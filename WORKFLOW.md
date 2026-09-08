@@ -12,7 +12,7 @@ doesn't have to reconstruct where things stand.
 - [x] **Gate 0** — implementation authorized, language decided (blocks everything below)
 - [x] Phase 1 — Audit Trail + Upstream Registry (foundation)
 - [x] Phase 2 — Credential Vault
-- [ ] Phase 3 — Definition Signer + Tool Quarantine
+- [x] Phase 3 — Definition Signer + Tool Quarantine
 - [ ] Phase 4 — Access Control
 - [ ] Phase 5 — Gateway Endpoint (first end-to-end integration point)
 - [ ] Phase 6 — Operator Console
@@ -169,7 +169,7 @@ test in the project quietly stops running instead of failing loudly.
 
 **Next: Phase 3 — Definition Signer + Tool Quarantine.**
 
-## Phase 3 — Definition Signer + Tool Quarantine
+## Phase 3 — Definition Signer + Tool Quarantine ✅ done 08 Sep 2026
 
 - Signer: Ed25519 over `command/url + args + sorted env-var names`,
   **excluding secret values** (Wirken pattern, `design/adr/0003`). Test:
@@ -184,6 +184,26 @@ test in the project quietly stops running instead of failing loudly.
   and both are pure verification logic with no I/O beyond reading the
   registry — good candidates to build and test together before Access
   Control introduces request-handling complexity.
+
+**Built:** `internal/signer` (domain: `Canonical`, `Signature`, `Signer`,
+`Verify`, key load/generate) + `internal/signer/sqlite` (adapter, its own
+`entry_signatures` table); `internal/quarantine` (domain: `ToolIdentity`,
+`Hash`, three-state `Tool` with a pure transition function, and `Usable()`
+as the single caller-facing gate) + `internal/quarantine/sqlite` (adapter,
+transaction-wrapped read-modify-write so a concurrent discovery cycle
+can't overwrite a `changed` verdict).
+
+**Two new ADRs, because three implementation-time decisions were
+security-significant and would otherwise look like arbitrary choices to
+whoever reads the code next:** `0006` (signing key in its own file, never
+in SQLite or the Vault; signatures in their own table; canonical hash
+includes `Name` and is length-prefixed and version-tagged) and `0007`
+(`changed` is permanent until a human approves; schema hashed as raw bytes
+with no JSON canonicalization; one predicate gates visibility and
+execution together).
+
+**Next: Phase 4 — Access Control, which is blocked on the identity model
+decision (see the gate above).**
 
 ## Phase 4 — Access Control
 

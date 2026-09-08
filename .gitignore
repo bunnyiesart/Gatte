@@ -1,0 +1,139 @@
+# .gitignore padrao do the organization.
+# Remova o que nao se aplica ao projeto. Acrescente o que faltar.
+#
+# ATENCAO: .gitignore nao e controle de segredo. Ele evita o commit acidental,
+# nao protege o que ja foi commitado. Segredo que ja entrou no historico
+# continua la e precisa ser rotacionado, nao apenas removido.
+
+# ----------------------------------------------------------------- segredos
+# Lista local de termo=slug do hook de pre-commit. Contem termo real,
+# por isso nunca e versionada.
+.slugs
+
+# Chave publica (.pub, authorized_keys, known_hosts) NAO entra aqui de proposito:
+# nao e segredo, e projeto de infra costuma versionar esses arquivos.
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+*.pfx
+*.jks
+id_rsa
+id_ed25519
+*.ovpn
+.netrc
+.htpasswd
+secrets.*
+credentials
+credentials.*
+*.kdbx
+
+# --------------------------------------------------------- ferramentas de IA
+# CLAUDE.md e .claude/settings.json sao versionados de proposito: valem pro time.
+# Apenas o que e pessoal ou gerado localmente fica de fora.
+CLAUDE.local.md
+.claude/settings.local.json
+.claude/projects/
+.claude/todos/
+.claude/shell-snapshots/
+.claude/statsig/
+.mcp.local.json
+
+# Antigravity
+.antigravity/
+.antigravity-local/
+
+# Outros editores e agentes de IA
+.cursor/
+.cursorignore
+.windsurf/
+.aider*
+.continue/
+
+# ------------------------------------------------------------------ sistema
+.DS_Store
+._*
+.Spotlight-V100
+.Trashes
+.fseventsd
+Thumbs.db
+ehthumbs.db
+desktop.ini
+$RECYCLE.BIN/
+
+# ----------------------------------------------------------------- editores
+.vscode/
+!.vscode/extensions.json
+.idea/
+*.swp
+*.swo
+*~
+
+# ------------------------------------------------------------------- Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.coverage
+.coverage.*
+htmlcov/
+
+# ------------------------------------------------------------- Node e front
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.next/
+.nuxt/
+
+# --------------------------------------------------------------- build e out
+# bin/ e obj/ NAO entram: em projeto de shell script, bin/ costuma ser
+# codigo versionado. Acrescente se o seu projeto compila para essas pastas.
+build/
+dist/
+out/
+target/
+*.o
+*.so
+*.dylib
+*.exe
+*.tar.gz
+*.tgz
+*.zip
+
+# ----------------------------------------- infraestrutura como codigo (IaC)
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+crash.log
+*.retry
+.vagrant/
+
+# -------------------------------------------------------- logs e temporarios
+*.log
+logs/
+tmp/
+temp/
+.cache/
+*.bak
+*.orig
+*.rej
+
+# ------------------------------------------------------------------------ Go
+*.test
+*.out
+coverage.out
+/bin/mcp-gateway
+/mcp-gateway
+vendor/

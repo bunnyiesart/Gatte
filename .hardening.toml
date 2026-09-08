@@ -1,0 +1,22 @@
+# Declaracao de hardening deste repositorio.
+# Todo controle desligado precisa de uma excecao declarada aqui.
+# Este arquivo fica no branch protegido: alterar exige commit assinado e Pull Request.
+#
+#   harden.py --list                    controles e quando e aceitavel pular cada um
+#   harden.py --explain <perfil>        o que um perfil liga e o que deixa de fora
+#   harden.py --audit <ORG>/<REPO>      conformidade deste repositorio
+#
+# Perfis: solo, solo-ci, time, critico.
+# Ajuste a linha abaixo para o perfil real deste projeto.
+
+perfil = "solo"
+
+# Para declarar uma excecao, copie o bloco e preencha.
+# Excecao sem motivo, sem aprovador ou sem data de revisao nao passa na auditoria.
+#
+# [[excecao]]
+# controle     = "status-check"
+# motivo       = "Projeto sem runner de Actions disponivel."
+# aprovado_por = "seu.usuario"
+# data         = 2026-09-01
+# revisar_em   = 2027-03-01

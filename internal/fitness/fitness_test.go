@@ -37,6 +37,7 @@ import (
 	_ "github.com/bunnyiesart/Gatte/internal/access"
 	_ "github.com/bunnyiesart/Gatte/internal/audit"
 	_ "github.com/bunnyiesart/Gatte/internal/audit/sqlite"
+	_ "github.com/bunnyiesart/Gatte/internal/gateway"
 	_ "github.com/bunnyiesart/Gatte/internal/registry"
 	_ "github.com/bunnyiesart/Gatte/internal/registry/sqlite"
 	_ "github.com/bunnyiesart/Gatte/internal/store"
@@ -114,9 +115,10 @@ const modulePath = "github.com/bunnyiesart/Gatte"
 // (internal/registry/sqlite, internal/audit/sqlite, ...), "/sopsage" for
 // the Credential Vault's sops+age adapter (internal/vault/sopsage), and
 // "/oidc" for Access Control's identity-provider adapter
-// (internal/access/oidc). Add a new entry here whenever a future
-// component gains its own adapter subpackage.
-var adapterSuffixes = []string{"/sqlite", "/sopsage", "/oidc"}
+// (internal/access/oidc), and "/stdio" for the Gateway Endpoint's
+// upstream dialer (internal/gateway/stdio). Add a new entry here whenever
+// a future component gains its own adapter subpackage.
+var adapterSuffixes = []string{"/sqlite", "/sopsage", "/oidc", "/stdio"}
 
 // isAdapter reports whether importPath is one of this project's own
 // adapter subpackages, by the suffix conventions in adapterSuffixes.

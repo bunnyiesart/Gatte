@@ -47,6 +47,40 @@ de aprovação; um parser generoso custa a garantia inteira.
 Fail-closed no eixo certo: aqui o falso positivo é barato, o falso
 negativo é o ataque.
 
+> **CORREÇÃO, 08 Sep 2026 — esta garantia não é entregue hoje.**
+>
+> Descoberto ao implementar `internal/gateway/stdio` (Fase 5): o SDK
+> oficial de MCP **decodifica `Tool.InputSchema` para `map[string]any`
+> antes que qualquer código nosso o veja**. A própria documentação do SDK
+> diz: *"From the client, this field will hold the default JSON marshaling
+> of the server's input schema (a `map[string]any`)."* Os bytes literais
+> do upstream já não existem na nossa fronteira.
+>
+> Ou seja: **há canonicalização, ela só não é nossa.** O que o hash cobre
+> hoje é o re-marshal de um mapa Go, não o que o upstream escreveu.
+>
+> O que se perde, do mais brando ao mais sério:
+> - Ordem de chaves e whitespace somem. Um reformat cosmético **não**
+>   move o hash e **não** vira `changed`. Isso, isolado, seria aceitável.
+> - Números normalizam: `1`, `1.0` e `1e0` viram o mesmo `float64`.
+> - **Chaves duplicadas colapsam.** `{"a":1,"a":2}` vira `{"a":2}` no
+>   decoder do Go. Dois schemas que um *outro* parser — o do cliente, o do
+>   modelo — poderia ler de formas diferentes passam a ter o mesmo hash.
+>   Isso é exatamente a confusão de parser que esta seção existia para
+>   evitar, reintroduzida por baixo.
+>
+> O que **continua funcionando**: qualquer mudança semântica — descrição
+> alterada (o vetor principal de tool poisoning), campo novo, tipo
+> trocado, campo removido — ainda move o hash e ainda dispara `changed`.
+> A defesa contra rug-pull não está quebrada; está com uma borda a menos
+> do que este ADR afirmava.
+>
+> **A decisão em si continua de pé** — não vamos *acrescentar*
+> canonicalização nossa. O que muda é a honestidade do texto: a garantia
+> é "nenhuma normalização nossa", não "bytes crus do upstream".
+> Fechar a diferença exige ler `tools/list` direto do fio, sem passar
+> pelo SDK. Rastreado como item próprio, não resolvido aqui.
+
 ### 3. Um único predicado (`Usable`) governa visibilidade e execução
 
 `Tool.Usable()` é a única resposta para "esta ferramenta pode ser

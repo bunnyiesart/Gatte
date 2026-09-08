@@ -46,6 +46,8 @@ func TestRecordThenList_RoundTrips(t *testing.T) {
 		Tool:            "casemgmt.list_cases",
 		TargetUpstream:  "casemgmt",
 		Timestamp:       time.Date(2026, 9, 8, 10, 30, 45, 123456789, time.FixedZone("BRT", -3*3600)),
+		Outcome:         audit.OutcomeAllowed,
+		Reason:          "",
 	}
 
 	if err := r.Record(ctx, want); err != nil {
@@ -85,6 +87,7 @@ func TestRecord_InvalidRecordRejectedAndNotStored(t *testing.T) {
 		Tool:            "", // invalid: empty
 		TargetUpstream:  "casemgmt",
 		Timestamp:       time.Now(),
+		Outcome:         audit.OutcomeAllowed,
 	}
 
 	err := r.Record(ctx, invalid)
@@ -120,9 +123,9 @@ func TestList_OrdersChronologicallyRegardlessOfInsertionOrder(t *testing.T) {
 	ctx := context.Background()
 
 	base := time.Date(2026, 9, 8, 0, 0, 0, 0, time.UTC)
-	ten := audit.Record{AnalystIdentity: "alice", Tool: "t", TargetUpstream: "casemgmt", Timestamp: base.Add(10 * time.Hour)}
-	nine := audit.Record{AnalystIdentity: "bob", Tool: "t", TargetUpstream: "casemgmt", Timestamp: base.Add(9 * time.Hour)}
-	eleven := audit.Record{AnalystIdentity: "carol", Tool: "t", TargetUpstream: "casemgmt", Timestamp: base.Add(11 * time.Hour)}
+	ten := audit.Record{AnalystIdentity: "alice", Tool: "t", TargetUpstream: "casemgmt", Timestamp: base.Add(10 * time.Hour), Outcome: audit.OutcomeAllowed}
+	nine := audit.Record{AnalystIdentity: "bob", Tool: "t", TargetUpstream: "casemgmt", Timestamp: base.Add(9 * time.Hour), Outcome: audit.OutcomeDenied, Reason: "forbidden"}
+	eleven := audit.Record{AnalystIdentity: "carol", Tool: "t", TargetUpstream: "casemgmt", Timestamp: base.Add(11 * time.Hour), Outcome: audit.OutcomeFailed}
 
 	// Insert out of chronological order: 10:00, 09:00, 11:00.
 	for _, rec := range []audit.Record{ten, nine, eleven} {

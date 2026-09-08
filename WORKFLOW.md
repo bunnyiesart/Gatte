@@ -13,7 +13,7 @@ doesn't have to reconstruct where things stand.
 - [x] Phase 1 — Audit Trail + Upstream Registry (foundation)
 - [x] Phase 2 — Credential Vault
 - [x] Phase 3 — Definition Signer + Tool Quarantine
-- [ ] Phase 4 — Access Control
+- [x] Phase 4 — Access Control
 - [ ] Phase 5 — Gateway Endpoint (first end-to-end integration point)
 - [ ] Phase 6 — Operator Console
 - [ ] Phase 7 — Hardening pass (net-new controls from `AGENTS.md` §2)
@@ -205,7 +205,7 @@ execution together).
 **Next: Phase 4 — Access Control, which is blocked on the identity model
 decision (see the gate above).**
 
-## Phase 4 — Access Control
+## Phase 4 — Access Control ✅ done 08 Sep 2026
 
 **Stop and confirm the identity model with the human before writing this
 phase** — see "why this order" above. Once decided:
@@ -218,6 +218,40 @@ phase** — see "why this order" above. Once decided:
   any) before the request reaches `Gateway Endpoint`. This is a named,
   required mechanism (`design/adr/0003`'s 31 Aug update, Kong
   `hide_credentials` pattern), not optional hardening.
+
+**Identity model decided:** self-hosted OIDC (`design/adr/0008`). bunnyiesart's
+constraint that everything be self-hostable removed Google/Entra from the
+table, and he chose a self-hosted provider over named static tokens,
+against the earlier recommendation and knowing the operational cost.
+
+**Built:** `internal/access` (domain: `Identity`, `Role`, `Policy` with
+`Authorize`/`AllowedTools`/`RolesFor`, the `TokenVerifier` port, and the
+401-vs-403 sentinels) + `internal/access/oidc` (adapter, provider-agnostic,
+go-oidc based).
+
+**Which IdP to run is deliberately not a code decision.** The verifier
+takes an issuer, an audience and a configurable groups-claim name; Keycloak,
+Authelia and Zitadel are indistinguishable from the gateway's side.
+ADR-0008 recommends Authelia (single binary + SQLite) without binding to it.
+
+**A real bug was found in review and fixed, worth recording because the
+class of it recurs:** `Policy` documented itself immutable -- and its
+no-locking design depends on that -- but stored the caller's `Role` structs
+directly. `Role.Tools` is a slice, so the policy shared a backing array
+with its constructor's caller, *and* `RolesFor` handed that same array to
+the request path, meaning `p.RolesFor(id)[0].Tools[0] = "..."` silently
+rewrote what the gateway authorized. Both directions are now cloned, and
+`TestPolicyIsActuallyImmutable` was confirmed to fail against the pre-fix
+code before being trusted.
+
+**Credential stripping is only structurally complete here.** `Identity`
+carries no raw token and a reflection test fails the build if a field named
+like a credential is ever added. The *enforcement point* -- ensuring a
+caller's token never reaches a spawned upstream -- lives in Phase 5, where
+upstream calls actually happen, and the `lab/` probe already exists to
+prove it.
+
+**Next: Phase 5 — Gateway Endpoint.**
 
 ## Phase 5 — Gateway Endpoint
 

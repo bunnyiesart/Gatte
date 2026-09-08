@@ -34,6 +34,7 @@ import (
 	// inside the test. `make test` (see Makefile) always passes
 	// `-count=1` for exactly this reason -- do not drop that flag, and
 	// do not trust a bare `go test ./...` result for this package.
+	_ "github.com/bunnyiesart/Gatte/internal/access"
 	_ "github.com/bunnyiesart/Gatte/internal/audit"
 	_ "github.com/bunnyiesart/Gatte/internal/audit/sqlite"
 	_ "github.com/bunnyiesart/Gatte/internal/registry"
@@ -110,11 +111,12 @@ const modulePath = "github.com/bunnyiesart/Gatte"
 
 // adapterSuffixes lists this project's "this import path is an adapter"
 // suffix conventions: "/sqlite" for the SQL-backed components
-// (internal/registry/sqlite, internal/audit/sqlite, ...) and "/sopsage"
-// for the Credential Vault's sops+age adapter (internal/vault/sopsage).
-// Add a new entry here whenever a future component gains its own adapter
-// subpackage.
-var adapterSuffixes = []string{"/sqlite", "/sopsage"}
+// (internal/registry/sqlite, internal/audit/sqlite, ...), "/sopsage" for
+// the Credential Vault's sops+age adapter (internal/vault/sopsage), and
+// "/oidc" for Access Control's identity-provider adapter
+// (internal/access/oidc). Add a new entry here whenever a future
+// component gains its own adapter subpackage.
+var adapterSuffixes = []string{"/sqlite", "/sopsage", "/oidc"}
 
 // isAdapter reports whether importPath is one of this project's own
 // adapter subpackages, by the suffix conventions in adapterSuffixes.

@@ -18,6 +18,7 @@ package audit
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 )
 
@@ -38,6 +39,54 @@ type Record struct {
 	// "now" is obtained -- the caller supplies it, keeping this component
 	// trivially testable without a Clock dependency.
 	Timestamp time.Time
+	// Outcome says whether the call was allowed, refused, or attempted
+	// and failed. See the Outcome type.
+	Outcome Outcome
+	// Reason is an optional short, operator-facing classification of a
+	// refusal or failure, e.g. "forbidden" or "quarantined".
+	//
+	// This deliberately holds the distinction the *caller* is not told.
+	// The gateway returns an opaque error to a client so it cannot probe
+	// which tools exist or which are currently under suspicion; the audit
+	// trail is read by the operator, who needs exactly that distinction to
+	// answer "why was this blocked". Free text, never parsed for a
+	// decision -- it is evidence, not control flow.
+	Reason string
+}
+
+// Outcome is what happened to a call.
+//
+// This field exists because an audit trail that cannot distinguish a
+// refused call from a completed one answers the wrong question. CONCEPTS.md
+// §2.5 names outcome as one of five things a useful record needs -- who,
+// what, when, target, outcome -- and is blunt that without them together
+// "the log is decoration, not evidence". For a SOC, "was this blocked?" is
+// the first question asked of the trail, and it was unanswerable until
+// this field existed.
+type Outcome string
+
+const (
+	// OutcomeAllowed means the call passed every gate and was forwarded to
+	// its upstream.
+	OutcomeAllowed Outcome = "allowed"
+	// OutcomeDenied means the gateway refused the call: no such tool, not
+	// approved by Tool Quarantine, or not permitted by the caller's role.
+	// The specific reason belongs in Reason.
+	OutcomeDenied Outcome = "denied"
+	// OutcomeFailed means the call was allowed and forwarded, but the
+	// upstream did not complete it. Distinct from OutcomeDenied because
+	// "the gateway said no" and "the backend broke" are different
+	// incidents with different responses.
+	OutcomeFailed Outcome = "failed"
+)
+
+// Valid reports whether o is one of the defined outcomes.
+func (o Outcome) Valid() bool {
+	switch o {
+	case OutcomeAllowed, OutcomeDenied, OutcomeFailed:
+		return true
+	}
+	return false
 }
 
 // Validate checks that r satisfies the audit trail's entry contract:
@@ -64,6 +113,14 @@ func (r Record) Validate() error {
 	}
 	if r.Timestamp.IsZero() {
 		errs = append(errs, errors.New("timestamp must not be the zero value"))
+	}
+	// Required, with no default. A zero-value Outcome would silently
+	// record every call as the same thing, which is the failure this
+	// field was added to prevent -- so an unset Outcome is a rejected
+	// record, not an "unknown" one.
+	if !r.Outcome.Valid() {
+		errs = append(errs, fmt.Errorf("outcome %q is not one of %q, %q, %q",
+			r.Outcome, OutcomeAllowed, OutcomeDenied, OutcomeFailed))
 	}
 
 	if len(errs) == 0 {

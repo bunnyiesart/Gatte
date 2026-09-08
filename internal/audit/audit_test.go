@@ -12,6 +12,7 @@ func validRecord() Record {
 		Tool:            "casemgmt.list_cases",
 		TargetUpstream:  "casemgmt",
 		Timestamp:       time.Date(2026, 9, 8, 10, 0, 0, 0, time.UTC),
+		Outcome:         OutcomeAllowed,
 	}
 }
 
@@ -72,6 +73,7 @@ func TestValidate_AllStringFieldsEmpty(t *testing.T) {
 		Tool:            "",
 		TargetUpstream:  "",
 		Timestamp:       time.Date(2026, 9, 8, 10, 0, 0, 0, time.UTC),
+		Outcome:         OutcomeAllowed,
 	}
 
 	err := r.Validate()
@@ -89,5 +91,43 @@ func TestValidate_AllStringFieldsEmpty(t *testing.T) {
 	const wantCount = 4
 	if len(unwrapped) != wantCount {
 		t.Fatalf("Validate() joined %d errors, want %d: %v", len(unwrapped), wantCount, err)
+	}
+}
+
+// TestValidate_RequiresAnOutcome pins that Outcome has no usable zero
+// value. A record defaulting to some outcome would quietly mark every
+// call the same, which is precisely the failure the field was added to
+// fix -- an audit trail that cannot tell a refused call from a completed
+// one.
+func TestValidate_RequiresAnOutcome(t *testing.T) {
+	base := Record{
+		AnalystIdentity: "analyst@example.test",
+		Tool:            "casemgmt.list_cases",
+		TargetUpstream:  "casemgmt",
+		Timestamp:       time.Date(2026, 9, 8, 10, 0, 0, 0, time.UTC),
+	}
+
+	t.Run("unset is rejected", func(t *testing.T) {
+		if err := base.Validate(); !errors.Is(err, ErrInvalid) {
+			t.Fatalf("Validate with no Outcome = %v, want ErrInvalid", err)
+		}
+	})
+
+	t.Run("garbage is rejected", func(t *testing.T) {
+		r := base
+		r.Outcome = "probably-fine"
+		if err := r.Validate(); !errors.Is(err, ErrInvalid) {
+			t.Fatalf("Validate with a bogus Outcome = %v, want ErrInvalid", err)
+		}
+	})
+
+	for _, o := range []Outcome{OutcomeAllowed, OutcomeDenied, OutcomeFailed} {
+		t.Run(string(o)+" is accepted", func(t *testing.T) {
+			r := base
+			r.Outcome = o
+			if err := r.Validate(); err != nil {
+				t.Fatalf("Validate with Outcome %q = %v, want nil", o, err)
+			}
+		})
 	}
 }

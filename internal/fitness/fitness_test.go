@@ -39,6 +39,8 @@ import (
 	_ "github.com/bunnyiesart/Gatte/internal/registry"
 	_ "github.com/bunnyiesart/Gatte/internal/registry/sqlite"
 	_ "github.com/bunnyiesart/Gatte/internal/store"
+	_ "github.com/bunnyiesart/Gatte/internal/vault"
+	_ "github.com/bunnyiesart/Gatte/internal/vault/sopsage"
 )
 
 // sqlPackages are the direct imports that mean "this package talks to the
@@ -98,15 +100,52 @@ func modulePackages(t *testing.T) []goPackage {
 	return pkgs
 }
 
+// modulePath is this module's path, from go.mod. isAdapter and
+// isCompositionRoot both require it as a prefix -- without it, a suffix
+// like "/sqlite" also matches the third-party modernc.org/sqlite driver
+// package itself, which is not one of *our* adapters and is exactly the
+// kind of package internal/store is supposed to be allowed to import
+// directly.
+const modulePath = "github.com/bunnyiesart/Gatte"
+
+// adapterSuffixes lists this project's "this import path is an adapter"
+// suffix conventions: "/sqlite" for the SQL-backed components
+// (internal/registry/sqlite, internal/audit/sqlite, ...) and "/sopsage"
+// for the Credential Vault's sops+age adapter (internal/vault/sopsage).
+// Add a new entry here whenever a future component gains its own adapter
+// subpackage.
+var adapterSuffixes = []string{"/sqlite", "/sopsage"}
+
+// isAdapter reports whether importPath is one of this project's own
+// adapter subpackages, by the suffix conventions in adapterSuffixes.
+func isAdapter(importPath string) bool {
+	if !strings.HasPrefix(importPath, modulePath) {
+		return false
+	}
+	for _, suf := range adapterSuffixes {
+		if strings.HasSuffix(importPath, suf) {
+			return true
+		}
+	}
+	return false
+}
+
 // isAdapterOrStore reports whether importPath is allowed to talk to the
 // database directly: either it is internal/store (the one package whose
-// job is exactly that), or its path ends in "/sqlite" -- this project's
-// convention for "this is the adapter half of a ports & adapters pair"
-// (internal/registry/sqlite, internal/audit/sqlite, and, when they exist,
-// internal/quarantine/sqlite and any other component's own adapter).
+// job is exactly that), or it is a "/sqlite" adapter (see adapterSuffixes).
 func isAdapterOrStore(importPath string) bool {
 	return strings.HasSuffix(importPath, "/internal/store") ||
 		strings.HasSuffix(importPath, "/sqlite")
+}
+
+// isCompositionRoot reports whether importPath is allowed to wire a
+// concrete adapter directly. Today that's only cmd/mcp-gateway (Phase 1's
+// "proves the wiring, nothing more yet") -- every other package must
+// depend on the relevant port interface (registry.Repository,
+// audit.Recorder, vault.Provider, ...), never reach into a concrete
+// adapter it doesn't itself define.
+func isCompositionRoot(importPath string) bool {
+	return strings.HasPrefix(importPath, modulePath) && strings.Contains(importPath, "/cmd/")
 }
 
 // TestOnlyAdaptersTouchTheDatabase is the fitness function WORKFLOW.md's
@@ -144,10 +183,11 @@ func TestOnlyAdaptersTouchTheDatabase(t *testing.T) {
 }
 
 // TestDomainPackagesDoNotImportTheirOwnAdapter guards the other direction
-// of the same rule: a domain package (registry, audit, ...) must not
-// depend on its own adapter subpackage. Go's compiler already forbids the
-// reverse (an import cycle, since the adapter imports the domain) -- this
-// test exists to catch the direction Go's compiler has no opinion about.
+// of the same rule: a domain package (registry, audit, vault, ...) must
+// not depend on its own adapter subpackage. Go's compiler already forbids
+// the reverse (an import cycle, since the adapter imports the domain) --
+// this test exists to catch the direction Go's compiler has no opinion
+// about.
 func TestDomainPackagesDoNotImportTheirOwnAdapter(t *testing.T) {
 	pkgs := modulePackages(t)
 
@@ -155,13 +195,51 @@ func TestDomainPackagesDoNotImportTheirOwnAdapter(t *testing.T) {
 		if isAdapterOrStore(pkg.ImportPath) {
 			continue
 		}
-		ownAdapter := pkg.ImportPath + "/sqlite"
+		for _, suf := range adapterSuffixes {
+			ownAdapter := pkg.ImportPath + suf
+			for _, imp := range pkg.Imports {
+				if imp == ownAdapter {
+					t.Errorf(
+						"%s imports its own adapter %s -- dependencies in ports & adapters point "+
+							"inward (adapter depends on domain), never the other way",
+						pkg.ImportPath, ownAdapter,
+					)
+				}
+			}
+		}
+	}
+}
+
+// TestOnlyCompositionRootImportsAdapters is the fitness function
+// design/adr/0001-monolithic-modular-style.md's Compliance section names
+// specifically for the Credential Vault ("nenhum componente acessa
+// Credential Vault fora da interface pública dele"), generalized to
+// every port/adapter pair this project has, not just the vault: an
+// adapter subpackage (internal/registry/sqlite, internal/vault/sopsage,
+// ...) may be imported only by cmd/mcp-gateway (the one place allowed to
+// wire concrete infrastructure, per isCompositionRoot) or by its own
+// package's tests (which go list -json reports separately, under
+// TestImports/XTestImports, not Imports -- so they never appear here).
+// Any other package -- in particular, a sibling domain package, or a
+// future Gateway Endpoint reaching for vault/sopsage directly instead of
+// depending on vault.Provider -- would defeat the entire reason
+// Credential Vault is a separate, security-sensitive component: nothing
+// should be able to touch a secret except through the interface that
+// promises never to log or persist it.
+func TestOnlyCompositionRootImportsAdapters(t *testing.T) {
+	pkgs := modulePackages(t)
+
+	for _, pkg := range pkgs {
+		if isCompositionRoot(pkg.ImportPath) || isAdapter(pkg.ImportPath) {
+			continue
+		}
 		for _, imp := range pkg.Imports {
-			if imp == ownAdapter {
+			if isAdapter(imp) {
 				t.Errorf(
-					"%s imports its own adapter %s -- dependencies in ports & adapters point "+
-						"inward (adapter depends on domain), never the other way",
-					pkg.ImportPath, ownAdapter,
+					"%s imports adapter %s directly -- only cmd/mcp-gateway may wire a concrete "+
+						"adapter; %s should depend on the corresponding port interface instead "+
+						"(design/adr/0001 Compliance)",
+					pkg.ImportPath, imp, pkg.ImportPath,
 				)
 			}
 		}

@@ -9,6 +9,47 @@ expected credential plus a fingerprint — never the credential itself. That mak
 it possible to prove credential injection worked while guaranteeing the secret
 cannot leak into a test transcript.
 
+## Go implementation (08 Sep 2026) — the harness for the new build
+
+`AGENTS.md` §5.4 says to reuse this lab as the test harness for the custom
+gateway itself, not just for evaluating third-party candidates. The Python/
+Docker harness described in the rest of this file (below) was built for the
+candidate evaluation in Round 3/5 (`DEVELOPMENT-LOG.md` §5, §10.1a) and never
+made it into this repository — only this README did. Since the project
+settled on Go (`design/adr/0002`), the mocks and probe were rebuilt in Go
+rather than resurrecting the Python originals, using the same `<name>_credcheck`
+pattern and the official `github.com/modelcontextprotocol/go-sdk`:
+
+| Path | What it is |
+|---|---|
+| `lab/mockutil/` | Shared `AddCredCheck(server, toolName)` — the one place the `<name>_credcheck` logic exists, used by every mock below. Reads `MOCK_SECRET`/`MOCK_EXPECT` from its process environment, returns `{received_expected_secret, fingerprint}` — never the secret. |
+| `lab/servers/casemgmt/`, `lab/servers/logsearch/`, `lab/servers/docsearch/`, `lab/servers/threatintel/` | One fake MCP server per real backend, each with 2 canned domain tools (no network calls, no real data) plus `<name>_credcheck`. |
+| `lab/probe/` | The verification tool: spawns a mock over stdio with a freshly-generated secret in `MOCK_SECRET`/`MOCK_EXPECT`, calls its credcheck tool, and — independent of that result — scans every raw byte of MCP wire traffic (via `mcp.LoggingTransport`) for the secret. Exit codes: `0` pass, `1` a real problem was found (bad credcheck result and/or a leak — a leak always forces `1`, never masked by a usage-error code), `2` the probe itself couldn't run (bad args, spawn/connect/parse failure). |
+
+Build and run:
+
+```bash
+go build -o /tmp/lab-bin/casemgmt ./lab/servers/casemgmt        # and logsearch, docsearch, threatintel
+go build -o /tmp/lab-bin/probe ./lab/probe
+/tmp/lab-bin/probe --tool casemgmt_credcheck -- /tmp/lab-bin/casemgmt
+```
+
+This is what `WORKFLOW.md` Phase 5 means by "run `probe.py`'s clean-environment
+credential-injection + leak check exactly as done for every external
+candidate" — same test, same property, Go instead of Python, real subprocess
+spawning rather than in-memory (each package also has its own `go test`
+suite using `mcp.NewInMemoryTransports()` for fast unit-level coverage; the
+probe binary above is the true end-to-end check, same as it was for every
+third-party candidate below).
+
+## The rest of this file: the original (Python/Docker) evaluation harness
+
+Everything below documents the harness and results from evaluating six
+third-party gateway candidates (Round 1–5, `DEVELOPMENT-LOG.md`), kept for the
+historical record. Its Python (`probe.py`) and Docker mock servers were never
+committed to this repository — only this README survived the handoff. Do not
+try to resurrect them; use the Go implementation above instead.
+
 ## The two scenarios
 
 **A — today.** The client spawns the server and passes the key itself:

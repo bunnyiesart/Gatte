@@ -252,6 +252,24 @@ func (g *Gateway) Connect(ctx context.Context) error {
 		conns[entry.Name] = up
 
 		for _, def := range defs {
+			if err := validateSchema(def.InputSchema); err != nil {
+				// Refused at discovery, deliberately, rather than guarded at
+				// each serving surface. mcp.Server.AddTool *panics* on a
+				// schema that is nil or not a JSON object of type "object",
+				// and InputSchema is upstream-controlled -- so a backend
+				// advertising one malformed tool could crash the gateway
+				// process, which ADR-0001 already accepts as a single point
+				// of failure for every analyst's tooling. A remotely
+				// triggerable panic in that position is not acceptable.
+				//
+				// Refusing here means no surface, present or future, has to
+				// remember to guard. Not routed, and not substituted with a
+				// permissive default either: `{"type":"object"}` in place of
+				// whatever the upstream actually sent would advertise a
+				// contract Tool Quarantine never approved.
+				failures = append(failures, fmt.Errorf("%w: %q: tool %q has an unusable input schema: %w", ErrUpstreamUnavailable, entry.Name, def.Name, err))
+				continue
+			}
 			if _, err := g.quarantine.Observe(ctx, entry.Name, identityOf(def)); err != nil {
 				// A tool whose quarantine state could not be recorded is a
 				// tool whose approval we cannot check later. Do not route it.
@@ -374,7 +392,16 @@ func (g *Gateway) ListTools(ctx context.Context, id access.Identity) ([]ToolDef,
 			out = append(out, ToolDef{
 				Name:        name,
 				Description: rt.def.Description,
-				InputSchema: rt.def.InputSchema,
+				// Cloned, not shared. InputSchema is a json.RawMessage --
+				// a slice -- so handing out rt.def.InputSchema directly
+				// would let a caller mutate the routing table's advertised
+				// schema in place, and that schema is the one Tool
+				// Quarantine fingerprinted and an operator approved.
+				//
+				// Same defect class as the access.Policy aliasing bug this
+				// project already caught by test; fixed here for the same
+				// reason and to keep one standard rather than two.
+				InputSchema: slices.Clone(rt.def.InputSchema),
 			})
 		case errors.Is(err, ErrToolQuarantined):
 			continue
@@ -737,3 +764,42 @@ type redactedError struct {
 
 func (e redactedError) Error() string { return e.msg }
 func (e redactedError) Unwrap() error { return e.cause }
+
+// ErrUnusableSchema means an upstream advertised a tool whose input
+// schema the gateway cannot serve.
+var ErrUnusableSchema = errors.New("gateway: unusable input schema")
+
+// validateSchema reports whether raw is an input schema this gateway can
+// safely advertise.
+//
+// The bar is set by what mcp.Server.AddTool will accept without panicking:
+// a non-nil JSON object whose "type" is "object". Anything else -- absent,
+// null, a bare array, a string, or an object typed as something other than
+// "object" -- is refused at discovery rather than allowed to reach a
+// serving surface.
+//
+// This is a validation of shape only. It deliberately does not attempt to
+// judge whether the schema is *good*, and it does not rewrite it: the
+// bytes an upstream sent are the bytes Tool Quarantine fingerprinted, and
+// normalizing them here would move the hash out from under an operator's
+// approval.
+func validateSchema(raw json.RawMessage) error {
+	if len(raw) == 0 {
+		return fmt.Errorf("%w: absent", ErrUnusableSchema)
+	}
+	var probe map[string]any
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		return fmt.Errorf("%w: not a JSON object", ErrUnusableSchema)
+	}
+	if probe == nil {
+		return fmt.Errorf("%w: null", ErrUnusableSchema)
+	}
+	typ, ok := probe["type"]
+	if !ok {
+		return fmt.Errorf("%w: no \"type\"", ErrUnusableSchema)
+	}
+	if typ != "object" {
+		return fmt.Errorf("%w: type is %v, want \"object\"", ErrUnusableSchema, typ)
+	}
+	return nil
+}

@@ -116,9 +116,10 @@ const modulePath = "github.com/bunnyiesart/Gatte"
 // the Credential Vault's sops+age adapter (internal/vault/sopsage), and
 // "/oidc" for Access Control's identity-provider adapter
 // (internal/access/oidc), and "/stdio" for the Gateway Endpoint's
-// upstream dialer (internal/gateway/stdio). Add a new entry here whenever
-// a future component gains its own adapter subpackage.
-var adapterSuffixes = []string{"/sqlite", "/sopsage", "/oidc", "/stdio"}
+// upstream dialer (internal/gateway/stdio), and "/httpapi" for its
+// client-facing HTTP surface (internal/gateway/httpapi). Add a new entry
+// here whenever a future component gains its own adapter subpackage.
+var adapterSuffixes = []string{"/sqlite", "/sopsage", "/oidc", "/stdio", "/httpapi"}
 
 // isAdapter reports whether importPath is one of this project's own
 // adapter subpackages, by the suffix conventions in adapterSuffixes.

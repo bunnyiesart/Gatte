@@ -14,7 +14,7 @@ doesn't have to reconstruct where things stand.
 - [x] Phase 2 — Credential Vault
 - [x] Phase 3 — Definition Signer + Tool Quarantine
 - [x] Phase 4 — Access Control
-- [ ] Phase 5 — Gateway Endpoint (first end-to-end integration point)
+- [x] Phase 5 — Gateway Endpoint (first end-to-end integration point)
 - [ ] Phase 6 — Operator Console
 - [ ] Phase 7 — Hardening pass (net-new controls from `AGENTS.md` §2)
 
@@ -253,7 +253,7 @@ prove it.
 
 **Next: Phase 5 — Gateway Endpoint.**
 
-## Phase 5 — Gateway Endpoint
+## Phase 5 — Gateway Endpoint ✅ done 08 Sep 2026
 
 - Single MCP surface, dispatch to the right upstream, aggregation of all
   registered servers.
@@ -267,6 +267,59 @@ prove it.
   every external candidate. If the custom build can't pass the same test
   the five external candidates failed, that's a stop-the-line finding, not
   a minor bug.
+
+**Built:** `internal/gateway` (routing table, namespacing, the
+authorize -> quarantine -> audit -> dispatch sequence), `internal/gateway/stdio`
+(spawns an upstream with an injected credential; child environment built
+explicitly, nothing inherited), `internal/gateway/httpapi` (streamable
+HTTP, stateless, bearer-only, per-identity tool exposure, every internal
+error reduced to a class and a constant string before it crosses the
+wire).
+
+**The checkpoint this phase exists for is green.** `internal/e2e` wires
+the real store, registry, quarantine, audit, policy, stdio dialer and HTTP
+surface together, spawns all four lab mocks as real subprocesses, and puts
+a real MCP client in front over real HTTP. A client holding no backend
+credential of its own reaches four backends that each received the
+injected secret, and that secret appears nowhere in the client-facing
+traffic or in the gateway's own logs. This is the same question five of
+six external candidates failed.
+
+The Credential Vault is the one component the checkpoint fakes (in-memory
+Provider). Deliberate: the vault's own no-leak property is proven against
+real sops encryption in `internal/vault/sopsage/leak_test.go`, and making
+the headline checkpoint depend on the sops binary would mean it silently
+skips wherever sops is absent.
+
+**Session handling resolved.** The open question about the 2026-07-28 spec
+revision was answered from the SDK rather than the secondary source:
+`StreamableHTTPOptions.Stateless` aligns with the spec's sessionless
+direction (SEP-2567) and neither reads nor sets `Mcp-Session-Id`. Used.
+"Session IDs must never double as authentication" is therefore true by
+construction, not by discipline.
+
+**Two defects found and fixed:** an upstream advertising a malformed input
+schema could *panic the gateway process* (`mcp.Server.AddTool` panics on a
+schema that is nil or not a JSON object of type "object", and the schema
+is upstream-controlled) -- now refused at discovery, before the tool is
+even observed into quarantine; and `ListTools` handed out schema bytes
+aliasing the routing table, the same defect class already caught in
+`access.Policy`.
+
+**One gap found and left visible on purpose:** an out-of-role tool probe is
+refused but not audited, because `httpapi`'s per-identity registration
+means the call never reaches `Dispatch`. Pinned in the checkpoint as
+current behaviour so fixing it fails loudly. Tracked separately; worth
+closing before Phase 6, since the Operator Console reads that trail.
+
+**Also outstanding:** the registry couples a vault key to the destination
+environment variable name (`env[name] = Resolve(name)`), so two upstreams
+cannot receive different values under the same variable name.
+`DEVELOPMENT-LOG.md` §7 said to reuse ToolHive's
+`--secret NAME,target=TARGET` shape, which separates the two; that
+separation was not carried into `registry.UpstreamServer`.
+
+**Next: Phase 6 — Operator Console.**
 
 ## Phase 6 — Operator Console
 

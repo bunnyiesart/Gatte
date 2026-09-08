@@ -1146,3 +1146,100 @@ func TestDispatch_AuditDistinguishesRefusalFromSuccess(t *testing.T) {
 		t.Errorf("both refusals recorded the same Reason %q; the audit trail cannot distinguish forbidden from unknown", a)
 	}
 }
+
+// TestConnect_RefusesUnusableSchemas guards a remotely triggerable panic.
+//
+// mcp.Server.AddTool panics if a tool's InputSchema is nil or is not a
+// JSON object of type "object" -- and InputSchema is whatever an upstream
+// said it was. Without this check a single malformed tool from one
+// backend would crash the gateway process on the next request that listed
+// it, and ADR-0001 already accepts the gateway as a single point of
+// failure for every analyst's tooling.
+//
+// Refusing at discovery means no serving surface has to remember to
+// guard, and the malformed tool simply isn't routed.
+func TestConnect_RefusesUnusableSchemas(t *testing.T) {
+	bad := []struct {
+		name   string
+		schema string
+	}{
+		{"absent", ``},
+		{"json null", `null`},
+		{"array", `[]`},
+		{"string", `"nope"`},
+		{"object without type", `{"properties":{}}`},
+		{"object of the wrong type", `{"type":"string"}`},
+	}
+
+	for _, tc := range bad {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t, "casemgmt.good", "casemgmt.bad")
+			h.register("casemgmt")
+			h.serve("casemgmt",
+				def("good", "a well-formed tool"),
+				ToolDef{Name: "bad", Description: "malformed", InputSchema: []byte(tc.schema)},
+			)
+
+			// Connect reports the refusal as a partial failure and keeps
+			// serving the rest of the fleet.
+			err := h.connect()
+			if err == nil {
+				t.Fatal("Connect accepted an unusable schema without reporting it")
+			}
+			if !errors.Is(err, ErrUpstreamUnavailable) {
+				t.Errorf("Connect error = %v, want it to wrap ErrUpstreamUnavailable", err)
+			}
+
+			// Only "good" can be approved: the malformed tool is refused
+			// before it is ever observed, so it never enters quarantine
+			// state at all. That is stronger than merely not routing it --
+			// a tool the gateway cannot serve should not be sitting in an
+			// operator's approval queue either.
+			h.approve("casemgmt", "good")
+			if _, err := h.quarantine.Approve(t.Context(), "casemgmt", "bad"); !errors.Is(err, quarantine.ErrNotFound) {
+				t.Errorf("approving the refused tool = %v, want quarantine.ErrNotFound (it should never have been observed)", err)
+			}
+
+			names := h.listNames(analyst)
+			if slices.Contains(names, "casemgmt.bad") {
+				t.Errorf("the malformed tool was routed anyway: %v", names)
+			}
+			if !slices.Contains(names, "casemgmt.good") {
+				t.Errorf("one malformed tool suppressed a well-formed sibling: %v", names)
+			}
+		})
+	}
+}
+
+// TestListTools_DoesNotAliasTheRoutingTable pins that a caller cannot
+// reach into the routing table through a returned schema. Same defect
+// class as the access.Policy aliasing bug caught earlier in this project.
+func TestListTools_DoesNotAliasTheRoutingTable(t *testing.T) {
+	h := newHarness(t, "casemgmt.list_cases")
+	h.register("casemgmt")
+	h.serve("casemgmt", def("list_cases", "list cases"))
+	h.mustConnect()
+	h.approve("casemgmt", "list_cases")
+
+	first, err := h.gw.ListTools(t.Context(), analyst)
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	if len(first) != 1 || len(first[0].InputSchema) == 0 {
+		t.Fatalf("unexpected first listing: %+v", first)
+	}
+	before := string(first[0].InputSchema)
+
+	// Scribble on what we were handed.
+	for i := range first[0].InputSchema {
+		first[0].InputSchema[i] = 'X'
+	}
+
+	second, err := h.gw.ListTools(t.Context(), analyst)
+	if err != nil {
+		t.Fatalf("ListTools again: %v", err)
+	}
+	if got := string(second[0].InputSchema); got != before {
+		t.Errorf("the routing table's schema was mutated through a returned ToolDef:\n got %q\nwant %q", got, before)
+	}
+}

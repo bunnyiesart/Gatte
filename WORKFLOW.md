@@ -11,7 +11,7 @@ doesn't have to reconstruct where things stand.
 
 - [x] **Gate 0** — implementation authorized, language decided (blocks everything below)
 - [x] Phase 1 — Audit Trail + Upstream Registry (foundation)
-- [ ] Phase 2 — Credential Vault
+- [x] Phase 2 — Credential Vault
 - [ ] Phase 3 — Definition Signer + Tool Quarantine
 - [ ] Phase 4 — Access Control
 - [ ] Phase 5 — Gateway Endpoint (first end-to-end integration point)
@@ -116,7 +116,7 @@ when `internal/fitness` matters** — see the comment in
 
 **Next: Phase 2 — Credential Vault.**
 
-## Phase 2 — Credential Vault
+## Phase 2 — Credential Vault ✅ done 08 Sep 2026
 
 - `Provider` interface (modeled on ToolHive's `pkg/secrets/types.go` shape,
   reimplemented — see `AGENTS.md`'s license note, do not vendor code),
@@ -129,6 +129,45 @@ when `internal/fitness` matters** — see the comment in
 - Confirm against `lab/README.md`'s existing methodology
   (`<name>_credcheck` pattern) — reuse it rather than inventing a new
   verification method.
+
+**Built:** `internal/vault` (domain: `Provider` interface, `Secret` type)
++ `internal/vault/sopsage` (adapter). The decisive test
+(`internal/vault/sopsage/leak_test.go`,
+`TestResolveThenSpawnDoesNotLeak`) resolves a real secret through a
+real sops+age-encrypted fixture, spawns a real subprocess running
+`lab/mockutil`'s `<name>_credcheck` tool over stdio (reused exactly as
+instructed, not reinvented), injects the resolved value into that
+subprocess's environment the same way a future Gateway Endpoint will,
+and scans the full JSON-RPC transcript, the tool result, and the
+subprocess's stderr for the raw secret — all three come back clean.
+Fitness function added: `internal/fitness`'s
+`TestOnlyCompositionRootImportsAdapters` generalizes ADR-0001's
+Compliance-section requirement ("nenhum componente acessa Credential
+Vault fora da interface pública dele") to every port/adapter pair in the
+project, not just the vault.
+
+**One real decision made and documented, not just implemented silently:**
+`design/adr/0005-shell-out-to-sops-cli.md` — the Credential Vault shells
+out to the standalone `sops` binary via `os/exec` rather than importing
+`github.com/getsops/sops/v3` as a Go library. Verified by hand: `go
+install`-ing that package's `cmd/sops` produces a 72MB binary (against
+`filippo.io/age`'s ~6MB) because sops's core unconditionally pulls in
+AWS/GCP/Azure/Vault KMS SDKs this project never uses — embedding it would
+have quietly undone the "single small binary, no external KMS" reasoning
+that won sops+age the comparison against Vault OSS in the first place
+(`DEVELOPMENT-LOG.md` §9.3).
+
+**One real gotcha, documented, not hidden:** `sops`, `age`, and
+`age-keygen` are runtime prerequisites of `internal/vault/sopsage`'s
+tests, not Go module dependencies (that's the whole point of the ADR
+above) — so those tests **skip**, rather than fail, when the binaries
+aren't on `PATH`. That includes the decisive leak test. Run `make
+devtools` once per dev machine/CI image (installs all three via `go
+install`, no system package manager needed) and make sure `make check`
+in CI actually has them on `PATH` — otherwise the single most important
+test in the project quietly stops running instead of failing loudly.
+
+**Next: Phase 3 — Definition Signer + Tool Quarantine.**
 
 ## Phase 3 — Definition Signer + Tool Quarantine
 

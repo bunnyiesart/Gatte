@@ -10,7 +10,7 @@ doesn't have to reconstruct where things stand.
 ## Progress
 
 - [x] **Gate 0** — implementation authorized, language decided (blocks everything below)
-- [ ] Phase 1 — Audit Trail + Upstream Registry (foundation)
+- [x] Phase 1 — Audit Trail + Upstream Registry (foundation)
 - [ ] Phase 2 — Credential Vault
 - [ ] Phase 3 — Definition Signer + Tool Quarantine
 - [ ] Phase 4 — Access Control
@@ -81,7 +81,7 @@ component graph in `design/02-components.md`:
   prevention beyond credential stripping) were deliberately deferred during
   design, not solved implicitly — don't let "phase 7" mean "someday."
 
-## Phase 1 — Audit Trail + Upstream Registry
+## Phase 1 — Audit Trail + Upstream Registry ✅ done 08 Sep 2026
 
 - SQLite schema for both (`design/02-components.md`: registry holds
   server config; audit holds one row per call — analyst identity, tool,
@@ -95,6 +95,26 @@ component graph in `design/02-components.md`:
   components exist to consume them through an interface — write the
   *test* now, even though nothing violates it yet; it's cheaper to write
   before there's code to retrofit against.
+
+**Built:** `internal/registry` (domain) + `internal/registry/sqlite`
+(adapter); `internal/audit` (domain) + `internal/audit/sqlite` (adapter);
+`internal/store` (shared SQLite connection, used by both); `internal/fitness`
+(the dependency-direction fitness function, `TestOnlyAdaptersTouchTheDatabase`
++ `TestDomainPackagesDoNotImportTheirOwnAdapter`); `cmd/mcp-gateway` (proves
+the wiring, nothing more yet). `make check` runs fmt/vet/test/build.
+
+**One real gotcha hit and documented, not just fixed silently:**
+`internal/fitness`'s test shells out to `go list -json` at runtime, which
+`go test`'s result cache cannot see — a deliberately-introduced violation
+in `internal/registry` reproducibly returned a stale cached PASS under a
+bare `go test ./...`, confirmed by hand, even after blank-importing the
+inspected packages as a partial mitigation. `go list -json` itself was
+always instantly correct; only `go test`'s caching was wrong. **Always run
+`make test` (`-count=1`) for this project, never a bare `go test ./...`
+when `internal/fitness` matters** — see the comment in
+`internal/fitness/fitness_test.go` for the full account.
+
+**Next: Phase 2 — Credential Vault.**
 
 ## Phase 2 — Credential Vault
 

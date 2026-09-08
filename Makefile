@@ -38,6 +38,26 @@ lab-probe: lab-build
 # Phase 2), the end-to-end proof that a resolved secret never leaks to an
 # upstream process's client.
 test:
+	@missing=""; \
+	for tool in sops age age-keygen; do \
+		command -v $$tool >/dev/null 2>&1 || missing="$$missing $$tool"; \
+	done; \
+	if [ -n "$$missing" ]; then \
+		echo "############################################################"; \
+		echo "# WARNING: not on PATH:$$missing"; \
+		echo "#"; \
+		echo "# internal/vault/sopsage's tests will SKIP, not fail. That"; \
+		echo "# includes TestResolveThenSpawnDoesNotLeak -- the end-to-end"; \
+		echo "# proof that a resolved secret never leaks to an upstream's"; \
+		echo "# client, which WORKFLOW.md Phase 2 calls the single most"; \
+		echo "# important test in this project."; \
+		echo "#"; \
+		echo "# A green 'make test' below does NOT mean that property was"; \
+		echo "# verified. Fix with:  make devtools"; \
+		echo "#   (then put \$$(go env GOPATH)/bin on your PATH -- installing"; \
+		echo "#    them is not enough if the shell can't see them)"; \
+		echo "############################################################"; \
+	fi
 	go test -count=1 ./...
 
 # devtools installs the external, non-Go-module tools this project's own

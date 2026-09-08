@@ -39,6 +39,10 @@ CLAUDE.local.md
 .claude/todos/
 .claude/shell-snapshots/
 .claude/statsig/
+# Worktrees Claude Code (or an agent) creates via EnterWorktree -- each is
+# its own git checkout with its own .git file; never something this repo's
+# own history should contain.
+.claude/worktrees/
 .mcp.local.json
 
 # Antigravity
@@ -135,5 +139,6 @@ temp/
 *.out
 coverage.out
 /bin/mcp-gateway
+/bin/lab/
 /mcp-gateway
 vendor/

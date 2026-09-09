@@ -54,7 +54,7 @@ Go (`design/adr/0002-language-runtime.md`).
 
 ## Repo hardening
 
-This repo follows [`bunnyiesart/hardening-repositorios`](https://github.com/bunnyiesart/hardening-repositorios)'s
+This repo follows a repository-hardening standard's
 `solo` profile — see `.hardening.toml`. Commits are signed with SSH
 (`gpg.format=ssh`); the pre-commit hook in `.githooks/` is a local
 guardrail, not a control — the server-side scan is what's authoritative.

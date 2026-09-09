@@ -17,10 +17,86 @@ load_rc_config $name
 : ${mcp_gateway_enable:="NO"}
 : ${mcp_gateway_config:="/usr/local/etc/mcp-gateway/config.toml"}
 : ${mcp_gateway_user:="mcpgw"}
-: ${mcp_gateway_logfile:="/var/log/mcp-gateway.log"}
 
-pidfile="/var/run/${name}.pid"
-procname="/usr/local/bin/mcp-gateway"
+# Both of these are DIRECTORIES owned by ${mcp_gateway_user}, not files
+# dropped into a directory owned by root, and that is the whole reason they
+# read the way they do.
+#
+# rc.subr honours ${name}_user by wrapping the command in su(1), so
+# everything below -- daemon(8) included -- runs as mcpgw, not as root. An
+# unprivileged process cannot create /var/run/mcp_gateway.pid (/var/run is
+# root:wheel 0755), so the service failed to start with the pidfile in
+# /var/run directly.
+#
+# The logfile moved for a sharper reason. It used to be
+# /var/log/mcp-gateway.log, and the prestart below does
+# `install -d -o mcpgw -g mcpgw -m 0750 "$(dirname ${logfile})"` -- which
+# for that path is /var/log itself. FreeBSD's install(1) applies -o/-g/-m
+# to an existing directory, so every single start would have chowned the
+# jail's entire /var/log to mcpgw:mcpgw and chmodded it 0750, taking
+# nginx's log directory with it. Giving the gateway its own directory makes
+# that line create what it was meant to create.
+: ${mcp_gateway_logdir:="/var/log/mcp-gateway"}
+: ${mcp_gateway_logfile:="${mcp_gateway_logdir}/mcp-gateway.log"}
+: ${mcp_gateway_rundir:="/var/run/mcp-gateway"}
+
+# service(8) deliberately runs an rc.d script with a minimal environment:
+# PATH=/sbin:/bin:/usr/sbin:/usr/bin, and notably NO /usr/local/bin.
+#
+# The gateway shells out to sops(1) to decrypt the Credential Vault
+# (ADR-0005 -- the sops CLI rather than the library, to keep three cloud
+# KMS SDKs out of the binary) and forwards only PATH to it. With the
+# default PATH the process therefore dies at startup with
+#
+#   serve: credential vault: sopsage: sops decrypt failed:
+#          exec: "sops": executable file not found in $PATH
+#
+# once per second, forever, because of the -r below. This is exactly the
+# "a genuine misconfiguration also gets retried" case the comment on
+# command_args warns about, and it is the first thing that actually
+# happened when this service was started for real.
+#
+# SSL_CERT_FILE/SSL_CERT_DIR are in the same variable for a related reason,
+# and this one is easy to get wrong twice. The jail "trusts the SOC CA" at
+# /usr/local/etc/ssl/certs/soc-ca.crt -- and curl(1) and anything else
+# linked against OpenSSL does. Go's crypto/x509 does not: on FreeBSD it
+# reads /usr/local/etc/ssl/cert.pem, /etc/ssl/cert.pem and the directories
+# /etc/ssl/certs and /usr/local/share/certs, and /usr/local/etc/ssl/certs
+# is in none of those lists. So OIDC discovery failed with
+#
+#   x509: certificate signed by unknown authority
+#
+# while `curl --cacert` against the same URL returned 200.
+#
+# The fix is deliberately NOT `certctl rehash`. deploy/authelia-jail.md is
+# explicit that this root has no name constraints and must never go into a
+# system-wide trust store -- it would sign a certificate for any name at
+# all. Pointing this one process at this one CA is what that document asks
+# for, and it happens to be the tighter configuration anyway: the gateway
+# dials exactly one TLS endpoint, its IdP, so trusting exactly one CA and
+# not the public roots is correct rather than merely sufficient.
+: ${mcp_gateway_env:="PATH=/sbin:/bin:/usr/sbin:/usr/bin:/usr/local/sbin:/usr/local/bin SSL_CERT_FILE=/usr/local/etc/ssl/certs/soc-ca.crt SSL_CERT_DIR=/usr/local/etc/ssl/certs"}
+
+# ${pidfile} holds the SUPERVISOR's pid (daemon -P), not the gateway's, and
+# that is what makes `service mcp_gateway stop` work at all.
+#
+# It used to hold the child's pid (daemon -p) with procname pointed at the
+# gateway binary. Under -r that combination cannot be stopped: rc.subr
+# signals the pid in the pidfile, which is the child, and daemon(8) --
+# still running, still supervising -- immediately restarts it. Measured:
+# `service stop` reported success, `service start` then failed with
+# "daemon: process already running", and the only way out was killing the
+# supervisor by hand. A service that cannot be restarted is not deployed,
+# it is stuck.
+#
+# The child's pid is still written, to ${child_pidfile}, because "which
+# process is the actual gateway" is the first thing anyone asks of ps(1).
+# SIGTERM to the supervisor is forwarded to the child, so the gateway still
+# gets the graceful shutdown it needs to reap its stdio upstreams.
+pidfile="${mcp_gateway_rundir}/${name}.pid"
+child_pidfile="${mcp_gateway_rundir}/${name}.child.pid"
+gateway_command="/usr/local/bin/mcp-gateway"
+procname="/usr/sbin/daemon"
 
 # daemon(8) rather than the bare binary: mcp-gateway logs to stderr and
 # stays in the foreground by design, so something has to background it,
@@ -37,15 +113,16 @@ procname="/usr/local/bin/mcp-gateway"
 # retried forever, so a gateway that never comes up means reading
 # ${mcp_gateway_logfile}, not assuming the service is merely slow.
 command="/usr/sbin/daemon"
-command_args="-f -r -S -T ${name} -o ${mcp_gateway_logfile} -p ${pidfile} \
-    ${procname} serve -config ${mcp_gateway_config}"
+command_args="-f -r -S -T ${name} -o ${mcp_gateway_logfile} \
+    -P ${pidfile} -p ${child_pidfile} \
+    ${gateway_command} serve -config ${mcp_gateway_config}"
 
 start_precmd="${name}_prestart"
 
 mcp_gateway_prestart()
 {
 	if [ ! -f "${mcp_gateway_config}" ]; then
-		err 1 "${mcp_gateway_config} does not exist -- see deploy/freebsd-jail.md"
+		err 1 "${mcp_gateway_config} does not exist -- run deploy/gateway-serve.sh (deploy/gateway-serve.md)"
 	fi
 
 	# The gateway refuses a group- or world-readable signing key itself,
@@ -54,8 +131,14 @@ mcp_gateway_prestart()
 	# starting it some other way. Nothing is re-checked here: a second
 	# implementation of a security check is a second thing to drift.
 
+	# Not `|| true`: these two directories are the difference between the
+	# service starting and daemon(8) failing to open its own pidfile as an
+	# unprivileged user, and a start that silently swallowed that would
+	# leave an operator reading an empty logfile that was never created.
 	install -d -o "${mcp_gateway_user}" -g "${mcp_gateway_user}" -m 0750 \
-		"$(dirname "${mcp_gateway_logfile}")" 2>/dev/null || true
+		"$(dirname "${mcp_gateway_logfile}")" || err 1 "cannot create the log directory"
+	install -d -o "${mcp_gateway_user}" -g "${mcp_gateway_user}" -m 0755 \
+		"${mcp_gateway_rundir}" || err 1 "cannot create ${mcp_gateway_rundir}"
 	return 0
 }
 

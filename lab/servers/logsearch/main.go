@@ -127,12 +127,12 @@ func newServer() *mcp.Server {
 	mockutil.AddCredCheck(server, "logsearch_credcheck")
 
 	mcp.AddTool(server, &mcp.Tool{
-		Name:        "logsearch_search_relative",
+		Name:        "search_relative",
 		Description: "Search fake Logsearch logs over a relative time range. Returns canned, deterministic results.",
 	}, handleSearchRelative)
 
 	mcp.AddTool(server, &mcp.Tool{
-		Name:        "logsearch_search_keyword",
+		Name:        "search_keyword",
 		Description: "Search fake Logsearch logs for a keyword. Returns canned, deterministic results.",
 	}, handleSearchKeyword)
 

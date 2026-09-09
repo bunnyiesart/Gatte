@@ -1243,3 +1243,119 @@ func TestListTools_DoesNotAliasTheRoutingTable(t *testing.T) {
 		t.Errorf("the routing table's schema was mutated through a returned ToolDef:\n got %q\nwant %q", got, before)
 	}
 }
+
+// TestRecordRefusedProbe_WritesAnAttributedDenial covers the ISSUE-16 path:
+// a serving adapter refused a call before Dispatch could see it, and the
+// trail has to hold the attempt anyway.
+func TestRecordRefusedProbe_WritesAnAttributedDenial(t *testing.T) {
+	h := newHarness(t, "casemgmt.list_cases")
+	h.register("casemgmt")
+	h.serve("casemgmt", def("list_cases", "list cases"))
+	h.mustConnect()
+	h.approve("casemgmt", "list_cases")
+
+	h.gw.RecordRefusedProbe(t.Context(), analyst, "casemgmt.delete_case")
+
+	rows := h.auditRows()
+	if len(rows) != 1 {
+		t.Fatalf("audit rows = %d, want exactly 1", len(rows))
+	}
+	got := rows[0]
+	if got.AnalystIdentity != analyst.Subject {
+		t.Errorf("AnalystIdentity = %q, want %q", got.AnalystIdentity, analyst.Subject)
+	}
+	if got.Tool != "casemgmt.delete_case" {
+		t.Errorf("Tool = %q, want the name the caller wrote", got.Tool)
+	}
+	if got.TargetUpstream != "casemgmt" {
+		t.Errorf("TargetUpstream = %q, want %q", got.TargetUpstream, "casemgmt")
+	}
+	if !got.Timestamp.Equal(fixedAt) {
+		t.Errorf("Timestamp = %v, want the injected clock's %v", got.Timestamp, fixedAt)
+	}
+	if got.Outcome != audit.OutcomeDenied {
+		t.Errorf("Outcome = %q, want %q", got.Outcome, audit.OutcomeDenied)
+	}
+	if got.Reason == "" {
+		t.Error("Reason is empty; an operator reading the trail is told nothing about why")
+	}
+
+	// Nothing was dispatched: recording is all this method does.
+	if calls := h.dialer.upstream("casemgmt").callLog(); len(calls) != 0 {
+		t.Errorf("recording a probe reached the upstream: %+v", calls)
+	}
+}
+
+// TestRecordRefusedProbe_ReasonIsDistinguishable is the point of having a
+// separate Reason at all. All three refusals below are the same opaque
+// answer to a caller; the operator must be able to tell "never offered to
+// this caller" from "no such tool" and from "not in your role", because
+// only the first is evidence of somebody walking the name space.
+func TestRecordRefusedProbe_ReasonIsDistinguishable(t *testing.T) {
+	h := newHarness(t, "casemgmt.list_cases")
+	h.register("casemgmt")
+	h.serve("casemgmt", def("list_cases", "list cases"), def("delete_case", "delete a case"))
+	h.mustConnect()
+	h.approve("casemgmt", "list_cases")
+	h.approve("casemgmt", "delete_case")
+
+	h.gw.RecordRefusedProbe(t.Context(), analyst, "casemgmt.probed")
+	if _, err := h.gw.Dispatch(t.Context(), analyst, "casemgmt.no_such_tool", nil); err == nil {
+		t.Fatal("expected the unknown-tool dispatch to be refused")
+	}
+	if _, err := h.gw.Dispatch(t.Context(), analyst, "casemgmt.delete_case", nil); err == nil {
+		t.Fatal("expected the unauthorized dispatch to be refused")
+	}
+
+	byTool := map[string]audit.Record{}
+	for _, r := range h.auditRows() {
+		byTool[r.Tool] = r
+	}
+	probe := byTool["casemgmt.probed"].Reason
+	unknown := byTool["casemgmt.no_such_tool"].Reason
+	forbidden := byTool["casemgmt.delete_case"].Reason
+	if probe == "" || probe == unknown || probe == forbidden {
+		t.Errorf("a probe's Reason %q does not distinguish it from unknown (%q) or forbidden (%q)",
+			probe, unknown, forbidden)
+	}
+}
+
+// TestRecordRefusedProbe_RecordsUnroutableNames: a probe is worth
+// recording precisely when the name means nothing, so a name with no
+// upstream part -- or no name at all -- must still produce a row rather
+// than fail audit.Record.Validate and vanish.
+func TestRecordRefusedProbe_RecordsUnroutableNames(t *testing.T) {
+	h := newHarness(t, "casemgmt.list_cases")
+	h.register("casemgmt")
+	h.serve("casemgmt", def("list_cases", "list cases"))
+	h.mustConnect()
+
+	for _, name := range []string{"ghost.tool", "notnamespaced", "", "   "} {
+		h.gw.RecordRefusedProbe(t.Context(), analyst, name)
+	}
+
+	rows := h.auditRows()
+	if len(rows) != 4 {
+		t.Fatalf("audit rows = %d, want 4 -- every probe is recorded, however malformed", len(rows))
+	}
+	var got []string
+	for _, r := range rows {
+		if r.Outcome != audit.OutcomeDenied {
+			t.Errorf("probe of %q recorded Outcome %q, want %q", r.Tool, r.Outcome, audit.OutcomeDenied)
+		}
+		got = append(got, r.Tool+" -> "+r.TargetUpstream)
+	}
+	// Compared as a set: the clock is fixed, so these rows share a
+	// timestamp and audit/sqlite orders by timestamp alone.
+	slices.Sort(got)
+	want := []string{
+		"ghost.tool -> ghost",
+		"notnamespaced -> " + unknownUpstream,
+		unnamedTool + " -> " + unknownUpstream,
+		unnamedTool + " -> " + unknownUpstream,
+	}
+	slices.Sort(want)
+	if !slices.Equal(got, want) {
+		t.Errorf("audit records = %v, want %v", got, want)
+	}
+}

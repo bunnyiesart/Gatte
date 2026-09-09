@@ -142,13 +142,13 @@ func TestDialListsToolsWithSchemasIntact(t *testing.T) {
 	for _, def := range defs {
 		byName[def.Name] = def
 	}
-	for _, want := range []string{"casemgmt_credcheck", "casemgmt_list_cases", "casemgmt_get_case"} {
+	for _, want := range []string{"casemgmt_credcheck", "list_cases", "get_case"} {
 		if _, ok := byName[want]; !ok {
 			t.Errorf("ListTools did not return %q; got %v", want, slices.Sorted(mapKeys(byName)))
 		}
 	}
 
-	getCase, ok := byName["casemgmt_get_case"]
+	getCase, ok := byName["get_case"]
 	if !ok {
 		t.Fatal("casemgmt_get_case missing, cannot check its schema")
 	}
@@ -258,7 +258,7 @@ func TestSecretNeverCrossesTheAPIBoundary(t *testing.T) {
 	}
 
 	// A tool-level error (IsError result): casemgmt_get_case with an unknown id.
-	res, err = up.CallTool(ctx, "casemgmt_get_case", json.RawMessage(`{"case_id":"no-such-case"}`))
+	res, err = up.CallTool(ctx, "get_case", json.RawMessage(`{"case_id":"no-such-case"}`))
 	record("get_case content", string(res.Content))
 	if err != nil {
 		record("get_case error", err.Error())

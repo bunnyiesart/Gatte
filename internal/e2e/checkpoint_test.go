@@ -529,35 +529,32 @@ func TestCheckpoint_RoleLimitsWhatIsReachable(t *testing.T) {
 
 	s.assertNoSecretLeaked()
 
-	// KNOWN GAP, asserted as it actually behaves rather than as it should.
-	//
-	// n1's out-of-role call above is correctly refused -- but it is NOT
-	// audited, and it should be. httpapi registers only the caller's own
-	// tools on their session, so a call naming anything else is rejected
-	// by the SDK before it ever reaches gateway.Dispatch, and Dispatch is
-	// what writes denials to the trail.
-	//
-	// Two features that are each correct alone: per-identity filtering
-	// (so a caller cannot enumerate what they may not use) and denial
-	// auditing (so a SOC can see who probed for what). Composed, the first
-	// silently disables the second, and a token probing tool names leaves
-	// no record at all.
-	//
-	// This test pins today's behaviour so the gap is visible and so
-	// fixing it will fail here loudly, rather than leaving a green suite
-	// that implies auditing works when it does not.
+	// The refusal above is on the trail, and that is the behaviour ISSUE-16
+	// restored: per-identity registration means an out-of-role name is
+	// refused by the SDK before gateway.Dispatch -- the only writer of
+	// denials -- ever runs, so probing used to leave no record at all.
+	// httpapi now records the attempt itself without changing what the
+	// caller is told.
 	rows, err := s.audit.List(context.Background())
 	if err != nil {
 		t.Fatalf("audit list: %v", err)
 	}
-	var denied int
+	var denials []audit.Record
 	for _, r := range rows {
 		if r.Outcome == audit.OutcomeDenied {
-			denied++
+			denials = append(denials, r)
 		}
 	}
-	if denied != 0 {
-		t.Fatalf("denied rows = %d; if this is now non-zero the known gap has been fixed -- "+
-			"update this test to assert the denial is attributed to sub-n1", denied)
+	if len(denials) != 1 {
+		t.Fatalf("denied rows = %d, want exactly 1 for n1's out-of-role call: %+v", len(denials), denials)
+	}
+	if got := denials[0].AnalystIdentity; got != "sub-n1" {
+		t.Errorf("denial attributed to %q, want %q", got, "sub-n1")
+	}
+	if got := denials[0].Tool; got != "casemgmt.casemgmt_credcheck" {
+		t.Errorf("denial names tool %q, want %q", got, "casemgmt.casemgmt_credcheck")
+	}
+	if denials[0].Reason == "" {
+		t.Error("denial carries no Reason; the operator reading the trail is told nothing about why")
 	}
 }

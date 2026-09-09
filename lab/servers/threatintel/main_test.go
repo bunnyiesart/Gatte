@@ -50,7 +50,7 @@ func TestLookupIPKnownAddress(t *testing.T) {
 	ctx := context.Background()
 
 	res, err := sess.CallTool(ctx, &mcp.CallToolParams{
-		Name:      "threatintel_lookup_ip",
+		Name:      "lookup_ip",
 		Arguments: map[string]any{"ip": "203.0.113.42"},
 	})
 	if err != nil {
@@ -78,7 +78,7 @@ func TestLookupIPEmptyAddress(t *testing.T) {
 	ctx := context.Background()
 
 	res, err := sess.CallTool(ctx, &mcp.CallToolParams{
-		Name:      "threatintel_lookup_ip",
+		Name:      "lookup_ip",
 		Arguments: map[string]any{"ip": ""},
 	})
 	if err != nil {
@@ -95,7 +95,7 @@ func TestEnrichKnownAddress(t *testing.T) {
 	ctx := context.Background()
 
 	res, err := sess.CallTool(ctx, &mcp.CallToolParams{
-		Name:      "threatintel_enrich",
+		Name:      "enrich",
 		Arguments: map[string]any{"ip": "203.0.113.42"},
 	})
 	if err != nil {
@@ -129,7 +129,7 @@ func TestEnrichEmptyAddress(t *testing.T) {
 	ctx := context.Background()
 
 	res, err := sess.CallTool(ctx, &mcp.CallToolParams{
-		Name:      "threatintel_enrich",
+		Name:      "enrich",
 		Arguments: map[string]any{"ip": ""},
 	})
 	if err != nil {

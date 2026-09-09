@@ -54,6 +54,26 @@ var (
 // registered name at a glance.
 const unknownUpstream = "(unknown)"
 
+// unnamedTool is the Tool recorded for an attempt that supplied no tool
+// name at all. Like unknownUpstream it exists so audit.Record.Validate --
+// which requires a non-empty Tool -- cannot turn a malformed probe into a
+// dropped record. A client that POSTs a tools/call with an empty name is
+// doing something no legitimate client does, which makes it more worth
+// recording than less.
+const unnamedTool = "(unnamed)"
+
+// reasonNotVisible is the audit Reason for a call naming a tool that was
+// never put on the caller's own MCP surface. See RecordRefusedProbe.
+//
+// It is deliberately distinct from Dispatch's "unknown tool" and
+// "forbidden": those are answers about the fleet and about the policy,
+// reached with a route in hand, whereas this one is only ever "whatever
+// the caller asked for, they were not offered it". An operator triaging
+// probing behaviour needs to tell the two apart -- one denial per
+// reachable-but-refused tool is routine, a burst of these is somebody
+// walking the name space.
+const reasonNotVisible = "not visible to caller"
+
 // redacted replaces a resolved credential value wherever one is found in
 // text that is about to leave this package.
 const redacted = "[redacted]"
@@ -509,6 +529,55 @@ func (g *Gateway) Dispatch(ctx context.Context, id access.Identity, namespacedTo
 		return Result{}, fmt.Errorf("gateway: call %q: %w", namespacedTool, err)
 	}
 	return res, nil
+}
+
+// RecordRefusedProbe writes the audit record for a call that named a tool
+// the caller's serving surface never offered, and which therefore never
+// reached Dispatch.
+//
+// # Why this exists
+//
+// A serving adapter may -- and internal/gateway/httpapi does -- expose
+// only the tools ListTools returned for one identity, so that a caller
+// cannot enumerate what they may not use. That filtering is correct and is
+// not changed by anything here. Its side effect is that a call naming
+// anything else is refused by the adapter's own protocol machinery before
+// Dispatch runs, and Dispatch is where every other refusal is written to
+// the trail. Composed with no third thing, the two correct features leave
+// a caller free to probe tool names and leave no record at all -- which,
+// for a SOC, is precisely the event worth keeping.
+//
+// This method is that third thing, and it lives here rather than in the
+// adapter so that every audit record this system writes is still written
+// by one component. An adapter that grows its own audit.Recorder is an
+// adapter free to drift from Dispatch's attribution, ordering and
+// reasons.
+//
+// # What it does and does not do
+//
+// It records and nothing else. It makes no admission decision, reads no
+// route, and returns nothing: the caller has already refused the call, and
+// the refusal must not change shape because of what happened here. A
+// record that cannot be written is loud in the log and leaves the
+// refusal alone, exactly as auditRefusal does for Dispatch -- see its
+// comment.
+//
+// namespacedTool is recorded as the caller wrote it, unresolved. The name
+// may be a real tool belonging to another role, a tool this caller's own
+// role holds but Tool Quarantine has not approved, or a pure fabrication
+// that matches nothing in the fleet; all three are recorded the same way
+// and under the same Reason. That is deliberate. Resolving which of the
+// three it was would mean a routing-table lookup on behalf of a caller who
+// was refused before any lookup happened, and the answer would be the
+// oracle Dispatch's opaque error exists to deny. The trail records who
+// asked for what and that they were turned away; an operator with the
+// routing table in front of them can classify it afterwards.
+func (g *Gateway) RecordRefusedProbe(ctx context.Context, id access.Identity, namespacedTool string) {
+	tool := namespacedTool
+	if strings.TrimSpace(tool) == "" {
+		tool = unnamedTool
+	}
+	g.auditRefusal(ctx, id, tool, targetOf(tool), reasonNotVisible)
 }
 
 // Close shuts every dialed upstream down and empties the routing table.

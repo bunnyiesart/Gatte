@@ -82,7 +82,7 @@ func newServer() *mcp.Server {
 	mockutil.AddCredCheck(server, "casemgmt_credcheck")
 
 	mcp.AddTool(server, &mcp.Tool{
-		Name:        "casemgmt_list_cases",
+		Name:        "list_cases",
 		Description: "Lists fake CASEMGMT case summaries (synthetic test data, not a real backend).",
 	}, func(_ context.Context, _ *mcp.CallToolRequest, _ listCasesArgs) (*mcp.CallToolResult, any, error) {
 		result := listCasesResult{Cases: make([]caseSummary, len(fakeCases))}
@@ -100,7 +100,7 @@ func newServer() *mcp.Server {
 	})
 
 	mcp.AddTool(server, &mcp.Tool{
-		Name:        "casemgmt_get_case",
+		Name:        "get_case",
 		Description: "Fetches full detail for one fake CASEMGMT case by ID (synthetic test data, not a real backend).",
 	}, func(_ context.Context, _ *mcp.CallToolRequest, args getCaseArgs) (*mcp.CallToolResult, any, error) {
 		for _, c := range fakeCases {

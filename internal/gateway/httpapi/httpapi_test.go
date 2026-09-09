@@ -1225,3 +1225,165 @@ func TestToCallToolResult(t *testing.T) {
 		}
 	})
 }
+
+// ------------------------------------------------- auditing refused probes
+
+// auditRows reads the whole trail the Gateway under this harness writes to.
+func (h *harness) auditRows() []audit.Record {
+	h.t.Helper()
+	rows, err := auditsql.New(h.db).List(context.Background())
+	if err != nil {
+		h.t.Fatalf("audit List: %v", err)
+	}
+	return rows
+}
+
+// denialsFor returns the denied rows naming one tool.
+func (h *harness) denialsFor(tool string) []audit.Record {
+	h.t.Helper()
+	var out []audit.Record
+	for _, r := range h.auditRows() {
+		if r.Tool == tool && r.Outcome == audit.OutcomeDenied {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// rawCall POSTs one tools/call as the analyst and returns the status and
+// body exactly as they went over the wire, so two refusals can be compared
+// byte for byte rather than through the SDK client's error formatting.
+func (h *harness) rawCall(name string) (int, string) {
+	h.t.Helper()
+	req := `{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"` + name + `","arguments":{}}}`
+	res := h.post("/mcp", "Bearer "+tokenAnalyst, req)
+	return res.StatusCode, body(h.t, res)
+}
+
+// TestUnservedToolCallIsAuditedAndStillOpaque is ISSUE-16 in one place.
+//
+// Registering only the caller's own tools means a call naming anything
+// else is answered by the SDK, never by gateway.Dispatch -- and Dispatch is
+// the only writer of denials, so probing used to be free and invisible.
+// Both halves are asserted together on purpose: the record has to exist,
+// and the caller has to learn nothing from the fact that it does. Either
+// one alone would pass while the feature was broken.
+func TestUnservedToolCallIsAuditedAndStillOpaque(t *testing.T) {
+	h := newHarness(t)
+
+	// A real tool that belongs to another role, and a name that exists
+	// nowhere in the fleet. To the analyst these must be the same event.
+	outOfRoleStatus, outOfRoleBody := h.rawCall(toolDeleteCase)
+	absentStatus, absentBody := h.rawCall(toolNonexistent)
+
+	if outOfRoleStatus != absentStatus {
+		t.Errorf("status: out-of-role = %d, nonexistent = %d; the two are distinguishable",
+			outOfRoleStatus, absentStatus)
+	}
+	// The tool name is echoed because the caller supplied it; everything
+	// else must match exactly.
+	normalize := func(s, name string) string { return strings.ReplaceAll(s, name, "<TOOL>") }
+	if a, b := normalize(outOfRoleBody, toolDeleteCase), normalize(absentBody, toolNonexistent); a != b {
+		t.Errorf("an out-of-role tool and a nonexistent one are distinguishable:\n"+
+			"  out-of-role: %q\n  nonexistent: %q", a, b)
+	}
+	assertNoLeak(t, outOfRoleBody)
+	assertNoLeak(t, absentBody)
+
+	// And yet both are on the trail, attributed and reasoned.
+	for _, tool := range []string{toolDeleteCase, toolNonexistent} {
+		rows := h.denialsFor(tool)
+		if len(rows) != 1 {
+			t.Fatalf("denial rows for %q = %d, want exactly 1: %+v", tool, len(rows), rows)
+		}
+		if rows[0].AnalystIdentity != analyst.Subject {
+			t.Errorf("denial for %q attributed to %q, want %q", tool, rows[0].AnalystIdentity, analyst.Subject)
+		}
+		if rows[0].Reason == "" {
+			t.Errorf("denial for %q carries no Reason; the operator cannot tell why it was blocked", tool)
+		}
+	}
+
+	// Nothing reached a backend.
+	up := h.dialer.upstream("casemgmt")
+	up.mu.Lock()
+	defer up.mu.Unlock()
+	if len(up.calls) != 0 {
+		t.Errorf("a refused probe reached the upstream: %v", up.calls)
+	}
+}
+
+// TestFabricatedToolNamesAreAudited: guessing at names the fleet does not
+// have is the same signal as naming a real tool somebody else owns, so it
+// is recorded the same way -- including for a name that does not even split
+// into upstream and tool.
+func TestFabricatedToolNamesAreAudited(t *testing.T) {
+	h := newHarness(t)
+
+	fabrications := []string{
+		"casemgmt.totally_made_up",  // plausible upstream, invented tool
+		"ghost.list_everything", // invented upstream too
+		"notnamespaced",         // not even a namespaced name
+	}
+	for _, name := range fabrications {
+		if status, got := h.rawCall(name); got == "" {
+			t.Fatalf("calling %q produced no response (status %d)", name, status)
+		}
+	}
+
+	for _, name := range fabrications {
+		rows := h.denialsFor(name)
+		if len(rows) != 1 {
+			t.Errorf("denial rows for the fabricated name %q = %d, want exactly 1: %+v", name, len(rows), rows)
+			continue
+		}
+		if rows[0].AnalystIdentity != analyst.Subject {
+			t.Errorf("denial for %q attributed to %q, want %q", name, rows[0].AnalystIdentity, analyst.Subject)
+		}
+		if rows[0].TargetUpstream == "" {
+			t.Errorf("denial for %q names no target upstream; audit.Record.Validate would have rejected it", name)
+		}
+	}
+}
+
+// TestServedToolIsAuditedExactlyOnce guards the other side of the new
+// interception: a tool the caller *is* served must not be recorded twice,
+// once by the middleware and once by gateway.Dispatch. A trail that
+// double-counts is a trail an operator cannot count from.
+func TestServedToolIsAuditedExactlyOnce(t *testing.T) {
+	h := newHarness(t)
+
+	// Allowed, and quarantined-but-in-role: the first goes through
+	// Dispatch, the second is filtered out of the caller's listing and so
+	// takes the new path. Each must produce exactly one row.
+	if _, err := h.session(tokenAnalyst).CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      toolListCases,
+		Arguments: json.RawMessage(`{}`),
+	}); err != nil {
+		t.Fatalf("calling %q: %v", toolListCases, err)
+	}
+	h.rawCall(toolPending)
+
+	counts := map[string]int{}
+	for _, r := range h.auditRows() {
+		counts[r.Tool]++
+	}
+	if counts[toolListCases] != 1 {
+		t.Errorf("audit rows for the allowed call = %d, want 1", counts[toolListCases])
+	}
+	if counts[toolPending] != 1 {
+		t.Errorf("audit rows for the unapproved-but-in-role call = %d, want 1", counts[toolPending])
+	}
+}
+
+// TestListingIsNotAudited pins the scope of the new middleware: it records
+// tools/call and nothing else. A tools/list is not a refusal and must not
+// land on the trail as one.
+func TestListingIsNotAudited(t *testing.T) {
+	h := newHarness(t)
+	h.toolNames(h.session(tokenAnalyst))
+
+	if rows := h.auditRows(); len(rows) != 0 {
+		t.Errorf("listing tools wrote %d audit rows, want 0: %+v", len(rows), rows)
+	}
+}

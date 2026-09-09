@@ -96,12 +96,27 @@ scans every client-side message. Full detail in `doc/test-report.html` and
 
 ### Defects found, ranked
 
+> **A note on this section, added when this repository was made public.**
+> What follows is an evaluation run in a lab in **late August 2026**,
+> against each project's **documented quickstart configuration** at that
+> date. Several of these are default-mode weaknesses that the projects may
+> since have changed, and a quickstart is by nature not a hardened
+> deployment — reading these as current, exploitable claims about those
+> projects today would be wrong.
+>
+> Specific endpoints, payloads and reproduction steps have been removed:
+> the point that mattered for *this* decision is that the credential
+> brokering these tools advertise did not hold up under a clean-environment
+> test, and that point survives without a how-to. If you maintain one of
+> these projects and want the detail, it is better sent to you directly
+> than published here.
+
 | Severity | Product | Defect |
 |---|---|---|
-| **CRITICAL** | MCPJungle | Unauthenticated `GET /api/v0/servers` returns every injected credential in plaintext; DB stored unencrypted, mode 0644 (world-readable) |
-| **HIGH** | ToolHive | `thv vmcp serve --group` (quickstart/quick mode) has **no authentication at all** — unauthenticated POST → HTTP 200, full tool + credential access |
-| **HIGH** | tbxark/mcp-proxy | Does not aggregate — one route per server (`/threatintel/mcp`, `/casemgmt/mcp`, …), `/mcp` returns 404. Fails the single-endpoint requirement outright |
-| **MEDIUM** | mcpproxy-go | Auto-generated API key protects the web UI only; the `/mcp` endpoint itself answered without it |
+| **CRITICAL** | MCPJungle | In the documented quickstart mode, an unauthenticated API path exposed injected credentials, and the local database was written without encryption and with permissive file modes |
+| **HIGH** | ToolHive | The quickstart ("quick") mode ships with no authentication at all — an unauthenticated request reached full tool and credential access |
+| **HIGH** | tbxark/mcp-proxy | Does not aggregate — one route per server rather than a single endpoint. Fails the single-endpoint requirement outright |
+| **MEDIUM** | mcpproxy-go | The auto-generated API key protected the web UI only; the MCP endpoint itself answered without it |
 | **MEDIUM** | ToolHive | Encrypted secrets provider (AES-256-GCM) needs an interactive keyring password at boot — fails outright on a non-TTY, undocumented for headless/service deployment |
 | **LOW** | ToolHive | 4 servers become 12 containers (egress proxy + dnsmasq per server) — defensible, but triples footprint and isn't signalled in advance |
 
@@ -283,10 +298,11 @@ starts from verified mechanism, not from candidates' marketing copy.
 - **MCPJungle** (MPL-2.0 — file-level copyleft, so copy the idea, not the
   code) — Tool Groups are a simple named include/exclude list over tools and
   servers. `${VAR}` resolution is a generic reflection-based walker over
-  `os.Getenv`. The credential leak is **the dev-mode default itself**, not
-  one overlooked route: the auth middleware no-ops entirely
-  (`if m == model.ModeDev { c.Next(); return }`), so every `/api/v0/*` route
-  is unauthenticated in the mode the documented quickstart puts you in.
+  `os.Getenv`. The credential exposure is **the dev-mode default itself**,
+  not one overlooked route: in that mode the auth middleware no-ops
+  entirely, so the API is unauthenticated in the configuration the
+  documented quickstart puts you in. (Code-level detail elided — see the
+  note in §5.)
 
 ### 9.3 Secrets management: sops + age
 
@@ -382,7 +398,7 @@ indexing logged a non-fatal error.
 
 **The decisive test, live, not from docs:** unauthenticated `tools/list`
 and `tools/call` against the one pre-registered MCP server, and
-unauthenticated `GET /api/servers` — **both returned HTTP 401**, including
+an unauthenticated API request — **both returned HTTP 401**, including
 a wrong/garbage bearer token, with no dev-mode or quick-mode bypass found
 anywhere in nginx's generated nginx config (unlike MCPJungle/ToolHive,
 whose failures were exactly this). Then completed the real Keycloak M2M

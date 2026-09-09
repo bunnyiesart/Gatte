@@ -1,6 +1,9 @@
 # 0001. Monolithic, domain-partitioned ("modular monolith") architecture for the custom MCP gateway
 
-**Status:** Proposed
+**Status:** Accepted — implementado por inteiro nas Fases 1–5 (um binário,
+um processo, um SQLite embarcado, nenhum salto de rede entre componentes).
+Marcado `Accepted` em 09 set 2026 na revisão de pendências; estava
+`Proposed` apenas por não ter sido revisitado depois da implementação.
 
 ## Contexto
 

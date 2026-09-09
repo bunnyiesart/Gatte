@@ -12,7 +12,7 @@ import (
 func TestProviderResolve(t *testing.T) {
 	secretsFile, ageKeyFile := newFixture(t, map[string]string{
 		"THREATINTEL_VT_KEY": "vt-abc123-topsecret",
-		"CASEMGMT_TOKEN":   "casemgmt-xyz789-topsecret",
+		"CASEMGMT_TOKEN":     "casemgmt-xyz789-topsecret",
 	})
 
 	p, err := sopsage.New(context.Background(), secretsFile, ageKeyFile)

@@ -242,9 +242,9 @@ func TestAuthorize_ExactToolAllowedOtherwiseForbidden(t *testing.T) {
 		{"casemgmt.list_cases", true},
 		{"casemgmt.get_case", true},
 		{"threatintel.lookup_ip", true},
-		{"docsearch.search", false},    // belongs to another role
+		{"docsearch.search", false},       // belongs to another role
 		{"logsearch.list_streams", false}, // belongs to another role
-		{"casemgmt.delete_case", false},     // exists nowhere
+		{"casemgmt.delete_case", false},   // exists nowhere
 	}
 
 	for _, c := range cases {

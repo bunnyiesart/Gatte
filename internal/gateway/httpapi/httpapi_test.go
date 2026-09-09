@@ -1321,9 +1321,9 @@ func TestFabricatedToolNamesAreAudited(t *testing.T) {
 	h := newHarness(t)
 
 	fabrications := []string{
-		"casemgmt.totally_made_up",  // plausible upstream, invented tool
-		"ghost.list_everything", // invented upstream too
-		"notnamespaced",         // not even a namespaced name
+		"casemgmt.totally_made_up", // plausible upstream, invented tool
+		"ghost.list_everything",    // invented upstream too
+		"notnamespaced",            // not even a namespaced name
 	}
 	for _, name := range fabrications {
 		if status, got := h.rawCall(name); got == "" {

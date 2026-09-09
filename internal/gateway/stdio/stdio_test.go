@@ -36,7 +36,7 @@ import (
 //     is the only way to observe an inherited variable that credcheck knows
 //     nothing about.
 var fixtureBinaries struct {
-	casemgmt       string
+	casemgmt   string
 	envfixture string
 }
 

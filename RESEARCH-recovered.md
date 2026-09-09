@@ -1,7 +1,16 @@
 # MCP Gateway Research - recovered transcript
 
-Session `51abc60d-3176-4bed-966c-c1feddef1b9d`, 2026-08-26 16:16-17:05 (ended on session limit).
-Recovered 2026-08-27 from the Claude Code transcript + subagent logs.
+Session recovered 2026-08-27 from the Claude Code transcript + subagent
+logs, of a research session run 2026-08-26.
+
+> **Read this first.** This is a raw working transcript, kept because the
+> reasoning behind "build rather than adopt" is more useful than a tidy
+> summary of it. It discusses third-party projects **as they were in late
+> August 2026**, largely from their own documentation, and several
+> observations are about *default quickstart configurations* rather than
+> hardened deployments. Any of it may be out of date, and none of it should
+> be read as a current claim about those projects. The hands-on findings
+> and the caveat that goes with them are in `DEVELOPMENT-LOG.md` §5.
 
 ---
 

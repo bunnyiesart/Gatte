@@ -358,6 +358,16 @@ without a reachable IdP. Correct (starting unable to authenticate anyone
 is not service), but it means an IdP outage plus a gateway restart
 recovers in order -- IdP first. Recorded in ADR-0008.
 
+**One scoped item deliberately not built: `rotate`.** Rotation stays
+`sops secrets.json`, so the binary keeps a read-only relationship with the
+encrypted store -- same isolation reasoning that keeps the signing key out
+of the Credential Vault (ADR-0006). But that exposed a real gap: credentials
+resolve at *dial* time, so rotating one does nothing for an
+already-connected upstream until restart, and nothing said so anywhere.
+Now documented in `deploy/freebsd-jail.md` ("Rotating credentials") and in
+the `internal/vault` package doc; a reconnect command and divergence
+detection are ISSUE-20.
+
 **Next: Phase 7 — the deferred hardening controls.**
 
 ## Phase 7 — Hardening pass

@@ -658,3 +658,51 @@ func TestFailedUpstreams(t *testing.T) {
 		t.Errorf("failedUpstreams = %v, want [casemgmt threatintel]", got)
 	}
 }
+
+// TestRequireLoopbackBind pins ADR-0011 item 1: the gateway refuses to
+// start on any address that is not loopback, rather than warning and
+// carrying on.
+//
+// The refusal is the whole control. Under ADR-0011 the gateway terminates
+// no TLS and holds no certificate, so a non-loopback bind is not "less
+// protected" -- it is every analyst's bearer token in cleartext, plus the
+// case data and IOCs behind it. A warning delegates that to whoever is in
+// a hurry; a refusal does not.
+//
+// Written against the pre-ADR-0011 code first, where every case below
+// passed, so that the test is evidence and not decoration.
+func TestRequireLoopbackBind(t *testing.T) {
+	refused := []string{
+		"0.0.0.0:8080",     // the one an operator reaches for
+		"10.17.89.10:8080", // a jail's own address
+		"[::]:8080",        // the IPv6 equivalent of 0.0.0.0
+		"192.168.1.5:8080",
+	}
+	for _, addr := range refused {
+		t.Run("refuses "+addr, func(t *testing.T) {
+			if err := requireLoopbackBind(addr); err == nil {
+				t.Errorf("requireLoopbackBind(%q) = nil, want refusal", addr)
+			}
+		})
+	}
+
+	allowed := []string{"127.0.0.1:8080", "[::1]:8080", "localhost:8080"}
+	for _, addr := range allowed {
+		t.Run("allows "+addr, func(t *testing.T) {
+			if err := requireLoopbackBind(addr); err != nil {
+				t.Errorf("requireLoopbackBind(%q) = %v, want nil", addr, err)
+			}
+		})
+	}
+
+	// An address that cannot be parsed is refused too. "Cannot tell" is not
+	// "loopback" -- the same fail-closed reading ADR-0004 applies to an
+	// unreadable registry.
+	for _, addr := range []string{"", "8080", "not an address"} {
+		t.Run("refuses unparseable "+addr, func(t *testing.T) {
+			if err := requireLoopbackBind(addr); err == nil {
+				t.Errorf("requireLoopbackBind(%q) = nil, want refusal", addr)
+			}
+		})
+	}
+}

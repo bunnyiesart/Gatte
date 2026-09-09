@@ -15,6 +15,7 @@ import (
 	"github.com/bunnyiesart/Gatte/internal/audit"
 	"github.com/bunnyiesart/Gatte/internal/quarantine"
 	"github.com/bunnyiesart/Gatte/internal/registry"
+	"github.com/bunnyiesart/Gatte/internal/signer"
 	"github.com/bunnyiesart/Gatte/internal/vault"
 )
 
@@ -98,6 +99,29 @@ type Config struct {
 	// Dialer opens a connection to one backend.
 	Dialer Dialer
 
+	// Signatures, when non-nil, is consulted at Connect time to verify
+	// each registry entry against its Ed25519 signature
+	// (design/adr/0003, design/adr/0006). An entry whose stored signature
+	// does not match what the registry now says is **never** served: an
+	// invalid signature is positive evidence that the command, args or
+	// env var names an upstream is spawned with were changed by something
+	// other than the signer, and there is no benign reading of that.
+	//
+	// Optional only in the sense that a Gateway without it still runs --
+	// but then nothing checks entry integrity at all, which is the state
+	// this project shipped in until ISSUE-18.
+	Signatures signer.Store
+
+	// RequireSigned makes an entry with *no* signature unusable too.
+	//
+	// The asymmetry with an invalid signature is deliberate and is
+	// ADR-0006's declared debt: while nothing produces signatures at
+	// volume, refusing unsigned entries would make the gateway unusable
+	// before the Operator Console exists, with no security gained --
+	// there would simply be no signed entries to serve. The ADR is
+	// explicit that this default must invert once signing is ergonomic.
+	RequireSigned bool
+
 	// Now supplies the timestamp for audit records and quarantine
 	// observations. Optional; defaults to time.Now. Injected rather than
 	// called directly so tests need no clock dependency, matching how
@@ -129,6 +153,8 @@ type Gateway struct {
 	audit      audit.Recorder
 	policy     *access.Policy
 	dialer     Dialer
+	signatures signer.Store
+	requireSig bool
 	now        func() time.Time
 	log        *slog.Logger
 
@@ -195,6 +221,8 @@ func New(cfg Config) (*Gateway, error) {
 		audit:      cfg.Audit,
 		policy:     cfg.Policy,
 		dialer:     cfg.Dialer,
+		signatures: cfg.Signatures,
+		requireSig: cfg.RequireSigned,
 		now:        now,
 		log:        logger,
 		conns:      map[string]Upstream{},
@@ -252,7 +280,22 @@ func (g *Gateway) Connect(ctx context.Context) error {
 	collisions := map[string]bool{}
 	var failures []error
 
+	if g.signatures == nil && len(entries) > 0 {
+		// Once per Connect, not once per entry: a per-entry warning in a
+		// fleet of twenty is a wall of text nobody reads, and this is
+		// precisely the condition that should stay legible.
+		g.log.WarnContext(ctx, "gateway: no signature store configured -- registry entry integrity is NOT being checked",
+			slog.Int("upstreams", len(entries)))
+	}
+
 	for _, entry := range entries {
+		if err := g.verifyEntry(ctx, entry); err != nil {
+			failures = append(failures, err)
+			g.log.ErrorContext(ctx, "gateway: upstream refused by signature check",
+				slog.String("upstream", entry.Name), slog.String("detail", err.Error()))
+			continue
+		}
+
 		up, err := g.bringUp(ctx, entry)
 		if err != nil {
 			failures = append(failures, err)
@@ -627,6 +670,49 @@ func (g *Gateway) admit(ctx context.Context, r route) error {
 	}
 	if !t.Usable() {
 		return fmt.Errorf("%w: %s", ErrToolQuarantined, r)
+	}
+	return nil
+}
+
+// verifyEntry checks a registry entry against its stored Ed25519
+// signature before anything is spawned with it.
+//
+// Ordering matters: this runs *before* bringUp, so an entry whose
+// command was tampered with is never executed, not executed and then
+// judged. Verification is worthless after the process has started.
+//
+// Three outcomes:
+//
+//   - No signer configured: nothing is checked. Reported once at Connect
+//     rather than per entry, so it cannot be missed in a wall of logs.
+//   - Signature present and invalid: refused, always, regardless of
+//     RequireSigned. This is the case with no benign reading.
+//   - Signature absent: refused only when RequireSigned is set. See the
+//     note on Config.RequireSigned for why that default is what it is.
+func (g *Gateway) verifyEntry(ctx context.Context, entry registry.UpstreamServer) error {
+	if g.signatures == nil {
+		return nil
+	}
+
+	sig, err := g.signatures.Get(ctx, entry.Name)
+	switch {
+	case errors.Is(err, signer.ErrNotFound):
+		if g.requireSig {
+			return fmt.Errorf("%w: %q: no signature, and unsigned entries are refused", ErrUpstreamUnavailable, entry.Name)
+		}
+		g.log.WarnContext(ctx, "gateway: upstream entry is unsigned",
+			slog.String("upstream", entry.Name))
+		return nil
+	case err != nil:
+		// The store is there but unreadable. Fail closed, same reasoning
+		// as ADR-0004 gives for the registry: an integrity decision made
+		// without the state that governs it is the decision an attacker
+		// wants.
+		return fmt.Errorf("%w: %q: signature store unreadable: %w", ErrUpstreamUnavailable, entry.Name, err)
+	}
+
+	if err := signer.Verify(entry, sig); err != nil {
+		return fmt.Errorf("%w: %q: %w", ErrUpstreamUnavailable, entry.Name, err)
 	}
 	return nil
 }

@@ -89,6 +89,22 @@ assinatura, o padrão deve inverter para exigir assinatura. Registrado aqui
 para não virar um default esquecido — que é exatamente a falha que este
 projeto encontrou em cinco dos seis candidatos avaliados.
 
+> **GATILHO DISPARADO — 09 set 2026. Dívida paga.**
+>
+> A Fase 6 entregou o Operator Console, e com ele `mcp-gateway sign NOME`.
+> Assinar deixou de ser trabalho manual, então a condição escrita acima foi
+> satisfeita e **o padrão inverteu: `require_signed` agora vale `true`
+> quando o arquivo não diz nada.**
+>
+> Detalhe de implementação que importa: o campo é `*bool`, não `bool`. O
+> zero value de um `bool` não distingue "o operador não escreveu nada" de
+> "o operador escreveu `false`", e ler silenciosamente "não escrito" como
+> "desligado" é precisamente como um default de segurança apodrece —
+> exatamente o mecanismo desta dívida, se ela tivesse sido esquecida.
+>
+> O que **não** mudou: assinatura *inválida* sempre foi e continua
+> recusada, com ou sem este ajuste.
+
 ## Consequências
 
 **Impactos positivos:** o esquema da Fase 1 não muda; `Definition Signer`

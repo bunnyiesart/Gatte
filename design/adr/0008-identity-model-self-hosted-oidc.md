@@ -115,6 +115,22 @@ autenticar. Puxa diretamente contra a característica #3. O gateway ganha
 uma dependência de runtime que não tinha: se o IdP está fora, ninguém
 autentica.
 
+> **Observado ao rodar o binário de verdade, 09 set 2026.** O acoplamento
+> acima é mais forte no *arranque* do que em regime: a descoberta OIDC
+> acontece antes de o gateway servir qualquer coisa, então **um IdP
+> inacessível impede o processo de subir**, não apenas de autenticar.
+>
+> Isso está correto e é intencional — subir sem poder validar token
+> nenhum significaria responder 401 a todo mundo, o que não é serviço, é
+> ruído. Mas a consequência operacional merece estar escrita: o cache de
+> JWKS cobre uma queda *transitória do IdP com o gateway já no ar*; ele
+> não cobre "IdP fora **e** gateway reiniciado", porque aí não há cache.
+> Nesse cenário a recuperação é ordenada: o IdP volta primeiro, o gateway
+> depois.
+>
+> Para quem opera: não reinicie o gateway durante uma janela de manutenção
+> do IdP a menos que pretenda que ele fique fora até o IdP voltar.
+
 **Mitigação obrigatória na Fase 4:** o comportamento do gateway quando o
 IdP está inacessível precisa ser decidido explicitamente, não descoberto
 em produção. Fail closed é a escolha coerente com `0004` (mesmo raciocínio

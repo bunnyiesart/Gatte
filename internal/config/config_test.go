@@ -153,8 +153,8 @@ func TestLoadCompleteFile(t *testing.T) {
 	if c.Signer.KeyFile != "/usr/local/etc/mcp-gateway/signing.key" {
 		t.Errorf("Signer.KeyFile = %q", c.Signer.KeyFile)
 	}
-	if !c.Signer.RequireSigned {
-		t.Error("Signer.RequireSigned = false, want true -- the file sets it, and a security setting that does not survive parsing is the whole failure mode this package guards")
+	if !c.Signer.SignaturesRequired() {
+		t.Error("SignaturesRequired() = false, want true -- the file sets it, and a security setting that does not survive parsing is the whole failure mode this package guards")
 	}
 
 	if len(c.Roles) != 2 {
@@ -196,8 +196,14 @@ func TestLoadAppliesDocumentedDefaults(t *testing.T) {
 	if c.Signer.KeyFile != "" {
 		t.Errorf("Signer.KeyFile = %q, want empty -- a signing key must never be guessed", c.Signer.KeyFile)
 	}
-	if c.Signer.RequireSigned {
-		t.Error("Signer.RequireSigned = true with nothing in the file; the ADR-0006 default is false until the Operator Console can sign at volume")
+	// Flipped 09 Sep 2026: ADR-0006's debt had an explicit trigger -- flip
+	// once the Operator Console can sign at volume -- and Phase 6 shipped
+	// it, so an unset file now means signatures are required.
+	if !c.Signer.SignaturesRequired() {
+		t.Error("SignaturesRequired() = false with nothing in the file; the default flipped to true when the Operator Console shipped (ADR-0006 trigger)")
+	}
+	if c.Signer.RequireSigned != nil {
+		t.Error("RequireSigned should stay nil when the file is silent, so 'unset' and 'explicitly false' remain distinguishable")
 	}
 }
 
@@ -677,12 +683,21 @@ func TestExampleConfigLoads(t *testing.T) {
 		t.Errorf("the example's roles do not build an access.Policy: %v", err)
 	}
 
-	// The example must not recommend turning signature enforcement on
-	// before the Operator Console can sign at volume (ADR-0006), and must
-	// not quietly ship it on either -- it is declared debt with a trigger,
-	// and the comment beside it is the deliverable.
-	if c.Signer.RequireSigned {
-		t.Error("config.example.toml sets require_signed = true; if the ADR-0006 trigger has been met, update the ADR, the default in Signer, and this test together")
+	// ADR-0006's trigger fired on 09 Sep 2026: the Operator Console can
+	// now sign at volume (`mcp-gateway sign NAME`), so the debt came due
+	// and the default flipped. This assertion flipped with it -- the
+	// earlier version of this test said, in as many words, that whoever
+	// met the trigger must update the ADR, the default and this test
+	// together, and that is what happened.
+	//
+	// It is asserted explicitly rather than left to the default so the
+	// example *shows* an operator the setting exists and is on, rather
+	// than relying on them knowing an omitted line means enforcement.
+	if !c.Signer.SignaturesRequired() {
+		t.Error("config.example.toml no longer requires signatures; ADR-0006's trigger has been met, so the shipped example must enforce")
+	}
+	if c.Signer.RequireSigned == nil {
+		t.Error("config.example.toml should state require_signed explicitly rather than relying on the default -- the example is documentation")
 	}
 }
 

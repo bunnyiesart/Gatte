@@ -15,7 +15,7 @@ doesn't have to reconstruct where things stand.
 - [x] Phase 3 — Definition Signer + Tool Quarantine
 - [x] Phase 4 — Access Control
 - [x] Phase 5 — Gateway Endpoint (first end-to-end integration point)
-- [ ] Phase 6 — Operator Console
+- [x] Phase 6 — Operator Console
 - [ ] Phase 7 — Hardening pass (net-new controls from `AGENTS.md` §2)
 
 *(Gate 0 satisfied 08 Sep 2026: bunnyiesart explicitly authorized moving to
@@ -321,11 +321,44 @@ separation was not carried into `registry.UpstreamServer`.
 
 **Next: Phase 6 — Operator Console.**
 
-## Phase 6 — Operator Console
+## Phase 6 — Operator Console ✅ done 09 Sep 2026
 
 - Single admin surface (not a separate service — `design/03-style.md`):
   register/deregister upstream, approve quarantine, rotate secret, sign,
   read audit trail.
+
+**Built:** `cmd/mcp-gateway` is no longer a stub. `serve` is the composition
+root -- config, store, four migrations, sops+age vault, OIDC verifier,
+policy, gateway (signer included), HTTP surface, graceful shutdown that
+reaps upstream subprocesses. Alongside it: `upstream list|register|
+deregister`, `tool list|approve`, `sign`, `audit`. Configuration is TOML
+(`config.example.toml`, ADR-0009).
+
+**ISSUE-17 and ISSUE-18 both closed by this phase.** The gateway can be run,
+and the Definition Signer -- built in Phase 3 and invoked from nowhere
+until now -- verifies every entry before anything is spawned. A tampered
+entry is never dialed, which is the only ordering that means anything.
+
+**ADR-0006's declared debt came due and was paid.** That ADR tolerated
+unsigned entries *only* until the Operator Console could sign at volume.
+The console shipped, so `require_signed` now defaults to **true**. The
+field became a `*bool` in the process: a plain bool cannot distinguish
+"unset" from "explicitly false", and reading unset as off is precisely how
+a security default rots -- which is the failure this project disqualified
+five of six candidates for.
+
+**Verified by running the real binary**, not only by test: register an
+upstream, see it reported NOT SIGNED with the consequence spelled out,
+sign it, watch `serve` refuse to start against an unreachable IdP, and
+confirm the injected credential appears in no log. A group-readable
+signing key is refused with the exact chmod to run.
+
+**Operational property found by running it:** the gateway cannot start
+without a reachable IdP. Correct (starting unable to authenticate anyone
+is not service), but it means an IdP outage plus a gateway restart
+recovers in order -- IdP first. Recorded in ADR-0008.
+
+**Next: Phase 7 — the deferred hardening controls.**
 
 ## Phase 7 — Hardening pass
 

@@ -9,10 +9,17 @@
 // contains no reference to database/sql, SQL, or any other infrastructure
 // detail. The sqlite subpackage is the adapter.
 //
-// Per WORKFLOW.md's Phase 1 scope, Record's schema is deliberately limited
-// to who/what/where/when -- outcome/success and any other telemetry are
-// out of scope until a later, currently-undesigned hardening phase
-// (AGENTS.md §2, "Telemetry/observability").
+// Record's schema was who/what/where/when for Phase 1, with outcome
+// deliberately deferred. That deferral ended in Phase 5: once the Gateway
+// Endpoint could *refuse* a call, a trail that could not tell a refusal
+// from a completion answered the wrong question, and CONCEPTS.md §2.5 is
+// blunt that without outcome alongside the other four "the log is
+// decoration, not evidence". Outcome and Reason are now required fields.
+//
+// Still out of scope, and genuinely so: operational metrics and
+// telemetry (AGENTS.md §2, "Telemetry/observability"). This is a record
+// of what was attempted and what happened to it, not a monitoring
+// system.
 package audit
 
 import (

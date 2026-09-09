@@ -96,12 +96,19 @@ type Signer struct {
 	KeyFile string `toml:"key_file"`
 	// RequireSigned makes an entry without a valid signature unusable.
 	//
-	// Defaults to false, and that default is declared debt with a
-	// trigger, not an oversight: ADR-0006 tolerates unsigned entries only
-	// until the Operator Console can produce signatures at volume, at
-	// which point this must default to true. An *invalid* signature is
-	// always refused regardless of this setting.
-	RequireSigned bool `toml:"require_signed"`
+	// **Defaults to true as of 09 Sep 2026.** It defaulted to false while
+	// nothing could produce signatures at volume, and ADR-0006 recorded
+	// that as debt with an explicit trigger: flip it once the Operator
+	// Console ships. The console shipped in Phase 6, so it is flipped.
+	//
+	// A pointer rather than a bool because the zero value of a bool
+	// cannot be told apart from an operator writing `require_signed =
+	// false`, and silently reading "unset" as "off" is precisely how a
+	// security default rots.
+	//
+	// An *invalid* signature is refused regardless of this setting: there
+	// is no benign reading of a signature that does not match the entry.
+	RequireSigned *bool `toml:"require_signed"`
 }
 
 // Role is a named set of namespaced tools, mirroring access.Role. It
@@ -127,6 +134,19 @@ const DefaultGroupsClaim = "groups"
 
 // DefaultConnectTimeout bounds the startup connect to all upstreams.
 const DefaultConnectTimeout = 30 * time.Second
+
+// DefaultRequireSigned is what signer.require_signed means when the file
+// does not say. See the field's own doc for why it changed.
+const DefaultRequireSigned = true
+
+// SignaturesRequired reports whether an unsigned registry entry may be
+// served, resolving the unset case to DefaultRequireSigned.
+func (s Signer) SignaturesRequired() bool {
+	if s.RequireSigned == nil {
+		return DefaultRequireSigned
+	}
+	return *s.RequireSigned
+}
 
 // Validate reports whether c can be used, applying defaults as it goes.
 //

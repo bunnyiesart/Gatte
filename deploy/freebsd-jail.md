@@ -86,6 +86,16 @@ jm stop                                        # stop the whole VM, if nothing e
 
 Proves the binary runs unmodified on real FreeBSD (not just cross-compiles
 cleanly) and that `modernc.org/sqlite` works without cgo on this target.
-Does **not** exercise anything past Phase 1 -- there's no MCP-serving
-behavior, no credential handling, and nothing here should be read as a
-statement about production deployment shape, which hasn't been designed.
+
+**Still only that, as of 09 Sep 2026**, and for a reason worth stating:
+`cmd/mcp-gateway` is *still* the Phase 1 stub. Phases 2–5 built the
+Credential Vault, Signer, Quarantine, Access Control and the HTTP surface,
+and all of them are exercised end to end by `internal/e2e` -- but none of
+it is reachable from the binary this script deploys. Deploying to the jail
+today therefore still proves only what it proved in Phase 1.
+
+Once the composition root exists, this doc needs revisiting for the things
+a real deployment adds: the age identity file and the Ed25519 signing key
+(both owner-only, per ADR-0005 and ADR-0006), `sops` on the jail's PATH,
+the OIDC issuer being reachable from inside the jail, and a published port
+(`bastille rdr`) for analysts to reach the endpoint.

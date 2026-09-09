@@ -12,8 +12,17 @@ OAuth). Full investigation: `DEVELOPMENT-LOG.md`.
 
 ## Status
 
-Gate 0 satisfied 08 Sep 2026 (see `WORKFLOW.md`). Implementation in
-progress — check `WORKFLOW.md`'s Progress checklist for the current phase.
+Phases 1–5 complete (see `WORKFLOW.md`). The end-to-end checkpoint passes:
+a client holding no backend credential reaches four spawned upstreams over
+HTTP, each receiving its injected secret, with that secret appearing
+nowhere the client can observe.
+
+**Not yet runnable as a program.** Every component is built and tested,
+but `cmd/mcp-gateway` is still the Phase 1 stub — it migrates two schemas
+and exits. There is no configuration mechanism, nothing wires the Gateway
+to the HTTP surface, and the Definition Signer is not invoked from any
+production path. Phase 6 (Operator Console) is where that composition
+root gets built.
 
 ## Start here
 

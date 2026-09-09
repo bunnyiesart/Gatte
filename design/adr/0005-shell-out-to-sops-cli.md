@@ -1,6 +1,9 @@
 # 0005. Credential Vault shells out to the `sops` CLI instead of importing it as a Go library
 
-**Status:** Proposed
+**Status:** Accepted — 09 set 2026. Implementado em
+`internal/vault/sopsage` e exercitado contra o binário `sops` real;
+a medição que motivou a decisão (72MB contra ~6MB do age) foi confirmada
+de primeira mão ao instalar as ferramentas via `make devtools`.
 
 ## Contexto
 

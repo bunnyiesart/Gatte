@@ -1,6 +1,16 @@
 # 0003. Security controls: sops+age credential injection, per-tool quarantine, Ed25519 definition signing
 
-**Status:** Proposed
+**Status:** Accepted — 09 set 2026.
+
+> **Ressalva de implementação, não da decisão.** Dos três controles que
+> este ADR decide, dois estão em vigor: injeção sops+age (`internal/vault`,
+> Fase 2) e quarentena por ferramenta (`internal/quarantine`, chamada por
+> `gateway.Connect`, Fase 3/5). O terceiro — **assinatura Ed25519 das
+> entradas, verificada no boot** — foi construído e testado
+> (`internal/signer`), mas **nada fora do próprio pacote o invoca**:
+> `gateway.Connect` lê o registro e disca sem verificar assinatura
+> nenhuma. A decisão está aceita; o controle ainda não está ligado.
+> Rastreado como item próprio.
 
 ## Contexto
 

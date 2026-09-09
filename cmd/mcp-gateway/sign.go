@@ -92,7 +92,8 @@ func trustedKeyLine(pub ed25519.PublicKey) string {
 func cmdSign(args []string, stdout, stderr io.Writer) int {
 	fs, configPath := opFlagSet("sign", stderr)
 	genKey := fs.Bool("generate-key", false,
-		"create a new Ed25519 signing key at signer.key_file and exit; refuses to overwrite an existing one")
+		"create a new Ed25519 signing key and exit; requires -out; refuses to overwrite an existing file")
+	keyOut := fs.String("out", "", "with -generate-key: path to write the new key to")
 	fs.Usage = func() { signUsage(stderr) }
 	if code, ok := opParse(fs, args); !ok {
 		return code
@@ -103,7 +104,12 @@ func cmdSign(args []string, stdout, stderr io.Writer) int {
 			signUsage(stderr)
 			return exitCannotRun
 		}
-		return opRun(*configPath, stdout, stderr, runGenerateKey)
+		if strings.TrimSpace(*keyOut) == "" {
+			fmt.Fprintf(stderr, "sign -generate-key requires -out PATH: the file to write the new key to\n\n")
+			signUsage(stderr)
+			return exitCannotRun
+		}
+		return runGenerateKey(*keyOut, stdout, stderr)
 	}
 	if fs.NArg() != 1 {
 		fmt.Fprintf(stderr, "sign takes exactly one argument: the name of the registry entry to sign\n\n")
@@ -120,7 +126,7 @@ func cmdSign(args []string, stdout, stderr io.Writer) int {
 func signUsage(w io.Writer) {
 	fmt.Fprint(w, `Usage:
   mcp-gateway sign [-config FILE] NAME
-  mcp-gateway sign [-config FILE] -generate-key
+  mcp-gateway sign -generate-key -out PATH
 
 Signs the registry entry NAME with the Ed25519 key at signer.key_file, and
 stores the signature so the gateway will serve the entry.
@@ -132,11 +138,12 @@ a credential never invalidates one.
 
 The key file must be readable by its owner only (chmod 600).
 
--generate-key creates that key at signer.key_file and prints the
-trusted_keys line to paste. It refuses to overwrite an existing key, since
-that would invalidate every signature the old one made. It does not edit
-the configuration file: this command must not be able to grant itself
-trust (ADR-0010).
+-generate-key creates that key at -out and prints the two configuration
+lines to paste. It reads no configuration file, because the config is not
+valid until it lists a trusted key and there is no key until this runs --
+so requiring one would deadlock a fresh install. It refuses to overwrite an
+existing file, and it does not edit the configuration: this command must
+not be able to grant itself trust (ADR-0010).
 
 Signing is not enough on its own: the gateway accepts a signature only from
 a key listed in signer.trusted_keys. If the key used here is not listed,
@@ -149,48 +156,51 @@ Exit codes: 0 ok, 1 ran and found a problem, 2 could not run.
 // runGenerateKey creates the signing key an operator needs before they can
 // sign anything at all.
 //
-// This exists because ADR-0010 made signer.trusted_keys required whenever
-// require_signed is on -- which is the default -- so "create a key" became
-// the literal first step of setting this gateway up. Until now
-// signer.GenerateKey and signer.WriteKey were built, tested, and reachable
-// from no command: an operator's only route was to know that the format is
-// PKCS#8 PEM and reach for `openssl genpkey -algorithm ed25519`. Leaving a
-// mandatory control's first step to folklore is how it ends up skipped.
+// # Why this reads no configuration file
 //
-// It deliberately does NOT add the new key to trusted_keys. Writing to the
-// operator's configuration file from a command would mean this process
-// grants its own trust, which is exactly the property ADR-0010 exists to
-// prevent -- the anchor has to be placed by a person, in a reviewed diff.
-// Printing the line to paste is the furthest this may go.
-func runGenerateKey(e *opEnv) int {
-	path := strings.TrimSpace(e.cfg.Signer.KeyFile)
-	if path == "" {
-		fmt.Fprintf(e.stderr, "signer.key_file is not set: nowhere to write the key.\nSet it in the configuration file first -- see config.example.toml.\n")
-		return exitCannotRun
-	}
-
+// ADR-0010 made signer.trusted_keys required whenever require_signed is on,
+// which is the default. That creates a bootstrap order: the config file is
+// not valid until it lists a trusted key, and there is no trusted key until
+// somebody generates one. If this command loaded the config the way every
+// other subcommand does, a fresh install would deadlock -- and the only way
+// out would be to set require_signed = false, generate, paste, and set it
+// back. That is the "turn the control off for a minute" dance this project
+// keeps finding at the bottom of its worst defects, and a first-run
+// experience should not require it.
+//
+// So this takes an explicit -out path and never opens the config. It is the
+// one subcommand that can run before there is a valid configuration,
+// because it is the one that makes a valid configuration possible.
+//
+// It deliberately does NOT write to the configuration file either. A
+// command that adds its own key to trusted_keys would be granting itself
+// trust, which is exactly the property ADR-0010 exists to prevent -- the
+// anchor is placed by a person, in a diff somebody read. Printing the line
+// to paste is as far as this may go.
+func runGenerateKey(path string, stdout, stderr io.Writer) int {
 	key, err := signer.GenerateKey()
 	if err != nil {
-		fmt.Fprintf(e.stderr, "generate key: %v\n", err)
+		fmt.Fprintf(stderr, "generate key: %v\n", err)
 		return exitCannotRun
 	}
 
 	// WriteKey opens with O_EXCL and mode 0600, so an existing key is never
 	// clobbered and the new one is owner-only from the instant it exists --
-	// there is no window where it sits readable and then gets chmodded.
+	// there is no window where it sits readable and is chmodded afterwards.
 	if err := signer.WriteKey(path, key); err != nil {
-		fmt.Fprintf(e.stderr, "write key: %v\n", err)
+		fmt.Fprintf(stderr, "write key: %v\n", err)
 		if errors.Is(err, fs.ErrExist) {
-			fmt.Fprintf(e.stderr, "\nA key already exists there and was left untouched. Overwriting it would\ninvalidate every signature it made. To rotate deliberately: move the old\nkey aside, generate a new one, re-sign every entry (`mcp-gateway sign NAME`),\nand only then remove the old key from signer.trusted_keys.\n")
+			fmt.Fprintf(stderr, "\nA key already exists there and was left untouched. Overwriting it would\ninvalidate every signature it made. To rotate deliberately: generate the new\nkey at a different path, add its public half to signer.trusted_keys ALONGSIDE\nthe old one, re-sign every entry (`mcp-gateway sign NAME`), and only then\nremove the old key and its trusted_keys line.\n")
 		}
 		return exitCannotRun
 	}
 
 	pub := key.Public().(ed25519.PublicKey)
-	fmt.Fprintf(e.stdout, "Wrote a new Ed25519 signing key to %s (owner-only).\n", path)
-	fmt.Fprintf(e.stdout, "\nThe gateway will not accept its signatures until you trust it. Add this to\nthe configuration file:\n\n    [signer]\n    trusted_keys = [\n      %q,  # %s\n    ]\n",
+	fmt.Fprintf(stdout, "Wrote a new Ed25519 signing key to %s (owner-only).\n", path)
+	fmt.Fprintf(stdout, "\nTwo lines go into the configuration file. The path, so this key is used\nfor signing:\n\n    [signer]\n    key_file = %q\n", path)
+	fmt.Fprintf(stdout, "\nAnd the public half, so the gateway accepts what it signs -- without this\nthe gateway refuses every entry, signed or not:\n\n    trusted_keys = [\n      %q,  # %s\n    ]\n",
 		trustedKeyLine(pub), signer.KeyFingerprint(pub))
-	fmt.Fprintf(e.stdout, "\nThen sign each registry entry:\n\n    mcp-gateway sign NAME\n")
+	fmt.Fprintf(stdout, "\nThen sign each registry entry:\n\n    mcp-gateway sign NAME\n")
 	return exitOK
 }
 

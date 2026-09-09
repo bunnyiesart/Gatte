@@ -1,0 +1,96 @@
+# mcp-gateway configuration for the jail deployment (third test phase).
+#
+# This is a DEPLOYMENT INSTANCE, not documentation -- config.example.toml
+# is the annotated reference and explains every field and why it defaults
+# the way it does. Read that one first; this one is deliberately terse.
+#
+# Placeholders written as __LIKE_THIS__ are filled in by
+# scripts/provision-gateway-jail.sh. If you are editing this by hand, the
+# script will tell you which ones it expects.
+
+# Loopback, and it cannot be anything else: the gateway refuses a
+# non-loopback bind (ADR-0011 item 1). nginx in this same jail terminates
+# TLS on 10.17.89.10:443 and proxies here.
+listen = "127.0.0.1:8080"
+
+database = "/var/db/mcp-gateway/mcp-gateway.db"
+
+[oidc]
+# Authelia, in its own jail (ADR-0011 item 4). Must be reachable from THIS
+# jail -- discovery happens at startup, and an unreachable issuer stops the
+# process from coming up at all, not merely from authenticating (ADR-0008).
+issuer = "https://id.soc.internal"
+
+# This gateway's own resource identifier (RFC 8707). Tokens minted for any
+# other service of the same IdP are refused. Never defaulted, and it must
+# match what Authelia puts in `aud` exactly.
+audience = "https://mcp.soc.internal/"
+
+groups_claim = "groups"
+
+[vault]
+secrets_file = "/usr/local/etc/mcp-gateway/secrets.json"
+age_key_file = "/usr/local/etc/mcp-gateway/age.key"
+
+[signer]
+key_file = "/usr/local/etc/mcp-gateway/signing.key"
+
+# The trust anchor (ADR-0010). Verification runs against these keys and
+# nothing else -- NOT against the key stored beside the signature, which is
+# what made signatures forgeable by anyone with database write access.
+#
+# Generate with `mcp-gateway sign -generate-key`, which prints this line
+# ready to paste. Public halves only: not secret, which is exactly why they
+# belong in a reviewed file rather than in the database.
+trusted_keys = [
+  "__TRUSTED_KEY__",
+]
+
+# require_signed is left unset on purpose: it defaults to true, and writing
+# it out invites someone to "temporarily" flip it.
+
+# Roles. Tool names are namespaced <upstream>.<tool>, matched exactly with
+# no wildcard -- a wildcard is how a role silently gains a tool an upstream
+# added later. Note docsearch self-prefixes its own tool names, so the
+# namespaced form doubles up; that is correct, not a typo.
+#
+# Every name below was read out of lab/servers/*/main.go, not guessed. That
+# matters more than it sounds: a role naming a tool that does not exist
+# fails SILENTLY -- the analyst just sees a shorter tool list, with no error
+# anywhere. The shipped example config had exactly this bug for docsearch
+# (ISSUE-30), and a first draft of this file invented `logsearch.search`,
+# `threatintel.whois` and `casemgmt.create_case`, none of which are real.
+[[role]]
+name = "analyst"
+tools = [
+  "casemgmt.list_cases",
+  "casemgmt.get_case",
+  "logsearch.search_relative",
+  "logsearch.search_keyword",
+  "docsearch.docsearch_search",
+  "threatintel.lookup_ip",
+]
+
+[[role]]
+name = "dfir-lead"
+tools = [
+  "casemgmt.list_cases",
+  "casemgmt.get_case",
+  "logsearch.search_relative",
+  "logsearch.search_keyword",
+  "docsearch.docsearch_search",
+  "docsearch.docsearch_list_indices",
+  "threatintel.lookup_ip",
+  "threatintel.enrich",
+]
+
+# Deliberately granted to nobody: the *_credcheck tools each mock exposes
+# exist to prove credential injection reached the backend (lab/README.md).
+# They are a test fixture, and a role that can call them is a role that can
+# ask a backend to describe the credential it was given.
+
+# Authelia group -> role. A group with no mapping is ignored, not an error:
+# an IdP carries groups that have nothing to do with this gateway.
+[group_to_role]
+"soc-analysts" = "analyst"
+"dfir-leads" = "dfir-lead"

@@ -11,7 +11,6 @@ JM_STATE_ROOT="${JM_STATE_ROOT:-$HOME/.jailmachine}"
 JM_SSH_KEY="$JM_STATE_ROOT/machines/jailmachine/ssh/id_ed25519"
 REMOTE_TMP=/tmp/mcp-gateway
 JAIL_ROOT="/usr/local/bastille/jails/$JAIL/root"
-DB_PATH="${MCP_GATEWAY_JAIL_DB:-/var/db/mcp-gateway.db}"
 
 cd "$(dirname "$0")/.."
 
@@ -27,7 +26,15 @@ jm ssh -- mkdir -p "$JAIL_ROOT/usr/local/bin"
 jm ssh -- cp "$REMOTE_TMP" "$JAIL_ROOT/usr/local/bin/mcp-gateway"
 jm ssh -- chmod +x "$JAIL_ROOT/usr/local/bin/mcp-gateway"
 
-echo "==> smoke test: opening the store and migrating schemas inside the jail"
-jm ssh -- bastille cmd "$JAIL" /usr/local/bin/mcp-gateway -db "$DB_PATH"
+# Smoke test: `version` is the only subcommand that reads no configuration
+# file. Everything else -- serve, upstream, tool, sign, audit -- loads the
+# TOML first, and config.Validate requires a database path, an OIDC issuer
+# and audience, and both vault files, none of which this script installs.
+# So `version` is deliberately all this proves: that a freebsd/arm64 binary
+# cross-compiled on darwin/arm64 actually loads and executes in the jail.
+# Anything past that is a deployment, not a smoke test -- see
+# deploy/freebsd-jail.md, "What this does and doesn't prove".
+echo "==> smoke test: running the binary inside the jail"
+jm ssh -- bastille cmd "$JAIL" /usr/local/bin/mcp-gateway version
 
 echo "==> done. jail IP: 10.17.89.10 -- 'jm ssh -- bastille list' to confirm"

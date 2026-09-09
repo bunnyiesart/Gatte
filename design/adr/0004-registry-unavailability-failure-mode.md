@@ -43,6 +43,47 @@ tenta reler em intervalo curto (a definir na implementação, ordem de
 segundos) em vez de cachear indefinidamente um estado que não consegue
 confirmar como válido.
 
+> **CORREÇÃO, 09 set 2026 — o retry não existe. Só metade desta decisão
+> foi implementada.**
+>
+> `Gateway.Connect` é chamado **exatamente uma vez**, em
+> `cmd/mcp-gateway/serve.go`, durante o arranque. Não há laço, não há
+> temporizador, não há intervalo "da ordem de segundos" em lugar nenhum do
+> código. As consequências reais, que são diferentes das descritas acima:
+>
+> - **Falha do registro no boot é fatal.** O processo não sobe. Isso é
+>   fail-closed, e é a metade que funciona — deliberadamente, com
+>   justificativa escrita no próprio `serve.go`: um processo que escuta na
+>   porta e não serve nada para ninguém é pior que um que se recusa a
+>   subir, porque só o segundo é visível para quem o reiniciou.
+> - **Mudança no registro depois do boot é invisível até reiniciar.** Não
+>   só uma falha de I/O: uma entrada registrada, removida ou re-assinada
+>   com o gateway no ar não muda nada até o próximo `serve`.
+> - **Portanto o cenário que motivou este ADR — "o arquivo SQLite fica
+>   ilegível por alguns segundos com o processo no ar" — não tem hoje
+>   comportamento nenhum.** Não falha fechado *durante* a janela e não
+>   relê depois dela; simplesmente não olha. A tabela de rotas montada no
+>   boot continua servindo.
+>
+> Note que o terceiro ponto é uma forma de exatamente o que a Opção B foi
+> rejeitada por permitir: servir uma decisão de roteamento que já não se
+> consegue confirmar. Chegamos nele por omissão, não por escolha — o que é
+> pior que ter escolhido.
+>
+> **Isto precisa de uma das duas coisas, e não de mais um documento que
+> descreva o retry como se ele existisse:** ou implementar a releitura
+> periódica que esta decisão manda, ou um ADR novo que largue o retry
+> explicitamente e diga por quê. O argumento honesto a favor de largar,
+> verificado no código: a garantia da quarentena — que era o motivo da
+> urgência aqui — **não depende da tabela de rotas**. `Dispatch` consulta
+> `quarantine.Get` contra o banco a cada chamada, então uma ferramenta
+> marcada `changed` fica bloqueada imediatamente, com ou sem releitura do
+> registro. O que a tabela de rotas velha ainda permite é servir um
+> upstream *desregistrado*, que é uma classe menos grave. Se esse for o
+> raciocínio, ele merece estar escrito num ADR e não deduzido daqui.
+>
+> Não foi rastreado como item até 09 set 2026; está sendo agora.
+
 **Justificativa técnica:** entre as duas opções, só a Opção A garante que
 `Tool Quarantine` nunca é contornado por estar servindo uma decisão de
 roteamento desatualizada — uma tool marcada `changed` durante a janela de
@@ -77,14 +118,29 @@ conflito Segurança vs. Simplicidade nomeado acima.
 
 ## Compliance
 
-- [ ] Automatizável? Sim, uma vez decidido — teste de integração que força
-  falha de leitura do SQLite e confirma o comportamento escolhido.
-- Onde vive o teste: a definir.
+- [x] Automatizável? Sim — teste de integração que força falha de leitura
+  do SQLite e confirma o comportamento.
+- Onde vive o teste (preenchido em 09 set 2026 — era "a definir"):
+  - `TestConnect_RegistryFailureFailsClosed`,
+    `internal/gateway/gateway_test.go`: prova que a tabela de rotas é
+    derrubada e nada é servido.
+  - `TestBuildServer_UnreadableRegistryIsFatal`,
+    `cmd/mcp-gateway/serve_test.go`: prova a mesma coisa no nível do
+    arranque, que é onde ela de fato acontece. **Pula, não falha**, sem
+    `sops` no PATH — ver o aviso do `make test`.
+- **Cobertura parcial, e a parte que falta é a que diverge.** Os dois
+  testes acima cobrem só a metade fail-closed. Não existe teste do retry,
+  porque não existe retry — ver a correção de 09 set 2026 na Decisão. Esta
+  seção dizia que o teste confirmava "o comportamento escolhido"; confirma
+  metade dele.
 - Quando roda: a cada build/CI.
 
 ## Notas
 
 - Autor: investigação conjunta (bunnyiesart + Claude), 31 Aug 2026, a partir de
   pesquisa comparativa com Envoy/Kong/APISIX/Ory Oathkeeper.
-- **Aguardando decisão de bunnyiesart** entre Opção A, Opção B, ou a
-  recomendação (A com retry/TTL curto).
+- Decidido por bunnyiesart em 31 Aug 2026: Opção A com retry curto (ver
+  Status). Esta linha dizia "**Aguardando decisão de bunnyiesart**" sob um
+  Status `Accepted` até 09 set 2026 — contradição de arquivo, não decisão
+  em aberto. A pendência real deste ADR não é a decisão, é a
+  implementação: ver a correção na seção Decisão.

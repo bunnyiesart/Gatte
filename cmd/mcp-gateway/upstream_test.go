@@ -175,7 +175,7 @@ func TestRunUpstreamDeregister(t *testing.T) {
 		// A signature keyed by name would otherwise outlive the entry and
 		// authenticate whatever is registered under that name next.
 		e := newOpTestEnv(t)
-		e.cfg.Signer.KeyFile = writeSigningKey(t, 0o600)
+		useSigningKey(t, e)
 		mustRegister(t, e, stdioEntry("casemgmt"))
 		requireExit(t, runSign(e.opEnv, "casemgmt"), exitOK, "sign")
 		e.out.Reset()
@@ -236,7 +236,7 @@ func TestRunUpstreamList_SignatureStates(t *testing.T) {
 		{
 			name: "signed and valid",
 			sign: func(t *testing.T, e opTestEnv, entry registry.UpstreamServer) {
-				e.cfg.Signer.KeyFile = writeSigningKey(t, 0o600)
+				useSigningKey(t, e)
 				requireExit(t, runSign(e.opEnv, entry.Name), exitOK, "sign")
 				e.out.Reset()
 			},
@@ -261,7 +261,7 @@ func TestRunUpstreamList_SignatureStates(t *testing.T) {
 				}
 			},
 			wantColumn: string(sigInvalid),
-			wantNote:   "evidence of tampering",
+			wantNote:   "will NOT serve",
 		},
 	}
 
@@ -306,7 +306,7 @@ func TestCmdUpstream_BadUsage(t *testing.T) {
 // flags parsed, config read, database opened and migrated, entry
 // persisted across two separate command invocations.
 func TestCmdUpstream_EndToEndThroughAConfigFile(t *testing.T) {
-	configPath := writeOperatorConfig(t, "")
+	configPath := writeOperatorConfig(t, signerSection(t, writeSigningKey(t, 0o600)))
 
 	var out, errBuf bytes.Buffer
 	code := cmdUpstream([]string{

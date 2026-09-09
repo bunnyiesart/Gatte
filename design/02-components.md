@@ -1,8 +1,12 @@
 # Phase 2 — Logical components
 
-Follows `docs/context/02-componentes-logicos.md`. First draft —
-per the method's own rule, this is an informed guess, not final; it will be
-revised once implementation starts.
+Follows `docs/context/02-componentes-logicos.md`. Written as an
+informed first draft per the method's own rule, and **kept as the record of
+the derivation, not as a description of the built system.** Phases 1-6 have
+since shipped; where this document and the code disagree, the code and the
+ADRs win. The one correction folded back in so far is the Operator
+Console's `rotate` (below) — the eight components and their boundaries have
+otherwise held.
 
 ## Approach chosen: Actor/Ação
 
@@ -15,7 +19,7 @@ it as the actor most often forgotten.
 |---|---|---|
 | **N1 triage analyst** | Connect to the gateway; call a tool from their allowed subset | `Gateway Endpoint`, `Access Control` |
 | **DFIR lead** | Same, against a wider tool subset | `Gateway Endpoint`, `Access Control` |
-| **Operator** (the one person who runs this) | Register a new upstream server; approve a quarantined tool; rotate a credential; sign a registry entry; review the audit trail | `Operator Console`, `Upstream Registry`, `Tool Quarantine`, `Credential Vault`, `Definition Signer`, `Audit Trail` |
+| **Operator** (the one person who runs this) | Register a new upstream server; approve a quarantined tool; sign a registry entry; review the audit trail. (Rotate a credential too — but *not* through this system; see the Operator Console note below) | `Operator Console`, `Upstream Registry`, `Tool Quarantine`, `Definition Signer`, `Audit Trail` |
 | **System** | Inject the real credential at process spawn; hash and compare tool definitions on every discovery; verify signatures at boot; write one audit record per call; validate token audience before dispatch | `Credential Vault`, `Tool Quarantine`, `Definition Signer`, `Audit Trail`, `Access Control` |
 
 ## Components
@@ -54,9 +58,20 @@ it as the actor most often forgotten.
   named in §3 ("no record of which analyst ran which lookup").
 - **Operator Console** — the one interface the single operator uses for
   everything not automatic: register/deregister an upstream, approve a
-  quarantined tool, rotate a secret, read the audit trail. Deliberately not
-  split further — one operator, one small surface, per "simplicity &
-  deployability."
+  quarantined tool, sign a registry entry, read the audit trail.
+  Deliberately not split further — one operator, one small surface, per
+  "simplicity & deployability."
+
+  **Correction, 09 Sep 2026 — no `rotate`.** This draft listed "rotate a
+  secret" here, and Phase 6 deliberately did not build it. Rotation stays
+  `sops secrets.json`: giving the gateway binary a write path into the
+  encrypted store, when everything else it does with that store is *read*,
+  buys convenience with the one asymmetry that makes the vault worth
+  having. Same isolation reasoning that keeps the signing key out of the
+  Credential Vault (`adr/0006`). The real operational hazard rotation does
+  carry — credentials resolve at *dial* time, so an already-connected
+  upstream keeps the old value until restart — is documented in
+  `deploy/freebsd-jail.md` ("Rotating credentials") and tracked as ISSUE-20.
 
 ## Granularity check (desintegradores vs. integradores, §02 §7)
 

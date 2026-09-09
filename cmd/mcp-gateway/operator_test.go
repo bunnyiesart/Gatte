@@ -224,7 +224,7 @@ func TestOperatorCommands_NeverPrintASecretValue(t *testing.T) {
 	t.Setenv("CASEMGMT_API_KEY", fakeValue)
 
 	e := newOpTestEnv(t)
-	e.cfg.Signer.KeyFile = writeSigningKey(t, 0o600)
+	useSigningKey(t, e)
 
 	mustRegister(t, e, registry.UpstreamServer{
 		Name:        "casemgmt",

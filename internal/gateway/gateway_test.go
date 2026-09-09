@@ -24,6 +24,7 @@ package gateway
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1071,6 +1072,59 @@ func TestNew_RejectsMissingPorts(t *testing.T) {
 	}
 }
 
+// TestNew_RefusesASilentlyDisabledSignatureCheck covers ADR-0010 item 3.
+//
+// Both combinations below assemble a Gateway that runs, serves, and checks
+// nothing, while the configuration that produced it says signatures are
+// enforced. verifyEntry returns early on a nil store -- before it ever
+// consults requireSig -- so RequireSigned with no store was a bypass that
+// left no trace at all. Neither is reachable from cmd today; both are
+// refused anyway, because "the security default was off and nobody noticed"
+// is the failure this project keeps writing ADRs about.
+func TestNew_RefusesASilentlyDisabledSignatureCheck(t *testing.T) {
+	sgn := newTestSigner(t)
+
+	t.Run("RequireSigned without a signature store", func(t *testing.T) {
+		cfg := fullConfig(t)
+		cfg.RequireSigned = true
+		cfg.Signatures = nil
+
+		gw, err := New(cfg)
+		if err == nil {
+			gw.Close()
+			t.Fatal("New with RequireSigned and no Signatures store: want an error, got a Gateway that would serve every entry unchecked")
+		}
+		if !strings.Contains(err.Error(), "RequireSigned") {
+			t.Errorf("error %q does not name RequireSigned, so an operator cannot tell which half to fix", err)
+		}
+	})
+
+	t.Run("a signature store without a trust anchor", func(t *testing.T) {
+		cfg := fullConfig(t)
+		cfg.Signatures = &signatureStore{sigs: map[string]signer.Signature{}}
+		cfg.Verifier = nil
+
+		gw, err := New(cfg)
+		if err == nil {
+			gw.Close()
+			t.Fatal("New with a Signatures store and no Verifier: want an error -- there would be nothing to verify against but the attacker-supplied key")
+		}
+	})
+
+	t.Run("both wired is accepted", func(t *testing.T) {
+		cfg := fullConfig(t)
+		cfg.Signatures = &signatureStore{sigs: map[string]signer.Signature{}}
+		cfg.Verifier = trusting(t, sgn)
+		cfg.RequireSigned = true
+
+		gw, err := New(cfg)
+		if err != nil {
+			t.Fatalf("New with both wired = %v, want nil", err)
+		}
+		gw.Close()
+	})
+}
+
 func fullConfig(t *testing.T) Config {
 	t.Helper()
 	policy, err := access.NewPolicy(nil, nil)
@@ -1399,6 +1453,38 @@ func (s *signatureStore) Delete(_ context.Context, name string) error {
 	return nil
 }
 
+func newTestSigner(t *testing.T) *signer.Signer {
+	t.Helper()
+
+	key, err := signer.GenerateKey()
+	if err != nil {
+		t.Fatalf("signer.GenerateKey: %v", err)
+	}
+	s, err := signer.NewSigner(key)
+	if err != nil {
+		t.Fatalf("signer.NewSigner: %v", err)
+	}
+	return s
+}
+
+// trusting builds the trust anchor a gateway configured with sgn's public
+// key in signer.trusted_keys would have (ADR-0010). Every test below has to
+// say whose signature counts before it can assert anything about
+// verification, which is the property the ADR was written to force.
+func trusting(t *testing.T, signers ...*signer.Signer) *signer.Verifier {
+	t.Helper()
+
+	keys := make([]ed25519.PublicKey, 0, len(signers))
+	for _, s := range signers {
+		keys = append(keys, s.PublicKey())
+	}
+	v, err := signer.NewVerifier(keys)
+	if err != nil {
+		t.Fatalf("signer.NewVerifier: %v", err)
+	}
+	return v
+}
+
 // TestConnect_VerifiesEntrySignatures is ISSUE-18: until this existed, the
 // Definition Signer was built, tested, and invoked from nowhere -- the
 // control ADR-0003 decided and ADR-0006 specified was not in force.
@@ -1407,14 +1493,7 @@ func (s *signatureStore) Delete(_ context.Context, name string) error {
 // the registry now says is never spawned. Verification after the process
 // started would be worthless, so this runs before bringUp.
 func TestConnect_VerifiesEntrySignatures(t *testing.T) {
-	key, err := signer.GenerateKey()
-	if err != nil {
-		t.Fatalf("GenerateKey: %v", err)
-	}
-	sgn, err := signer.NewSigner(key)
-	if err != nil {
-		t.Fatalf("NewSigner: %v", err)
-	}
+	sgn := newTestSigner(t)
 
 	// Exactly what harness.register writes, so the signature is over the
 	// entry Connect will actually read.
@@ -1429,6 +1508,7 @@ func TestConnect_VerifiesEntrySignatures(t *testing.T) {
 		h.register("casemgmt")
 		h.serve("casemgmt", def("list_cases", "list cases"))
 		h.gw.signatures = &signatureStore{sigs: map[string]signer.Signature{"casemgmt": sgn.Sign(entry)}}
+		h.gw.verifier = trusting(t, sgn)
 
 		if err := h.connect(); err != nil {
 			t.Fatalf("Connect with a valid signature: %v", err)
@@ -1449,6 +1529,7 @@ func TestConnect_VerifiesEntrySignatures(t *testing.T) {
 		tampered := entry
 		tampered.Command = "/tmp/evil"
 		h.gw.signatures = &signatureStore{sigs: map[string]signer.Signature{"casemgmt": sgn.Sign(tampered)}}
+		h.gw.verifier = trusting(t, sgn)
 
 		err := h.connect()
 		if !errors.Is(err, ErrUpstreamUnavailable) {
@@ -1462,12 +1543,42 @@ func TestConnect_VerifiesEntrySignatures(t *testing.T) {
 		}
 	})
 
+	// The ADR-0010 forgery, end to end through Connect. The subtest above
+	// only ever failed because the attacker was assumed not to re-sign; an
+	// attacker who can write the registry row can write the signature row
+	// too, since ADR-0001 puts both tables in the same SQLite file.
+	t.Run("an entry re-signed with an untrusted key is refused", func(t *testing.T) {
+		h := newHarness(t, "casemgmt.list_cases")
+		h.register("casemgmt")
+		h.serve("casemgmt", def("list_cases", "list cases"))
+
+		// The registry now says /usr/bin/casemgmt; the attacker's signature is
+		// over exactly that, made with a key they generated a moment ago.
+		// Self-consistent, internally perfect, and worth nothing.
+		attacker := newTestSigner(t)
+		h.gw.signatures = &signatureStore{sigs: map[string]signer.Signature{"casemgmt": attacker.Sign(entry)}}
+		h.gw.verifier = trusting(t, sgn)
+		h.gw.requireSig = true
+
+		err := h.connect()
+		if !errors.Is(err, ErrUpstreamUnavailable) {
+			t.Fatalf("Connect = %v, want ErrUpstreamUnavailable -- the signing key is not in trusted_keys", err)
+		}
+		if h.dialer.wasDialed("casemgmt") {
+			t.Error("an entry vouched for only by the attacker's own key was DIALED")
+		}
+		if got := h.listNames(analyst); len(got) != 0 {
+			t.Errorf("a forged entry was served: %v", got)
+		}
+	})
+
 	t.Run("unsigned is tolerated by default and refused when required", func(t *testing.T) {
 		for _, tc := range []struct{ require, wantServed bool }{{false, true}, {true, false}} {
 			h := newHarness(t, "casemgmt.list_cases")
 			h.register("casemgmt")
 			h.serve("casemgmt", def("list_cases", "list cases"))
 			h.gw.signatures = &signatureStore{sigs: map[string]signer.Signature{}}
+			h.gw.verifier = trusting(t, sgn)
 			h.gw.requireSig = tc.require
 
 			_ = h.connect()
@@ -1493,6 +1604,7 @@ func TestConnect_VerifiesEntrySignatures(t *testing.T) {
 		h.register("casemgmt")
 		h.serve("casemgmt", def("list_cases", "list cases"))
 		h.gw.signatures = &signatureStore{err: errors.New("disk on fire")}
+		h.gw.verifier = trusting(t, sgn)
 
 		if err := h.connect(); !errors.Is(err, ErrUpstreamUnavailable) {
 			t.Fatalf("Connect = %v, want ErrUpstreamUnavailable when the store is unreadable", err)

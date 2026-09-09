@@ -55,6 +55,20 @@ func newSigner(t *testing.T) *signer.Signer {
 	return s
 }
 
+// newVerifier builds the trust anchor the gateway would build from
+// signer.trusted_keys. This package's tests generate their own key and then
+// declare it trusted, which is the whole ceremony ADR-0010 requires: there
+// is no verifying without first saying, in code, whose signature counts.
+func newVerifier(t *testing.T, s *signer.Signer) *signer.Verifier {
+	t.Helper()
+
+	v, err := signer.NewVerifier([]ed25519.PublicKey{s.PublicKey()})
+	if err != nil {
+		t.Fatalf("NewVerifier: %v", err)
+	}
+	return v
+}
+
 func TestMigrate_IsIdempotent(t *testing.T) {
 	db := newTestDB(t) // already migrated once
 
@@ -72,7 +86,8 @@ func TestPutThenGet_PreservesBytesExactly(t *testing.T) {
 	ctx := context.Background()
 
 	entry := casemgmtEntry()
-	want := newSigner(t).Sign(entry)
+	sgn := newSigner(t)
+	want := sgn.Sign(entry)
 
 	if err := st.Put(ctx, entry.Name, want); err != nil {
 		t.Fatalf("Put: %v", err)
@@ -92,7 +107,7 @@ func TestPutThenGet_PreservesBytesExactly(t *testing.T) {
 	// The round trip is only worth anything if what comes back still
 	// verifies -- that, not byte equality, is what the boot-time check
 	// will actually do with it.
-	if err := signer.Verify(entry, got); err != nil {
+	if err := newVerifier(t, sgn).Verify(entry, got); err != nil {
 		t.Errorf("Verify(stored signature) = %v, want nil", err)
 	}
 }
@@ -229,15 +244,16 @@ func TestSignaturesAreKeyedPerEntry(t *testing.T) {
 		t.Fatalf("Get threatintel: %v", err)
 	}
 
-	if err := signer.Verify(casemgmt, gotIris); err != nil {
+	verifier := newVerifier(t, s)
+	if err := verifier.Verify(casemgmt, gotIris); err != nil {
 		t.Errorf("Verify casemgmt = %v, want nil", err)
 	}
-	if err := signer.Verify(threatintel, gotSwiss); err != nil {
+	if err := verifier.Verify(threatintel, gotSwiss); err != nil {
 		t.Errorf("Verify threatintel = %v, want nil", err)
 	}
 	// threatintel's signature must not authenticate casemgmt, even though the same
 	// key produced both.
-	if err := signer.Verify(casemgmt, gotSwiss); !errors.Is(err, signer.ErrInvalidSignature) {
+	if err := verifier.Verify(casemgmt, gotSwiss); !errors.Is(err, signer.ErrInvalidSignature) {
 		t.Errorf("threatintel's signature verified against casemgmt: %v, want ErrInvalidSignature", err)
 	}
 }

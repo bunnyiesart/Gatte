@@ -261,12 +261,16 @@ prove it.
   closed with short retry** — decided, not a judgment call at
   implementation time (`design/adr/0004`, Accepted).
 - **First point to run the `lab/` harness against the real build**: spin
-  up the mock servers (`lab/servers/mock_mcp.py`), point the new gateway
-  at them instead of at a candidate under evaluation, run `probe.py`'s
-  clean-environment credential-injection + leak check exactly as done for
-  every external candidate. If the custom build can't pass the same test
-  the five external candidates failed, that's a stop-the-line finding, not
-  a minor bug.
+  up the mock servers (`lab/servers/{casemgmt,logsearch,docsearch,threatintel}`),
+  point the new gateway at them instead of at a candidate under
+  evaluation, run `lab/probe`'s clean-environment credential-injection +
+  leak check exactly as done for every external candidate — `make
+  lab-probe` does both. If the custom build can't pass the same test the
+  five external candidates failed, that's a stop-the-line finding, not a
+  minor bug. (This bullet named `mock_mcp.py` and `probe.py` until 09 Sep
+  2026; those were the Python/Docker harness from the candidate
+  evaluation and were never committed — `lab/README.md` says so and gives
+  the Go paths above.)
 
 **Built:** `internal/gateway` (routing table, namespacing, the
 authorize -> quarantine -> audit -> dispatch sequence), `internal/gateway/stdio`
@@ -306,11 +310,15 @@ even observed into quarantine; and `ListTools` handed out schema bytes
 aliasing the routing table, the same defect class already caught in
 `access.Policy`.
 
-**One gap found and left visible on purpose:** an out-of-role tool probe is
-refused but not audited, because `httpapi`'s per-identity registration
-means the call never reaches `Dispatch`. Pinned in the checkpoint as
-current behaviour so fixing it fails loudly. Tracked separately; worth
-closing before Phase 6, since the Operator Console reads that trail.
+**One gap found and left visible on purpose — since closed.** An
+out-of-role tool probe was refused but not audited, because `httpapi`'s
+per-identity registration means the call never reaches `Dispatch`, the only
+writer of denials. It was pinned in the checkpoint as current behaviour so
+that fixing it would fail loudly. **ISSUE-16 closed it:** `httpapi` now
+records the attempt itself, attributed to the caller and carrying a reason,
+without changing what the caller is told. The checkpoint asserts the
+denial row rather than its absence
+(`TestCheckpoint_RoleLimitsWhatIsReachable`, `internal/e2e/checkpoint_test.go`).
 
 **Also outstanding:** the registry couples a vault key to the destination
 environment variable name (`env[name] = Resolve(name)`), so two upstreams
@@ -351,7 +359,9 @@ five of six candidates for.
 upstream, see it reported NOT SIGNED with the consequence spelled out,
 sign it, watch `serve` refuse to start against an unreachable IdP, and
 confirm the injected credential appears in no log. A group-readable
-signing key is refused with the exact chmod to run.
+signing key is refused with the exact chmod to run — by **`sign`**, which
+is the only command that reads that key; `serve` never opens it, and
+`config.Signer.KeyFile` is optional for exactly that reason.
 
 **Operational property found by running it:** the gateway cannot start
 without a reachable IdP. Correct (starting unable to authenticate anyone

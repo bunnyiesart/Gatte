@@ -4,7 +4,11 @@
 # arquivo sozinho: o caminho e passado explicitamente, para que nunca haja
 # duvida sobre qual arquivo esta valendo.
 #
-#   mcp-gateway -config /usr/local/etc/mcp-gateway/config.toml
+#   mcp-gateway serve -config /usr/local/etc/mcp-gateway/config.toml
+#
+# O subcomando vem primeiro, sempre. `mcp-gateway -config ...` sem subcomando
+# nao roda nada: o despacho le o primeiro argumento como nome de comando,
+# nao reconhece `-config`, imprime o uso e sai com 2.
 #
 # ---------------------------------------------------------------------------
 # REGRA 1: NENHUM SEGREDO NESTE ARQUIVO. NUNCA.
@@ -173,7 +177,7 @@ age_key_file = "/usr/local/etc/mcp-gateway/age.key"
 
 
 # ===========================================================================
-# [signer] -- Definition Signer (ADR-0006)
+# [signer] -- Definition Signer (ADR-0006 e ADR-0010)
 # ===========================================================================
 
 [signer]
@@ -194,6 +198,55 @@ age_key_file = "/usr/local/etc/mcp-gateway/age.key"
 # legitimas.
 key_file = "/usr/local/etc/mcp-gateway/signing.key"
 
+# Chaves publicas Ed25519 cujas assinaturas este gateway aceita: base64
+# (codificacao padrao) dos 32 bytes crus. Uma assinatura feita por qualquer
+# outra chave e recusada.
+#
+# ---------------------------------------------------------------------
+# ESTA E A ANCORA DE CONFIANCA. SEM ELA, ASSINATURA NAO PROVA NADA.
+# ---------------------------------------------------------------------
+# A verificacao ja foi feita contra a chave que vinha *dentro* da propria
+# linha de assinatura, no banco. Isso foi provado explorável e a ADR-0010
+# conta a historia: quem tem escrita no SQLite reescreve a entrada, gera um
+# par Ed25519 novo, assina a entrada adulterada com ele, grava os dois --
+# e o gateway aceita. As entradas e as assinaturas moram no mesmo arquivo,
+# entao "escrita no registro" e "escrita nas assinaturas" sao a mesma
+# permissao; nao ha degrau entre uma e outra. `require_signed = true` nao
+# ajudava, porque a entrada *estava* assinada.
+#
+# Uma ancora guardada ao lado daquilo que ela autentica nao e ancora. Por
+# isso ela vive aqui: chave publica nao e segredo -- e exatamente por isso
+# que ela pode ficar em arquivo versionado e revisado --, mas precisa estar
+# fora do raio de dano de quem adultera o que ela atesta. E o mesmo
+# raciocinio da REGRA 3 acima: mudar em quem o gateway confia para assinar
+# entradas e a decisao de politica mais forte deste sistema, e merece um
+# diff que alguem leu.
+#
+# **Obrigatorio quando `require_signed` esta ligado** -- e ele vem ligado
+# por padrao. Exigir assinatura sem ter contra o que verificar e pedir uma
+# garantia impossivel, entao o gateway recusa subir e diz o que fazer.
+#
+# Como obter o valor: `mcp-gateway sign NOME` imprime a linha pronta para
+# colar sempre que a chave que ele acabou de usar nao estiver nesta lista.
+# Nao ha o que decorar.
+#
+# E uma lista, e nao um valor unico, para dar rotacao sem janela de
+# indisponibilidade: acrescente a chave nova, re-assine as entradas
+# (`mcp-gateway sign NOME`), e so entao remova a velha. Enquanto as duas
+# estiverem aqui, assinatura de qualquer uma das duas vale.
+#
+# Se errar: uma chave a menos aqui derruba justamente as entradas que ela
+# assinou -- falha fechada, visivel em `mcp-gateway upstream list` como
+# `SIGNED: INVALID`. Uma chave *a mais* e o erro grave e silencioso: e
+# conceder a quem tem a metade privada dela o poder de definir o que este
+# gateway executa, com todas as credenciais que a entrada nomear. Trate
+# acrescentar uma linha aqui com a mesma cerimonia de conceder root.
+trusted_keys = [
+  # Chave de assinatura do operador. Substitua pelo valor real do deploy --
+  # este e um exemplo, e ninguem tem a metade privada dele.
+  "xY0cSQI7oc2qmVniMbTJm4EVMR1QkEeWET25gEE09B0=",
+]
+
 # Exigir assinatura valida para que uma entrada de registro seja usavel.
 #
 # ---------------------------------------------------------------------
@@ -212,6 +265,15 @@ key_file = "/usr/local/etc/mcp-gateway/signing.key"
 # Cuidado para nao ler mais tolerancia do que existe: uma assinatura
 # *invalida* e sempre recusada, independente deste ajuste. O que `false`
 # tolera e a *ausencia* de assinatura, nao uma assinatura que nao confere.
+# E, desde a ADR-0010, "invalida" inclui assinatura feita por chave que nao
+# esta em `trusted_keys`: nao e ausencia, e evidencia positiva de que
+# alguem assinou esta entrada com uma chave que este gateway nao reconhece.
+#
+# Ligar isto exige `trusted_keys` preenchido. A combinacao contraria e
+# recusada na inicializacao, e ela e uma quebra deliberada: toda
+# configuracao existente que exija assinatura precisa de uma edicao. O
+# momento foi escolhido -- o gateway nunca rodou fora de teste, entao nao
+# ha implantacao para migrar.
 #
 # Se errar: `true` com entradas ainda nao assinadas derruba justamente
 # essas entradas (falha fechada -- desconfortavel, mas seguro; assine com
@@ -293,9 +355,18 @@ tools = [
   # Busca historica: busca por palavra-chave no Logsearch (sem a janela
   # relativa curta da triagem) e consulta direta ao Docsearch, para
   # quando a investigacao precisa voltar semanas.
+  #
+  # Repare no nome duplicado: o servidor `docsearch` batiza as proprias
+  # ferramentas de `docsearch_search` e `docsearch_list_indices`, e o
+  # gateway prefixa o nome do upstream por cima disso (lab/README.md). O
+  # nome namespaced e o que sai da soma dos dois. Como o casamento e exato
+  # e nao existe coringa, escrever `docsearch.search` aqui nao concede
+  # nada -- e nao da erro nenhum, porque um papel pode legitimamente
+  # nomear ferramenta que ainda nao existe. Confira contra
+  # `mcp-gateway tool list` ao adicionar uma linha.
   "logsearch.search_keyword",
-  "docsearch.search",
-  "docsearch.list_indices",
+  "docsearch.docsearch_search",
+  "docsearch.docsearch_list_indices",
   # Enriquecimento pago/ruidoso. Fora da triagem porque uma submissao a
   # sandbox e observavel pelo adversario -- quem faz isso precisa saber o
   # que esta fazendo.

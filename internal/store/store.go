@@ -1,8 +1,16 @@
 // Package store owns the single embedded SQLite connection shared by every
-// adapter that needs one (Upstream Registry, Audit Trail, and later Tool
-// Quarantine -- design/adr/0001, "one embedded SQLite ... never for
-// secrets"). It knows nothing about what any table holds; each adapter
-// package migrates and queries its own tables through this *sql.DB.
+// adapter that needs one -- Upstream Registry, Audit Trail, Tool
+// Quarantine, and entry signatures (design/adr/0001, "one embedded SQLite
+// ... never for secrets"). It knows nothing about what any table holds;
+// each adapter package migrates and queries its own tables through this
+// *sql.DB, and cmd/mcp-gateway runs all four migrations together at
+// startup so a missing table surfaces there rather than mid-request.
+//
+// One thing deliberately does not live here: the public keys that entry
+// signatures are checked against. A trust anchor stored in the same file
+// as what it authenticates is not an anchor -- whoever can rewrite a
+// signature row can rewrite the key beside it -- so those live in the
+// configuration file instead. See design/adr/0010-signature-trust-anchor.md.
 package store
 
 import (

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"errors"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -44,6 +45,23 @@ func newSigner(t *testing.T) *Signer {
 	return s
 }
 
+// newVerifier builds the trust anchor the gateway would build from
+// signer.trusted_keys, out of the signers whose keys the test says are
+// trusted. Passing none is the "trust nobody" case.
+func newVerifier(t *testing.T, trusted ...*Signer) *Verifier {
+	t.Helper()
+
+	keys := make([]ed25519.PublicKey, 0, len(trusted))
+	for _, s := range trusted {
+		keys = append(keys, s.PublicKey())
+	}
+	v, err := NewVerifier(keys)
+	if err != nil {
+		t.Fatalf("NewVerifier: %v", err)
+	}
+	return v
+}
+
 // TestCredentialRotationDoesNotInvalidateSignature is the test
 // design/adr/0003-security-controls.md names explicitly, and the reason
 // the canonical form excludes secret values in the first place.
@@ -52,22 +70,239 @@ func newSigner(t *testing.T) *Signer {
 // sops-encrypted store the Credential Vault reads -- never in the registry
 // entry. So the entry after a rotation is the same entry, with the same
 // EnvVarNames, and the signature must still verify.
+//
+// # Why this test is shaped the way it is
+//
+// It used to read `before := casemgmtEntry(); sig := Sign(before); after :=
+// casemgmtEntry()` and then assert Canonical(before) == Canonical(after). Those
+// two values are byte-identical by construction, so the assertion was
+// Canonical(x) == Canonical(x): it would have passed against an
+// implementation that hashed the secret values, against one that hashed
+// nothing at all, and against every bug it was cited as ruling out. A test
+// that cannot fail is not evidence, and ADR-0006 cited this one as evidence.
+//
+// So the rotation is modelled where it actually happens -- in the vault --
+// and the entry is *derived* from the vault's contents rather than written
+// out twice by hand. The setup guard below is what the old version lacked:
+// it fails the test if the two vault states are the same, so a refactor
+// that quietly stops rotating anything is caught rather than rewarded.
 func TestCredentialRotationDoesNotInvalidateSignature(t *testing.T) {
-	before := casemgmtEntry()
+	// The Credential Vault, before and after rotating CASEMGMT_API_KEY. Values
+	// live here and nowhere else; the whole design rests on them having no
+	// path into a registry entry.
+	vaultBefore := map[string]string{
+		"CASEMGMT_API_KEY": "casemgmt-key-BEFORE-8f31c0d2",
+		"CASEMGMT_URL":     "https://casemgmt.soc.internal",
+	}
+	vaultAfter := map[string]string{
+		"CASEMGMT_API_KEY": "casemgmt-key-AFTER-4a97e15b",
+		"CASEMGMT_URL":     "https://casemgmt.soc.internal",
+	}
+	if maps.Equal(vaultBefore, vaultAfter) {
+		t.Fatal("test setup: nothing was rotated, so this test would assert nothing")
+	}
 
+	// entryFor builds the registry entry the Operator would have written
+	// for a given vault state. It copies the *names* across and cannot copy
+	// a value even by accident, because UpstreamServer has no field to put
+	// one in -- which is the property under test.
+	entryFor := func(v map[string]string) registry.UpstreamServer {
+		e := casemgmtEntry()
+		e.EnvVarNames = slices.Sorted(maps.Keys(v))
+		return e
+	}
+
+	before := entryFor(vaultBefore)
 	s := newSigner(t)
+	verifier := newVerifier(t, s)
 	sig := s.Sign(before)
 
-	// The rotation: CASEMGMT_API_KEY now resolves to a different value in the
-	// vault. Nothing in the registry entry moves, because the entry never
-	// held the value -- only the name.
-	after := casemgmtEntry()
+	// A rotation is also a write, and a write moves UpdatedAt. Including
+	// that here keeps the test honest about what a real rotation leaves
+	// behind, rather than testing an idealised no-op.
+	after := entryFor(vaultAfter)
+	after.UpdatedAt = before.UpdatedAt.Add(90 * time.Minute)
 
 	if !bytes.Equal(Canonical(before), Canonical(after)) {
 		t.Error("canonical bytes changed across a credential rotation; the hash must not depend on secret values")
 	}
-	if err := Verify(after, sig); err != nil {
+	if err := verifier.Verify(after, sig); err != nil {
 		t.Errorf("Verify after rotation = %v, want nil", err)
+	}
+
+	// And the direct statement of ADR-0003 item 3: neither the old nor the
+	// new secret is anywhere in the bytes a signature covers. This is what
+	// makes the equality above mean something rather than being an accident
+	// of how the two entries were built.
+	signed := Canonical(after)
+	for _, secret := range []string{vaultBefore["CASEMGMT_API_KEY"], vaultAfter["CASEMGMT_API_KEY"]} {
+		if bytes.Contains(signed, []byte(secret)) {
+			t.Errorf("a secret value reached the signed bytes: %q", secret)
+		}
+	}
+}
+
+// TestVerify_RefusesAnEntryResignedWithAnUntrustedKey is the regression
+// test for design/adr/0010-signature-trust-anchor.md, and it reproduces the
+// attack that ADR recorded as proven against the code as it stood.
+//
+// Verification used to run against sig.PublicKey -- the key stored in the
+// signature row, in the same SQLite file as the entry it attests to. So an
+// attacker with write access to that file did this:
+//
+//  1. rewrite the entry's Command to /tmp/evil;
+//  2. generate a fresh Ed25519 pair, sign the rewritten entry with it, and
+//     write the signature and the new public key into the signature row.
+//
+// Both halves are one permission -- the two tables share a file -- and the
+// result verified. `upstream list` printed SIGNED: yes. require_signed did
+// not help, because the entry *was* signed. The gateway would then spawn
+// /tmp/evil with every credential the entry names injected into it.
+//
+// Step 1 alone was always refused and is asserted here too, because the
+// difference between the two steps is the entire point: the old code got
+// the easy half right, which is what made the missing half easy to miss.
+func TestVerify_RefusesAnEntryResignedWithAnUntrustedKey(t *testing.T) {
+	operator := newSigner(t)
+	verifier := newVerifier(t, operator)
+
+	entry := casemgmtEntry()
+	legitimate := operator.Sign(entry)
+	if err := verifier.Verify(entry, legitimate); err != nil {
+		t.Fatalf("test setup: the operator's own signature must verify: %v", err)
+	}
+
+	tampered := casemgmtEntry()
+	tampered.Command = "/tmp/evil"
+	if bytes.Equal(Canonical(entry), Canonical(tampered)) {
+		t.Fatal("test setup: the tampered entry is indistinguishable from the original")
+	}
+
+	// Step 1: tamper, present the legitimate signature.
+	if err := verifier.Verify(tampered, legitimate); !errors.Is(err, ErrInvalidSignature) {
+		t.Errorf("tampered entry with the operator's signature = %v, want ErrInvalidSignature", err)
+	}
+
+	// Step 2: tamper, then re-sign with a key nobody put in trusted_keys.
+	// Internally consistent, and worthless: it says only that whoever made
+	// this pair made both halves of it.
+	attacker := newSigner(t)
+	forged := attacker.Sign(tampered)
+	if ed25519.Verify(attacker.PublicKey(), Canonical(tampered), forged.Bytes) != true {
+		t.Fatal("test setup: the forged pair is not self-consistent, so it does not model the attack")
+	}
+	if err := verifier.Verify(tampered, forged); !errors.Is(err, ErrInvalidSignature) {
+		t.Errorf("FORGERY ACCEPTED: tampered entry re-signed with an untrusted key = %v, want ErrInvalidSignature", err)
+	}
+
+	// The untampered entry re-signed by the attacker must go the same way.
+	// Otherwise an attacker who cannot change an entry could still take
+	// ownership of the signature on it, and the next rotation of the real
+	// key would silently leave their key as the one that vouches for it.
+	if err := verifier.Verify(entry, attacker.Sign(entry)); !errors.Is(err, ErrInvalidSignature) {
+		t.Errorf("untouched entry signed by an untrusted key = %v, want ErrInvalidSignature", err)
+	}
+}
+
+// TestVerify_TrustsEveryConfiguredKey pins what makes key rotation possible
+// without a window in which nothing verifies: trusted_keys is a list, and
+// any key in it is sufficient. ADR-0010 names this as the reason the field
+// is plural.
+func TestVerify_TrustsEveryConfiguredKey(t *testing.T) {
+	retiring := newSigner(t)
+	incoming := newSigner(t)
+	verifier := newVerifier(t, retiring, incoming)
+
+	entry := casemgmtEntry()
+	for name, s := range map[string]*Signer{"retiring key": retiring, "incoming key": incoming} {
+		t.Run(name, func(t *testing.T) {
+			if err := verifier.Verify(entry, s.Sign(entry)); err != nil {
+				t.Errorf("Verify = %v, want nil -- both keys in trusted_keys must be accepted", err)
+			}
+		})
+	}
+
+	// Removing a key from the list is what actually retires it. After that
+	// the entry it signed is refused, which is the operator's cue to
+	// re-sign -- not something that fails quietly.
+	narrowed := newVerifier(t, incoming)
+	if err := narrowed.Verify(entry, retiring.Sign(entry)); !errors.Is(err, ErrInvalidSignature) {
+		t.Errorf("Verify with the retired key removed = %v, want ErrInvalidSignature", err)
+	}
+}
+
+// TestVerify_WithNoTrustedKeysRefusesEverything covers the "trust nobody"
+// configuration. It is reachable only with require_signed = false --
+// config.Config.Validate refuses the other combination -- and in it a
+// signature cannot mean anything, so it must not be treated as if it did.
+func TestVerify_WithNoTrustedKeysRefusesEverything(t *testing.T) {
+	s := newSigner(t)
+	entry := casemgmtEntry()
+	verifier := newVerifier(t)
+
+	if got := verifier.TrustedCount(); got != 0 {
+		t.Fatalf("test setup: TrustedCount = %d, want 0", got)
+	}
+	if err := verifier.Verify(entry, s.Sign(entry)); !errors.Is(err, ErrInvalidSignature) {
+		t.Errorf("Verify with an empty trusted set = %v, want ErrInvalidSignature", err)
+	}
+}
+
+func TestNewVerifier_RejectsAMalformedTrustAnchor(t *testing.T) {
+	good := newSigner(t).PublicKey()
+
+	tests := map[string][]ed25519.PublicKey{
+		"nil key":       {nil},
+		"truncated key": {good[:len(good)-1]},
+		"good then bad": {good, make(ed25519.PublicKey, 8)},
+	}
+
+	for name, keys := range tests {
+		t.Run(name, func(t *testing.T) {
+			if _, err := NewVerifier(keys); !errors.Is(err, ErrNoKey) {
+				t.Errorf("NewVerifier = %v, want ErrNoKey -- a malformed trust anchor must not be silently dropped", err)
+			}
+		})
+	}
+}
+
+// TestNewVerifier_CopiesTheTrustedSet: the caller's slice is configuration
+// that has already been reviewed. A Verifier that aliased it could have its
+// trust anchor changed after construction by anything holding the original.
+func TestNewVerifier_CopiesTheTrustedSet(t *testing.T) {
+	trusted := newSigner(t)
+	attacker := newSigner(t)
+
+	keys := []ed25519.PublicKey{trusted.PublicKey()}
+	v, err := NewVerifier(keys)
+	if err != nil {
+		t.Fatalf("NewVerifier: %v", err)
+	}
+
+	keys[0] = attacker.PublicKey()
+
+	entry := casemgmtEntry()
+	if err := v.Verify(entry, trusted.Sign(entry)); err != nil {
+		t.Errorf("the originally trusted key stopped verifying after the caller's slice was mutated: %v", err)
+	}
+	if err := v.Verify(entry, attacker.Sign(entry)); !errors.Is(err, ErrInvalidSignature) {
+		t.Errorf("mutating the caller's slice changed whom the Verifier trusts: %v", err)
+	}
+}
+
+func TestVerifier_Trusts(t *testing.T) {
+	known := newSigner(t)
+	unknown := newSigner(t)
+	v := newVerifier(t, known)
+
+	if !v.Trusts(known.PublicKey()) {
+		t.Error("Trusts(configured key) = false, want true")
+	}
+	if v.Trusts(unknown.PublicKey()) {
+		t.Error("Trusts(unconfigured key) = true, want false")
+	}
+	if v.Trusts(nil) {
+		t.Error("Trusts(nil) = true, want false")
 	}
 }
 
@@ -86,7 +321,7 @@ func TestCanonicalIgnoresTimestamps(t *testing.T) {
 	if !bytes.Equal(Canonical(entry), Canonical(touched)) {
 		t.Error("canonical bytes changed when only CreatedAt/UpdatedAt moved; timestamps must be excluded")
 	}
-	if err := Verify(touched, sig); err != nil {
+	if err := newVerifier(t, s).Verify(touched, sig); err != nil {
 		t.Errorf("Verify after timestamp bump = %v, want nil", err)
 	}
 }
@@ -235,7 +470,7 @@ func TestSignThenVerify_Succeeds(t *testing.T) {
 	if !sig.PublicKey.Equal(s.PublicKey()) {
 		t.Error("signature carries a public key that is not the signer's")
 	}
-	if err := Verify(entry, sig); err != nil {
+	if err := newVerifier(t, s).Verify(entry, sig); err != nil {
 		t.Errorf("Verify = %v, want nil", err)
 	}
 }
@@ -277,7 +512,7 @@ func TestVerify_DetectsTampering(t *testing.T) {
 			s := newSigner(t)
 			sig := s.Sign(entry)
 
-			err := Verify(tt.tamper(entry), sig)
+			err := newVerifier(t, s).Verify(tt.tamper(entry), sig)
 			if !errors.Is(err, ErrInvalidSignature) {
 				t.Errorf("Verify(tampered) = %v, want ErrInvalidSignature", err)
 			}
@@ -285,19 +520,27 @@ func TestVerify_DetectsTampering(t *testing.T) {
 	}
 }
 
+// TestVerify_RejectsSignatureFromAnotherKey covers the mismatch inside one
+// signature row: the bytes were made by key A, the row claims key B. Both
+// keys are trusted here, so what is being tested is Ed25519 itself and not
+// the trust anchor -- the row must not be accepted just because the key it
+// names happens to be in trusted_keys.
 func TestVerify_RejectsSignatureFromAnotherKey(t *testing.T) {
 	entry := casemgmtEntry()
 	keyA := newSigner(t)
 	keyB := newSigner(t)
+	verifier := newVerifier(t, keyA, keyB)
 
 	sig := keyA.Sign(entry)
 
-	// The entry is untouched; only the public key claimed alongside the
-	// signature is swapped for another operator's. Ed25519 must reject it.
-	forged := Signature{Bytes: sig.Bytes, PublicKey: keyB.PublicKey()}
+	// A's signature bytes over a *different* entry, presented under B's
+	// name. Neither trusted key verifies these bytes over this entry.
+	other := casemgmtEntry()
+	other.Command = "/usr/bin/podman"
+	forged := Signature{Bytes: keyA.Sign(other).Bytes, PublicKey: keyB.PublicKey()}
 
-	if err := Verify(entry, forged); !errors.Is(err, ErrInvalidSignature) {
-		t.Errorf("Verify(key A signature as key B) = %v, want ErrInvalidSignature", err)
+	if err := verifier.Verify(entry, forged); !errors.Is(err, ErrInvalidSignature) {
+		t.Errorf("Verify(signature over another entry, claimed as key B) = %v, want ErrInvalidSignature", err)
 	}
 	// And key B's own signature over the same entry must differ from A's,
 	// so the two are not silently interchangeable.
@@ -319,9 +562,10 @@ func TestVerify_RejectsMalformedSignature(t *testing.T) {
 		"truncated pubkey": {Bytes: valid.Bytes, PublicKey: valid.PublicKey[:len(valid.PublicKey)-1]},
 	}
 
+	verifier := newVerifier(t, s)
 	for name, sig := range tests {
 		t.Run(name, func(t *testing.T) {
-			if err := Verify(entry, sig); !errors.Is(err, ErrInvalidSignature) {
+			if err := verifier.Verify(entry, sig); !errors.Is(err, ErrInvalidSignature) {
 				t.Errorf("Verify = %v, want ErrInvalidSignature", err)
 			}
 		})
@@ -377,7 +621,7 @@ func TestLoadKey_RoundTripsAWrittenKey(t *testing.T) {
 		t.Fatalf("NewSigner: %v", err)
 	}
 	entry := casemgmtEntry()
-	if err := Verify(entry, s.Sign(entry)); err != nil {
+	if err := newVerifier(t, s).Verify(entry, s.Sign(entry)); err != nil {
 		t.Errorf("Verify with loaded key = %v, want nil", err)
 	}
 }

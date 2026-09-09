@@ -23,6 +23,7 @@ import (
 	quarantinesqlite "github.com/bunnyiesart/Gatte/internal/quarantine/sqlite"
 	"github.com/bunnyiesart/Gatte/internal/registry"
 	registrysqlite "github.com/bunnyiesart/Gatte/internal/registry/sqlite"
+	"github.com/bunnyiesart/Gatte/internal/signer"
 	signersqlite "github.com/bunnyiesart/Gatte/internal/signer/sqlite"
 	"github.com/bunnyiesart/Gatte/internal/vault/sopsage"
 )
@@ -196,6 +197,20 @@ func buildServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) (
 		return fail(err)
 	}
 
+	// The trust anchor. Config.Validate has already decoded these once and
+	// refused a malformed entry, so a failure here is a wiring bug rather
+	// than an operator's typo -- but it is still reported instead of
+	// dropped, because the alternative is a gateway that starts with an
+	// emptier trusted set than the file says.
+	trusted, err := cfg.Signer.TrustedPublicKeys()
+	if err != nil {
+		return fail(fmt.Errorf("signer: %w", err))
+	}
+	sigVerifier, err := signer.NewVerifier(trusted)
+	if err != nil {
+		return fail(fmt.Errorf("signer: %w", err))
+	}
+
 	gw, err := gateway.New(gateway.Config{
 		Registry:   reg,
 		Vault:      credentials,
@@ -203,10 +218,13 @@ func buildServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) (
 		Audit:      aud,
 		Policy:     policy,
 		Dialer:     gwstdio.New(gwstdio.WithClientInfo("mcp-gateway", buildVersion)),
-		// Wiring these two is ISSUE-18, and they are the reason
-		// gateway.verifyEntry exists: without a Store the gateway checks
-		// no entry's integrity at all and says so once per Connect.
+		// Wiring these is ISSUE-18 plus ADR-0010, and they are the reason
+		// gateway.verifyEntry exists: without a Store the gateway checks no
+		// entry's integrity at all, and without a Verifier it would check
+		// each signature against the key that arrived with it, which checks
+		// nothing.
 		Signatures:    sigs,
+		Verifier:      sigVerifier,
 		RequireSigned: cfg.Signer.SignaturesRequired(),
 		Logger:        logger,
 	})
@@ -354,6 +372,12 @@ type startupSummary struct {
 	// because it is ADR-0006's declared debt: its state should be visible
 	// in the log rather than only in a file.
 	RequireSigned bool
+	// TrustedKeys is how many public keys signatures are checked against
+	// (ADR-0010). Reported alongside RequireSigned because the two only
+	// mean anything together: "signatures required" says nothing until you
+	// know required *by whom*, and a list that shrank to one during a
+	// rotation is worth seeing before the last key is retired.
+	TrustedKeys int
 }
 
 // newStartupSummary gathers the counts. Every read here is best-effort:
@@ -375,6 +399,7 @@ func newStartupSummary(
 		ToolsDiscovered:     -1,
 		ToolsServable:       -1,
 		RequireSigned:       cfg.Signer.SignaturesRequired(),
+		TrustedKeys:         len(cfg.Signer.TrustedKeys),
 	}
 
 	if entries, err := reg.List(ctx); err == nil {
@@ -405,6 +430,7 @@ func (s startupSummary) log(logger *slog.Logger) {
 		slog.Int("tools_discovered", s.ToolsDiscovered),
 		slog.Int("tools_servable", s.ToolsServable),
 		slog.Bool("require_signed", s.RequireSigned),
+		slog.Int("trusted_keys", s.TrustedKeys),
 	)
 
 	if len(s.UpstreamsFailed) > 0 {
@@ -419,9 +445,11 @@ func (s startupSummary) log(logger *slog.Logger) {
 			slog.String("listen", s.Addr))
 	}
 	if s.RequireSigned {
-		logger.Info("mcp-gateway: require_signed=true -- a registry entry without a valid signature is refused")
+		logger.Info("mcp-gateway: require_signed=true -- a registry entry without a valid signature is refused",
+			slog.Int("trusted_keys", s.TrustedKeys))
 	} else {
-		logger.Warn("mcp-gateway: require_signed=false -- a registry entry with NO signature is accepted and served (ADR-0006 declared debt); an INVALID signature is always refused regardless")
+		logger.Warn("mcp-gateway: require_signed=false -- a registry entry with NO signature is accepted and served (ADR-0006 declared debt); an INVALID signature is always refused regardless",
+			slog.Int("trusted_keys", s.TrustedKeys))
 	}
 	if s.ToolsDiscovered > 0 && s.ToolsServable == 0 {
 		logger.Warn("mcp-gateway: no discovered tool is approved in Tool Quarantine, so every analyst will see an empty tool list until an operator approves one",

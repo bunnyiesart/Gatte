@@ -102,7 +102,7 @@ func runUpstreamList(e *opEnv, asJSON bool) int {
 	// the gateway will trust an entry.
 	states := make([]signatureState, len(entries))
 	for i, entry := range entries {
-		state, err := entrySignatureState(e.ctx(), e.signatures(), entry)
+		state, err := entrySignatureState(e, entry)
 		if err != nil {
 			fmt.Fprintf(e.stderr, "signatures: %v\n", err)
 			return exitCannotRun
@@ -180,11 +180,19 @@ func runUpstreamList(e *opEnv, asJSON bool) int {
 	}
 	if len(invalid) > 0 {
 		// An absent signature is the normal state of a new entry; a
-		// signature that does not verify is positive evidence that the
-		// entry changed after it was signed (ADR-0006 item 4). The two
-		// must not read alike in a table an operator skims.
-		fmt.Fprintf(e.stdout, "\nWARNING: %d %s a stored signature that does NOT match its current\ndefinition: %s\nThat is evidence of tampering, not a stale signature -- the gateway refuses\nto serve such an entry. Find out what changed before re-signing it.\n",
-			len(invalid), opPlural(len(invalid), "entry has", "entries have"),
+		// signature the gateway will not accept is positive evidence that
+		// something is wrong (ADR-0006 item 4). The two must not read alike
+		// in a table an operator skims.
+		//
+		// Since ADR-0010 there are two ways to land here, and they call for
+		// completely different actions, so the message names both rather
+		// than asserting the one it cannot distinguish from the outside.
+		// Blaming "the entry changed" when the real cause is a key missing
+		// from trusted_keys sends the operator hunting for a tampering that
+		// did not happen -- and, worse, teaches them that this warning is
+		// usually noise.
+		fmt.Fprintf(e.stdout, "\nWARNING: the gateway will NOT serve %d %s a stored signature it does\nnot accept: %s\nEither the entry changed after it was signed, or it was signed by a key that\nis not in signer.trusted_keys. Neither has a benign reading on its own:\nfind out which it is -- and what changed, or whose key that is -- before\nre-signing.\n",
+			len(invalid), opPlural(len(invalid), "entry with", "entries with"),
 			strings.Join(invalid, ", "))
 	}
 	return exitOK

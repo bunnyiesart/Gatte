@@ -1,6 +1,7 @@
 package config
 
 import (
+	"crypto/ed25519"
 	"errors"
 	"os"
 	"path/filepath"
@@ -14,6 +15,12 @@ import (
 // -----------------------------------------------------------------------
 // Fixtures
 // -----------------------------------------------------------------------
+
+// testTrustedKey is the base64 of a real (throwaway) Ed25519 public key, in
+// the form signer.trusted_keys takes. A public key is not a secret, so a
+// literal here breaks no rule of this package -- but it is a key nobody
+// holds the private half of, so nothing can be signed for it either.
+const testTrustedKey = "YBVP3wMTzQlOQqvDUZ31FVpYqX9Yenqw5fPVYLlQ9HE="
 
 // completeConfig is a file that sets every field explicitly, including the
 // ones that have defaults. Tests that want to exercise a specific failure
@@ -36,6 +43,7 @@ age_key_file = "/usr/local/etc/mcp-gateway/age.key"
 [signer]
 key_file       = "/usr/local/etc/mcp-gateway/signing.key"
 require_signed = true
+trusted_keys   = ["YBVP3wMTzQlOQqvDUZ31FVpYqX9Yenqw5fPVYLlQ9HE=", "95hrvkq5Lv2DH0yrq4V/4YgBs/0B/InLgZzpBF0+QxU="]
 
 [[role]]
 name  = "n1-triage"
@@ -53,6 +61,12 @@ tools = ["casemgmt.list_cases", "docsearch.search", "threatintel.virustotal"]
 // minimalConfig sets only what is required, so the defaults are what fills
 // in the rest. Deliberately does NOT set listen, groups_claim or
 // authorization_servers.
+//
+// signer.trusted_keys is here because it *is* required: require_signed
+// defaults to true, and ADR-0010 makes requiring signatures with no key to
+// check them against a startup error. signer.key_file stays out -- the
+// serving process verifies and never signs, so the public half is required
+// and the private half is not, which is the split this fixture should show.
 const minimalConfig = `
 database = "/var/db/mcp-gateway/mcp-gateway.db"
 
@@ -63,6 +77,9 @@ audience = "https://gw.soc.internal/mcp"
 [vault]
 secrets_file = "/usr/local/etc/mcp-gateway/secrets.enc.json"
 age_key_file = "/usr/local/etc/mcp-gateway/age.key"
+
+[signer]
+trusted_keys = ["YBVP3wMTzQlOQqvDUZ31FVpYqX9Yenqw5fPVYLlQ9HE="]
 `
 
 // writeConfig writes contents to a temp file and returns its path.
@@ -343,6 +360,102 @@ func TestLoadRequiresEachField(t *testing.T) {
 	}
 }
 
+// TestRequireSignedWithoutTrustedKeysIsRefused is ADR-0010 item 3.
+//
+// Requiring a valid signature while listing no key to verify against asks
+// for a guarantee that cannot be produced. Left to run, it is not even a
+// safe failure: it is a fleet-wide outage discovered by whoever is on call,
+// not by the operator who just edited the file. Failing at startup puts it
+// in front of the person who caused it, which is the pattern ADR-0009
+// established.
+//
+// require_signed defaults to true, so this is also the breaking change
+// ADR-0010 accepts on purpose: every existing configuration that enforces
+// signing needs one edit. The gateway has never run outside test, so there
+// is no deployment to migrate.
+func TestRequireSignedWithoutTrustedKeysIsRefused(t *testing.T) {
+	t.Run("default require_signed, no trusted_keys", func(t *testing.T) {
+		// minimalConfig carries trusted_keys precisely because this rule
+		// exists; taking it away is what puts the file back in the state
+		// every pre-ADR-0010 configuration is in today.
+		err := loadErr(t, withoutLine(t, minimalConfig, "trusted_keys"))
+
+		if !errors.Is(err, ErrInvalid) {
+			t.Fatalf("error does not wrap ErrInvalid: %v", err)
+		}
+		for _, want := range []string{"require_signed", "trusted_keys"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("error does not name %q, so it does not say which two settings contradict each other:\n%v", want, err)
+			}
+		}
+		if !strings.Contains(err.Error(), "mcp-gateway sign") {
+			t.Errorf("error does not tell the operator how to get a key to paste; a control that is annoying to enable stays disabled:\n%v", err)
+		}
+	})
+
+	t.Run("explicit require_signed = false is allowed with no trusted_keys", func(t *testing.T) {
+		contents := withoutLine(t, minimalConfig, "trusted_keys")
+		contents += "require_signed = false\n"
+
+		c := mustLoad(t, contents)
+		if c.Signer.SignaturesRequired() {
+			t.Error("SignaturesRequired() = true after an explicit false")
+		}
+		if len(c.Signer.TrustedKeys) != 0 {
+			t.Errorf("TrustedKeys = %v, want empty", c.Signer.TrustedKeys)
+		}
+	})
+}
+
+// TestTrustedKeysMustDecodeToAnEd25519PublicKey covers the parse half. The
+// values are 44 characters that differ from each other in no way a human
+// eye picks up, so every message here has to name the offending entry --
+// otherwise the operator is left diffing the list by hand.
+func TestTrustedKeysMustDecodeToAnEd25519PublicKey(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		key  string
+	}{
+		{"not base64", "this is not base64!!"},
+		{"base64 of too few bytes", "YWJj"},
+		{"base64 of too many bytes", "YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXphYmNkZWZnaGlqa2xtbm9wcXJzdHV2d3h5eg=="},
+		{"empty", ""},
+		{"a PEM block rather than the raw key", "-----BEGIN PUBLIC KEY-----"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			contents := strings.Replace(minimalConfig,
+				`trusted_keys = ["`+testTrustedKey+`"]`,
+				`trusted_keys = ["`+testTrustedKey+`", "`+tc.key+`"]`, 1)
+
+			err := loadErr(t, contents)
+			if !errors.Is(err, ErrInvalid) {
+				t.Fatalf("error does not wrap ErrInvalid: %v", err)
+			}
+			// Index 1, not 0: the good key must not be the one blamed.
+			if !strings.Contains(err.Error(), "signer.trusted_keys[1]") {
+				t.Errorf("error does not name which entry is bad:\n%v", err)
+			}
+		})
+	}
+}
+
+func TestTrustedPublicKeysDecodesEveryKey(t *testing.T) {
+	c := mustLoad(t, completeConfig)
+
+	keys, err := c.Signer.TrustedPublicKeys()
+	if err != nil {
+		t.Fatalf("TrustedPublicKeys: %v", err)
+	}
+	if len(keys) != len(c.Signer.TrustedKeys) {
+		t.Fatalf("decoded %d keys, want %d -- a dropped key is a key the gateway silently stops trusting", len(keys), len(c.Signer.TrustedKeys))
+	}
+	for i, k := range keys {
+		if len(k) != ed25519.PublicKeySize {
+			t.Errorf("key %d is %d bytes, want %d", i, len(k), ed25519.PublicKeySize)
+		}
+	}
+}
+
 // TestLoadReportsEveryProblemAtOnce is the reason Validate uses
 // errors.Join rather than returning on the first problem. An operator who
 // fixes configuration one error per restart, on a jail they have to ssh
@@ -557,7 +670,8 @@ func TestToAccessPolicyPropagatesNewPolicyErrors(t *testing.T) {
 			SecretsFile: "/usr/local/etc/mcp-gateway/secrets.enc.json",
 			AgeKeyFile:  "/usr/local/etc/mcp-gateway/age.key",
 		},
-		Roles: []Role{{Name: "n1-triage ", Tools: []string{"casemgmt.list_cases"}}},
+		Signer: Signer{TrustedKeys: []string{testTrustedKey}},
+		Roles:  []Role{{Name: "n1-triage ", Tools: []string{"casemgmt.list_cases"}}},
 	}
 	if err := c.Validate(); err != nil {
 		t.Fatalf("Validate rejected the fixture, so this test is no longer probing ToAccessPolicy: %v", err)

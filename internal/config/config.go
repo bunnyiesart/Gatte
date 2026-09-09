@@ -17,6 +17,8 @@
 package config
 
 import (
+	"crypto/ed25519"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"net/url"
@@ -87,13 +89,36 @@ type Vault struct {
 }
 
 // Signer points at the Ed25519 key used to sign registry entries
-// (design/adr/0006).
+// (design/adr/0006), and holds the public keys the gateway will accept
+// signatures from (design/adr/0010).
 type Signer struct {
 	// KeyFile is the Ed25519 private key, PEM-wrapped PKCS#8, owner-only.
 	// Optional: without it the gateway can still *verify* signatures, it
 	// just cannot create them, which is the right split for a serving
 	// process that never signs.
 	KeyFile string `toml:"key_file"`
+
+	// TrustedKeys are the Ed25519 public keys whose signatures this gateway
+	// accepts on a registry entry: base64 (standard encoding, with padding)
+	// of the raw 32 bytes. A signature made by any other key is refused.
+	//
+	// This is the trust anchor, and it lives here rather than in the
+	// database for the reason ADR-0010 gives: an anchor stored beside the
+	// thing it authenticates is not an anchor. The entries and their
+	// signatures share one SQLite file, so "can rewrite the registry" and
+	// "can rewrite the signatures" are the same permission -- verifying an
+	// entry against a key read out of that same file proved exactly
+	// nothing, and was demonstrated exploitable. A public key is not a
+	// secret, which is precisely why it can sit in a versioned, reviewed
+	// file; what it needs is to be out of the attacker's write radius.
+	//
+	// A list rather than a single value, so a key can be rotated without a
+	// window in which nothing verifies: add the new key, re-sign, remove
+	// the old one.
+	//
+	// Required whenever RequireSigned is in effect -- see Validate.
+	TrustedKeys []string `toml:"trusted_keys"`
+
 	// RequireSigned makes an entry without a valid signature unusable.
 	//
 	// **Defaults to true as of 09 Sep 2026.** It defaulted to false while
@@ -148,6 +173,45 @@ func (s Signer) SignaturesRequired() bool {
 	return *s.RequireSigned
 }
 
+// TrustedPublicKeys decodes TrustedKeys into the form signer.NewVerifier
+// wants, returning an error naming the offending entry -- both its position
+// and the text as written -- if any of them is not base64 of exactly
+// ed25519.PublicKeySize bytes.
+//
+// Naming the entry matters more here than in most validation messages: the
+// values are 44 characters of base64 that differ from each other in no way
+// a human eye picks up, so "one of your trusted keys is wrong" would leave
+// an operator diffing the list by hand. Echoing the text is safe -- a
+// public key is not a secret, and one that fails to decode is not even a
+// public key.
+//
+// Validate calls this, so a Config that came out of Load has already been
+// through it and callers can treat a failure here as a wiring bug.
+func (s Signer) TrustedPublicKeys() ([]ed25519.PublicKey, error) {
+	keys := make([]ed25519.PublicKey, 0, len(s.TrustedKeys))
+	for i, raw := range s.TrustedKeys {
+		text := strings.TrimSpace(raw)
+		if text == "" {
+			return nil, fmt.Errorf("signer.trusted_keys[%d]: empty", i)
+		}
+		decoded, err := base64.StdEncoding.DecodeString(text)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"signer.trusted_keys[%d] (%q): not valid base64 -- expected the standard encoding of the raw 32-byte ed25519 public key, which `mcp-gateway sign` prints ready to paste",
+				i, text,
+			)
+		}
+		if len(decoded) != ed25519.PublicKeySize {
+			return nil, fmt.Errorf(
+				"signer.trusted_keys[%d] (%q): decodes to %d bytes, want %d -- this is the raw public key, not a PEM block, not a fingerprint, and not the private key",
+				i, text, len(decoded), ed25519.PublicKeySize,
+			)
+		}
+		keys = append(keys, ed25519.PublicKey(decoded))
+	}
+	return keys, nil
+}
+
 // Validate reports whether c can be used, applying defaults as it goes.
 //
 // It is deliberately strict at startup. A configuration error discovered
@@ -189,6 +253,29 @@ func (c *Config) Validate() error {
 	}
 	if strings.TrimSpace(c.Vault.AgeKeyFile) == "" {
 		errs = append(errs, errors.New("vault.age_key_file: required"))
+	}
+
+	if _, err := c.Signer.TrustedPublicKeys(); err != nil {
+		errs = append(errs, err)
+	}
+	if c.Signer.SignaturesRequired() && len(c.Signer.TrustedKeys) == 0 {
+		// Requiring a signature with nothing to verify it against is asking
+		// for a guarantee that cannot be produced: every entry would be
+		// refused, and the operator would be debugging a fleet-wide outage
+		// rather than reading this line.
+		//
+		// This is the breaking change ADR-0010 accepts on purpose.
+		// require_signed has defaulted to true since Phase 6, so every
+		// existing configuration that enforces signing needs one edit. The
+		// gateway has never run outside test, so there is no deployment to
+		// migrate, and the alternative -- defaulting the trust anchor to
+		// something -- is not a thing a trust anchor can do.
+		errs = append(errs, errors.New(
+			"signer.require_signed is true but signer.trusted_keys is empty: "+
+				"signatures are verified against the keys listed there and nothing else, so with an empty list every entry would be refused. "+
+				"Add the public half of the signing key -- `mcp-gateway sign NAME` prints the line to paste -- "+
+				"or set require_signed = false to accept unsigned entries (an INVALID signature is still refused either way)",
+		))
 	}
 
 	seen := map[string]bool{}

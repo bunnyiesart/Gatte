@@ -468,7 +468,7 @@ func TestConnect_CollidingToolNamesRouteToTheirOwnBackend(t *testing.T) {
 	h.dialer.upstream("logsearch").result = Result{Content: json.RawMessage(`"from-logsearch"`)}
 	h.dialer.upstream("docsearch").result = Result{Content: json.RawMessage(`"from-docsearch"`)}
 
-	if got, want := h.listNames(analyst), []string{"logsearch.search", "docsearch.search"}; !slices.Equal(got, want) {
+	if got, want := h.listNames(analyst), []string{"docsearch.search", "logsearch.search"}; !slices.Equal(got, want) {
 		t.Fatalf("ListTools = %v, want %v", got, want)
 	}
 
@@ -702,8 +702,8 @@ func TestDispatch_UnknownToolIsAuditedAndOpaque(t *testing.T) {
 	}
 	slices.Sort(targets)
 	want := []string{
-		"ghost.tool -> ghost",
 		"casemgmt.nope -> casemgmt",
+		"ghost.tool -> ghost",
 		"notnamespaced -> " + unknownUpstream,
 	}
 	if !slices.Equal(targets, want) {

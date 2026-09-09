@@ -1,0 +1,182 @@
+---
+# Authelia configuration for the `authelia` jail (10.17.89.20), acting as an
+# OpenID Connect 1.0 Provider for mcp-gateway.
+#
+# Installed verbatim by deploy/vm/authelia-provision.sh at
+# /usr/local/etc/authelia.yml -- the path the packaged rc.d script passes to
+# `authelia --config`. Do not edit it in the jail; edit it here and re-run
+# deploy/authelia-jail.sh, or the next run overwrites your change.
+#
+# NO SECRET APPEARS IN THIS FILE. Every one is pulled at load time by the
+# `secret` template function out of /usr/local/etc/authelia/secrets/, which
+# the provisioning script generates in the jail and never copies back. That
+# function only works because the packaged rc.d script already starts
+# authelia with `--config.experimental.filters template`; drop that flag and
+# the daemon reads the template actions below as literal text and fails
+# validation. (The whole file is a Go template, so a comment cannot contain
+# a double-brace action either -- that is a parse error, not a comment.)
+#
+# This is a lab identity provider. See deploy/authelia-jail.md.
+
+theme: 'light'
+
+server:
+  # Loopback only. nginx in the same jail terminates TLS on :443 and
+  # proxies here, so the OIDC endpoints are never reachable in the clear
+  # even from inside the jail network.
+  address: 'tcp://127.0.0.1:9091'
+
+log:
+  level: 'debug'
+  format: 'text'
+  file_path: '/var/log/authelia/authelia.log'
+  keep_stdout: true
+
+ntp:
+  # The jail has no route to an NTP server, so Authelia's startup clock
+  # check fails and the daemon exits fatally before it ever listens. This
+  # disables the CHECK, not the dependency: JWT `iat`/`exp` are still
+  # judged against the VM's clock, and a VM that has been suspended can
+  # therefore mint tokens a verifier considers not-yet-valid or expired.
+  # If verification starts failing on timing, check the clock first.
+  disable_startup_check: true
+
+totp:
+  disable: true
+
+webauthn:
+  disable: true
+
+authentication_backend:
+  password_reset:
+    disable: true
+  file:
+    path: '/usr/local/etc/authelia/users_database.yml'
+    watch: false
+    search:
+      email: false
+      case_insensitive: false
+    password:
+      algorithm: 'argon2'
+
+access_control:
+  # One factor is the whole point here: the gateway cares about the group
+  # claim, not about how hard the human worked to prove they are the human.
+  # A second factor in a scripted lab is a second thing to fake.
+  default_policy: 'one_factor'
+
+session:
+  name: 'authelia_session'
+  secret: {{ secret "/usr/local/etc/authelia/secrets/session.secret" }}
+  expiration: '1 hour'
+  inactivity: '30 minutes'
+  cookies:
+    - domain: 'soc.internal'
+      authelia_url: 'https://id.soc.internal'
+      # No default_redirection_url: Authelia rejects a value equal to
+      # authelia_url, and there is no second host in this lab to send a
+      # bare login at.
+
+regulation:
+  # Disabled on purpose: deploy/authelia-verify.sh logs the same test user
+  # in on every run, and a lockout would make a working provider look
+  # broken. Do not carry this setting anywhere real.
+  max_retries: 0
+
+storage:
+  encryption_key: {{ secret "/usr/local/etc/authelia/secrets/storage.encryption.key" }}
+  local:
+    path: '/var/db/authelia/db.sqlite3'
+
+notifier:
+  disable_startup_check: true
+  filesystem:
+    filename: '/var/log/authelia/notification.txt'
+
+identity_validation:
+  reset_password:
+    jwt_secret: {{ secret "/usr/local/etc/authelia/secrets/identity_validation.jwt.secret" }}
+
+identity_providers:
+  oidc:
+    hmac_secret: {{ secret "/usr/local/etc/authelia/secrets/oidc.hmac.secret" }}
+
+    # The issuer signing key. RS256 because that is what the gateway's JWKS
+    # verification path expects, and because Authelia requires at least one
+    # RS256 JWK regardless.
+    jwks:
+      - key_id: 'main'
+        algorithm: 'RS256'
+        use: 'sig'
+        key: {{ secret "/usr/local/etc/authelia/secrets/oidc.jwks.main.pem" | mindent 10 "|" | msquote }}
+
+    enable_client_debug_messages: false
+
+    claims_policies:
+      # Authelia does not put `groups` in an access token unless told to.
+      # The default JWT access token carries the registered RFC 9068 claims
+      # and nothing about the subject's group membership, so a gateway that
+      # maps groups to roles would authenticate everyone and authorise
+      # nobody. This policy is what puts the claim in the token.
+      mcp_gateway:
+        access_token_audience_mode: 'specification'
+        id_token:
+          - 'groups'
+          - 'email'
+          - 'preferred_username'
+        access_token:
+          - 'groups'
+          - 'email'
+          - 'preferred_username'
+
+    clients:
+      - client_id: 'mcp-gateway'
+        client_name: 'MCP Gateway'
+        client_secret: {{ secret "/usr/local/etc/authelia/secrets/oidc.client.mcp-gateway.digest" }}
+        public: false
+        authorization_policy: 'one_factor'
+        claims_policy: 'mcp_gateway'
+
+        # RFC 8707 resource indicator. The gateway is a Resource Server and
+        # rejects a token whose `aud` is not exactly this, so this string
+        # and the gateway's configured audience have to stay identical --
+        # trailing slash included.
+        audience:
+          - 'https://mcp.soc.internal/'
+
+        scopes:
+          - 'openid'
+          - 'profile'
+          - 'email'
+          - 'groups'
+          - 'offline_access'
+
+        redirect_uris:
+          - 'https://mcp.soc.internal/oauth2/callback'
+
+        grant_types:
+          - 'authorization_code'
+          - 'refresh_token'
+
+        response_types:
+          - 'code'
+
+        response_modes:
+          - 'query'
+
+        # THE SETTING THAT MATTERS. Authelia's default here is 'none',
+        # which means an opaque access token -- a random string the gateway
+        # cannot verify against the JWKS at all, only introspect. Setting an
+        # algorithm is what turns the access token into a signed JWT.
+        access_token_signed_response_alg: 'RS256'
+        id_token_signed_response_alg: 'RS256'
+
+        token_endpoint_auth_method: 'client_secret_post'
+
+        # 'implicit' skips the consent screen. That is a lab decision made
+        # so a shell script can complete the authorization code flow without
+        # driving a browser; it is not a defensible setting for a client a
+        # real user consents to.
+        consent_mode: 'implicit'
+
+        require_pkce: false

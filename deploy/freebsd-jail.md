@@ -38,6 +38,34 @@ jm ssh -- bastille create mcp-gateway-test 15.1-RELEASE 10.17.89.10
 Re-creating it after a `bastille destroy mcp-gateway-test` is the same
 two commands (bootstrap is a no-op if the release is already cached).
 
+### Superseded, 09 Sep 2026: it is a VNET jail at 10.17.90.10 now
+
+**The two rows above describe how the jail was created, not what it is.**
+`bastille create ... 10.17.89.10` makes a *classic* jail, which has no
+loopback of its own: a process binding `127.0.0.1` inside one has that bind
+rewritten to `10.17.89.10`, and the socket is then reachable from the VM
+host, from the other jails, and across the VPN in cleartext. `mcp-gateway`
+refuses any non-loopback bind (ADR-0011 item 1) -- and in a classic jail that
+refusal passes while meaning nothing, which is the defect ADR-0011's
+CORREÇÃO block records.
+
+So the jail was converted to **VNET**: its own network stack, its own
+`lo0`, its own `127.0.0.1`, on `10.17.90.10/24` behind the `socbr0` bridge.
+`deploy/gateway-vnet.md` is the current description of its networking and
+supersedes the IP and Type rows here; the type is still a thin jail, and
+everything below in *this* file about deploying the binary, `sops`, and
+rotating credentials is unaffected.
+
+```bash
+./deploy/gateway-vnet.sh           # convert (idempotent)
+./deploy/gateway-vnet-verify.sh    # the acceptance test
+./deploy/gateway-vnet-rollback.sh  # back to a classic jail at 10.17.89.10
+```
+
+The two-command recreate above still works and still produces a classic
+jail; run `./deploy/gateway-vnet.sh` after it, or the loopback property is
+gone again with nothing to say so.
+
 ## Deploying the binary
 
 There is no host directory sharing between the Mac and the VM
@@ -138,7 +166,12 @@ What this script does *not* set up, and what a real deployment needs:
   - **the OIDC issuer reachable from inside the jail.** Discovery happens
     at startup, so an unreachable issuer stops the process from coming up
     at all -- not just from authenticating. See "Rotating credentials"
-    below and the operator note in ADR-0008.
+    below and the operator note in ADR-0008. There is one to point at now:
+    `deploy/authelia-jail.md` builds an Authelia provider in a second jail
+    at `https://id.soc.internal` (10.17.89.20), issuing JWT access tokens
+    with `aud` = `https://mcp.soc.internal/` and a `groups` claim. It does
+    *not* add the hosts entry to this jail -- that is a deliberate boundary,
+    and `id.soc.internal` will not resolve here until someone adds it.
   - **the public keys the gateway will trust for signatures.** ADR-0010
     (09 Sep 2026) moved the trust anchor out of the signature line and into
     the configuration file, and made `require_signed` -- on by default

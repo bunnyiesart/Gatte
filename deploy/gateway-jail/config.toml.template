@@ -10,7 +10,12 @@
 
 # Loopback, and it cannot be anything else: the gateway refuses a
 # non-loopback bind (ADR-0011 item 1). nginx in this same jail terminates
-# TLS on 10.17.89.10:443 and proxies here.
+# TLS on 10.17.90.10:443 and proxies here.
+#
+# This is a real 127.0.0.1 only because the jail is now a VNET jail: in the
+# classic jail it used to be, the kernel rewrote this bind to the jail's
+# routable address and the socket was reachable across the VPN in cleartext
+# with the check reporting success. See deploy/gateway-vnet.md.
 listen = "127.0.0.1:8080"
 
 database = "/var/db/mcp-gateway/mcp-gateway.db"

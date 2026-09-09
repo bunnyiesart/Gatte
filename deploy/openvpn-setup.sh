@@ -116,8 +116,9 @@ Connect (needs root -- it creates a utun device and installs a route):
 
 Then, in another terminal:
 
-    ping -c 3 10.17.89.10
-    nc -vz 10.17.89.10 443
+    ping -c 3 10.17.89.20      # authelia, classic jail
+    ping -c 3 10.17.90.10      # mcp-gateway, VNET jail
+    nc -vz 10.17.90.10 443
 
 Undo everything: deploy/openvpn-teardown.sh
 EOF

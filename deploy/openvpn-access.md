@@ -29,6 +29,36 @@ and the hole is useless without a client certificate.
 Not a security control for anything the gateway does. `.hardening.toml` and
 the ADRs under `design/` are unaffected. This is lab access plumbing.
 
+> **Correction, 09 Sep 2026: there are two jail subnets now, and the
+> gateway moved.**
+>
+> `mcp-gateway-test` was converted to a **VNET** jail and is at
+> **`10.17.90.10`**, on a real bridge (`socbr0`, host side `10.17.90.1/24`),
+> not on the `bastille0` loopback clone. A VNET jail needs layer 2 to attach
+> an epair to, and `bastille0` has none; it could not stay on
+> `10.17.89.0/24` because a jail whose own `/24` covers `10.17.89.20` would
+> treat Authelia as on-link and ARP for it on a bridge where nothing
+> answers. See `deploy/gateway-vnet.md`, "Subnet".
+>
+> Consequences for this document:
+>
+>   - The server now pushes **two** routes, `10.17.89.0/24` *and*
+>     `10.17.90.0/24`. `deploy/openvpn-vm-setup.sh` writes both. A client
+>     connected before this change has only the first and silently has no
+>     route to the gateway -- reconnect.
+>   - Everywhere below that says `10.17.89.10`, read `10.17.90.10`. The
+>     recorded command transcripts are left as they were run, because
+>     editing captured output to match a later reality is how a lab notebook
+>     stops being evidence. The diagram is the same: `mcp-gateway-test` has
+>     moved off `bastille0` onto `socbr0`.
+>   - `10.17.89.20 authelia` is unchanged, still a classic jail on
+>     `bastille0`.
+>
+> Untested at the time of writing: the client's view. No Mac client was
+> connected when the route was added, so "a VPN client reaches
+> `10.17.90.10`" is expected, not measured. Run the probes below after
+> reconnecting.
+
 ## Two CAs, on purpose
 
 There are two certificate authorities in this lab and they must not become one.

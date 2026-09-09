@@ -21,6 +21,12 @@ VPN_NET=10.8.0.0
 VPN_MASK=255.255.255.0
 JAIL_NET=10.17.89.0
 JAIL_MASK=255.255.255.0
+# The mcp-gateway jail is a VNET jail and cannot share the classic jails'
+# subnet -- 10.17.89.10/.20 exist as /32 host routes on the bastille0
+# loopback clone, and a bridge carrying the same /24 would make Authelia
+# look on-link to the jail. See deploy/gateway-vnet.md, "Subnet".
+VNET_JAIL_NET=10.17.90.0
+VNET_JAIL_MASK=255.255.255.0
 
 say() { echo "==> $*"; }
 
@@ -94,11 +100,17 @@ port 1194
 topology subnet
 server $VPN_NET $VPN_MASK
 
-# The whole point: hand the client a route into the jail subnet. Note there is
-# deliberately no redirect-gateway -- the Mac's normal internet traffic must
-# not come through here. This tunnel is the only route to 10.17.89.0/24 and
-# nothing else.
+# The whole point: hand the client a route into the jail subnets. Note there
+# is deliberately no redirect-gateway -- the Mac's normal internet traffic
+# must not come through here. This tunnel is the only route to these two
+# networks and nothing else.
+#
+# Two, not one: the classic jails (Authelia at 10.17.89.20) sit on the
+# bastille0 loopback clone, and the VNET mcp-gateway jail sits on a real
+# bridge that has to carry a different subnet. Dropping the second line does
+# not fail loudly -- the client simply has no route to the gateway.
 push "route $JAIL_NET $JAIL_MASK"
+push "route $VNET_JAIL_NET $VNET_JAIL_MASK"
 
 ca $PKI_DIR/ca.crt
 cert $PKI_DIR/issued/server.crt
@@ -194,5 +206,5 @@ fi
 
 say "openvpn is running"
 sockstat -4 -l | grep -E ':1194' || { echo "!! nothing listening on udp/1194" >&2; exit 1; }
-netstat -rn -f inet | grep -E '10\.8\.0|10\.17\.89' || true
+netstat -rn -f inet | grep -E '10\.8\.0|10\.17\.(89|90)' || true
 say "done"

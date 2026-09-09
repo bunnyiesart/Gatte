@@ -94,11 +94,47 @@ escuta o IP da jail em 443 com TLS; o gateway escuta `127.0.0.1:8080`.
 >    mas é convenção verificada em outro lugar — precisamente o que o item
 >    1 queria deixar de ser.
 >
-> Nenhuma das três foi aplicada: (1) e (2) exigem reconfigurar a jail, e o
-> comando foi barrado por falta de permissão. **Até que uma delas esteja no
-> ar e verificada, a propriedade que este ADR afirma não existe nesta
-> implantação.** Registrado assim, em vez de corrigido em silêncio, porque
-> um ADR que descreve a segurança que gostaríamos de ter é pior que nenhum.
+> **RESOLVIDO no mesmo dia — opção (1), jail VNET.** Escolha de bunnyiesart.
+> `mcp-gateway-test` virou jail VNET com pilha de rede própria, em
+> `10.17.90.10/24` atrás da bridge `socbr0`. O teste de aceitação é o bloco
+> de medição acima dando o resultado oposto, e dá:
+>
+> ```
+> $ bastille cmd mcp-gateway-test sockstat -4 -l | grep 18080
+> root  nc  13801  3  tcp4  127.0.0.1:18080  *:*      <- não mais reescrito
+>
+> controle: 10.17.90.10:18081 alcançável do host da VM  -> OK
+> 10.17.90.10:18080 do host da VM                       -> recusado
+> 127.0.0.1:18080 no host da VM                         -> silencioso
+> 10.17.90.10:18080 de dentro da jail authelia          -> recusado
+> ```
+>
+> O **controle** importa tanto quanto a negativa: sem ele, o teste passaria
+> igual numa jail com rede quebrada. Verificado por mim de forma
+> independente, não só pelo relato de quem implementou.
+>
+> **A sub-rede teve de mudar**, e a razão é a mesma coisa que causou o
+> defeito: `bastille0` é clone de loopback, os endereços das jails clássicas
+> são aliases `/32` nele, e não há camada 2 onde prender um epair. Uma jail
+> VNET em `10.17.89.10/24` trataria `10.17.89.20` como *on-link*, faria ARP
+> pela Authelia numa bridge onde ninguém responde, e a descoberta OIDC
+> falharia no arranque do gateway. Em `10.17.90.0/24` a Authelia fica
+> off-link, sai pela rota default, e o host encaminha — e é aqui que
+> `net.inet.ip.forwarding`, ligado antes por precaução, deixa de ser
+> decorativo.
+>
+> Três consequências, todas tratadas: `/etc/hosts` das jails, a rota
+> `10.17.90.0/24` empurrada pela VPN, e o SAN do certificado do nginx, que
+> precisa carregar `IP:10.17.90.10`.
+>
+> Sobrevive a `jm stop`/`jm start` sem passo manual, e o rollback foi
+> **executado**, não só escrito: reverte para jail clássica e o defeito
+> volta a ser mensurável, o que é a prova de que o rollback reverte a coisa
+> certa.
+>
+> **O que continua não verificado:** que um cliente na ponta da VPN alcança
+> `10.17.90.10` — a segunda rota está empurrada e o openvpn reiniciou
+> limpo, mas isso é esperado, não medido, até alguém conectar o túnel.
 
 Escolhido em vez de terminar TLS no próprio binário porque mantém material
 de certificado e renovação fora do processo que detém todas as credenciais

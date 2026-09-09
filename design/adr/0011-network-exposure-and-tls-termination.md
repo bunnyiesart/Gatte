@@ -50,6 +50,56 @@ jail do gateway, que é justamente o que o item 1 proíbe.
 Portanto: `nginx` e `mcp-gateway` moram na jail `mcp-gateway-test`. O nginx
 escuta o IP da jail em 443 com TLS; o gateway escuta `127.0.0.1:8080`.
 
+> **CORREÇÃO — 09 set 2026, no mesmo dia. A premissa acima é falsa.**
+>
+> "Cada jail tem seu próprio `127.0.0.1`" está **errado** para jail
+> clássica (não-VNET), que é o que este laboratório usa. Uma jail clássica
+> não tem loopback próprio: ela recebe um conjunto de endereços, e um
+> processo que faz bind em `127.0.0.1` tem esse bind **reescrito para o
+> endereço roteável da jail**.
+>
+> Medido, não deduzido. Dentro de `mcp-gateway-test`:
+>
+> ```
+> $ nc -l 127.0.0.1 18080 &
+> $ sockstat -4 -l | grep 18080
+> root  nc  32734  3  tcp4  10.17.89.10:18080  *:*
+> ```
+>
+> e de fora da jail, `nc -z 10.17.89.10 18080` **conecta**.
+>
+> A consequência é exatamente a classe de defeito que este ADR foi escrito
+> para fechar: `requireLoopbackBind` passa, o log diz `listen=127.0.0.1:8080`,
+> o operador acredita que o gateway só é alcançável pelo nginx — e o
+> gateway está escutando em texto claro no IP que o cliente da VPN alcança,
+> contornando o TLS inteiro. O mesmo vale para a Authelia, encontrada
+> escutando `10.17.89.20:9091` em HTTP simples com `address:
+> 'tcp://127.0.0.1:9091'` escrito na configuração dela.
+>
+> **O que continua valendo:** recusar bind não-loopback continua correto e
+> continua sendo a coisa certa a fazer no binário. O erro não é o controle,
+> é ter afirmado que ele **basta**. Numa jail clássica nenhum bind é
+> inalcançável, então nenhuma checagem de endereço dentro do processo pode
+> entregar esta propriedade — é uma restrição do ambiente, não do código.
+>
+> **O que precisa mudar na implantação**, em ordem de preferência:
+>
+> 1. **Jail VNET** para o gateway. Pilha de rede própria, `127.0.0.1` de
+>    verdade, e aí o item 1 entrega o que promete sem nada além.
+> 2. **Endereço de loopback dedicado** (`lo0|127.0.1.10`) somado aos
+>    endereços da jail, com o gateway fazendo bind nele. `127/8` não é
+>    roteado pela VPN, e `IsLoopback()` já aceita, então não exige mudança
+>    de código. Mais leve que VNET.
+> 3. **pf** bloqueando `10.17.89.10:8080` vindo de fora do host. Funciona,
+>    mas é convenção verificada em outro lugar — precisamente o que o item
+>    1 queria deixar de ser.
+>
+> Nenhuma das três foi aplicada: (1) e (2) exigem reconfigurar a jail, e o
+> comando foi barrado por falta de permissão. **Até que uma delas esteja no
+> ar e verificada, a propriedade que este ADR afirma não existe nesta
+> implantação.** Registrado assim, em vez de corrigido em silêncio, porque
+> um ADR que descreve a segurança que gostaríamos de ter é pior que nenhum.
+
 Escolhido em vez de terminar TLS no próprio binário porque mantém material
 de certificado e renovação fora do processo que detém todas as credenciais
 de backend — o mesmo raciocínio de isolamento que o `0006` usa para manter

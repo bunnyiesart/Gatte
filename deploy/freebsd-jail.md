@@ -87,15 +87,55 @@ jm stop                                        # stop the whole VM, if nothing e
 Proves the binary runs unmodified on real FreeBSD (not just cross-compiles
 cleanly) and that `modernc.org/sqlite` works without cgo on this target.
 
-**Still only that, as of 09 Sep 2026**, and for a reason worth stating:
-`cmd/mcp-gateway` is *still* the Phase 1 stub. Phases 2–5 built the
-Credential Vault, Signer, Quarantine, Access Control and the HTTP surface,
-and all of them are exercised end to end by `internal/e2e` -- but none of
-it is reachable from the binary this script deploys. Deploying to the jail
-today therefore still proves only what it proved in Phase 1.
+That was *all* it proved until 09 Sep 2026, because `cmd/mcp-gateway` was
+the Phase 1 stub -- everything built in Phases 2-5 was unreachable from the
+binary this script deploys. **Phase 6 changed that:** the composition root
+exists, so what lands in the jail is now the real program.
 
-Once the composition root exists, this doc needs revisiting for the things
-a real deployment adds: the age identity file and the Ed25519 signing key
-(both owner-only, per ADR-0005 and ADR-0006), `sops` on the jail's PATH,
-the OIDC issuer being reachable from inside the jail, and a published port
-(`bastille rdr`) for analysts to reach the endpoint.
+What this script still does *not* set up, and what a real deployment needs
+before `serve` will start:
+
+  - **the age identity** (ADR-0005) and **the Ed25519 signing key**
+    (ADR-0006), both owner-only. `serve` refuses to start on a signing key
+    the group can read, and prints the `chmod` to fix it -- that refusal
+    is the control working, not an obstacle to route around.
+  - **`sops` on the jail's PATH.** The vault shells out to it (ADR-0005).
+  - **the OIDC issuer reachable from inside the jail.** Discovery happens
+    at startup, so an unreachable issuer stops the process from coming up
+    at all -- not just from authenticating. See "Rotating credentials"
+    below and the operator note in ADR-0008.
+  - **a published port** (`bastille rdr`) for analysts to reach the
+    endpoint. Note that `listen` defaults to loopback on purpose.
+
+## Rotating credentials
+
+**Read this before rotating anything in anger.** Rotation is almost always
+a response to believing a credential is compromised, and the gap below is
+the difference between that belief being true and being false.
+
+### An upstream backend credential (the sops vault)
+
+Edit the encrypted file directly -- there is deliberately no
+`mcp-gateway rotate` subcommand, because it would give a binary that
+otherwise only *reads* the encrypted store a write path into it:
+
+    sops secrets.json
+
+**Then restart the gateway.** This is the part that is easy to miss and
+expensive to get wrong: credentials are resolved at *dial* time and passed
+into the upstream subprocess's environment, so an upstream that is already
+connected keeps using the old value indefinitely. Editing the vault
+changes what the *next* connect will use and nothing else.
+
+So until the gateway restarts, "I rotated the credential" means "the old
+credential is still in active use by every connected upstream." Nothing in
+the system currently warns about this -- making it warn, or making a
+reconnect possible without a full restart, is tracked as ISSUE-20.
+
+### The Ed25519 signing key (ADR-0006)
+
+Replace the key file, then **re-sign every registry entry** with
+`mcp-gateway sign NAME`. Entries signed with the old key will not verify
+against the new one, and with `require_signed` on (the default) they will
+not be served. `sign` tells you when it replaced a signature made by a
+different key -- if you did not just rotate, find out whose key that was.

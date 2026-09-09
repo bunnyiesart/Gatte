@@ -3,6 +3,16 @@
 // value, in memory, for injection into an upstream server's environment
 // at spawn time -- never persisted to disk, never logged.
 //
+// **Resolution happens at spawn, and that has a rotation consequence.**
+// The value a Provider returns is copied into the upstream subprocess's
+// environment when that upstream is dialed, so it is fixed for the life
+// of the connection. Changing the underlying store afterwards affects
+// only the *next* dial: an already-connected upstream keeps the old value
+// until the gateway restarts. This matters because rotation usually means
+// someone believes the old credential is compromised, and nothing here
+// currently tells them it is still in use. See deploy/freebsd-jail.md
+// ("Rotating credentials") and ISSUE-20.
+//
 // Per the ports & adapters split this project follows
 // (docs/context/05-testabilidade-e-contratos.md), this package
 // contains no reference to sops, age, os/exec, or any other

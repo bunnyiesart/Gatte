@@ -273,8 +273,9 @@ func (c *Config) Validate() error {
 		errs = append(errs, errors.New(
 			"signer.require_signed is true but signer.trusted_keys is empty: "+
 				"signatures are verified against the keys listed there and nothing else, so with an empty list every entry would be refused. "+
-				"Add the public half of the signing key -- `mcp-gateway sign NAME` prints the line to paste -- "+
-				"or set require_signed = false to accept unsigned entries (an INVALID signature is still refused either way)",
+				"If you have no signing key yet: `mcp-gateway sign -generate-key -out PATH` creates one and prints both lines to paste "+
+				"(it reads no config, so it works before this file is valid). "+
+				"If you already have one: `mcp-gateway sign NAME` prints the trusted_keys line.",
 		))
 	}
 

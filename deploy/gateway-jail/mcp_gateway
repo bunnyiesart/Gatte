@@ -1,0 +1,62 @@
+#!/bin/sh
+#
+# rc.d script for mcp-gateway, to be installed at
+# /usr/local/etc/rc.d/mcp_gateway inside the gateway jail.
+#
+# PROVIDE: mcp_gateway
+# REQUIRE: NETWORKING DAEMON
+# KEYWORD: shutdown
+
+. /etc/rc.subr
+
+name="mcp_gateway"
+rcvar="mcp_gateway_enable"
+
+load_rc_config $name
+
+: ${mcp_gateway_enable:="NO"}
+: ${mcp_gateway_config:="/usr/local/etc/mcp-gateway/config.toml"}
+: ${mcp_gateway_user:="mcpgw"}
+: ${mcp_gateway_logfile:="/var/log/mcp-gateway.log"}
+
+pidfile="/var/run/${name}.pid"
+procname="/usr/local/bin/mcp-gateway"
+
+# daemon(8) rather than the bare binary: mcp-gateway logs to stderr and
+# stays in the foreground by design, so something has to background it,
+# own the pidfile, and capture the log.
+#
+# -S sends output to the logfile; -r restarts it if it dies. -r is on
+# because the gateway fails closed by design -- an unreachable IdP or an
+# unreadable registry is a fatal startup error (ADR-0004, ADR-0008) -- and
+# on this deployment the IdP is a separate jail that may simply come up
+# second after a host reboot. Without -r, boot order decides whether the
+# SOC has a gateway. With it, the gateway retries until the IdP is there.
+#
+# The consequence is worth stating: a genuine misconfiguration also gets
+# retried forever, so a gateway that never comes up means reading
+# ${mcp_gateway_logfile}, not assuming the service is merely slow.
+command="/usr/sbin/daemon"
+command_args="-f -r -S -T ${name} -o ${mcp_gateway_logfile} -p ${pidfile} \
+    ${procname} serve -config ${mcp_gateway_config}"
+
+start_precmd="${name}_prestart"
+
+mcp_gateway_prestart()
+{
+	if [ ! -f "${mcp_gateway_config}" ]; then
+		err 1 "${mcp_gateway_config} does not exist -- see deploy/freebsd-jail.md"
+	fi
+
+	# The gateway refuses a group- or world-readable signing key itself,
+	# and refuses to start on a non-loopback bind (ADR-0011). Both are
+	# checked in the binary, deliberately, so they cannot be bypassed by
+	# starting it some other way. Nothing is re-checked here: a second
+	# implementation of a security check is a second thing to drift.
+
+	install -d -o "${mcp_gateway_user}" -g "${mcp_gateway_user}" -m 0750 \
+		"$(dirname "${mcp_gateway_logfile}")" 2>/dev/null || true
+	return 0
+}
+
+run_rc_command "$1"

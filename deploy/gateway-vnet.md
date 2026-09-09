@@ -268,14 +268,15 @@ actually holding in this deployment for the first time.
     during this work, so "a VPN client can reach 10.17.90.10 and cannot
     reach 127.0.0.1 in the jail" is untested. Reconnect and run the probes in
     `deploy/openvpn-access.md`.
-  - That nginx terminates TLS in front of the gateway. Neither nginx nor a
-    `mcp.soc.internal` certificate exists in this jail yet; only the CA root
-    and the binary are installed. ADR-0011 item 2 remains unimplemented, and
-    its certificate must be issued for `10.17.90.10`.
-  - That `mcp-gateway serve` runs here. There is still no configuration file,
-    vault, or age identity in the jail -- see `deploy/freebsd-jail.md`, "What
-    this script does *not* set up". The conversion changes the network, not
-    the deployment.
+  - ~~That nginx terminates TLS in front of the gateway.~~ **Superseded, 09
+    Sep 2026.** nginx runs in this jail with a CA-issued certificate for
+    `mcp.soc.internal` / `IP:10.17.90.10` and proxies to `127.0.0.1:8080`.
+    ADR-0011 item 2 is implemented. See `deploy/gateway-serve.md`.
+  - ~~That `mcp-gateway serve` runs here.~~ **Superseded, 09 Sep 2026.** It
+    does: configuration, sops+age vault, signing key, four signed upstreams
+    and an rc.d service, verified end to end with a real Authelia token
+    through nginx. See `deploy/gateway-serve.md`. The conversion still only
+    changed the network -- the deployment came later, in that stream.
   - Anything about IPv6. The jail's `lo0` has `::1` and `vnet0` has no IPv6
     address; `ip6 = disable` could not be carried over, so IPv6 is now the
     jail's own business rather than the host's. Nothing listens on it today.

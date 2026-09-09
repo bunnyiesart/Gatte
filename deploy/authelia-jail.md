@@ -361,14 +361,20 @@ never printed by the script.
 
 ## Assumed, not proven
 
-  - **That `mcp-gateway` accepts these tokens.** Nothing in this jail runs
-    the gateway. The claims match what the gateway is documented to require;
-    whether its verifier agrees is the next stream's test, not this one's.
-  - **That `mcp-gateway-test` can reach the provider.** Routing on
-    `bastille0` makes it plausible and the CA cert's IP SAN covers the
-    address, but that jail's `/etc/hosts` was intentionally left alone, so
-    `id.soc.internal` does not resolve there yet and nothing has been dialled
-    from it.
+  - ~~**That `mcp-gateway` accepts these tokens.**~~ **Settled, 09 Sep
+    2026: it does.** A token from this flow gets HTTP 200 and a real tool
+    list out of the running gateway, and `groups` maps to the right role --
+    `analyst` sees 6 tools, `dfirlead` 8. See `deploy/gateway-serve.md`.
+    Nothing in *this* jail changed to make that work.
+  - ~~**That `mcp-gateway-test` can reach the provider.**~~ **Settled, 09
+    Sep 2026: it does.** The gateway completes OIDC discovery against
+    `https://id.soc.internal` at every start. One trap that cost an hour and
+    is not this jail's fault: Go's `crypto/x509` does not read
+    `/usr/local/etc/ssl/certs/`, where the gateway jail keeps `soc-ca.crt`,
+    so discovery failed with "certificate signed by unknown authority" while
+    `curl --cacert` on the same URL returned 200. Fixed with `SSL_CERT_FILE`
+    on that process only -- **not** by putting this unconstrained root into
+    a system trust store, which the section above forbids for good reason.
   - **The `bastille create` branch of `authelia-host-setup.sh`.** The jail
     was created by hand before the script existed, so every run so far has
     taken the "already exists" path. The create branch is two lines copied

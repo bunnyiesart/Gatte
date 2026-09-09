@@ -80,9 +80,53 @@ func TestCredCheckMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("call tool: %v", err)
 	}
-	tc := res.Content[0].(*mcp.TextContent)
+	if len(res.Content) != 1 {
+		t.Fatalf("expected 1 content item, got %d", len(res.Content))
+	}
+	tc, ok := res.Content[0].(*mcp.TextContent)
+	if !ok {
+		t.Fatalf("expected TextContent, got %T", res.Content[0])
+	}
+
+	// received_expected_secret == false is the negative half of the
+	// positive control every leak test in this repo keys off (see
+	// internal/vault/sopsage/leak_test.go, internal/gateway/stdio,
+	// internal/e2e, lab/servers/*): they all trust a *true* here to mean
+	// "the secret really did arrive", and this is the only place the
+	// false direction is pinned at all. So it has to be a claim that can
+	// actually fail.
+	//
+	// It could not, before: the unmarshal error was discarded, and got is
+	// the zero value on any error -- so "ReceivedExpectedSecret is false"
+	// passed just as happily on a malformed body, an empty body, or a
+	// tool that had stopped emitting the field at all. A control that
+	// cannot fail is not a control.
+	//
+	// Three assertions make it falsifiable, in order: the payload parsed;
+	// every key in it is one CredCheckResult declares
+	// (DisallowUnknownFields, so a producer that drifts to a different
+	// wire shape fails loudly here instead of decoding as a silent
+	// false); and the fingerprint is present, proving we decoded a real
+	// credcheck result and not an empty object that satisfies the first
+	// two vacuously.
+	//
+	// Honest limit: because this test decodes with the very struct
+	// AddCredCheck encodes with, a rename of the `json:"..."` tag itself
+	// moves both sides at once and stays invisible here. What pins the
+	// wire name is the four mock servers' own tests
+	// (lab/servers/*/main_test.go), which declare
+	// `json:"received_expected_secret"` in a separate, independently
+	// written struct. This test's job is the narrower one: that a false
+	// read here is a false the tool actually reported.
+	dec := json.NewDecoder(strings.NewReader(tc.Text))
+	dec.DisallowUnknownFields()
 	var got CredCheckResult
-	json.Unmarshal([]byte(tc.Text), &got)
+	if err := dec.Decode(&got); err != nil {
+		t.Fatalf("unmarshal result %q: %v", tc.Text, err)
+	}
+	if got.Fingerprint == "" {
+		t.Fatalf("Fingerprint is empty -- decoded %q as %+v, which is not a real credcheck result", tc.Text, got)
+	}
 	if got.ReceivedExpectedSecret {
 		t.Errorf("ReceivedExpectedSecret = true for mismatched secrets, want false")
 	}

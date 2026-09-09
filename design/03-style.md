@@ -109,4 +109,6 @@ today and will continue to. Relevant ones to design against explicitly:
 
 Two significant decisions from this phase go to `design/adr/`:
 `0001-monolithic-modular-style.md` (this decision, formalized) and
-`0002-language-runtime.md` (still open — see that file's status).
+`0002-language-runtime.md` (Accepted 08 Sep 2026 — Go, overriding that
+ADR's original Python proposal; this line said "still open" until 09 Sep
+2026).

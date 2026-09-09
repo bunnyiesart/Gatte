@@ -2,15 +2,29 @@
 
 **Status:** Accepted — 09 set 2026.
 
-> **Ressalva de implementação, não da decisão.** Dos três controles que
-> este ADR decide, dois estão em vigor: injeção sops+age (`internal/vault`,
-> Fase 2) e quarentena por ferramenta (`internal/quarantine`, chamada por
-> `gateway.Connect`, Fase 3/5). O terceiro — **assinatura Ed25519 das
-> entradas, verificada no boot** — foi construído e testado
-> (`internal/signer`), mas **nada fora do próprio pacote o invoca**:
-> `gateway.Connect` lê o registro e disca sem verificar assinatura
-> nenhuma. A decisão está aceita; o controle ainda não está ligado.
-> Rastreado como item próprio.
+> **Ressalva de implementação, não da decisão — histórico do terceiro
+> controle.** Dos três controles que este ADR decide, dois estão em vigor
+> desde cedo: injeção sops+age (`internal/vault`, Fase 2) e quarentena por
+> ferramenta (`internal/quarantine`, chamada por `gateway.Connect`, Fase
+> 3/5). O terceiro — **assinatura Ed25519 das entradas, verificada no
+> boot** — levou duas correções, e as duas ficam registradas aqui porque
+> quem ler este ADR precisa saber que o controle não nasceu funcionando:
+>
+> - **Até a Fase 6:** construído e testado (`internal/signer`), mas **nada
+>   fora do próprio pacote o invocava**. `gateway.Connect` lia o registro e
+>   discava sem verificar assinatura nenhuma. Decisão aceita, controle
+>   desligado.
+> - **Fase 6, 09 set 2026 — ligado.** `gateway.Connect` passou a verificar
+>   toda entrada antes de `bringUp` (`internal/gateway/endpoint.go`), então
+>   uma entrada adulterada nunca chega a ser discada. `require_signed`
+>   inverteu para `true` por padrão (`0006`, gatilho disparado).
+> - **09 set 2026, mesma revisão — encontrado sem âncora.** Ligar o
+>   controle expôs que ele verificava contra a chave pública que viaja
+>   *dentro da própria assinatura*: consistência interna, não
+>   autenticidade. Forjar uma entrada servida exigia só escrita no banco.
+>   **`0010` corrige**, movendo as chaves confiáveis para o arquivo de
+>   configuração. Leia `0010` antes de confiar em qualquer afirmação sobre
+>   este controle: o que vale hoje é o que está lá.
 
 ## Contexto
 
@@ -107,7 +121,18 @@ mecanismo próprio, não incluído aqui):
   uma tool `pending`/`changed` não aparece na listagem nem é executável;
   (c) confirmam que verificação de assinatura roda no boot e recusa
   entradas alteradas quando em modo anchored.
-- Onde vive o teste: a definir na implementação.
+- Onde vive o teste (preenchido em 09 set 2026 — era "a definir na
+  implementação"):
+  - (a) `TestResolveThenSpawnDoesNotLeak`,
+    `internal/vault/sopsage/leak_test.go`. **Pula, não falha**, sem `sops`
+    e `age` no PATH — ver o aviso do `make test`.
+  - (b) `TestPendingAndChangedAreUnreachableButStillListed`,
+    `internal/quarantine/sqlite/sqlite_test.go`, pelos três caminhos por
+    onde um chamador obtém uma ferramenta.
+  - (c) `TestConnect_VerifiesEntrySignatures`,
+    `internal/gateway/gateway_test.go`. Cobre a verificação no boot; o que
+    **não** cobria, até `0010`, era contra *qual* chave — o teste de forja
+    vive em `internal/signer/signer_test.go`.
 - Quando roda: a cada build/CI.
 - Mudanças de código necessárias: nenhuma além da própria implementação
   dos três mecanismos.

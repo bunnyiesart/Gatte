@@ -150,11 +150,41 @@ consciente e não como esquecimento.
 - [x] Automatizável? Sim.
 - Mecanismo: testes de validação com um JWKS de teste próprio — token
   expirado, audiência errada, emissor errado, assinatura inválida, alg
-  `none`, e token válido — todos hermético, sem IdP rodando. Mais um teste
-  end-to-end contra um provedor real, que **pula com aviso** quando não há
-  um configurado, seguindo exatamente o padrão de `0005` e o aviso alto
-  que o `make test` já imprime.
-- Onde vive: `internal/access/*_test.go` (Fase 4).
+  `none`, e token válido — todos herméticos, sem IdP rodando. **Isto
+  existe e roda.**
+- Onde vive: `internal/access/oidc/oidc_test.go` (o verificador e a
+  descoberta) e `internal/access/access_test.go` (papéis, audiência,
+  `TestIdentity_CarriesNoCredentialField`). Esta linha apontava para
+  `internal/access/*_test.go` até 09 set 2026, o que deixa de fora o
+  pacote onde o verificador de fato mora.
+
+> **CORREÇÃO, 09 set 2026 — o teste contra um IdP real nunca foi escrito.**
+>
+> Esta seção prometia, além dos testes herméticos, "um teste end-to-end
+> contra um provedor real, que **pula com aviso** quando não há um
+> configurado, seguindo exatamente o padrão de `0005`". Não existe: não há
+> teste algum no repositório condicionado a um IdP configurado, nem
+> variável de ambiente que o ligue, nem `t.Skip` correspondente. O padrão
+> do `0005` foi citado, não copiado.
+>
+> O que isso deixa **não** coberto, e vale nomear em vez de deixar a
+> promessa não cumprida escondida numa lista: os testes herméticos usam um
+> JWKS que este repositório mesmo gera. Eles provam que a *lógica* de
+> validação está correta — expiração, audiência, emissor, `alg`. Não
+> provam interoperabilidade com um provedor de verdade: descoberta em
+> `/.well-known/openid-configuration` com os campos que um Keycloak ou
+> Authentik realmente emitem, rotação de JWKS em produção, a forma
+> concreta do claim de grupos. Esse último é o mais provável de morder —
+> `TestVerifyGroupsClaim` cobre as formas que *nós supusemos*, contra um
+> emissor que *nós escrevemos*; `groups_claim` é configurável exatamente
+> porque provedores discordam, e a discordância real não está no
+> repositório para ser exercitada.
+>
+> A Fase 6 cobriu parte disso à mão, rodando o binário: `serve` se recusa
+> a subir contra um emissor inalcançável (`WORKFLOW.md` Fase 6). É
+> verificação manual, feita uma vez, e não substitui o teste prometido.
+> Escrever o teste, ou riscar a promessa por decisão explícita, é item em
+> aberto.
 
 ## Notas
 

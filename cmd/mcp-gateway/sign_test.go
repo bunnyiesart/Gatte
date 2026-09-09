@@ -3,13 +3,73 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/bunnyiesart/Gatte/internal/registry"
 	"github.com/bunnyiesart/Gatte/internal/signer"
 )
+
+// useSigningKey sets up the two halves an operator has to set up before
+// the gateway will serve a signed entry: a private key to sign with, and
+// its public half in signer.trusted_keys so the signature counts for
+// anything (ADR-0010).
+//
+// Both, not one, because since ADR-0010 signing alone changes nothing an
+// operator can observe -- `upstream list` reports INVALID for an entry
+// signed by a key the configuration does not name. Tests that want the
+// happy path have to model the paste step, and tests that want to see the
+// paste step *not* done use writeSigningKey directly.
+func useSigningKey(t *testing.T, e opTestEnv) string {
+	t.Helper()
+
+	path := writeSigningKey(t, 0o600)
+	e.cfg.Signer.KeyFile = path
+	e.cfg.Signer.TrustedKeys = append(e.cfg.Signer.TrustedKeys, trustedKeyFor(t, path))
+	return path
+}
+
+// trustedKeyFor returns the trusted_keys value for the key file at path:
+// the base64 of its public half.
+func trustedKeyFor(t *testing.T, path string) string {
+	t.Helper()
+
+	key, err := signer.LoadKey(path)
+	if err != nil {
+		t.Fatalf("LoadKey(%s): %v", path, err)
+	}
+	s, err := signer.NewSigner(key)
+	if err != nil {
+		t.Fatalf("NewSigner: %v", err)
+	}
+	return base64.StdEncoding.EncodeToString(s.PublicKey())
+}
+
+// mustVerifier builds the trust anchor the console would build from e's
+// configuration -- the same one the gateway builds at boot.
+func mustVerifier(t *testing.T, e opTestEnv) *signer.Verifier {
+	t.Helper()
+
+	v, err := opVerifier(e.opEnv)
+	if err != nil {
+		t.Fatalf("opVerifier: %v", err)
+	}
+	return v
+}
+
+// signerSection renders the [signer] block a configuration file needs in
+// order to load at all now that require_signed defaults to true: the key
+// to sign with, and its public half in trusted_keys.
+func signerSection(t *testing.T, keyFile string) string {
+	t.Helper()
+
+	return "\n[signer]\nkey_file = \"" + keyFile + "\"\n" +
+		"require_signed = true\ntrusted_keys = [\"" + trustedKeyFor(t, keyFile) + "\"]\n"
+}
 
 // TestRunSign_WithoutAKeyCannotRun covers the two ways there is no usable
 // key: none configured, and one configured that LoadKey refuses. Both are
@@ -72,7 +132,7 @@ func TestRunSign_WithoutAKeyCannotRun(t *testing.T) {
 // component exists for.
 func TestRunSign_ThenListShowsTheEntryAsSigned(t *testing.T) {
 	e := newOpTestEnv(t)
-	e.cfg.Signer.KeyFile = writeSigningKey(t, 0o600)
+	useSigningKey(t, e)
 	entry := stdioEntry("casemgmt")
 	mustRegister(t, e, entry)
 
@@ -86,7 +146,7 @@ func TestRunSign_ThenListShowsTheEntryAsSigned(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reading back the signature: %v", err)
 	}
-	if err := signer.Verify(entry, sig); err != nil {
+	if err := mustVerifier(t, e).Verify(entry, sig); err != nil {
 		t.Errorf("stored signature does not verify: %v", err)
 	}
 
@@ -164,7 +224,7 @@ func TestRunSign_ResigningIsNormalAndSaysWhatItDid(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			e := newOpTestEnv(t)
-			e.cfg.Signer.KeyFile = writeSigningKey(t, 0o600)
+			useSigningKey(t, e)
 			entry := stdioEntry("casemgmt")
 			mustRegister(t, e, entry)
 			tc.setup(t, e, entry)
@@ -178,16 +238,106 @@ func TestRunSign_ResigningIsNormalAndSaysWhatItDid(t *testing.T) {
 			if err != nil {
 				t.Fatalf("reading back: %v", err)
 			}
-			if err := signer.Verify(entry, sig); err != nil {
+			if err := mustVerifier(t, e).Verify(entry, sig); err != nil {
 				t.Errorf("signature after re-signing does not verify: %v", err)
 			}
 		})
 	}
 }
 
-func TestRunSign_UnknownEntryIsAProblem(t *testing.T) {
+// TestRunSign_PrintsThePasteReadyTrustedKeysLine is ADR-0010 item 4: a
+// control that gives an operator work to turn on stays off.
+//
+// Signing with a key that is not in signer.trusted_keys stores a signature
+// the gateway will refuse. Nothing about that is visible from the sign
+// command's other output -- it says "Signed" and looks like success. So the
+// command that creates the gap prints the line that closes it, in the exact
+// encoding the field wants, and says plainly that the entry is not being
+// served yet.
+func TestRunSign_PrintsThePasteReadyTrustedKeysLine(t *testing.T) {
+	t.Run("key not yet trusted", func(t *testing.T) {
+		e := newOpTestEnv(t)
+		keyFile := writeSigningKey(t, 0o600)
+		e.cfg.Signer.KeyFile = keyFile // ...and deliberately NOT trusted.
+		entry := stdioEntry("casemgmt")
+		mustRegister(t, e, entry)
+
+		requireExit(t, runSign(e.opEnv, "casemgmt"), exitOK, "sign")
+
+		out := e.stdoutText()
+		for _, want := range []string{"will NOT serve", "trusted_keys", trustedKeyFor(t, keyFile)} {
+			requireContains(t, out, want, "sign with an untrusted key")
+		}
+		// And it must not claim success it is about to retract. A command
+		// that says "the gateway will now serve it" and then explains that
+		// it will not has taught the operator to stop reading.
+		if strings.Contains(out, "will now serve it") {
+			t.Errorf("sign claims the entry is now served while also saying it is not:\n%s", out)
+		}
+
+		// The printed value must be exactly what the field accepts, with no
+		// editing: a line the operator has to fix up before it works is a
+		// line they will get wrong at 3am. Pasting it must also be
+		// *sufficient* -- the entry goes from refused to served with that
+		// one edit and nothing else.
+		e.cfg.Signer.TrustedKeys = []string{trustedKeyFor(t, keyFile)}
+		if _, err := e.cfg.Signer.TrustedPublicKeys(); err != nil {
+			t.Fatalf("the printed trusted_keys value is not accepted by the config parser: %v", err)
+		}
+		e.out.Reset()
+		requireExit(t, runUpstreamList(e.opEnv, false), exitOK, "list")
+		requireContains(t, e.stdoutText(), string(sigValid), "list after pasting the key")
+	})
+
+	t.Run("key already trusted", func(t *testing.T) {
+		e := newOpTestEnv(t)
+		useSigningKey(t, e)
+		mustRegister(t, e, stdioEntry("casemgmt"))
+
+		requireExit(t, runSign(e.opEnv, "casemgmt"), exitOK, "sign")
+
+		// No nagging when there is nothing to do. An instruction that
+		// prints every time is an instruction nobody reads the day it
+		// matters.
+		if strings.Contains(e.stdoutText(), "trusted_keys") {
+			t.Errorf("sign told the operator to add a key that is already trusted:\n%s", e.stdoutText())
+		}
+	})
+}
+
+// TestRunSign_UntrustedKeyMakesTheEntryINVALIDNotUnsigned pins the
+// distinction ADR-0010 item 2 insists on. An entry signed by a key this
+// gateway does not know is not "not signed yet": somebody signed it, with
+// something, and the console must not round that down to a benign state.
+func TestRunSign_UntrustedKeyMakesTheEntryINVALIDNotUnsigned(t *testing.T) {
 	e := newOpTestEnv(t)
 	e.cfg.Signer.KeyFile = writeSigningKey(t, 0o600)
+	mustRegister(t, e, stdioEntry("casemgmt"))
+
+	requireExit(t, runSign(e.opEnv, "casemgmt"), exitOK, "sign")
+
+	// Asserted through the JSON form rather than the table: sigUnsigned is
+	// the string "no", which occurs inside half the prose the table prints
+	// ("not", "names only"), so a substring check against the table would
+	// pass or fail for reasons unrelated to the signature column.
+	e.out.Reset()
+	requireExit(t, runUpstreamList(e.opEnv, true), exitOK, "list -json")
+
+	var got []upstreamJSON
+	if err := json.Unmarshal(e.out.Bytes(), &got); err != nil {
+		t.Fatalf("parsing list -json: %v\n%s", err, e.stdoutText())
+	}
+	if len(got) != 1 {
+		t.Fatalf("listed %d entries, want 1", len(got))
+	}
+	if got[0].Signature != string(sigInvalid) {
+		t.Errorf("signature state = %q, want %q -- somebody signed this entry with a key this gateway does not know, which is not the same as nobody having signed it", got[0].Signature, sigInvalid)
+	}
+}
+
+func TestRunSign_UnknownEntryIsAProblem(t *testing.T) {
+	e := newOpTestEnv(t)
+	useSigningKey(t, e)
 
 	requireExit(t, runSign(e.opEnv, "ghost"), exitProblem, "sign unknown")
 	requireContains(t, e.stderrText(), `no upstream named "ghost"`, "sign unknown")
@@ -215,7 +365,7 @@ func TestCmdSign_BadUsage(t *testing.T) {
 // including reading signer.key_file out of a real configuration file.
 func TestCmdSign_EndToEndThroughAConfigFile(t *testing.T) {
 	keyFile := writeSigningKey(t, 0o600)
-	configPath := writeOperatorConfig(t, "\n[signer]\nkey_file = \""+keyFile+"\"\nrequire_signed = true\n")
+	configPath := writeOperatorConfig(t, signerSection(t, keyFile))
 
 	var out, errBuf bytes.Buffer
 	requireExit(t, cmdUpstream([]string{

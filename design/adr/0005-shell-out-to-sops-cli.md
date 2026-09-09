@@ -62,8 +62,16 @@ as a deployment prerequisite, checked at Provider construction time, not
 enforced by the Go compiler the way an import would be. A future sops
 CLI flag/output change could break the adapter without a compile-time
 signal — mitigated by pinning a minimum tested `sops` version in
-deployment docs once one exists (not yet written; tracked for
-`deploy/freebsd-jail.md` when Phase 2 ships).
+deployment docs once one exists.
+
+> **Mitigação escrita — 09 set 2026.** A pendência acima está paga:
+> `deploy/freebsd-jail.md` tem uma seção "sops version" fixando **3.13.2**
+> como mínimo (é o que o `pkg` do FreeBSD entrega hoje), registrando que
+> dev/CI roda 3.13.3 porque `make devtools` instala `@latest`, e anotando
+> a superfície exata da qual o adapter depende: `sops --decrypt
+> --input-type json --output-type json`. Essa linha de comando é o
+> contrato de verdade — é ela que uma versão futura pode quebrar sem aviso
+> de compilação, então é ela que está escrita, e não só um número.
 
 **Trade-offs assumidos:** we chose auditable dependency-graph size over
 avoiding a subprocess call — consistent with `01-discovery.md` ranking

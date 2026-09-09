@@ -127,7 +127,23 @@ segurança.
   a reversão da definição, prova a regra 1; o caso de colisão deliberada
   (`"ab"+"c"` vs `"a"+"bc"`) prova que a codificação com prefixo de
   tamanho da regra 2 não é ambígua.
-- Onde vive: `internal/quarantine/*_test.go`.
+- Onde vive (precisado em 09 set 2026 — esta linha dizia só
+  `internal/quarantine/*_test.go`, o que cobre um dos três e não os
+  outros dois):
+  - Regra 1 (não se auto-cura): `TestRugPullSequence` e
+    `TestObserved_ChangedDoesNotRevertWhenHashReturnsToBaseline`, em
+    `internal/quarantine/quarantine_test.go`; e a mesma sequência
+    atravessando a persistência em `TestRugPullSequence_ThroughTheAdapter`,
+    `internal/quarantine/sqlite/sqlite_test.go`.
+  - Regra 2 (codificação com prefixo de tamanho): `TestHash_IsUnambiguous`,
+    `internal/quarantine/quarantine_test.go` — é este que carrega o caso
+    `"ab"+"c"` vs `"a"+"bc"`.
+  - Regra 3 (um só predicado, pelos três caminhos):
+    `TestPendingAndChangedAreUnreachableButStillListed`, em
+    `internal/quarantine/sqlite/sqlite_test.go`. Vive no pacote do
+    adaptador, um nível abaixo do que esta linha apontava, porque prova a
+    regra *através* da persistência e não só na memória —
+    `TestUsable_IsTheSingleGate` é a metade em memória.
 - Quando roda: a cada `make test`.
 
 ## Notas

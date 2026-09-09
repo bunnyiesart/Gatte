@@ -22,6 +22,8 @@ import (
 	"github.com/bunnyiesart/Gatte/internal/gateway/httpapi"
 	"github.com/bunnyiesart/Gatte/internal/registry"
 	registrysqlite "github.com/bunnyiesart/Gatte/internal/registry/sqlite"
+	"github.com/bunnyiesart/Gatte/internal/signer"
+	signersqlite "github.com/bunnyiesart/Gatte/internal/signer/sqlite"
 	"github.com/bunnyiesart/Gatte/internal/store"
 )
 
@@ -223,6 +225,24 @@ func TestCmdServe_InvalidConfigCannotRun(t *testing.T) {
 			body: "this is not toml\n",
 			want: "parsing",
 		},
+		{
+			// ADR-0010 item 3, at the surface the operator actually
+			// touches. require_signed defaults to true, so this body is
+			// every pre-ADR-0010 configuration in the world: it used to
+			// start and serve, and it now refuses, in front of whoever
+			// just edited the file rather than in front of whoever is on
+			// call three weeks later.
+			name: "signatures required with nothing to verify against",
+			body: "database = \"x.db\"\n[oidc]\nissuer = \"https://idp.example\"\naudience = \"https://gw.example/mcp\"\n" +
+				"[vault]\nsecrets_file = \"s\"\nage_key_file = \"k\"\n[signer]\nrequire_signed = true\n",
+			want: "trusted_keys",
+		},
+		{
+			name: "a trusted key that is not a key",
+			body: "database = \"x.db\"\n[oidc]\nissuer = \"https://idp.example\"\naudience = \"https://gw.example/mcp\"\n" +
+				"[vault]\nsecrets_file = \"s\"\nage_key_file = \"k\"\n[signer]\ntrusted_keys = [\"obviously-not-base64!\"]\n",
+			want: "signer.trusted_keys[0]",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "bad.toml")
@@ -413,6 +433,86 @@ func TestBuildServer_OneUnavailableUpstreamIsNotFatal(t *testing.T) {
 	stack.server.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/", strings.NewReader("{}")))
 	if rec.Code != http.StatusUnauthorized {
 		t.Errorf("status = %d, want 401 from a degraded but serving gateway", rec.Code)
+	}
+}
+
+// TestBuildServer_TrustAnchorIsWired is ADR-0010 at the composition root:
+// the whole point of the change is that the *serving* process refuses an
+// entry vouched for only by a key nobody put in the configuration file.
+//
+// The unit tests prove signer.Verifier refuses it. This proves the trust
+// anchor actually reaches the gateway -- that buildServer reads
+// signer.trusted_keys, builds a Verifier from it, and hands it over. A
+// Verifier that is correct but not wired is the same as no Verifier.
+func TestBuildServer_TrustAnchorIsWired(t *testing.T) {
+	// A key the configuration will name, and one it will not. Only the
+	// second one ever signs anything here: the attacker's whole advantage
+	// was that generating a key is free.
+	attacker, err := signer.GenerateKey()
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	attackerSigner, err := signer.NewSigner(attacker)
+	if err != nil {
+		t.Fatalf("NewSigner: %v", err)
+	}
+	trustedKey := writeSigningKey(t, 0o600)
+
+	fx := newServeFixture(t, func(body *strings.Builder) {
+		// Replace the fixture's permissive signer block. require_signed is
+		// on, and the only key named is one the attacker does not hold.
+		s := body.String()
+		body.Reset()
+		body.WriteString(strings.Replace(s,
+			"[signer]\nrequire_signed = false\n",
+			"[signer]\nrequire_signed = true\ntrusted_keys = [\""+trustedKeyFor(t, trustedKey)+"\"]\n", 1))
+	})
+
+	entry := registry.UpstreamServer{
+		Name:        "casemgmt",
+		Transport:   registry.TransportStdio,
+		Command:     filepath.Join(t.TempDir(), "no-such-binary"),
+		EnvVarNames: []string{"MOCK_SECRET"},
+	}
+
+	db, err := store.Open(fx.dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	if err := registrysqlite.Migrate(db); err != nil {
+		t.Fatalf("migrate registry: %v", err)
+	}
+	if err := signersqlite.Migrate(db); err != nil {
+		t.Fatalf("migrate signatures: %v", err)
+	}
+	if err := registrysqlite.New(db).Register(context.Background(), entry); err != nil {
+		t.Fatalf("register upstream: %v", err)
+	}
+	// The forgery: the entry is signed, self-consistently, by a key the
+	// gateway was never told to trust. Before ADR-0010 this was accepted
+	// and the command below would have been spawned.
+	if err := signersqlite.New(db).Put(context.Background(), entry.Name, attackerSigner.Sign(entry)); err != nil {
+		t.Fatalf("store forged signature: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	logger, logs := serveTestLogger()
+	stack, err := buildServer(context.Background(), fx.cfg, logger)
+	if err != nil {
+		t.Fatalf("buildServer: %v", err)
+	}
+	defer stack.close()
+
+	if got := stack.summary.UpstreamsFailed; len(got) != 1 || got[0] != "casemgmt" {
+		t.Fatalf("summary.UpstreamsFailed = %v, want [casemgmt] -- an entry signed by an untrusted key must not be served", got)
+	}
+	if !strings.Contains(logs.String(), "trusted_keys") {
+		t.Errorf("the log does not say the signing key is untrusted, so an operator cannot tell this apart from a broken backend:\n%s", logs.String())
+	}
+	if got := stack.summary.TrustedKeys; got != 1 {
+		t.Errorf("summary.TrustedKeys = %d, want 1 -- the size of the trusted set belongs in the startup log", got)
 	}
 }
 

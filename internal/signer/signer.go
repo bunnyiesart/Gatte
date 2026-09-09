@@ -17,8 +17,10 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/x509"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -33,9 +35,11 @@ import (
 // Callers should check these with errors.Is, since adapters wrap them with
 // additional context.
 var (
-	// ErrInvalidSignature is returned by Verify when a signature does not
-	// authenticate the entry it was presented with -- including when the
-	// signature or public key is malformed. Per
+	// ErrInvalidSignature is returned by Verifier.Verify when a signature
+	// does not authenticate the entry it was presented with -- including
+	// when the signature or public key is malformed, and including when it
+	// was made by a key outside the trusted set
+	// (design/adr/0010-signature-trust-anchor.md item 2). Per
 	// design/adr/0006-signing-key-and-signature-storage.md item 3, this is
 	// positive evidence of tampering and has no benign reading: the entry
 	// must not be served.
@@ -45,9 +49,11 @@ var (
 	// signature is not evidence of tampering -- ADR-0006 item 3 makes how
 	// to react to it a configuration decision, not this package's.
 	ErrNotFound = errors.New("signer: no signature stored for entry")
-	// ErrNoKey is returned when a signing key is required but absent,
-	// unreadable as a key, or not an Ed25519 key of the right size.
-	ErrNoKey = errors.New("signer: no usable signing key")
+	// ErrNoKey is returned when a key is required but absent, unreadable as
+	// a key, or not an Ed25519 key of the right size. It covers both halves
+	// of the pair: the private key LoadKey reads, and a public key offered
+	// to NewVerifier as a trust anchor.
+	ErrNoKey = errors.New("signer: no usable key")
 )
 
 // canonicalTag is a domain-separation prefix, length-prefixed like every
@@ -144,15 +150,20 @@ func appendCount(buf []byte, n int) []byte {
 // Signature is an Ed25519 signature over Canonical(entry), together with
 // the public key that produced it.
 //
-// Carrying the public key makes a stored signature self-describing:
-// verification needs nothing but the entry and this value, so a key
-// rotation is visible as a signature that names a key the operator no
-// longer trusts, rather than as a silent verification failure.
+// PublicKey is *diagnostic only*, and that distinction is the whole subject
+// of design/adr/0010-signature-trust-anchor.md. It travels in the same row,
+// in the same SQLite file, as the entry it attests to, so anyone who can
+// rewrite the entry can rewrite it too; a key supplied by whoever supplied
+// the signature proves nothing but that the two were generated together.
+// What it is good for is telling an operator *which* key signed an entry --
+// naming a key that is no longer trusted, or one that was never trusted --
+// and that is the only job it has.
 type Signature struct {
 	// Bytes is the raw Ed25519 signature, ed25519.SignatureSize bytes.
 	Bytes []byte
-	// PublicKey is the Ed25519 public key that produced Bytes,
-	// ed25519.PublicKeySize bytes.
+	// PublicKey is the Ed25519 public key that claims to have produced
+	// Bytes, ed25519.PublicKeySize bytes. Never an input to the trust
+	// decision -- see Verifier.Verify.
 	PublicKey ed25519.PublicKey
 }
 
@@ -212,25 +223,142 @@ func (s *Signer) Sign(entry registry.UpstreamServer) Signature {
 	}
 }
 
-// Verify reports whether sig authenticates entry, returning nil when it
-// does and ErrInvalidSignature when it does not -- including when sig is
-// malformed, or was produced by a different key than the one it names.
+// Verifier decides whether a signature authenticates an entry, using a
+// fixed set of trusted public keys -- the gateway's trust anchor
+// (design/adr/0010-signature-trust-anchor.md).
 //
-// Verify is a free function, not a Signer method, because verification
-// needs only the public key travelling inside sig. Nothing that verifies
-// -- the boot-time check above all -- should need access to the private
-// key (ADR-0006 item 1).
-func Verify(entry registry.UpstreamServer, sig Signature) error {
+// # Why this is a type and not a free function
+//
+// It used to be a free function taking only the entry and the signature,
+// on the reasoning that verification needs nothing but the public key
+// travelling inside sig. That reasoning was wrong, and it was proven
+// exploitable: an attacker with write access to the database tampers with
+// the entry, generates a fresh Ed25519 pair, signs the tampered entry with
+// it, and writes both the entry and the new (key, signature) pair. Every
+// check passed. `upstream list` printed SIGNED: yes.
+//
+// A signature is only ever evidence *relative to a key you already
+// trusted*. So the key set has to come from somewhere the attacker being
+// modelled cannot reach -- here, the configuration file, which is
+// versioned and reviewed and lives outside the SQLite file that holds both
+// the entries and their signatures. Making the trusted set a constructor
+// argument is what forces every caller to name it: there is no way to
+// verify without having said, in code, what you trust.
+//
+// A Verifier is immutable and safe for concurrent use.
+type Verifier struct {
+	trusted []ed25519.PublicKey
+}
+
+// NewVerifier returns a Verifier that accepts signatures made by any key in
+// trusted, and nothing else. It returns ErrNoKey if any element is not a
+// well-formed Ed25519 public key, naming its position -- a malformed trust
+// anchor is a configuration error, and inferring intent from it (skipping
+// it, say) would quietly shrink the set the operator wrote down.
+//
+// An empty trusted set is allowed and means "trust nobody": every signature
+// is then refused as invalid. That is a coherent state for a deployment
+// that has set require_signed = false and simply does not use signing --
+// config.Config.Validate is what refuses the incoherent combination of
+// requiring signatures with nothing to check them against.
+//
+// NewVerifier copies trusted, so a later mutation of the caller's slice
+// cannot change what this Verifier accepts.
+func NewVerifier(trusted []ed25519.PublicKey) (*Verifier, error) {
+	keys := make([]ed25519.PublicKey, 0, len(trusted))
+	for i, pub := range trusted {
+		if len(pub) != ed25519.PublicKeySize {
+			return nil, fmt.Errorf("%w: trusted key %d is not a %d-byte ed25519 public key", ErrNoKey, i, ed25519.PublicKeySize)
+		}
+		keys = append(keys, slices.Clone(pub))
+	}
+	return &Verifier{trusted: keys}, nil
+}
+
+// Trusts reports whether pub is one of the keys this Verifier was built
+// with. It answers a question about configuration, not about any particular
+// signature: `sign` uses it to tell an operator that the key just used to
+// sign an entry is not one the gateway will accept.
+func (v *Verifier) Trusts(pub ed25519.PublicKey) bool {
+	for _, k := range v.trusted {
+		// ed25519.PublicKey.Equal, not bytes.Equal: it is the type's own
+		// notion of equality, and it does not care that these are public
+		// values for which timing is irrelevant.
+		if k.Equal(pub) {
+			return true
+		}
+	}
+	return false
+}
+
+// TrustedCount reports how many keys this Verifier accepts. Callers use it
+// to say "no trusted key is configured" out loud rather than letting that
+// state show up only as every entry mysteriously failing.
+func (v *Verifier) TrustedCount() int { return len(v.trusted) }
+
+// Verify reports whether sig authenticates entry *against a trusted key*,
+// returning nil when it does and ErrInvalidSignature when it does not.
+//
+// The trust decision is structural: Canonical(entry) is checked against
+// each configured key in turn, and sig.PublicKey is never passed to
+// ed25519.Verify. It is read below the decision, to say which key the row
+// claims -- so a future edit here cannot accidentally reintroduce the flaw
+// ADR-0010 removed, because the attacker-supplied key is not on the path
+// that can return nil.
+//
+// A signature made by a key outside the trusted set is ErrInvalidSignature,
+// not ErrNotFound: it is positive evidence that somebody signed this entry
+// with a key this gateway does not recognise, and that has no benign
+// reading -- the same judgement ADR-0006 item 3 makes about a signature
+// that does not match.
+func (v *Verifier) Verify(entry registry.UpstreamServer, sig Signature) error {
+	// Shape checks first, including on the diagnostic key. Refusing a row
+	// that cannot even say which key produced it is not part of the trust
+	// decision -- it is this project's general refusal to reason about
+	// malformed input, and it keeps the message below honest.
 	if len(sig.PublicKey) != ed25519.PublicKeySize {
 		return fmt.Errorf("%w: malformed public key", ErrInvalidSignature)
 	}
 	if len(sig.Bytes) != ed25519.SignatureSize {
 		return fmt.Errorf("%w: malformed signature", ErrInvalidSignature)
 	}
-	if !ed25519.Verify(sig.PublicKey, Canonical(entry), sig.Bytes) {
-		return fmt.Errorf("%w: signature does not match entry %q", ErrInvalidSignature, entry.Name)
+
+	canonical := Canonical(entry)
+	for _, pub := range v.trusted {
+		if ed25519.Verify(pub, canonical, sig.Bytes) {
+			return nil
+		}
 	}
-	return nil
+
+	// Nothing below can return nil. Everything here exists so the operator
+	// reading the log learns which of two very different things happened.
+	switch {
+	case len(v.trusted) == 0:
+		return fmt.Errorf(
+			"%w: entry %q carries a signature but no trusted key is configured to check it against -- set signer.trusted_keys",
+			ErrInvalidSignature, entry.Name,
+		)
+	case v.Trusts(sig.PublicKey):
+		// A key we do trust, over content that is not what we were given:
+		// the entry changed after it was signed.
+		return fmt.Errorf("%w: signature does not match entry %q", ErrInvalidSignature, entry.Name)
+	default:
+		return fmt.Errorf(
+			"%w: entry %q is signed by %s, which is not in signer.trusted_keys (%d trusted)",
+			ErrInvalidSignature, entry.Name, KeyFingerprint(sig.PublicKey), len(v.trusted),
+		)
+	}
+}
+
+// KeyFingerprint names a public key without printing it: the hex SHA-256 of
+// the key bytes, prefixed so a reader knows what they are looking at.
+//
+// Used in operator messages and in verification errors. It takes the public
+// half only, so no formatting mistake at a call site can leak signing
+// material -- the private key has no path into this function.
+func KeyFingerprint(pub ed25519.PublicKey) string {
+	sum := sha256.Sum256(pub)
+	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
 // keyPEMType is the PEM block type used by LoadKey and WriteKey.

@@ -112,6 +112,14 @@ type Config struct {
 	// this project shipped in until ISSUE-18.
 	Signatures signer.Store
 
+	// Verifier holds the trusted public keys a stored signature is checked
+	// against (design/adr/0010-signature-trust-anchor.md). Required
+	// whenever Signatures is set: a signature store without a trust anchor
+	// verifies signatures against the key that arrived with them, which is
+	// the flaw ADR-0010 exists to remove, so New refuses the combination
+	// rather than letting it be assembled.
+	Verifier *signer.Verifier
+
 	// RequireSigned makes an entry with *no* signature unusable too.
 	//
 	// The asymmetry with an invalid signature is deliberate and is
@@ -120,6 +128,8 @@ type Config struct {
 	// before the Operator Console exists, with no security gained --
 	// there would simply be no signed entries to serve. The ADR is
 	// explicit that this default must invert once signing is ergonomic.
+	//
+	// It may not be set without Signatures. See New.
 	RequireSigned bool
 
 	// Now supplies the timestamp for audit records and quarantine
@@ -154,6 +164,7 @@ type Gateway struct {
 	policy     *access.Policy
 	dialer     Dialer
 	signatures signer.Store
+	verifier   *signer.Verifier
 	requireSig bool
 	now        func() time.Time
 	log        *slog.Logger
@@ -181,6 +192,19 @@ type routedTool struct {
 // any required port is nil -- a missing port is a wiring bug at startup,
 // and the alternative (a nil-checking request path) would mean discovering
 // it during an incident.
+//
+// It also refuses two combinations that are individually well-formed and
+// together mean "the security control is off but the configuration says it
+// is on" (design/adr/0010 item 3):
+//
+//   - RequireSigned with no Signatures store. verifyEntry has nothing to
+//     read, so every entry would sail through unchecked while the operator
+//     believes unsigned entries are being refused. Unreachable from cmd
+//     today; refused anyway, because a control that can be silently
+//     disabled by a wiring mistake is the exact failure this project keeps
+//     writing ADRs about.
+//   - Signatures with no Verifier. Verification would have no trust
+//     anchor, which is the ADR-0010 flaw.
 func New(cfg Config) (*Gateway, error) {
 	var missing []string
 	if cfg.Registry == nil {
@@ -205,6 +229,21 @@ func New(cfg Config) (*Gateway, error) {
 		return nil, fmt.Errorf("gateway: missing required port(s): %s", strings.Join(missing, ", "))
 	}
 
+	if cfg.RequireSigned && cfg.Signatures == nil {
+		return nil, errors.New(
+			"gateway: RequireSigned is set but no Signatures store was wired: " +
+				"there would be nothing to read a signature from, so every entry would be served unchecked " +
+				"while the configuration claims unsigned entries are refused",
+		)
+	}
+	if cfg.Signatures != nil && cfg.Verifier == nil {
+		return nil, errors.New(
+			"gateway: a Signatures store was wired without a Verifier: " +
+				"a signature can only be checked against keys trusted in advance (design/adr/0010-signature-trust-anchor.md), " +
+				"and the key stored alongside the signature is not one of those",
+		)
+	}
+
 	now := cfg.Now
 	if now == nil {
 		now = time.Now
@@ -222,6 +261,7 @@ func New(cfg Config) (*Gateway, error) {
 		policy:     cfg.Policy,
 		dialer:     cfg.Dialer,
 		signatures: cfg.Signatures,
+		verifier:   cfg.Verifier,
 		requireSig: cfg.RequireSigned,
 		now:        now,
 		log:        logger,
@@ -280,11 +320,21 @@ func (g *Gateway) Connect(ctx context.Context) error {
 	collisions := map[string]bool{}
 	var failures []error
 
-	if g.signatures == nil && len(entries) > 0 {
-		// Once per Connect, not once per entry: a per-entry warning in a
-		// fleet of twenty is a wall of text nobody reads, and this is
-		// precisely the condition that should stay legible.
+	// Once per Connect, not once per entry: a per-entry warning in a fleet
+	// of twenty is a wall of text nobody reads, and these are precisely the
+	// conditions that should stay legible.
+	switch {
+	case len(entries) == 0:
+	case g.signatures == nil:
 		g.log.WarnContext(ctx, "gateway: no signature store configured -- registry entry integrity is NOT being checked",
+			slog.Int("upstreams", len(entries)))
+	case g.verifier.TrustedCount() == 0:
+		// Reachable only with require_signed = false, since Config.Validate
+		// refuses the other combination. Worth saying out loud anyway: in
+		// this state a *signed* entry is refused (nothing vouches for the
+		// key that signed it) while an unsigned one is served, which reads
+		// backwards until you know why.
+		g.log.WarnContext(ctx, "gateway: signer.trusted_keys is empty -- no signature can be accepted, so any signed entry will be refused as invalid",
 			slog.Int("upstreams", len(entries)))
 	}
 
@@ -684,9 +734,13 @@ func (g *Gateway) admit(ctx context.Context, r route) error {
 // Three outcomes:
 //
 //   - No signer configured: nothing is checked. Reported once at Connect
-//     rather than per entry, so it cannot be missed in a wall of logs.
+//     rather than per entry, so it cannot be missed in a wall of logs. New
+//     guarantees this cannot coexist with RequireSigned, so the early
+//     return below cannot be a silent bypass of it.
 //   - Signature present and invalid: refused, always, regardless of
-//     RequireSigned. This is the case with no benign reading.
+//     RequireSigned. This is the case with no benign reading, and since
+//     ADR-0010 it includes a signature made by a key that is not in
+//     signer.trusted_keys.
 //   - Signature absent: refused only when RequireSigned is set. See the
 //     note on Config.RequireSigned for why that default is what it is.
 func (g *Gateway) verifyEntry(ctx context.Context, entry registry.UpstreamServer) error {
@@ -711,7 +765,7 @@ func (g *Gateway) verifyEntry(ctx context.Context, entry registry.UpstreamServer
 		return fmt.Errorf("%w: %q: signature store unreadable: %w", ErrUpstreamUnavailable, entry.Name, err)
 	}
 
-	if err := signer.Verify(entry, sig); err != nil {
+	if err := g.verifier.Verify(entry, sig); err != nil {
 		return fmt.Errorf("%w: %q: %w", ErrUpstreamUnavailable, entry.Name, err)
 	}
 	return nil

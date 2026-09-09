@@ -12,10 +12,10 @@ OAuth). Full investigation: `DEVELOPMENT-LOG.md`.
 
 ## Status
 
-Phases 1–5 complete (see `WORKFLOW.md`). The end-to-end checkpoint passes:
-a client holding no backend credential reaches four spawned upstreams over
-HTTP, each receiving its injected secret, with that secret appearing
-nowhere the client can observe.
+Phases 1–6 complete (see `WORKFLOW.md`); Phase 7, the hardening pass, is
+what remains. The end-to-end checkpoint passes: a client holding no backend
+credential reaches four spawned upstreams over HTTP, each receiving its
+injected secret, with that secret appearing nowhere the client can observe.
 
 **It runs.** Phase 6 built the composition root and the Operator Console:
 

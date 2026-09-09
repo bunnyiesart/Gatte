@@ -34,13 +34,27 @@ import (
 	// inside the test. `make test` (see Makefile) always passes
 	// `-count=1` for exactly this reason -- do not drop that flag, and
 	// do not trust a bare `go test ./...` result for this package.
+	//
+	// This list is itself hand-maintained and therefore stale-prone, and
+	// it cannot ever be complete: `main` packages (cmd/mcp-gateway,
+	// lab/probe, lab/servers/*) and test-only packages (internal/e2e) are
+	// not importable at all, so no blank import can pin them. It covers
+	// the internal/ tree the rules below actually govern; `-count=1`
+	// remains the only real guarantee of a fresh run.
 	_ "github.com/bunnyiesart/Gatte/internal/access"
+	_ "github.com/bunnyiesart/Gatte/internal/access/oidc"
 	_ "github.com/bunnyiesart/Gatte/internal/audit"
 	_ "github.com/bunnyiesart/Gatte/internal/audit/sqlite"
 	_ "github.com/bunnyiesart/Gatte/internal/config"
 	_ "github.com/bunnyiesart/Gatte/internal/gateway"
+	_ "github.com/bunnyiesart/Gatte/internal/gateway/httpapi"
+	_ "github.com/bunnyiesart/Gatte/internal/gateway/stdio"
+	_ "github.com/bunnyiesart/Gatte/internal/quarantine"
+	_ "github.com/bunnyiesart/Gatte/internal/quarantine/sqlite"
 	_ "github.com/bunnyiesart/Gatte/internal/registry"
 	_ "github.com/bunnyiesart/Gatte/internal/registry/sqlite"
+	_ "github.com/bunnyiesart/Gatte/internal/signer"
+	_ "github.com/bunnyiesart/Gatte/internal/signer/sqlite"
 	_ "github.com/bunnyiesart/Gatte/internal/store"
 	_ "github.com/bunnyiesart/Gatte/internal/vault"
 	_ "github.com/bunnyiesart/Gatte/internal/vault/sopsage"
@@ -103,55 +117,128 @@ func modulePackages(t *testing.T) []goPackage {
 	return pkgs
 }
 
-// modulePath is this module's path, from go.mod. isAdapter and
-// isCompositionRoot both require it as a prefix -- without it, a suffix
-// like "/sqlite" also matches the third-party modernc.org/sqlite driver
-// package itself, which is not one of *our* adapters and is exactly the
-// kind of package internal/store is supposed to be allowed to import
-// directly.
+// modulePath is this module's path, from go.mod. Every classifier below
+// anchors on it -- without that anchor, a suffix like "/sqlite" also
+// matches the third-party modernc.org/sqlite driver package itself, which
+// is not one of *our* adapters and is exactly the kind of package
+// internal/store is supposed to be allowed to import directly.
 const modulePath = "github.com/bunnyiesart/Gatte"
 
-// adapterSuffixes lists this project's "this import path is an adapter"
-// suffix conventions: "/sqlite" for the SQL-backed components
-// (internal/registry/sqlite, internal/audit/sqlite, ...), "/sopsage" for
-// the Credential Vault's sops+age adapter (internal/vault/sopsage), and
-// "/oidc" for Access Control's identity-provider adapter
-// (internal/access/oidc), and "/stdio" for the Gateway Endpoint's
-// upstream dialer (internal/gateway/stdio), and "/httpapi" for its
-// client-facing HTTP surface (internal/gateway/httpapi). Add a new entry
-// here whenever a future component gains its own adapter subpackage.
-var adapterSuffixes = []string{"/sqlite", "/sopsage", "/oidc", "/stdio", "/httpapi"}
+// internalPrefix is where every component of this project lives. The
+// shape of the tree below it is what the adapter rules are built on:
+// exactly one segment under it is a component's *domain* package (the
+// package that owns the port interface -- internal/registry,
+// internal/vault, ...), and anything nested below one of those is that
+// component's concrete infrastructure (internal/registry/sqlite,
+// internal/vault/sopsage, internal/access/oidc, internal/gateway/stdio,
+// internal/gateway/httpapi, ...).
+const internalPrefix = modulePath + "/internal/"
+
+// notAnAdapter lists packages under a domain package that are genuinely
+// NOT adapters, and may therefore be imported like any ordinary package.
+//
+// It is empty today, and that is the point. isAdapter used to consult the
+// mirror image of this list -- a hand-maintained set of adapter path
+// suffixes ("/sqlite", "/sopsage", "/oidc", ...) -- which was fail-open:
+// a brand-new adapter was simply invisible to
+// TestOnlyCompositionRootImportsAdapters until somebody remembered to add
+// its suffix. Verified by hand before this was inverted: adding
+// internal/vault/awskms, a concrete vault adapter, and importing it
+// straight from internal/registry passed the whole suite clean, which is
+// precisely the "a component reaches past the Credential Vault's port"
+// case ADR-0001 asks this test to make impossible.
+//
+// So the default is now "a package below a domain package is suspected
+// infrastructure", and an exception has to be argued for here, in
+// writing, by someone who has thought about it. A stale allowlist that
+// fails closed costs a confusing test failure and one obvious edit; a
+// stale allowlist that fails open costs the architecture silently.
+var notAnAdapter = []string{}
 
 // isAdapter reports whether importPath is one of this project's own
-// adapter subpackages, by the suffix conventions in adapterSuffixes.
+// adapter packages: any package of this module nested *below* a
+// component's domain package, i.e. <module>/internal/<component>/<...>.
+//
+// This is structural rather than name-based on purpose. What makes a
+// package an adapter here is not what it is called but where it sits: a
+// domain package owns a port, and everything underneath it is one
+// concrete way of satisfying that port -- a driver, a CLI it shells out
+// to, a wire protocol. Naming conventions can be forgotten; the position
+// in the tree cannot, because it is the thing being created.
+//
+// Scoped to internal/ deliberately: lab/ is the mock-upstream harness
+// (lab/README.md), not a component of the architecture ADR-0001 governs,
+// so lab/servers/threatintel is not "an adapter of lab/servers".
 func isAdapter(importPath string) bool {
-	if !strings.HasPrefix(importPath, modulePath) {
+	rest, ok := strings.CutPrefix(importPath, internalPrefix)
+	if !ok || !strings.Contains(rest, "/") {
 		return false
 	}
-	for _, suf := range adapterSuffixes {
-		if strings.HasSuffix(importPath, suf) {
-			return true
+	for _, exempt := range notAnAdapter {
+		if importPath == exempt {
+			return false
 		}
 	}
-	return false
+	return true
+}
+
+// domainPackageOf returns the domain package that owns importPath -- the
+// single-segment package under internal/ that importPath sits beneath.
+// For a domain package it returns the package itself; for anything
+// outside internal/ it returns "".
+func domainPackageOf(importPath string) string {
+	rest, ok := strings.CutPrefix(importPath, internalPrefix)
+	if !ok || rest == "" {
+		return ""
+	}
+	component, _, _ := strings.Cut(rest, "/")
+	return internalPrefix + component
 }
 
 // isAdapterOrStore reports whether importPath is allowed to talk to the
 // database directly: either it is internal/store (the one package whose
-// job is exactly that), or it is a "/sqlite" adapter (see adapterSuffixes).
+// job is exactly that), or it is a "/sqlite" adapter -- the naming
+// convention every SQL-backed component in this project follows
+// (internal/registry/sqlite, internal/audit/sqlite, ...).
+//
+// Unlike isAdapter, this one stays name-based, and that is safe because
+// of which way it fails: a new adapter that talks to the database under
+// some other name (internal/foo/postgres, say) is not exempted, so it
+// fails this test and someone has to come here and decide deliberately.
+// An allowlist is only dangerous when being absent from it means being
+// unchecked; here it means the opposite.
 func isAdapterOrStore(importPath string) bool {
 	return strings.HasSuffix(importPath, "/internal/store") ||
 		strings.HasSuffix(importPath, "/sqlite")
 }
 
 // isCompositionRoot reports whether importPath is allowed to wire a
-// concrete adapter directly. Today that's only cmd/mcp-gateway (Phase 1's
-// "proves the wiring, nothing more yet") -- every other package must
-// depend on the relevant port interface (registry.Repository,
-// audit.Recorder, vault.Provider, ...), never reach into a concrete
-// adapter it doesn't itself define.
+// concrete adapter directly: a command package sitting *directly* under
+// this module's top-level cmd/ directory. Today that's only
+// cmd/mcp-gateway (Phase 1's "proves the wiring, nothing more yet") --
+// every other package must depend on the relevant port interface
+// (registry.Repository, audit.Recorder, vault.Provider, ...), never reach
+// into a concrete adapter it doesn't itself define.
+//
+// "Directly under the module's own cmd/" is load-bearing. This used to be
+// strings.Contains(importPath, "/cmd/"), which handed the exemption to
+// any package with a path segment named cmd anywhere above it, at any
+// depth, and the exemption is granted by BOTH rules in this file at once
+// -- so the widest privilege in the architecture was claimable by naming
+// a directory. Verified by hand before this was narrowed: a package at
+// internal/gateway/cmd/helper, buried inside a domain component and
+// nothing like a composition root, could import database/sql *and*
+// internal/vault/sopsage with the whole suite passing clean.
+//
+// A privilege this large has to be granted by exact position in the tree,
+// not by a substring any subdirectory can claim. Note the failure
+// direction if cmd/mcp-gateway is ever renamed or moved: nothing matches,
+// the real composition root starts failing these tests loudly, and
+// somebody comes back here on purpose. That is the right way for this to
+// break.
 func isCompositionRoot(importPath string) bool {
-	return strings.HasPrefix(importPath, modulePath) && strings.Contains(importPath, "/cmd/")
+	rest, ok := strings.CutPrefix(importPath, modulePath+"/cmd/")
+	return ok && rest != "" && !strings.Contains(rest, "/")
 }
 
 // TestOnlyAdaptersTouchTheDatabase is the fitness function WORKFLOW.md's
@@ -209,23 +296,23 @@ func TestOnlyAdaptersTouchTheDatabase(t *testing.T) {
 // the reverse (an import cycle, since the adapter imports the domain) --
 // this test exists to catch the direction Go's compiler has no opinion
 // about.
+//
+// It no longer enumerates candidate adapter names (the old
+// pkg.ImportPath + "/sqlite", + "/sopsage", ... loop, which could only
+// see adapters somebody had already registered by hand). Anything
+// isAdapter recognizes whose owning domain package is this package is a
+// violation, whatever it is called.
 func TestDomainPackagesDoNotImportTheirOwnAdapter(t *testing.T) {
 	pkgs := modulePackages(t)
 
 	for _, pkg := range pkgs {
-		if isAdapterOrStore(pkg.ImportPath) {
-			continue
-		}
-		for _, suf := range adapterSuffixes {
-			ownAdapter := pkg.ImportPath + suf
-			for _, imp := range pkg.Imports {
-				if imp == ownAdapter {
-					t.Errorf(
-						"%s imports its own adapter %s -- dependencies in ports & adapters point "+
-							"inward (adapter depends on domain), never the other way",
-						pkg.ImportPath, ownAdapter,
-					)
-				}
+		for _, imp := range pkg.Imports {
+			if isAdapter(imp) && domainPackageOf(imp) == pkg.ImportPath {
+				t.Errorf(
+					"%s imports its own adapter %s -- dependencies in ports & adapters point "+
+						"inward (adapter depends on domain), never the other way",
+					pkg.ImportPath, imp,
+				)
 			}
 		}
 	}
@@ -251,10 +338,27 @@ func TestOnlyCompositionRootImportsAdapters(t *testing.T) {
 	pkgs := modulePackages(t)
 
 	for _, pkg := range pkgs {
-		if isCompositionRoot(pkg.ImportPath) || isAdapter(pkg.ImportPath) {
+		if isCompositionRoot(pkg.ImportPath) {
 			continue
 		}
 		for _, imp := range pkg.Imports {
+			// A package may always import its own subpackages: those are
+			// its private implementation, not another component's
+			// infrastructure, and nothing crosses a port boundary.
+			//
+			// This replaces a blanket "skip every adapter package"
+			// exemption, which was a third fail-open in the same family
+			// as the other two: it let any adapter import any *other*
+			// component's adapter unchallenged -- internal/gateway/stdio
+			// reaching straight into internal/vault/sopsage instead of
+			// depending on vault.Provider was exactly as invisible as a
+			// domain package doing it. No adapter in the module needed
+			// that exemption (checked against the full import graph when
+			// it was removed), and ports & adapters gives no reason one
+			// ever should.
+			if imp == pkg.ImportPath || strings.HasPrefix(imp, pkg.ImportPath+"/") {
+				continue
+			}
 			if isAdapter(imp) {
 				t.Errorf(
 					"%s imports adapter %s directly -- only cmd/mcp-gateway may wire a concrete "+

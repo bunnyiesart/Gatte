@@ -66,9 +66,28 @@ escalar partes independentemente (nenhum sinal disso hoje).
 - [x] Automatizável? Sim.
 - Mecanismo: fitness function de dependência entre módulos (nenhum
   componente acessa `Credential Vault` fora da interface pública dele).
-- Onde vive o teste: a definir na implementação — `07-fitness-functions.md`
-  do dev-context recomenda algo equivalente a ArchUnit/NetArchTest; a
-  ferramenta concreta depende da linguagem escolhida (`0002`).
+- Onde vive o teste (preenchido em 09 set 2026 — era "a definir na
+  implementação"): `internal/fitness/fitness_test.go`, três funções que
+  varrem o AST do próprio repositório —
+  `TestOnlyAdaptersTouchTheDatabase`,
+  `TestDomainPackagesDoNotImportTheirOwnAdapter` e
+  `TestOnlyCompositionRootImportsAdapters` (esta última é a que sustenta a
+  regra do `cmd/mcp-gateway` ser o único lugar que instancia um adaptador
+  concreto). Sem ArchUnit/NetArchTest: em Go, `go/parser` sobre o próprio
+  módulo é suficiente e não adiciona dependência.
+- A regra saiu **mais geral** do que foi escrita aqui. Este ADR pediu a
+  fitness function só para o `Credential Vault`; o que existe vale para os
+  oito componentes, porque a checagem é estrutural (nada fora de `cmd/`
+  importa um pacote abaixo de um pacote de domínio) e não uma lista de
+  nomes. O caso do vault é uma instância dela: `internal/vault/sopsage` é
+  inalcançável de qualquer lugar que não seja a raiz de composição.
+  A outra metade — que um segredo já resolvido não vaza para o processo
+  filho — não é estrutural e tem teste próprio,
+  `TestResolveThenSpawnDoesNotLeak` em `internal/vault/sopsage/leak_test.go`.
+- **Cuidado com o cache:** `go test` pode devolver um `pass` velho para
+  estes testes mesmo depois de o código violar a regra, porque o arquivo
+  varrido não é entrada declarada do teste. Por isso o `make test` usa
+  `-count=1`; um `go test ./...` cru não é evidência aqui.
 - Quando roda: a cada build/CI, não sob demanda.
 - Mudanças de código necessárias: nenhuma além de definir as interfaces dos
   8 componentes como parte da implementação inicial.
@@ -76,4 +95,8 @@ escalar partes independentemente (nenhum sinal disso hoje).
 ## Notas
 
 - Autor: investigação conjunta (bunnyiesart + Claude), decisão registrada 31 Aug 2026.
-- Aprovado por: pendente confirmação de bunnyiesart.
+- Aprovado por: bunnyiesart. Esta linha dizia "pendente confirmação de bunnyiesart"
+  sob um Status `Accepted` até 09 set 2026 — contradição de arquivo. A
+  confirmação veio junto com a autorização de implementação em 08 set 2026
+  (`AGENTS.md` §3), e as seis fases construídas desde então foram
+  construídas sobre este estilo.

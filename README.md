@@ -17,12 +17,21 @@ a client holding no backend credential reaches four spawned upstreams over
 HTTP, each receiving its injected secret, with that secret appearing
 nowhere the client can observe.
 
-**Not yet runnable as a program.** Every component is built and tested,
-but `cmd/mcp-gateway` is still the Phase 1 stub — it migrates two schemas
-and exits. There is no configuration mechanism, nothing wires the Gateway
-to the HTTP surface, and the Definition Signer is not invoked from any
-production path. Phase 6 (Operator Console) is where that composition
-root gets built.
+**It runs.** Phase 6 built the composition root and the Operator Console:
+
+```
+mcp-gateway upstream register -name casemgmt -transport stdio -command …
+mcp-gateway sign casemgmt
+mcp-gateway serve
+```
+
+Configuration is a documented TOML file — copy `config.example.toml`.
+`mcp-gateway help` lists the rest (`tool list|approve`, `audit`,
+`upstream list|deregister`).
+
+Registry entries must be signed to be served (`require_signed` defaults
+to true as of Phase 6); an unsigned entry is reported as such the moment
+you register it, with the command to fix it.
 
 ## Start here
 

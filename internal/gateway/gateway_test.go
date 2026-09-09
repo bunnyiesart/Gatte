@@ -41,6 +41,7 @@ import (
 	"github.com/bunnyiesart/Gatte/internal/quarantine"
 	quarantinesql "github.com/bunnyiesart/Gatte/internal/quarantine/sqlite"
 	"github.com/bunnyiesart/Gatte/internal/registry"
+	"github.com/bunnyiesart/Gatte/internal/signer"
 	"github.com/bunnyiesart/Gatte/internal/store"
 	"github.com/bunnyiesart/Gatte/internal/vault"
 )
@@ -145,6 +146,17 @@ func (d *fakeDialer) Dial(_ context.Context, spec UpstreamSpec, env map[string]s
 		d.upstreams[spec.Name] = up
 	}
 	return up, nil
+}
+
+// wasDialed reports whether Dial was ever called for this upstream. Used
+// to prove signature verification happens *before* anything is spawned:
+// a tampered entry that is refused only after dialing has already run its
+// command, which is the outcome verification exists to prevent.
+func (d *fakeDialer) wasDialed(name string) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	_, ok := d.specs[name]
+	return ok
 }
 
 func (d *fakeDialer) upstream(name string) *fakeUpstream {
@@ -1358,4 +1370,135 @@ func TestRecordRefusedProbe_RecordsUnroutableNames(t *testing.T) {
 	if !slices.Equal(got, want) {
 		t.Errorf("audit records = %v, want %v", got, want)
 	}
+}
+
+// signatureStore is an in-memory signer.Store for the verification tests.
+type signatureStore struct {
+	sigs map[string]signer.Signature
+	err  error
+}
+
+func (s *signatureStore) Put(_ context.Context, name string, sig signer.Signature) error {
+	s.sigs[name] = sig
+	return nil
+}
+
+func (s *signatureStore) Get(_ context.Context, name string) (signer.Signature, error) {
+	if s.err != nil {
+		return signer.Signature{}, s.err
+	}
+	sig, ok := s.sigs[name]
+	if !ok {
+		return signer.Signature{}, signer.ErrNotFound
+	}
+	return sig, nil
+}
+
+func (s *signatureStore) Delete(_ context.Context, name string) error {
+	delete(s.sigs, name)
+	return nil
+}
+
+// TestConnect_VerifiesEntrySignatures is ISSUE-18: until this existed, the
+// Definition Signer was built, tested, and invoked from nowhere -- the
+// control ADR-0003 decided and ADR-0006 specified was not in force.
+//
+// What it must guarantee: an entry whose signature does not match what
+// the registry now says is never spawned. Verification after the process
+// started would be worthless, so this runs before bringUp.
+func TestConnect_VerifiesEntrySignatures(t *testing.T) {
+	key, err := signer.GenerateKey()
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	sgn, err := signer.NewSigner(key)
+	if err != nil {
+		t.Fatalf("NewSigner: %v", err)
+	}
+
+	// Exactly what harness.register writes, so the signature is over the
+	// entry Connect will actually read.
+	entry := registry.UpstreamServer{
+		Name:      "casemgmt",
+		Transport: registry.TransportStdio,
+		Command:   "/usr/bin/casemgmt",
+	}
+
+	t.Run("a valid signature is served", func(t *testing.T) {
+		h := newHarness(t, "casemgmt.list_cases")
+		h.register("casemgmt")
+		h.serve("casemgmt", def("list_cases", "list cases"))
+		h.gw.signatures = &signatureStore{sigs: map[string]signer.Signature{"casemgmt": sgn.Sign(entry)}}
+
+		if err := h.connect(); err != nil {
+			t.Fatalf("Connect with a valid signature: %v", err)
+		}
+		h.approve("casemgmt", "list_cases")
+		if got := h.listNames(analyst); len(got) != 1 {
+			t.Errorf("tools = %v, want the entry to be served", got)
+		}
+	})
+
+	t.Run("a signature over different content is refused", func(t *testing.T) {
+		h := newHarness(t, "casemgmt.list_cases")
+		h.register("casemgmt")
+		h.serve("casemgmt", def("list_cases", "list cases"))
+
+		// Signed when the command was something else -- i.e. the registry
+		// row was changed after signing, which is the whole threat.
+		tampered := entry
+		tampered.Command = "/tmp/evil"
+		h.gw.signatures = &signatureStore{sigs: map[string]signer.Signature{"casemgmt": sgn.Sign(tampered)}}
+
+		err := h.connect()
+		if !errors.Is(err, ErrUpstreamUnavailable) {
+			t.Fatalf("Connect = %v, want ErrUpstreamUnavailable for a bad signature", err)
+		}
+		if got := h.listNames(analyst); len(got) != 0 {
+			t.Errorf("a tampered entry was served anyway: %v", got)
+		}
+		if h.dialer.wasDialed("casemgmt") {
+			t.Error("a tampered entry was DIALED -- verification must happen before anything is spawned")
+		}
+	})
+
+	t.Run("unsigned is tolerated by default and refused when required", func(t *testing.T) {
+		for _, tc := range []struct{ require, wantServed bool }{{false, true}, {true, false}} {
+			h := newHarness(t, "casemgmt.list_cases")
+			h.register("casemgmt")
+			h.serve("casemgmt", def("list_cases", "list cases"))
+			h.gw.signatures = &signatureStore{sigs: map[string]signer.Signature{}}
+			h.gw.requireSig = tc.require
+
+			_ = h.connect()
+			// A refused entry never reaches quarantine, so there is
+			// nothing to approve -- which is itself the stronger
+			// statement: it is not merely unserved, it never entered the
+			// operator's approval queue.
+			if tc.wantServed {
+				h.approve("casemgmt", "list_cases")
+			}
+			served := len(h.listNames(analyst)) == 1
+			if served != tc.wantServed {
+				t.Errorf("RequireSigned=%v: served=%v, want %v", tc.require, served, tc.wantServed)
+			}
+			if !tc.wantServed && h.dialer.wasDialed("casemgmt") {
+				t.Error("an unsigned entry was dialed despite RequireSigned")
+			}
+		}
+	})
+
+	t.Run("an unreadable signature store fails closed", func(t *testing.T) {
+		h := newHarness(t, "casemgmt.list_cases")
+		h.register("casemgmt")
+		h.serve("casemgmt", def("list_cases", "list cases"))
+		h.gw.signatures = &signatureStore{err: errors.New("disk on fire")}
+
+		if err := h.connect(); !errors.Is(err, ErrUpstreamUnavailable) {
+			t.Fatalf("Connect = %v, want ErrUpstreamUnavailable when the store is unreadable", err)
+		}
+		if h.dialer.wasDialed("casemgmt") {
+			t.Error("dialed despite being unable to check integrity")
+		}
+	})
 }

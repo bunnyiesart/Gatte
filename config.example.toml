@@ -197,23 +197,27 @@ key_file = "/usr/local/etc/mcp-gateway/signing.key"
 # Exigir assinatura valida para que uma entrada de registro seja usavel.
 #
 # ---------------------------------------------------------------------
-# `false` AQUI E DIVIDA DECLARADA COM GATILHO, NAO E RECOMENDACAO.
+# O PADRAO E `true` DESDE 09 set 2026. O GATILHO FOI ATINGIDO.
 # ---------------------------------------------------------------------
-# O padrao e `false` porque a ADR-0006 tolera entradas *sem* assinatura
-# enquanto o Operator Console ainda nao consegue produzir assinaturas em
-# volume. No momento em que ele conseguir, isto vira `true` -- no arquivo e
-# no padrao do codigo -- e essa mudanca e parte do escopo daquele trabalho,
-# nao um "quando sobrar tempo".
+# Ate a Fase 6 o padrao era `false`, e a ADR-0006 registrou isso como
+# divida com gatilho explicito: tolerar entrada sem assinatura *apenas*
+# enquanto nada conseguisse assinar em volume. O Operator Console passou a
+# existir (`mcp-gateway sign NOME`), o gatilho disparou, e o padrao virou.
+#
+# Omitir esta linha significa `true`. Escrever `false` e uma decisao
+# consciente de aceitar entradas nao assinadas, nao um descuido -- por isso
+# o campo distingue "nao escrito" de "escrito false" em vez de tratar os
+# dois como a mesma coisa.
 #
 # Cuidado para nao ler mais tolerancia do que existe: uma assinatura
 # *invalida* e sempre recusada, independente deste ajuste. O que `false`
 # tolera e a *ausencia* de assinatura, nao uma assinatura que nao confere.
 #
-# Se errar: `true` antes de todas as entradas estarem assinadas derruba os
-# upstreams nao assinados (falha fechada -- desconfortavel, mas seguro).
-# Deixar `false` depois que o gatilho acima foi atingido e uma entrada de
-# registro forjada entrando sem ninguem notar.
-require_signed = false
+# Se errar: `true` com entradas ainda nao assinadas derruba justamente
+# essas entradas (falha fechada -- desconfortavel, mas seguro; assine com
+# `mcp-gateway sign NOME`). `false` esquecido depois do gatilho e uma
+# entrada de registro forjada entrando sem ninguem notar.
+require_signed = true
 
 
 # ===========================================================================

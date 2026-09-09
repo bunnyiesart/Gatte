@@ -170,7 +170,22 @@ func TestOnlyAdaptersTouchTheDatabase(t *testing.T) {
 	pkgs := modulePackages(t)
 
 	for _, pkg := range pkgs {
-		if isAdapterOrStore(pkg.ImportPath) {
+		// The composition root is exempt, deliberately and narrowly.
+		//
+		// It must hold the one shared *sql.DB in order to hand it to each
+		// adapter's Migrate and New -- that is inseparable from being the
+		// place adapters get wired. The alternatives are worse: an opaque
+		// handle buys nothing, because cmd/ may already import the
+		// adapters themselves, which is the larger privilege; and letting
+		// each adapter open its own connection would break "one embedded
+		// SQLite" (ADR-0001) and the pool pinning internal/store depends
+		// on for correctness.
+		//
+		// This widening does not weaken what the rule protects. The rule
+		// exists to stop *domain* packages reaching past their ports, and
+		// the composition root contains no domain logic -- it is wiring.
+		// Every package that holds a business rule is still covered.
+		if isAdapterOrStore(pkg.ImportPath) || isCompositionRoot(pkg.ImportPath) {
 			continue
 		}
 		for _, imp := range pkg.Imports {

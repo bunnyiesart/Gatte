@@ -46,12 +46,15 @@ export EASYRSA_ALGO=ec
 export EASYRSA_CURVE=prime256v1
 export EASYRSA_CA_EXPIRE=3650
 export EASYRSA_CERT_EXPIRE=825
-export EASYRSA_REQ_CN="mcp-gateway-lab-vpn-ca"
 
+# NB: EASYRSA_REQ_CN is deliberately NOT exported. easy-rsa applies it to every
+# request it builds, so exporting it stamps the CA's own name onto the server
+# and client certificates too, and you end up unable to tell the three apart in
+# a log. Pass it per-command instead.
 if [ ! -f "$PKI_DIR/ca.crt" ]; then
 	say "initialising easy-rsa PKI at $PKI_DIR"
 	easyrsa init-pki
-	easyrsa build-ca nopass
+	EASYRSA_REQ_CN="mcp-gateway-lab-vpn-ca" easyrsa build-ca nopass
 else
 	say "PKI already present at $PKI_DIR (leaving CA alone)"
 fi
@@ -109,8 +112,28 @@ tls-version-min 1.2
 keepalive 10 60
 persist-key
 persist-tun
+
+# Drop privileges after the tun device and the socket are open. This is only
+# safe with DCO off, and DCO is on by default in OpenVPN 2.7 -- see below.
 user openvpn
 group openvpn
+
+# Not a preference: with ovpn-dco (2.7's in-kernel data path) the server keeps
+# issuing privileged ioctls for the lifetime of the process, so it cannot run
+# as an unprivileged user. Leaving both on looks fine at startup and then dies
+# the instant a client connects:
+#
+#   Failed to poll for packets: Operation not permitted (errno=1)
+#   MULTI_sva: pool returned IPv4=10.8.0.2
+#   Failed to create new peer: Operation not permitted (errno=1)
+#   Exiting due to fatal error
+#
+# The client's TLS handshake completes, then it waits forever for a PUSH_REPLY
+# that no longer has a server to come from. So it is DCO or the privilege
+# drop, not both. This lab picks the privilege drop: a userspace data path is
+# far more throughput than a couple of jails on a loopback will ever need, and
+# the alternative is an internet-reachable process running as root.
+disable-dco
 
 # The client reaches this server through gvproxy's userspace UDP forwarder,
 # which is a NAT. If it ever rebinds the source port mid-session the session
@@ -147,7 +170,20 @@ fi
 
 # ------------------------------------------------------------------ service
 say "(re)starting openvpn"
-service openvpn restart >/dev/null 2>&1 || service openvpn start
+service openvpn stop >/dev/null 2>&1 || true
+
+# An openvpn that died on a fatal error leaves its tun interface behind, and
+# the next start then fails to name its own device and silently lands on a
+# different one. Only interfaces in the "openvpn" group are touched, and only
+# with no openvpn process running, so this cannot take out anything else.
+if ! pgrep -q openvpn; then
+	for _ifc in $(ifconfig -g openvpn 2>/dev/null); do
+		say "destroying stale tun interface $_ifc"
+		ifconfig "$_ifc" destroy || true
+	done
+fi
+
+service openvpn start
 
 sleep 2
 if ! service openvpn status >/dev/null 2>&1; then

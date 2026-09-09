@@ -157,7 +157,12 @@ func buildServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) (
 		slog.String("listen", cfg.Listen),
 		slog.Bool("require_signed", cfg.Signer.SignaturesRequired()),
 	)
-	warnIfNotLoopback(logger, cfg.Listen)
+	// Before anything is opened, spawned or connected: if this process must
+	// not be reachable, finding that out after building the whole stack
+	// would mean spawning every upstream subprocess only to exit.
+	if err := requireLoopbackBind(cfg.Listen); err != nil {
+		return fail(err)
+	}
 
 	db, err := openStore(cfg)
 	if err != nil {
@@ -519,20 +524,40 @@ func failedUpstreams(entries []registry.UpstreamServer, connErr error) []string 
 	return failed
 }
 
-// warnIfNotLoopback says plainly, in the first lines of the log, that this
-// process is reachable from the network.
+// requireLoopbackBind refuses to start on anything but loopback
+// (design/adr/0011-network-exposure-and-tls-termination.md item 1).
 //
-// A non-loopback bind is the operator's decision and is not refused --
-// config.DefaultListen already makes loopback the default nobody has to
-// choose. What it must not be is invisible: the whole reason the default
-// exists is that a gateway holding every backend credential should not
-// become network-reachable by accident.
-func warnIfNotLoopback(logger *slog.Logger, listen string) {
+// This used to warn and continue. It does not any more, and the change is
+// the control: under ADR-0011 the gateway terminates no TLS and holds no
+// certificate, so a non-loopback bind is not a slightly weaker deployment
+// -- it is every analyst's bearer token crossing the network in cleartext,
+// along with the case data and IOCs behind it. A warning hands that
+// decision to whoever is in a hurry at the time.
+//
+// Reaching this gateway from another machine is a job for something in
+// front of it: a TLS-terminating reverse proxy sharing this jail, itself
+// reachable only over the VPN. That is why the message names the fix
+// rather than just the problem.
+//
+// There is deliberately no override flag. An `allow_insecure_bind` would
+// be switched on once "just to test" and never switched off -- the exact
+// mechanism by which require_signed would have rotted had ADR-0006 not
+// written its trigger down. If terminating TLS here ever becomes right,
+// that is an amendment to ADR-0011 with a real listen_tls, not a flag that
+// disables a check.
+func requireLoopbackBind(listen string) error {
 	if isLoopbackAddr(listen) {
-		return
+		return nil
 	}
-	logger.Warn("mcp-gateway: configured listen address is NOT loopback -- this process will be reachable from the network",
-		slog.String("listen", listen))
+	// Note this also refuses an address that cannot be parsed: isLoopbackAddr
+	// returns false when SplitHostPort fails. "Cannot tell" must not read as
+	// "loopback" -- the same fail-closed reading ADR-0004 applies to a
+	// registry it cannot read.
+	return fmt.Errorf(
+		"listen: %q is not a loopback address, and this gateway refuses to be network-reachable directly (design/adr/0011)\n"+
+			"It terminates no TLS, so binding here would put every analyst's bearer token on the wire in cleartext.\n"+
+			"Set listen to 127.0.0.1:PORT and put a TLS-terminating reverse proxy in front of it, in this same jail.",
+		listen)
 }
 
 // isLoopbackAddr reports whether a host:port address is reachable only

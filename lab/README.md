@@ -26,6 +26,32 @@ pattern and the official `github.com/modelcontextprotocol/go-sdk`:
 | `lab/servers/casemgmt/`, `lab/servers/logsearch/`, `lab/servers/docsearch/`, `lab/servers/threatintel/` | One fake MCP server per real backend, each with 2 canned domain tools (no network calls, no real data) plus `<name>_credcheck`. |
 | `lab/probe/` | The verification tool: spawns a mock over stdio with a freshly-generated secret in `MOCK_SECRET`/`MOCK_EXPECT`, calls its credcheck tool, and — independent of that result — scans every raw byte of MCP wire traffic (via `mcp.LoggingTransport`) for the secret. Exit codes: `0` pass, `1` a real problem was found (bad credcheck result and/or a leak — a leak always forces `1`, never masked by a usage-error code), `2` the probe itself couldn't run (bad args, spawn/connect/parse failure). |
 
+### Tool naming: the mocks mirror the real fleet, warts included
+
+A mock's tools carry the names its **real counterpart** uses, not a tidy
+invented scheme, because the point of a mock is to be shaped like the
+thing it stands in for.
+
+That means the real fleet's inconsistency shows through, deliberately:
+
+| Upstream | Tool names | Client-facing, after namespacing |
+|---|---|---|
+| `casemgmt` | `list_cases`, `get_case` | `casemgmt.list_cases` |
+| `logsearch` | `search_relative`, `search_keyword` | `logsearch.search_relative` |
+| `threatintel` | `lookup_ip`, `enrich` | `threatintel.lookup_ip` |
+| `docsearch` | `docsearch_search`, `docsearch_list_indices` | `docsearch.docsearch_search` |
+
+`docsearch` really does self-prefix its own tools, so `docsearch.docsearch_search`
+is the genuine production name and not a bug to tidy away. The mocks
+briefly all self-prefixed, which made `casemgmt.casemgmt_list_cases` the name a
+role would have had to grant -- wrong for three of the four backends, and
+wrong in the silent direction: a role written against the real names would
+authorize nothing, and the analyst would simply see an empty tool list.
+
+The `<name>_credcheck` tools keep their prefix regardless. That convention
+predates namespacing, `lab/probe` is invoked with those exact names, and it
+is what lets a credcheck result say which upstream answered.
+
 Build and run:
 
 ```bash

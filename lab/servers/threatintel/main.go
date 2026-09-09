@@ -102,11 +102,11 @@ func newServer() *mcp.Server {
 	mockutil.AddCredCheck(server, "threatintel_credcheck")
 
 	mcp.AddTool(server, &mcp.Tool{
-		Name:        "threatintel_lookup_ip",
+		Name:        "lookup_ip",
 		Description: "Looks up fake reputation data for an IP address (synthetic test data, not a real backend).",
 	}, func(_ context.Context, _ *mcp.CallToolRequest, args lookupIPArgs) (*mcp.CallToolResult, any, error) {
 		if args.IP == "" {
-			return missingIPResult("threatintel_lookup_ip"), nil, nil
+			return missingIPResult("lookup_ip"), nil, nil
 		}
 
 		score, country, malicious := reputationFor(args.IP)
@@ -127,12 +127,12 @@ func newServer() *mcp.Server {
 	})
 
 	mcp.AddTool(server, &mcp.Tool{
-		Name: "threatintel_enrich",
+		Name: "enrich",
 		Description: "Fans out to fake VirusTotal, Shodan, and AbuseIPDB sources for an IP address and returns " +
 			"a combined result (synthetic test data, not a real backend; mocks the real threatintel server's composite tool).",
 	}, func(_ context.Context, _ *mcp.CallToolRequest, args enrichArgs) (*mcp.CallToolResult, any, error) {
 		if args.IP == "" {
-			return missingIPResult("threatintel_enrich"), nil, nil
+			return missingIPResult("enrich"), nil, nil
 		}
 
 		result := enrichResult{

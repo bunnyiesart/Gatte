@@ -1,0 +1,336 @@
+# Configuracao de exemplo do mcp-gateway.
+#
+# Copie para o caminho real do deploy e edite. O binario nao procura este
+# arquivo sozinho: o caminho e passado explicitamente, para que nunca haja
+# duvida sobre qual arquivo esta valendo.
+#
+#   mcp-gateway -config /usr/local/etc/mcp-gateway/config.toml
+#
+# ---------------------------------------------------------------------------
+# REGRA 1: NENHUM SEGREDO NESTE ARQUIVO. NUNCA.
+# ---------------------------------------------------------------------------
+# Este arquivo carrega **caminhos** e **identificadores** -- onde vive a
+# identidade age, onde vive a chave de assinatura, qual issuer confiar, qual
+# a audiencia deste gateway. Valor de segredo nenhum, em campo nenhum.
+#
+# Os segredos continuam onde as ADR 0003, 0005 e 0006 os puseram: no arquivo
+# sops cifrado (`vault.secrets_file`) e em arquivos de chave com permissao
+# restrita ao dono. E exatamente isso que torna este arquivo versionavel sem
+# cerimonia -- e o que faz o hook de pre-commit do template nao ter nada
+# para barrar nele. Se voce se pegar querendo colar uma senha aqui, o lugar
+# certo e o arquivo sops; adicione a chave la e aponte o codigo para ela.
+#
+# ---------------------------------------------------------------------------
+# REGRA 2: CHAVE DESCONHECIDA E ERRO, NAO E IGNORADA.
+# ---------------------------------------------------------------------------
+# O carregador (`internal/config.Load`) recusa iniciar se o arquivo contem
+# qualquer chave que ele nao reconheca. Isso e proposital e e controle de
+# seguranca: `require_signd = true` -- uma letra a menos -- seria aceito e
+# descartado em silencio por um parser permissivo, e o arquivo continuaria
+# *lendo* como se a exigencia de assinatura estivesse ligada. Um erro na
+# inicializacao e barulhento; uma politica de seguranca que nao aplicou e
+# muda.
+#
+# Consequencia pratica: nao comente uma chave "para depois" trocando o nome
+# dela. Comente a linha inteira com `#`.
+#
+# ---------------------------------------------------------------------------
+# REGRA 3: PAPEL E POLITICA, ENTAO PAPEL MORA AQUI (ADR-0009).
+# ---------------------------------------------------------------------------
+# Upstream e estado operacional e vive no banco, administrado por subcomando.
+# Papel decide quem pode chamar o que, entao vive neste arquivo: alargar um
+# papel vira um diff revisado em Pull Request com commit assinado, e nao um
+# comando que nao deixa rastro. O custo aceito e que recarregar papeis exige
+# reiniciar o processo. Para ~7 pessoas cujos papeis mudam raramente, e
+# barato.
+
+
+# ===========================================================================
+# Rede
+# ===========================================================================
+
+# Endereco onde o endpoint MCP escuta.
+#
+# O padrao (quando omitido) e "127.0.0.1:8080" -- loopback, deliberadamente.
+# Um gateway que guarda a credencial de todos os backends nao deve virar
+# alcancavel pela rede porque alguem esqueceu de configurar o endereco.
+#
+# Se errar: colocar "0.0.0.0:8080" aqui expoe o endpoint a toda a rede da
+# jail/host. Publique a porta de forma explicita (`bastille rdr`, pf, o
+# proxy que termina TLS) em vez de abrir o bind. Este processo nao termina
+# TLS; quem faz isso e o proxy na frente dele.
+listen = "127.0.0.1:8080"
+
+# Caminho do arquivo SQLite embutido: Upstream Registry, Tool Quarantine,
+# Audit Trail e as assinaturas das entradas (ADR-0001).
+#
+# Obrigatorio, sem padrao. Nao guarda segredo nenhum -- credencial de
+# upstream fica no vault, e o registro guarda apenas a *referencia* a ela.
+#
+# Se errar: um caminho em diretorio que o processo nao pode escrever faz o
+# gateway falhar na inicializacao (o que e o comportamento desejado). Um
+# caminho em `/tmp` faz o Audit Trail evaporar no reboot -- e o audit e o
+# unico registro de quem chamou o que.
+database = "/var/db/mcp-gateway/mcp-gateway.db"
+
+
+# ===========================================================================
+# [oidc] -- identidade (ADR-0008)
+# ===========================================================================
+# O gateway e um OAuth 2.0 Resource Server: ele **valida** tokens emitidos
+# pelo provedor que a equipe hospeda, nunca emite identidade e nunca
+# repassa o token do chamador para um upstream.
+#
+# Repare no que NAO existe aqui: client_secret. Um resource server nao
+# precisa de um -- ele verifica assinatura, issuer, audiencia e expiracao
+# contra as chaves publicas do issuer. Se alguem pedir para voce colocar um
+# segredo de cliente nesta secao, a pergunta certa e por que.
+
+[oidc]
+
+# URL base do provedor, usada para a descoberta OIDC
+# (`<issuer>/.well-known/openid-configuration`).
+#
+# Obrigatorio. Precisa ser URL absoluta.
+#
+# Se errar: o gateway nao consegue buscar as chaves de assinatura e recusa
+# todo token -- falha fechada, e o modo certo de falhar. Confira tambem que
+# o issuer e alcancavel de *dentro* da jail, e nao so da sua estacao.
+issuer = "https://id.soc.internal/realms/soc"
+
+# Identificador deste gateway como recurso: o valor que o token precisa
+# trazer em `aud`, e o mesmo que a metadata RFC 9728 publica como
+# `resource`.
+#
+# Obrigatorio e **sem padrao nenhum**, deliberadamente. Defaultar audiencia
+# significaria aceitar um token emitido para outro servico do mesmo IdP --
+# o wiki interno, o Grafana, qualquer coisa -- como se tivesse sido emitido
+# para este gateway. E precisamente o que a RFC 8707 existe para impedir.
+# Um analista com token valido do Grafana nao tem, por isso, permissao de
+# chamar ferramenta de DFIR aqui.
+#
+# Se errar: audiencia divergente do que o IdP emite = todo token e recusado
+# com 401. Audiencia larga demais (ou compartilhada entre servicos) =
+# fronteira de seguranca perdida, sem nenhum sintoma visivel.
+audience = "https://gw.soc.internal/mcp"
+
+# Nome do claim que carrega os grupos do usuario. Provedores divergem
+# (`groups`, `roles`, `cognito:groups`, ...); deixar configuravel e o que
+# mantem o gateway agnostico de provedor.
+#
+# Padrao quando omitido: "groups".
+#
+# Se errar: o token e aceito (autenticacao ok) mas nenhum grupo e lido,
+# entao `group_to_role` nao resolve nada e o chamador fica sem papel
+# algum -- ou seja, proibido de tudo. Sintoma tipico: "autentiquei e a
+# lista de ferramentas veio vazia".
+groups_claim = "groups"
+
+# Servidores de autorizacao anunciados na metadata RFC 9728, para que um
+# cliente compativel descubra sozinho onde obter um token.
+#
+# Padrao quando omitido: `[issuer]`. Preencha explicitamente apenas se mais
+# de um provedor puder emitir token para este recurso.
+#
+# Se errar: uma lista vazia (ou apontando para o lugar errado) faz o 401
+# devolver uma metadata que nao manda o cliente a lugar nenhum -- o cliente
+# nao tem como se recuperar sozinho.
+authorization_servers = ["https://id.soc.internal/realms/soc"]
+
+
+# ===========================================================================
+# [vault] -- Credential Vault (ADR-0003 e ADR-0005)
+# ===========================================================================
+# Caminhos, so caminhos.
+
+[vault]
+
+# Documento JSON cifrado com sops. Obrigatorio.
+#
+# **Este arquivo e seguro para versionar** -- e o proposito inteiro do sops:
+# o conteudo esta cifrado em repouso e no git, e so o par de chaves age
+# abaixo o abre. E o unico lugar deste projeto onde valor de segredo mora.
+#
+# Se errar: caminho inexistente, ou arquivo que nao e sops valido, faz a
+# inicializacao falhar. O gateway nao sobe sem conseguir resolver as
+# credenciais dos upstreams -- subir "meio funcionando" seria pior.
+secrets_file = "/usr/local/etc/mcp-gateway/secrets.enc.json"
+
+# Identidade age que decifra o arquivo acima. Obrigatorio.
+#
+# **Este arquivo NAO vai para o git.** Ele e a exposicao de texto-claro em
+# disco que este projeto assume conscientemente (ADR-0005): precisa ser
+# `0600` e pertencer ao usuario que roda o gateway. Essa permissao e o
+# unico item do ADR-0009 que nao da para automatizar -- e pre-requisito
+# conferido a mao, documentado em deploy/freebsd-jail.md.
+#
+#   install -m 0600 -o mcpgw -g mcpgw age.key /usr/local/etc/mcp-gateway/age.key
+#
+# Se errar: permissao frouxa aqui significa que qualquer processo da jail
+# le a chave que abre todos os segredos de todos os upstreams. E o pior
+# erro possivel neste arquivo.
+age_key_file = "/usr/local/etc/mcp-gateway/age.key"
+
+
+# ===========================================================================
+# [signer] -- Definition Signer (ADR-0006)
+# ===========================================================================
+
+[signer]
+
+# Chave privada Ed25519 que assina entradas do registro: PEM, PKCS#8,
+# `0600`, dona do usuario que roda o gateway.
+#
+# **Opcional**, e vale entender por que. Sem esta chave o gateway continua
+# capaz de *verificar* assinaturas; ele so nao consegue *criar* novas. Essa
+# divisao e a certa para um processo que serve trafego e nunca assina: em
+# producao, considere deixar esta linha comentada e assinar entradas a
+# partir do Operator Console, num processo separado que e o unico a tocar a
+# chave privada.
+#
+# Se errar: apontar para um arquivo que nao e PEM PKCS#8 valido faz a
+# inicializacao falhar com erro explicito. Permissao frouxa permite que
+# alguem forje entradas de registro que o gateway vai aceitar como
+# legitimas.
+key_file = "/usr/local/etc/mcp-gateway/signing.key"
+
+# Exigir assinatura valida para que uma entrada de registro seja usavel.
+#
+# ---------------------------------------------------------------------
+# `false` AQUI E DIVIDA DECLARADA COM GATILHO, NAO E RECOMENDACAO.
+# ---------------------------------------------------------------------
+# O padrao e `false` porque a ADR-0006 tolera entradas *sem* assinatura
+# enquanto o Operator Console ainda nao consegue produzir assinaturas em
+# volume. No momento em que ele conseguir, isto vira `true` -- no arquivo e
+# no padrao do codigo -- e essa mudanca e parte do escopo daquele trabalho,
+# nao um "quando sobrar tempo".
+#
+# Cuidado para nao ler mais tolerancia do que existe: uma assinatura
+# *invalida* e sempre recusada, independente deste ajuste. O que `false`
+# tolera e a *ausencia* de assinatura, nao uma assinatura que nao confere.
+#
+# Se errar: `true` antes de todas as entradas estarem assinadas derruba os
+# upstreams nao assinados (falha fechada -- desconfortavel, mas seguro).
+# Deixar `false` depois que o gatilho acima foi atingido e uma entrada de
+# registro forjada entrando sem ninguem notar.
+require_signed = false
+
+
+# ===========================================================================
+# Papeis
+# ===========================================================================
+# Cada `[[role]]` e um nome e uma lista explicita de ferramentas
+# namespaced. A lista e curta de proposito: com ~65 ferramentas e dois
+# papeis, isto e algo que uma pessoa le inteiro e entende as 03h durante um
+# incidente. Uma DSL de politica seria mais uma coisa que ninguem numa
+# equipe de sete pessoas lembra como depurar.
+#
+# ---------------------------------------------------------------------
+# NAO EXISTE CORINGA. NEM `casemgmt.*`, NEM `*`, NEM PREFIXO.
+# ---------------------------------------------------------------------
+# O casamento e exato, e a ausencia de coringa e uma decisao, nao uma
+# limitacao a ser contornada. `casemgmt.*` significa que, no dia em que o
+# servidor `casemgmt` ganhar uma ferramenta nova -- digamos `casemgmt.delete_case`
+# ou `casemgmt.merge_cases` --, todo mundo com este papel passa a poder chamar
+# ela, sem revisao, sem diff, sem ninguem decidir nada. Ampliar um papel
+# tem que ser um ato deliberado com nome e sobrenome. Escreva a linha.
+#
+# Convencao desta equipe para cada entrada nova:
+#   - o nome completo e namespaced (`servidor.ferramenta`);
+#   - um comentario dizendo *por que* este papel precisa dela;
+#   - quem aprovou e quando revisar, quando a ferramenta escrever algo.
+#
+# Um papel com `tools = []` e valido e as vezes e o que se quer: alguem que
+# pode autenticar mas nao pode agir (um estagiario em onboarding, uma conta
+# de servico que so existe para o health check ver 200).
+
+# ---------------------------------------------------------------------------
+# n1-triage -- o analista de plantao. So consulta.
+# ---------------------------------------------------------------------------
+# Regra do papel: nada aqui muda estado em lugar nenhum. Triagem le, decide
+# e escala. Se uma ferramenta desta lista um dia passar a escrever, ela sai
+# daqui no mesmo commit.
+[[role]]
+name = "n1-triage"
+tools = [
+  # CASEMGMT -- fila de casos. Ver o que esta aberto e abrir um caso para ler.
+  "casemgmt.list_cases",
+  "casemgmt.get_case",
+  # Threatintel Army -- enriquecimento de indicador contra threat intel. Leitura
+  # pura, mas consome cota de API de terceiro: se aparecer alerta de rate
+  # limit, o suspeito e aqui.
+  "threatintel.lookup_ip",
+  "threatintel.lookup_domain",
+  # Logsearch -- busca em janela relativa ("ultimos 30 min"), que e a forma
+  # que a triagem usa. A busca por intervalo absoluto fica com o DFIR:
+  # varredura de meses e cara e nao e trabalho de plantao.
+  "logsearch.search_relative",
+]
+
+# ---------------------------------------------------------------------------
+# dfir-lead -- quem conduz a investigacao. Le mais fundo e escreve no caso.
+# ---------------------------------------------------------------------------
+# Superconjunto do n1-triage por enquanto, mas nao dependa disso: os dois
+# papeis sao listas independentes de proposito, para que apertar a triagem
+# nao dependa de lembrar o que isso faz com o DFIR.
+[[role]]
+name = "dfir-lead"
+tools = [
+  # Tudo que a triagem ve.
+  "casemgmt.list_cases",
+  "casemgmt.get_case",
+  "threatintel.lookup_ip",
+  "threatintel.lookup_domain",
+  "logsearch.search_relative",
+  # Escrita no caso: a unica escrita concedida a qualquer papel hoje.
+  # Toda chamada fica no Audit Trail atribuida ao `sub` do IdP.
+  "casemgmt.add_case_note",
+  "casemgmt.update_case_status",
+  # Busca historica: busca por palavra-chave no Logsearch (sem a janela
+  # relativa curta da triagem) e consulta direta ao Docsearch, para
+  # quando a investigacao precisa voltar semanas.
+  "logsearch.search_keyword",
+  "docsearch.search",
+  "docsearch.list_indices",
+  # Enriquecimento pago/ruidoso. Fora da triagem porque uma submissao a
+  # sandbox e observavel pelo adversario -- quem faz isso precisa saber o
+  # que esta fazendo.
+  "threatintel.virustotal",
+]
+
+# ---------------------------------------------------------------------------
+# onboarding -- pode autenticar, nao pode agir.
+# ---------------------------------------------------------------------------
+# Lista vazia e valido e intencional. Serve para confirmar que a conta e o
+# grupo do IdP estao certos antes de conceder qualquer ferramenta: a pessoa
+# se autentica, ve uma lista de ferramentas vazia, e a gente sabe que o
+# caminho de identidade funciona.
+[[role]]
+name = "onboarding"
+tools = []
+
+
+# ===========================================================================
+# Grupo do IdP -> papel
+# ===========================================================================
+# A esquerda, o valor exato como ele aparece no claim configurado em
+# `oidc.groups_claim`. A direita, o nome de um `[[role]]` definido acima.
+#
+# Grupo do IdP sem mapeamento aqui e simplesmente ignorado, e nao um erro:
+# o IdP carrega dezenas de grupos que nada tem a ver com este gateway, e
+# tratar um grupo alheio como erro quebraria o login toda vez que alguem
+# entrasse num time nao relacionado.
+#
+# Ja o contrario e erro *na inicializacao*: mapear para um papel que nao
+# existe (um `[[role]]` renomeado e um mapeamento esquecido) faz o gateway
+# recusar subir. Isso e melhor do que a alternativa, que e negar
+# silenciosamente as ferramentas de um analista real no meio de um
+# incidente.
+#
+# Quem nao cai em nenhum mapeamento fica sem papel, e quem esta sem papel e
+# proibido de tudo. Esse e o padrao de falha fechada: "ninguem decidiu" se
+# le como "nao".
+[group_to_role]
+"soc-n1" = "n1-triage"
+"soc-dfir" = "dfir-lead"
+"soc-onboarding" = "onboarding"

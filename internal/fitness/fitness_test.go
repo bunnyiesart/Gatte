@@ -37,6 +37,7 @@ import (
 	_ "github.com/bunnyiesart/Gatte/internal/access"
 	_ "github.com/bunnyiesart/Gatte/internal/audit"
 	_ "github.com/bunnyiesart/Gatte/internal/audit/sqlite"
+	_ "github.com/bunnyiesart/Gatte/internal/config"
 	_ "github.com/bunnyiesart/Gatte/internal/gateway"
 	_ "github.com/bunnyiesart/Gatte/internal/registry"
 	_ "github.com/bunnyiesart/Gatte/internal/registry/sqlite"

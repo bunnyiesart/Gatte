@@ -60,7 +60,7 @@ func TestSearchRelative(t *testing.T) {
 	sess, closeFn := connect(t)
 	defer closeFn()
 
-	res := callTool(t, sess, "logsearch_search_relative", map[string]any{
+	res := callTool(t, sess, "search_relative", map[string]any{
 		"query":         "failed login",
 		"range_minutes": 30,
 	})
@@ -86,7 +86,7 @@ func TestSearchKeyword(t *testing.T) {
 	sess, closeFn := connect(t)
 	defer closeFn()
 
-	res := callTool(t, sess, "logsearch_search_keyword", map[string]any{
+	res := callTool(t, sess, "search_keyword", map[string]any{
 		"keyword": "ransomware",
 	})
 	if res.IsError {
@@ -111,7 +111,7 @@ func TestSearchKeywordEmpty(t *testing.T) {
 	sess, closeFn := connect(t)
 	defer closeFn()
 
-	res := callTool(t, sess, "logsearch_search_keyword", map[string]any{
+	res := callTool(t, sess, "search_keyword", map[string]any{
 		"keyword": "",
 	})
 	if !res.IsError {

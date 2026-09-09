@@ -482,6 +482,15 @@ type caller struct {
 // defence in depth and must not be optimized away -- the list was true when
 // it was built, and a call arrives later.
 //
+// # Auditing the calls that never reach a handler
+//
+// Because an unserved name is refused by the SDK's own tools/call
+// implementation, it never reaches gateway.Dispatch -- and Dispatch is what
+// writes denials to the trail. The server therefore also carries the
+// receiving middleware from [Handler.recordUnservedToolCalls], which
+// records such a call and then hands the request on untouched. See that
+// method for why the interception is there and not somewhere else.
+//
 // # The unreachable path
 //
 // ServeHTTP installs the caller in the context before it delegates, and it
@@ -499,6 +508,14 @@ func (h *Handler) getServer(r *http.Request) *mcp.Server {
 		)
 		return srv
 	}
+
+	// served is the set of names this server will actually answer a
+	// tools/call for. It is built from the registrations rather than from
+	// c.tools because the two can differ: a tool with an unusable schema is
+	// skipped below, and a caller who names it is refused by the SDK just
+	// like a caller who names somebody else's tool. The middleware has to
+	// see it the way the SDK does or it would miss that refusal.
+	served := make(map[string]struct{}, len(c.tools))
 
 	for _, def := range c.tools {
 		schema, ok := objectSchema(def.InputSchema)
@@ -525,8 +542,92 @@ func (h *Handler) getServer(r *http.Request) *mcp.Server {
 			Description: def.Description,
 			InputSchema: schema,
 		}, h.dispatchTool(c.identity, def.Name))
+		served[def.Name] = struct{}{}
 	}
+
+	// Installed after the registrations so served is complete, and last so
+	// it is the outermost middleware -- it must observe every tools/call,
+	// including any the SDK's own middleware might later short-circuit.
+	srv.AddReceivingMiddleware(h.recordUnservedToolCalls(c.identity, served))
 	return srv
+}
+
+// methodToolsCall is the JSON-RPC method name for a tool invocation. The
+// SDK's own constant is unexported, and the string is fixed by the MCP
+// specification, so it is restated here rather than inferred.
+const methodToolsCall = "tools/call"
+
+// recordUnservedToolCalls returns the receiving middleware that puts a
+// tools/call for a name this caller was never served onto the audit trail.
+//
+// # Why here
+//
+// The gap it closes (ISSUE-16) is that per-identity registration and denial
+// auditing, each correct alone, cancel each other out: an unserved name is
+// answered by the SDK's own tools/call implementation, which never calls
+// gateway.Dispatch, which is the only writer of denials. Three places
+// could have caught it, and the other two were rejected:
+//
+//   - A catch-all tool. There is none to register: mcp.Server dispatches on
+//     an exact name, so "catching everything" would mean registering the
+//     names, and a registered tool is a listed tool. Answering the gap by
+//     advertising the fleet's names to everyone would trade an audit hole
+//     for an enumeration oracle -- a strictly worse bargain.
+//
+//   - Sniffing the body in ServeHTTP, before delegating. That means a
+//     second JSON-RPC parser -- framing, batches, notifications, the
+//     streamable transport's rules -- over attacker-controlled bytes, kept
+//     in agreement with the SDK's by hand, plus buffering and replacing
+//     every request body. A divergent decoder at the boundary is the same
+//     defect class this package already refuses in toCallToolResult.
+//
+// Receiving middleware sits exactly between the two: the SDK has already
+// decoded the request, so the name read here is the same string its
+// dispatcher will look up, and the request has not been dispatched yet.
+//
+// # Why the caller cannot tell
+//
+// The middleware records and then returns next(...) verbatim. It writes no
+// response, maps no error and changes no timing decision, so the answer a
+// caller gets is produced by the same SDK code as before this existed: a
+// tool outside the caller's role and a tool that exists nowhere at all
+// remain byte-for-byte identical, which is the property
+// TestToolOutsideRoleIsAbsentAndUncallable pins. The record is added for
+// the operator; nothing is added for the caller.
+//
+// # What counts as unserved
+//
+// Any name not in served: another role's tool, a tool in this caller's
+// role that Tool Quarantine has not approved, a tool skipped for an
+// unusable schema, or a name that matches nothing in the fleet. The
+// fabricated name is recorded on purpose and not as an accident of the
+// check -- somebody guessing at tool names is the same signal as somebody
+// naming a real tool they were not given, and it is the one an operator is
+// most likely to want. Classifying which case it was is left to the
+// gateway (see gateway.Gateway.RecordRefusedProbe): doing it here would
+// mean this layer consulting the routing table on behalf of a caller who
+// was refused before any lookup, and that lookup is the oracle the opaque
+// error exists to deny.
+//
+// A tool that *is* served is left alone: its handler calls
+// gateway.Dispatch, which records the attempt itself. So every tools/call
+// produces exactly one record, from exactly one of the two paths.
+func (h *Handler) recordUnservedToolCalls(id access.Identity, served map[string]struct{}) mcp.Middleware {
+	return func(next mcp.MethodHandler) mcp.MethodHandler {
+		return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
+			if method == methodToolsCall {
+				// A tools/call whose params did not decode into the shape the
+				// SDK dispatches on is left to the SDK to reject; there is no
+				// name to attribute a record to.
+				if params, ok := req.GetParams().(*mcp.CallToolParamsRaw); ok && params != nil {
+					if _, offered := served[params.Name]; !offered {
+						h.gateway.RecordRefusedProbe(ctx, id, params.Name)
+					}
+				}
+			}
+			return next(ctx, method, req)
+		}
+	}
 }
 
 // dispatchTool returns the handler registered for one namespaced tool: it

@@ -49,7 +49,7 @@ func TestListCases(t *testing.T) {
 	defer sess.Close()
 
 	ctx := context.Background()
-	res, err := sess.CallTool(ctx, &mcp.CallToolParams{Name: "casemgmt_list_cases"})
+	res, err := sess.CallTool(ctx, &mcp.CallToolParams{Name: "list_cases"})
 	if err != nil {
 		t.Fatalf("call tool: %v", err)
 	}
@@ -73,7 +73,7 @@ func TestGetCaseKnownID(t *testing.T) {
 
 	want := fakeCases[0]
 	res, err := sess.CallTool(ctx, &mcp.CallToolParams{
-		Name:      "casemgmt_get_case",
+		Name:      "get_case",
 		Arguments: map[string]any{"case_id": want.CaseID},
 	})
 	if err != nil {
@@ -107,7 +107,7 @@ func TestGetCaseUnknownID(t *testing.T) {
 	ctx := context.Background()
 
 	res, err := sess.CallTool(ctx, &mcp.CallToolParams{
-		Name:      "casemgmt_get_case",
+		Name:      "get_case",
 		Arguments: map[string]any{"case_id": "does-not-exist"},
 	})
 	if err != nil {

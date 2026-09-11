@@ -2,11 +2,13 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -818,5 +820,37 @@ func TestRunAuditVerify_NamesTheChainToAnchorAgainst(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("`audit -verify` does not say %q:\n%s", want, out)
 		}
+	}
+}
+
+// TestReportCredentialDrift_RefusesAnExpiredContextLoudly is the safety net
+// under a bug that produced no symptom.
+//
+// The refresh loop cancelled its context the moment Refresh returned and
+// then handed that same dead context to the drift check. Nothing broke,
+// because the vault in use does not consult the context -- so the check
+// would have reported "no drift" forever, indistinguishably from having
+// found none, the day any ctx-honouring Provider replaced it.
+//
+// "No drift reported" and "drift never looked for" must not be the same
+// silence. The guard runs before the gateway is touched, which is also why
+// this test needs no gateway.
+func TestReportCredentialDrift_RefusesAnExpiredContextLoudly(t *testing.T) {
+	var logged bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logged, nil))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	// No gateway: reaching one would be the bug. A panic here is a failure.
+	(&serveStack{}).reportCredentialDrift(ctx, logger)
+
+	out := logged.String()
+	if !strings.Contains(out, "NOT checked") {
+		t.Errorf("an expired context produced no warning; the check's silence is indistinguishable "+
+			"from finding no drift:\n%s", out)
+	}
+	if !strings.Contains(out, "level=ERROR") {
+		t.Errorf("reported below Error: a rotation going unnoticed is what the loop exists to prevent:\n%s", out)
 	}
 }

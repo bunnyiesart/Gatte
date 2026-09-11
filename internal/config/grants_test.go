@@ -426,3 +426,38 @@ func TestGrantsFieldIsOptionalInEveryFixture(t *testing.T) {
 		})
 	}
 }
+
+// TestLoadRejectsADuplicatedTrustedKeysList is the trust-anchor half of the
+// collapsed-key problem, and the one that costs most.
+//
+// TOML's duplicate-key error does not reach inside [signer], so writing
+// trusted_keys twice keeps the LAST list and discards the first without a
+// word. A file that reads as trusting two keys can be running on one -- and
+// ADR-0010 moved this list into the config precisely so it would be
+// reviewable there.
+func TestLoadRejectsADuplicatedTrustedKeysList(t *testing.T) {
+	// The duplicate must go INSIDE the existing [signer] table: a second
+	// [signer] header is a top-level duplicate, which TOML rejects on its
+	// own and is a different bug from the one under test here.
+	src := strings.Replace(completeConfig,
+		`trusted_keys   = ["YBVP3wMTzQlOQqvDUZ31FVpYqX9Yenqw5fPVYLlQ9HE=", "95hrvkq5Lv2DH0yrq4V/4YgBs/0B/InLgZzpBF0+QxU="]`,
+		"trusted_keys   = [\"YBVP3wMTzQlOQqvDUZ31FVpYqX9Yenqw5fPVYLlQ9HE=\"]\ntrusted_keys   = [\"95hrvkq5Lv2DH0yrq4V/4YgBs/0B/InLgZzpBF0+QxU=\"]",
+		1)
+	if src == completeConfig {
+		t.Fatal("the fixture's trusted_keys line moved; this test is not exercising what it claims")
+	}
+	err := loadErr(t, src)
+	if !strings.Contains(err.Error(), "signer.trusted_keys") {
+		t.Errorf("the error does not name the key that was lost: %v", err)
+	}
+}
+
+// TestLoadRejectsADuplicatedToolsList is the same defect on the older half
+// of a role's grant.
+func TestLoadRejectsADuplicatedToolsList(t *testing.T) {
+	err := loadErr(t, completeConfig+
+		"\n[[role]]\nname = \"n1-dup\"\ntools = [\"casemgmt.list_cases\"]\ntools = [\"casemgmt.get_case\"]\n")
+	if !strings.Contains(err.Error(), "role.tools") {
+		t.Errorf("the error does not name the key that was lost: %v", err)
+	}
+}

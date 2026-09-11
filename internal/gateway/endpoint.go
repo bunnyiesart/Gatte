@@ -881,6 +881,13 @@ func (g *Gateway) bringUp(ctx context.Context, entry registry.UpstreamServer) (U
 	// Taken here, while the plaintext is briefly in hand, and nowhere
 	// else -- this is the only moment the gateway knows what the upstream
 	// is actually being given. Digests, not values: see the creds field.
+	//
+	// The `defer clear(env)` above is what makes "briefly" true in code
+	// rather than in prose, and it is load-bearing: an attempt to redact
+	// call-time errors by holding this map on the connection produced a
+	// wrapper that redacted nothing, because by then the map was empty.
+	// Keeping a COPY would have bought that redaction by defeating this
+	// control; auditFailure drops the upstream's text instead.
 	g.rememberCredentials(entry.Name, env)
 
 	up, err := g.dialer.Dial(ctx, specFor(entry), env)
@@ -1403,10 +1410,21 @@ func (g *Gateway) auditFailure(ctx context.Context, c Caller, tool, upstream str
 		slog.String("tool", tool),
 		slog.String("upstream", upstream),
 		slog.String("reason", reason),
-		// The upstream's own text goes here and only here. It is
-		// upstream-controlled data, and the audit trail is not a place this
-		// gateway lets a backend write free text into.
-		slog.String("detail", cause.Error()),
+		// The upstream's own text is NOT logged, and this used to be the one
+		// place it was. A backend that echoes the credential it was handed --
+		// `401: token=...` is an ordinary thing for an API client to say --
+		// put that value straight into this line, which is shipped off the
+		// box to a SIEM and read by everyone with access to it. Confirmed by
+		// TestDispatch_AnUpstreamEchoingItsCredentialDoesNotLeakItIntoTheLog.
+		//
+		// Redacting it instead would mean holding the resolved values for the
+		// connection's lifetime, which defeats the `defer clear(env)` in
+		// bringUp -- a control this project enforces rather than merely
+		// documents. Losing the text costs the difference between "the
+		// backend rejected our credential" and "the backend is down"; that
+		// distinction is recoverable from the backend's own logs, and a
+		// credential in ours is not recoverable at all.
+		slog.String("error_class", fmt.Sprintf("%T", cause)),
 	)
 	writeCtx, cancel := auditWriteCtx(ctx)
 	defer cancel()

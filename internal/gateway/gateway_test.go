@@ -26,11 +26,14 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -2713,5 +2716,56 @@ func TestDispatch_AnUpstreamEchoingItsCredentialDoesNotLeakItIntoTheLog(t *testi
 	// assertion above is passing because nothing was written at all.
 	if !strings.Contains(logged.String(), "dispatched call failed") {
 		t.Fatalf("no failure was logged, so the assertion above proves nothing:\n%s", logged.String())
+	}
+}
+
+// TestCredentialDrift_TheKeyNeverLeaves pins the other never-log guarantee
+// that nothing tested: the per-process HMAC key.
+//
+// endpoint.go says it is "32 random bytes generated once per process and
+// never persisted", and gives the reason: a plain hash of a low-entropy
+// credential is recoverable from a dictionary if a digest reaches a core
+// dump or a log, so the digest is keyed with a value that dies with the
+// process. Every part of that is worth exactly what enforces it, and until
+// now nothing did -- a mutation putting the key or a digest in the drift
+// report, or in a log line, survived the whole suite.
+func TestCredentialDrift_TheKeyNeverLeaves(t *testing.T) {
+	const secret = "vt-fake-drift-subject-7c1a"
+
+	var logged bytes.Buffer
+	h := newHarness(t, "threatintel.lookup_ip")
+	h.gw.log = slog.New(slog.NewTextHandler(&logged, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	h.register("threatintel", "THREATINTEL_VT_KEY")
+	h.vault.values["THREATINTEL_VT_KEY"] = secret
+	h.serve("threatintel", def("lookup_ip", "look up an ip"))
+	h.mustConnect()
+
+	// Rotate underneath the live connection, then ask.
+	h.vault.values["THREATINTEL_VT_KEY"] = "vt-fake-rotated-9b2d"
+	drift := h.gw.CredentialDrift(t.Context())
+	if len(drift) == 0 {
+		t.Fatal("no drift reported after a rotation; this test is not exercising the path it claims")
+	}
+
+	// The key itself, in the two encodings anything careless would use.
+	keyHex := hex.EncodeToString(h.gw.credKey)
+	keyB64 := base64.StdEncoding.EncodeToString(h.gw.credKey)
+
+	report := fmt.Sprintf("%+v", drift) + logged.String()
+	for name, forbidden := range map[string]string{
+		"the HMAC key (hex)":    keyHex,
+		"the HMAC key (base64)": keyB64,
+		"the old credential":    secret,
+		"the new credential":    "vt-fake-rotated-9b2d",
+	} {
+		if forbidden != "" && strings.Contains(report, forbidden) {
+			t.Errorf("LEAK: %s appears in the drift report or the log", name)
+		}
+	}
+	// And no digest either: a keyed digest is inert outside this process,
+	// but it is still derived from the credential and has no business
+	// leaving. Any 64-hex-char run in the report would be one.
+	if regexp.MustCompile(`\b[0-9a-f]{64}\b`).MatchString(report) {
+		t.Errorf("a 64-hex-character digest appears in the drift report or the log:\n%s", report)
 	}
 }

@@ -159,3 +159,38 @@ func TestNewRefusesAgeIdentityReadableByOthers(t *testing.T) {
 		}
 	})
 }
+
+// TestDecryptErrorDoesNotCarrySopsStderr pins a guarantee provider.go
+// states twice and nothing tested: sops's stderr is discarded rather than
+// wired into the returned error.
+//
+// The reason is in New's doc comment -- sops's diagnostics can echo
+// fragments of the file it was decrypting -- and the mutation that breaks
+// it is one line: point cmd.Stderr at a buffer and interpolate it. Both
+// halves of the guarantee (the discard, and the error staying quiet)
+// survived the whole suite untested until now.
+//
+// The failure is provoked with an age identity that cannot decrypt this
+// file, which is the ordinary way sops fails loudly.
+func TestDecryptErrorDoesNotCarrySopsStderr(t *testing.T) {
+	secretsFile, _ := newFixture(t, map[string]string{"CASEMGMT_API_TOKEN": "tok-fake-do-not-echo-me"})
+	// A DIFFERENT identity: valid in form, wrong for this file.
+	_, wrongKeyFile := newFixture(t, map[string]string{"OTHER": "x"})
+
+	_, err := sopsage.New(context.Background(), secretsFile, wrongKeyFile)
+	if err == nil {
+		t.Fatal("decrypting with the wrong identity succeeded; this test is not exercising a failure")
+	}
+
+	msg := err.Error()
+	// Non-vacuity: the error must actually be sops failing, or the
+	// assertions below hold trivially.
+	if !containsFold(msg, "sops") {
+		t.Fatalf("the error is not a sops failure, so this proves nothing: %q", msg)
+	}
+	for _, forbidden := range []string{"tok-fake-do-not-echo-me", "CASEMGMT_API_TOKEN", "age1", "AGE-SECRET-KEY"} {
+		if containsFold(msg, forbidden) {
+			t.Errorf("LEAK: the decrypt error carries %q: %q", forbidden, msg)
+		}
+	}
+}

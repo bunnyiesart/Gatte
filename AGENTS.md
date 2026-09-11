@@ -100,9 +100,15 @@ From `design/adr/0003-security-controls.md`'s explicit "not covered" list:
 
 - **Telemetry/observability (OWASP MCP08)** — `Audit Trail` covers "who
   called what," not operational metrics. No design yet.
-- **Response-schema validation** — mitigation for prompt-injection via a
-  tool's *result* re-entering model context. Cited in research, not
-  designed.
+- **Response validation** — designed and built 10 Sep 2026
+  (`design/adr/0014-response-validation-scope.md`), and the entry that
+  stood here was wrong in a way worth keeping visible: it called this
+  "mitigation for prompt-injection via a tool's *result*", which schema
+  validation cannot deliver. What exists is a size ceiling on results
+  (always enforced, refusal not truncation) and validation of
+  `structuredContent` against a declared `outputSchema` (no backend
+  declares one yet). **Prompt injection via result remains open**, is not
+  claimed as covered, and is not something this layer can close.
 - **Token-passthrough prevention beyond credential stripping** — if the
   gateway ever calls a third-party OAuth-protected API on a client's
   behalf, it must mint its own upstream token (spec-level MUST, see

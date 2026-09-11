@@ -51,6 +51,10 @@ var (
 	// some default state, since the default a bug would most likely reach
 	// for ("") is not usable but also not visibly wrong.
 	ErrInvalidStatus = errors.New("quarantine: invalid status")
+	// ErrChangedIsNotRevocable is returned by Revoke and Tool.Revoked for a
+	// tool whose status is StatusChanged. See Tool.Revoked for why that is
+	// refused rather than allowed as a no-op.
+	ErrChangedIsNotRevocable = errors.New("quarantine: a changed tool cannot be revoked")
 )
 
 // hashDomainTag is mixed into every Hash as its first length-prefixed
@@ -276,13 +280,63 @@ func (t Tool) Approved(now time.Time) Tool {
 	return next
 }
 
+// Revoked returns the state t transitions to when an operator withdraws
+// their own approval: back to pending, with the approved baseline cleared
+// and the last observation kept.
+//
+// This is the other half of Approve, and ADR-0013 adds it because without
+// it approval was a one-way door -- the only route back to pending was
+// deleting the database, which is not an incident-response action. The
+// obvious move during an incident is "I no longer trust this tool, stop
+// serving it", and Usable is re-read on every list and every dispatch, so
+// the effect lands on the very next call rather than at the next restart.
+//
+// Three details, each of them deliberate:
+//
+//   - ApprovedHash is cleared, not kept. A leftover baseline is what a
+//     later observation would match against, and a revoked tool that
+//     re-entered the usable set because its definition still hashed to the
+//     withdrawn baseline would make the withdrawal meaningless.
+//   - ObservedHash and FirstSeenAt survive. Revoking withdraws a judgement;
+//     it does not un-see the tool, and pretending the gateway never
+//     observed it would lose the discovery history an operator reads.
+//   - A `changed` tool is REFUSED, with ErrChangedIsNotRevocable.
+//
+// That last one is the one worth arguing, because "revoke returns a tool to
+// pending" reads as though it should apply to any state. It must not apply
+// here. `changed` is not merely "not approved": under ADR-0007 rule 1 it is
+// the standing record that a definition a human vetted was replaced
+// afterwards, and it is what makes `mcp-gateway tool list` print its own
+// alarm block. Moving it to pending would relabel a rug pull as a tool
+// nobody has looked at yet -- erasing exactly the evidence rule 1 exists to
+// preserve -- and it would buy nothing operationally, since a changed tool
+// is already unusable. Refusing costs an operator nothing they wanted.
+//
+// Revoking a tool that is already pending is a no-op, not an error: an
+// operator asking for a state they already have has not made a mistake.
+func (t Tool) Revoked(now time.Time) (Tool, error) {
+	if !t.Status.Valid() {
+		return Tool{}, ErrInvalidStatus
+	}
+	if t.Status == StatusChanged {
+		return Tool{}, ErrChangedIsNotRevocable
+	}
+
+	next := t
+	next.Status = StatusPending
+	next.ApprovedHash = ""
+	next.UpdatedAt = now
+	return next, nil
+}
+
 // Store is the port through which the domain persists and retrieves
 // quarantine state. Implementations are adapters (e.g. the sqlite
 // subpackage) and must honor the contracts documented on each method.
 //
-// Implementations must not reimplement the state machine: Observe and
-// Approve are required to derive their result through NewTool,
-// Tool.Observed and Tool.Approved, so the rules stay in one place.
+// Implementations must not reimplement the state machine: Observe, Approve
+// and Revoke are required to derive their result through NewTool,
+// Tool.Observed, Tool.Approved and Tool.Revoked, so the rules stay in one
+// place.
 type Store interface {
 	// Observe records that tool t was seen on serverName during discovery
 	// and returns the resulting state.
@@ -318,6 +372,52 @@ type Store interface {
 	// definition the gateway has actually seen, never one typed from
 	// memory.
 	Approve(ctx context.Context, serverName, toolName string) (Tool, error)
+
+	// Revoke returns (serverName, toolName) to pending and returns the
+	// resulting state, per Tool.Revoked -- an operator withdrawing an
+	// approval they themselves gave.
+	//
+	// It returns ErrNotFound if no entry exists for that pair, and
+	// ErrChangedIsNotRevocable for a tool whose status is StatusChanged.
+	// Read Tool.Revoked for why a changed tool is refused; the short
+	// version is that `changed` is evidence of a rug pull, revoking it
+	// would relabel that evidence as "never reviewed", and the tool is
+	// already not being served.
+	//
+	// Revoke never widens the usable set: every state it can produce is
+	// pending, and pending is never usable.
+	Revoke(ctx context.Context, serverName, toolName string) (Tool, error)
+
+	// Forget removes every quarantine entry belonging to serverName and
+	// returns how many were removed.
+	//
+	// It exists for one caller -- `mcp-gateway upstream deregister` -- and
+	// for one reason: quarantine state is keyed by upstream *name*, so
+	// without this it outlives the entry it describes and a replacement
+	// registered under the same name inherits approvals a human gave to
+	// something else. That was reproduced on the live deployment: an
+	// upstream removed and re-registered with a different command, a
+	// different credential list and a new signature had all three of its
+	// tools still approved and servable the moment it came up. It is the
+	// same lesson as ADR-0006 item 3 (the stored signature is deleted with
+	// the entry for exactly this reason) and this is the same fix.
+	//
+	// Note what it does NOT protect against: the fingerprint cannot tell a
+	// replacement advertising byte-identical definitions from the original,
+	// because it is a hash of those definitions and they are identical.
+	// Removal, not detection, is what covers that case -- which is why the
+	// test for this is written with identical definitions.
+	//
+	// Removing entries for a server that has none is not an error: it
+	// returns 0. Deregistering an upstream the gateway never connected to
+	// is an ordinary thing to do, and an error there would put a scary line
+	// in front of a routine action.
+	//
+	// Forget is destructive and irreversible: it discards approvals,
+	// baselines, first-seen timestamps and any standing `changed` verdict.
+	// Everything the deregistered upstream advertises next is seen for the
+	// first time again, and starts pending.
+	Forget(ctx context.Context, serverName string) (int, error)
 
 	// Get returns the quarantine entry for (serverName, toolName). It
 	// returns ErrNotFound if no entry exists for that pair, and

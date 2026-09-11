@@ -194,7 +194,7 @@ ADR com `listen_tls` de verdade, não uma flag que desliga a checagem.
 que a VPN e o token OIDC já fazem. Um laptop autorizado e comprometido
 continua sendo um cliente legítimo com um token legítimo — o que é
 exatamente o que o Audit Trail existe para tornar reconstituível, e uma
-razão a mais para o endereço de origem que falta nos registros (ISSUE-24).
+razão a mais para o endereço de origem que falta nos registros (GAB-24).
 
 ## Compliance
 
@@ -212,6 +212,6 @@ razão a mais para o endereço de origem que falta nos registros (ISSUE-24).
 
 - Autor: Claude, 09 set 2026. Topologia decidida por bunnyiesart (OpenVPN,
   Authelia em jail própria, TLS no proxy reverso).
-- Fecha a metade de gateway do ISSUE-27. Depende de `0001` (um processo),
+- Fecha a metade de gateway do GAB-27. Depende de `0001` (um processo),
   `0006` (precedente de isolar material sensível) e `0008` (IdP como
   serviço separado, e o acoplamento de arranque).

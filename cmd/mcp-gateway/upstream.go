@@ -63,11 +63,10 @@ Exit codes: 0 ok, 1 ran and found a problem, 2 could not run.
 func upstreamList(args []string, stdout, stderr io.Writer) int {
 	fs, configPath := opFlagSet("upstream list", stderr)
 	asJSON := fs.Bool("json", false, "print JSON instead of an aligned table")
-	fs.Usage = func() { upstreamUsage(stderr) }
-	if code, ok := opParse(fs, args); !ok {
+	if code, ok := opParse(fs, args, stdout, stderr, upstreamUsage); !ok {
 		return code
 	}
-	if !opNoArgs(fs, stderr) {
+	if !opNoArgs(fs, stderr, upstreamUsage) {
 		return exitCannotRun
 	}
 	return opRun(*configPath, stdout, stderr, func(e *opEnv) int {
@@ -151,9 +150,8 @@ func runUpstreamList(e *opEnv, asJSON bool) int {
 			states[i],
 		)
 	}
-	if err := tw.Flush(); err != nil {
-		fmt.Fprintf(e.stderr, "writing table: %v\n", err)
-		return exitCannotRun
+	if !opFlushTable(tw, e.stderr) {
+		return exitProblem
 	}
 
 	var unsigned, invalid []string
@@ -218,11 +216,10 @@ func upstreamRegister(args []string, stdout, stderr io.Writer) int {
 	fs.Var(&argv, "arg", "argument for the spawned command; repeat, in order")
 	var envs opStringList
 	fs.Var(&envs, "env", "NAME of an environment variable the upstream needs; repeat. Names only, never values")
-	fs.Usage = func() { upstreamUsage(stderr) }
-	if code, ok := opParse(fs, args); !ok {
+	if code, ok := opParse(fs, args, stdout, stderr, upstreamUsage); !ok {
 		return code
 	}
-	if !opNoArgs(fs, stderr) {
+	if !opNoArgs(fs, stderr, upstreamUsage) {
 		return exitCannotRun
 	}
 
@@ -280,9 +277,8 @@ func runUpstreamRegister(e *opEnv, entry registry.UpstreamServer) int {
 	fmt.Fprintf(tw, "  transport\t%s\n", entry.Transport)
 	fmt.Fprintf(tw, "  command / url\t%s\n", opCommandLine(entry))
 	fmt.Fprintf(tw, "  env var names\t%s\n", opDash(strings.Join(entry.EnvVarNames, ", ")))
-	if err := tw.Flush(); err != nil {
-		fmt.Fprintf(e.stderr, "writing table: %v\n", err)
-		return exitCannotRun
+	if !opFlushTable(tw, e.stderr) {
+		return exitProblem
 	}
 
 	// Registering deliberately does not sign: signing needs the private
@@ -290,6 +286,82 @@ func runUpstreamRegister(e *opEnv, entry registry.UpstreamServer) int {
 	// an entry the gateway will refuse (or warn about) is a confusing
 	// thing to have created silently, so say it here rather than let it be
 	// discovered at the next restart.
+	//
+	// What this used to do was print "NOT SIGNED" categorically, without
+	// ever opening the signature store -- an assertion about a table it
+	// never read. Signatures are keyed by *name*, not by entry, so a name
+	// that has been used before can still carry one: deregister removes it,
+	// but a hand-edited database, a restore from backup, or a crash between
+	// deregister's two deletes does not. In that state the console said
+	// "NOT SIGNED ... will NOT be served" and `upstream list`, one command
+	// later, said SIGNED: yes. Both cannot be true, and the one that was
+	// wrong is the one an operator reads at the moment they decide whether
+	// there is anything left to do (GAB-25).
+	//
+	// entrySignatureState is the same function `upstream list` uses, and
+	// therefore the same answer the gateway will reach at boot.
+	state, err := entrySignatureState(e, entry)
+	if err != nil {
+		// The entry is registered; only the reading of the signature store
+		// failed. Saying nothing about signing would be the same silence
+		// this block exists to break, and guessing would be worse than the
+		// bug being fixed here.
+		fmt.Fprintf(e.stderr, "\nWARNING: %q was registered, but whether it is signed could not be determined: %v\nDo not assume either way -- find out before relying on this entry:\n\n    mcp-gateway upstream list\n", entry.Name, err)
+		return exitProblem
+	}
+
+	switch state {
+	case sigValid:
+		// The loud case, and the reason this is exitProblem rather than a
+		// footnote. A signature that verifies an entry created seconds ago
+		// was not made by anybody reviewing *this* entry -- it was made
+		// for a previous occupant of the name, and it matches because the
+		// new entry runs the same command with the same arguments and the
+		// same env var names. That is exactly the transplant including
+		// Name in the canonical form (ADR-0006 item 3) exists to prevent,
+		// handed over for free by the name being reused.
+		//
+		// It is not automatically an attack -- re-registering an entry you
+		// just removed by mistake lands here too -- but it means the
+		// gateway will serve this entry, immediately, on the strength of a
+		// review nobody performed today.
+		fmt.Fprintf(e.stdout, `
+WARNING: this entry is ALREADY SIGNED, and nobody signed it just now.
+
+A signature is stored under the name %q and it VERIFIES the entry that was
+just created -- so the gateway will serve it from the next restart, with no
+further action. Registering did not do that: the signature was already
+there, left by a previous entry of the same name, and it matches because
+this entry runs the same command with the same arguments and env var names.
+
+That means what the gateway will trust here was vetted by whoever signed
+that earlier entry, and nobody reviewed the one you just registered. If
+that is not what you intended, remove it -- deregistering also removes the
+stored signature:
+
+    mcp-gateway upstream deregister %s
+
+If it is what you intended, sign it yourself so the signature belongs to
+this entry and to you:
+
+    mcp-gateway sign %s
+
+Either way, check what is actually stored:
+
+    mcp-gateway upstream list
+`, entry.Name, entry.Name, entry.Name)
+		return exitProblem
+
+	case sigInvalid:
+		// A stored signature that does not verify is refused no matter
+		// what require_signed says (ADR-0006 item 4), so the require_signed
+		// sentence below would be misleading here: this entry is not
+		// servable either way.
+		fmt.Fprintf(e.stdout, "\nWARNING: a signature is already stored under the name %q and it is INVALID for\nthe entry just registered -- it does not verify it, or it was made by a key\nthat is not in signer.trusted_keys.\n\nThe gateway refuses an entry with a signature it does not accept regardless of\nsigner.require_signed, so this entry will NOT be served. Left over from an\nearlier entry of this name, most likely. Signing replaces it:\n\n    mcp-gateway sign %s\n",
+			entry.Name, entry.Name)
+		return exitProblem
+	}
+
 	verb := "warn about"
 	consequence := "signer.require_signed is false today, so the entry will still be served"
 	if e.cfg.Signer.SignaturesRequired() {
@@ -304,8 +376,7 @@ func runUpstreamRegister(e *opEnv, entry registry.UpstreamServer) int {
 // upstreamDeregister removes an entry from the registry.
 func upstreamDeregister(args []string, stdout, stderr io.Writer) int {
 	fs, configPath := opFlagSet("upstream deregister", stderr)
-	fs.Usage = func() { upstreamUsage(stderr) }
-	if code, ok := opParse(fs, args); !ok {
+	if code, ok := opParse(fs, args, stdout, stderr, upstreamUsage); !ok {
 		return code
 	}
 	if fs.NArg() != 1 {
@@ -320,17 +391,39 @@ func upstreamDeregister(args []string, stdout, stderr io.Writer) int {
 	})
 }
 
+// runUpstreamDeregister removes everything this gateway holds under one
+// upstream name: the registry row, the stored signature, and the quarantine
+// state. All three are keyed by name, which is why all three are this
+// command's job.
+//
+// A missing registry row does not stop the other two, and that is GAB-25(b).
+// This used to return on registry.ErrNotFound before reaching either
+// cleanup -- so in exactly the state the warnings below describe (row gone,
+// signature and approvals still there, both keyed by a name anyone may
+// register next), the remedy those warnings prescribe did nothing and said
+// "no such upstream". Getting that answer while stale approvals sit in the
+// database is the worst of both: nothing was cleaned, and the operator was
+// told there was nothing to clean.
 func runUpstreamDeregister(e *opEnv, name string) int {
-	err := e.upstreams().Deregister(e.ctx(), name)
-	switch {
+	registryHadIt := true
+	switch err := e.upstreams().Deregister(e.ctx(), name); {
 	case errors.Is(err, registry.ErrNotFound):
-		fmt.Fprintf(e.stderr, "no upstream named %q is registered.\n\nList what is:\n\n    mcp-gateway upstream list\n", name)
-		return exitProblem
+		registryHadIt = false
 	case err != nil:
 		fmt.Fprintf(e.stderr, "registry: %v\n", err)
 		return exitCannotRun
 	}
-	fmt.Fprintf(e.stdout, "Deregistered %q.\n", name)
+
+	if registryHadIt {
+		fmt.Fprintf(e.stdout, "Deregistered %q.\n", name)
+	} else {
+		// Said first, and on stderr, because it is what the operator asked
+		// about and is probably a typo. The command keeps going anyway:
+		// whether a row exists says nothing about whether the state keyed
+		// by the same name does.
+		fmt.Fprintf(e.stderr, "no upstream named %q is registered.\n\nList what is:\n\n    mcp-gateway upstream list\n", name)
+		fmt.Fprintf(e.stdout, "\nChecking anyway for state left behind under that name -- a signature and\nany approvals are keyed by name, not by the entry, so they can outlive it.\n")
+	}
 
 	// The signature is keyed by entry name and would outlive the entry.
 	// Left behind, it would authenticate a *future* entry registered under
@@ -338,14 +431,66 @@ func runUpstreamDeregister(e *opEnv, name string) int {
 	// including Name in the canonical form (ADR-0006 item 3) exists to
 	// prevent, handed over for free by a name being reused. Removing it is
 	// part of deregistering, not a separate chore to remember.
+	//
+	// cleaned counts what was actually removed here, so that the closing
+	// message for a name with no registry row can say which of the two it
+	// is: an operator's typo, or a database that was carrying state for an
+	// entry that no longer exists.
+	cleaned := 0
 	switch err := e.signatures().Delete(e.ctx(), name); {
 	case errors.Is(err, signer.ErrNotFound):
-		fmt.Fprintf(e.stdout, "It had no stored signature.\n")
+		fmt.Fprintf(e.stdout, "There was no stored signature under this name.\n")
 	case err != nil:
-		fmt.Fprintf(e.stderr, "\nWARNING: the entry was removed but its stored signature was not: %v\nA signature left behind would authenticate a future entry registered under\nthe same name. Remove it before reusing %q.\n", err, name)
+		fmt.Fprintf(e.stderr, "\nWARNING: the stored signature under %q was NOT removed: %v\nA signature left behind would authenticate a future entry registered under\nthe same name. Remove it before reusing %q.\n", name, err, name)
 		return exitProblem
 	default:
+		cleaned++
 		fmt.Fprintf(e.stdout, "Its stored signature was removed too, so the name cannot be reused by an\nentry nobody signed.\n")
 	}
-	return exitOK
+
+	// Same argument as the signature, one component over (ADR-0013 item 2).
+	// Quarantine state is keyed by upstream *name*, so an approval left
+	// behind here does not merely go stale -- it vouches for whatever is
+	// registered under that name next. This was reproduced on the live
+	// deployment: an upstream removed and re-registered with a different
+	// command, different credentials and a new signature had all three of
+	// its tools still approved and servable the moment it came up, because
+	// the quarantine never saw a new upstream at all.
+	//
+	// The fingerprint cannot cover this. A replacement advertising
+	// byte-identical definitions -- which is exactly what swapping a
+	// backend's binary would arrange, the tool list being the part an
+	// attacker controls -- hashes to the approved baseline, because it *is*
+	// the approved baseline. Only removing the state closes it.
+	//
+	// Not fatal on failure, and reported the same way the signature is: the
+	// entry is already gone, and leaving the operator believing otherwise
+	// would be worse than an exit code.
+	switch n, err := e.tools().Forget(e.ctx(), name); {
+	case err != nil:
+		fmt.Fprintf(e.stderr, "\nWARNING: the quarantine state under %q was NOT removed: %v\nApprovals left behind are keyed by name, so anything registered under %q\nnext would be served under the approvals a human gave to the entry this\nstate belonged to. Clear them before reusing the name.\n", name, err, name)
+		return exitProblem
+	case n == 0:
+		fmt.Fprintf(e.stdout, "There were no observed tools under this name, so there was no quarantine\nstate to remove.\n")
+	default:
+		cleaned += n
+		fmt.Fprintf(e.stdout, "%d quarantine %s removed with it, so a future upstream registered under\nthis name starts from pending and has to be approved on its own -- an\nidentical-looking replacement does not inherit the review this one had.\n",
+			n, opPlural(n, "entry was", "entries were"))
+	}
+
+	if registryHadIt {
+		return exitOK
+	}
+	// exitProblem either way: a name with no registry row is either a typo
+	// or a database that was still vouching for an entry nobody can see.
+	// Both are things the operator asked about and did not get.
+	if cleaned > 0 {
+		fmt.Fprintf(e.stdout, "\nNothing was registered under %q, but state keyed by that name was, and it\nhas now been removed. Until this ran, the next entry registered under %q\nwould have inherited it.\n", name, name)
+	} else {
+		// Worth one line rather than silence: "no such upstream" on its own
+		// leaves open whether anything is still stored under the name, and
+		// that question is the whole reason this command keeps going.
+		fmt.Fprintf(e.stdout, "\nSo nothing was left over either: the name %q is clean and safe to reuse.\n", name)
+	}
+	return exitProblem
 }

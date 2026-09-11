@@ -15,11 +15,11 @@ import (
 	"github.com/bunnyiesart/Gatte/internal/registry"
 )
 
-// casemgmtEntry is the shape of a real entry from AGENTS.md §1: a stdio server
+// irisEntry is the shape of a real entry from AGENTS.md §1: a stdio server
 // spawned through docker, whose credentials reach it as environment
 // variables the Credential Vault resolves at spawn time. The entry itself
 // holds only the variable *names*.
-func casemgmtEntry() registry.UpstreamServer {
+func irisEntry() registry.UpstreamServer {
 	return registry.UpstreamServer{
 		Name:        "casemgmt",
 		Transport:   registry.TransportStdio,
@@ -73,8 +73,8 @@ func newVerifier(t *testing.T, trusted ...*Signer) *Verifier {
 //
 // # Why this test is shaped the way it is
 //
-// It used to read `before := casemgmtEntry(); sig := Sign(before); after :=
-// casemgmtEntry()` and then assert Canonical(before) == Canonical(after). Those
+// It used to read `before := irisEntry(); sig := Sign(before); after :=
+// irisEntry()` and then assert Canonical(before) == Canonical(after). Those
 // two values are byte-identical by construction, so the assertion was
 // Canonical(x) == Canonical(x): it would have passed against an
 // implementation that hashed the secret values, against one that hashed
@@ -107,7 +107,7 @@ func TestCredentialRotationDoesNotInvalidateSignature(t *testing.T) {
 	// a value even by accident, because UpstreamServer has no field to put
 	// one in -- which is the property under test.
 	entryFor := func(v map[string]string) registry.UpstreamServer {
-		e := casemgmtEntry()
+		e := irisEntry()
 		e.EnvVarNames = slices.Sorted(maps.Keys(v))
 		return e
 	}
@@ -166,13 +166,13 @@ func TestVerify_RefusesAnEntryResignedWithAnUntrustedKey(t *testing.T) {
 	operator := newSigner(t)
 	verifier := newVerifier(t, operator)
 
-	entry := casemgmtEntry()
+	entry := irisEntry()
 	legitimate := operator.Sign(entry)
 	if err := verifier.Verify(entry, legitimate); err != nil {
 		t.Fatalf("test setup: the operator's own signature must verify: %v", err)
 	}
 
-	tampered := casemgmtEntry()
+	tampered := irisEntry()
 	tampered.Command = "/tmp/evil"
 	if bytes.Equal(Canonical(entry), Canonical(tampered)) {
 		t.Fatal("test setup: the tampered entry is indistinguishable from the original")
@@ -213,7 +213,7 @@ func TestVerify_TrustsEveryConfiguredKey(t *testing.T) {
 	incoming := newSigner(t)
 	verifier := newVerifier(t, retiring, incoming)
 
-	entry := casemgmtEntry()
+	entry := irisEntry()
 	for name, s := range map[string]*Signer{"retiring key": retiring, "incoming key": incoming} {
 		t.Run(name, func(t *testing.T) {
 			if err := verifier.Verify(entry, s.Sign(entry)); err != nil {
@@ -237,7 +237,7 @@ func TestVerify_TrustsEveryConfiguredKey(t *testing.T) {
 // signature cannot mean anything, so it must not be treated as if it did.
 func TestVerify_WithNoTrustedKeysRefusesEverything(t *testing.T) {
 	s := newSigner(t)
-	entry := casemgmtEntry()
+	entry := irisEntry()
 	verifier := newVerifier(t)
 
 	if got := verifier.TrustedCount(); got != 0 {
@@ -281,7 +281,7 @@ func TestNewVerifier_CopiesTheTrustedSet(t *testing.T) {
 
 	keys[0] = attacker.PublicKey()
 
-	entry := casemgmtEntry()
+	entry := irisEntry()
 	if err := v.Verify(entry, trusted.Sign(entry)); err != nil {
 		t.Errorf("the originally trusted key stopped verifying after the caller's slice was mutated: %v", err)
 	}
@@ -309,12 +309,12 @@ func TestVerifier_Trusts(t *testing.T) {
 // TestCanonicalIgnoresTimestamps pins the other exclusion: an unrelated
 // write bumps UpdatedAt, and a signature must survive it.
 func TestCanonicalIgnoresTimestamps(t *testing.T) {
-	entry := casemgmtEntry()
+	entry := irisEntry()
 
 	s := newSigner(t)
 	sig := s.Sign(entry)
 
-	touched := casemgmtEntry()
+	touched := irisEntry()
 	touched.UpdatedAt = entry.UpdatedAt.Add(72 * time.Hour)
 	touched.CreatedAt = entry.CreatedAt.Add(-time.Second)
 
@@ -327,8 +327,8 @@ func TestCanonicalIgnoresTimestamps(t *testing.T) {
 }
 
 func TestCanonicalIsIndependentOfEnvVarNameOrder(t *testing.T) {
-	entry := casemgmtEntry()
-	reordered := casemgmtEntry()
+	entry := irisEntry()
+	reordered := irisEntry()
 	slices.Reverse(reordered.EnvVarNames)
 
 	if slices.Equal(entry.EnvVarNames, reordered.EnvVarNames) {
@@ -340,8 +340,8 @@ func TestCanonicalIsIndependentOfEnvVarNameOrder(t *testing.T) {
 }
 
 func TestCanonicalChangesWhenAnEnvVarNameIsAdded(t *testing.T) {
-	entry := casemgmtEntry()
-	extended := casemgmtEntry()
+	entry := irisEntry()
+	extended := irisEntry()
 	extended.EnvVarNames = append(extended.EnvVarNames, "CASEMGMT_DEBUG_TOKEN")
 
 	if bytes.Equal(Canonical(entry), Canonical(extended)) {
@@ -350,7 +350,7 @@ func TestCanonicalChangesWhenAnEnvVarNameIsAdded(t *testing.T) {
 }
 
 func TestCanonicalDoesNotMutateItsInput(t *testing.T) {
-	entry := casemgmtEntry()
+	entry := irisEntry()
 	entry.EnvVarNames = []string{"Z_LAST", "A_FIRST"}
 	original := slices.Clone(entry.EnvVarNames)
 
@@ -459,7 +459,7 @@ func TestCanonicalEncodingIsUnambiguous(t *testing.T) {
 }
 
 func TestSignThenVerify_Succeeds(t *testing.T) {
-	entry := casemgmtEntry()
+	entry := irisEntry()
 	s := newSigner(t)
 
 	sig := s.Sign(entry)
@@ -508,7 +508,7 @@ func TestVerify_DetectsTampering(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			entry := casemgmtEntry()
+			entry := irisEntry()
 			s := newSigner(t)
 			sig := s.Sign(entry)
 
@@ -526,7 +526,7 @@ func TestVerify_DetectsTampering(t *testing.T) {
 // the trust anchor -- the row must not be accepted just because the key it
 // names happens to be in trusted_keys.
 func TestVerify_RejectsSignatureFromAnotherKey(t *testing.T) {
-	entry := casemgmtEntry()
+	entry := irisEntry()
 	keyA := newSigner(t)
 	keyB := newSigner(t)
 	verifier := newVerifier(t, keyA, keyB)
@@ -535,7 +535,7 @@ func TestVerify_RejectsSignatureFromAnotherKey(t *testing.T) {
 
 	// A's signature bytes over a *different* entry, presented under B's
 	// name. Neither trusted key verifies these bytes over this entry.
-	other := casemgmtEntry()
+	other := irisEntry()
 	other.Command = "/usr/bin/podman"
 	forged := Signature{Bytes: keyA.Sign(other).Bytes, PublicKey: keyB.PublicKey()}
 
@@ -550,7 +550,7 @@ func TestVerify_RejectsSignatureFromAnotherKey(t *testing.T) {
 }
 
 func TestVerify_RejectsMalformedSignature(t *testing.T) {
-	entry := casemgmtEntry()
+	entry := irisEntry()
 	s := newSigner(t)
 	valid := s.Sign(entry)
 
@@ -620,7 +620,7 @@ func TestLoadKey_RoundTripsAWrittenKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSigner: %v", err)
 	}
-	entry := casemgmtEntry()
+	entry := irisEntry()
 	if err := newVerifier(t, s).Verify(entry, s.Sign(entry)); err != nil {
 		t.Errorf("Verify with loaded key = %v, want nil", err)
 	}

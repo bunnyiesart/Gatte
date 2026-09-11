@@ -364,15 +364,27 @@ func (u *upstream) ListTools(ctx context.Context) ([]gateway.ToolDef, error) {
 		if err != nil {
 			return nil, fmt.Errorf("stdio: upstream %q: list tools: %w", u.name, err)
 		}
-		schema, err := rawSchema(tool.InputSchema)
+		schema, err := rawJSON(tool.InputSchema)
 		if err != nil {
 			return nil, fmt.Errorf("stdio: upstream %q: tool %q: input schema is not representable as JSON: %w",
 				u.name, tool.Name, err)
 		}
+		// Carried on the same terms as the input schema: raw bytes, no
+		// reformatting of ours, and nil when the upstream declared none --
+		// which is every tool of every backend in this fleet today. Nothing
+		// here substitutes a permissive default for an absent schema; an
+		// invented output contract would be one nobody published and no
+		// operator approved (design/adr/0014).
+		output, err := rawJSON(tool.OutputSchema)
+		if err != nil {
+			return nil, fmt.Errorf("stdio: upstream %q: tool %q: output schema is not representable as JSON: %w",
+				u.name, tool.Name, err)
+		}
 		defs = append(defs, gateway.ToolDef{
-			Name:        tool.Name,
-			Description: tool.Description,
-			InputSchema: schema,
+			Name:         tool.Name,
+			Description:  tool.Description,
+			InputSchema:  schema,
+			OutputSchema: output,
 		})
 	}
 	return defs, nil
@@ -413,7 +425,28 @@ func (u *upstream) CallTool(ctx context.Context, tool string, args json.RawMessa
 		content = encoded
 	}
 
-	return gateway.Result{Content: content, IsError: res.IsError}, nil
+	// Structured content gets the opposite treatment from content: absent
+	// stays absent, as nil, never as a four-byte "null". The distinction is
+	// load-bearing one layer up -- the gateway reads emptiness as "the
+	// upstream sent none", which is a schema violation for a tool that
+	// declared an output contract and unremarkable for one that did not, and
+	// a literal null would answer both questions wrongly.
+	//
+	// Carried exactly as it arrived, including when it contradicts the
+	// schema the tool published. Judging that is the Gateway Endpoint's job
+	// (design/adr/0014); an adapter that repaired a non-conforming answer
+	// here would be hiding the evidence the check upstairs exists to find.
+	var structured json.RawMessage
+	if res.StructuredContent != nil {
+		encoded, err := rawJSON(res.StructuredContent)
+		if err != nil {
+			return gateway.Result{}, fmt.Errorf("stdio: upstream %q: call tool %q: structured content is not representable as JSON: %w",
+				u.name, tool, err)
+		}
+		structured = encoded
+	}
+
+	return gateway.Result{Content: content, StructuredContent: structured, IsError: res.IsError}, nil
 }
 
 // Close implements [gateway.Upstream]: it shuts the session down, which
@@ -436,23 +469,28 @@ func (u *upstream) Close() error {
 	return u.closeErr
 }
 
-// rawSchema returns a tool's input schema as raw JSON bytes, per
+// rawJSON returns an SDK-decoded value -- a tool's input or output schema,
+// or a result's structured content -- as raw JSON bytes, per
 // design/adr/0007: no reformatting, no canonicalization, no key
-// reordering of our own. The bytes returned here are hashed by Tool
+// reordering of our own. The bytes returned for a schema are hashed by Tool
 // Quarantine, so any normalization applied on this path is a change a human
 // would never be shown.
 //
 // Known limitation, recorded because it bounds the guarantee above: the MCP
-// SDK decodes a tool's inputSchema into a map[string]any before this
-// package ever sees it, so the upstream's literal bytes are already gone by
-// this point. What we do here is the single re-marshal of that decoded
-// value and nothing more -- but a purely cosmetic change upstream (added
-// whitespace, reordered keys) will therefore not move the quarantine hash.
-// Closing that gap means reading tools/list off the wire ourselves rather
+// SDK decodes each of these into a map[string]any before this package ever
+// sees it, so the upstream's literal bytes are already gone by this point.
+// What we do here is the single re-marshal of that decoded value and
+// nothing more -- but a purely cosmetic change upstream (added whitespace,
+// reordered keys) will therefore not move the quarantine hash, and the byte
+// count the size ceiling is applied to is this re-marshal's, not the
+// upstream's. Both differences are small and neither is in a direction that
+// hides payload: Go's encoder emits no insignificant whitespace, so the
+// re-marshal is at most the same size as what arrived.
+// Closing the gap means reading tools/list off the wire ourselves rather
 // than through the SDK; it is not worth doing inside this adapter, and it
 // is not something a future reader should assume is already handled.
-func rawSchema(schema any) (json.RawMessage, error) {
-	switch typed := schema.(type) {
+func rawJSON(value any) (json.RawMessage, error) {
+	switch typed := value.(type) {
 	case nil:
 		return nil, nil
 	case json.RawMessage:
@@ -461,7 +499,7 @@ func rawSchema(schema any) (json.RawMessage, error) {
 	case []byte:
 		return bytes.Clone(typed), nil
 	}
-	return json.Marshal(schema)
+	return json.Marshal(value)
 }
 
 // captureTransport wraps an [mcp.Transport] and remembers the

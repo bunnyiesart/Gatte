@@ -18,8 +18,9 @@
 # See deploy/openvpn-access.md.
 set -eu
 
-JM_STATE_ROOT="${JM_STATE_ROOT:-$HOME/.jailmachine}"
-JM_SSH_KEY="$JM_STATE_ROOT/machines/jailmachine/ssh/id_ed25519"
+# shellcheck source=deploy/lib/remote.sh
+. "$(dirname "$0")/lib/remote.sh"
+
 CLIENT_NAME="${CLIENT_NAME:-mac-client}"
 PROFILE_DIR="${OVPN_PROFILE_DIR:-$HOME/.config/mcp-gateway-lab/openvpn}"
 PROFILE="$PROFILE_DIR/mcp-gateway-lab.ovpn"
@@ -36,20 +37,17 @@ case "$PROFILE_DIR" in
 	;;
 esac
 
-jmssh() { jm ssh -- "$@"; }
+echo "==> copying the setup script into $(remote_target)"
+remote_cp deploy/openvpn-vm-setup.sh "$REMOTE_SCRIPT"
 
-echo "==> copying the setup script into the VM"
-scp -q -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no \
-	-i "$JM_SSH_KEY" -P 2222 deploy/openvpn-vm-setup.sh "root@127.0.0.1:$REMOTE_SCRIPT"
-
-echo "==> running it in the VM"
-jmssh sh "$REMOTE_SCRIPT"
+echo "==> running it on the jail host"
+remote_sh sh "$REMOTE_SCRIPT"
 
 echo "==> fetching client credentials"
 mkdir -p "$PROFILE_DIR"
 chmod 700 "$PROFILE_DIR"
 
-fetch() { jmssh cat "$1"; }
+fetch() { remote_sh cat "$1"; }
 
 CA=$(fetch "$VPN_DIR/pki/ca.crt")
 CRT=$(fetch "$VPN_DIR/pki/issued/$CLIENT_NAME.crt")
@@ -64,6 +62,22 @@ for v in "$CA" "$CRT" "$KEY" "$TC"; do
 	[ -n "$v" ] || { echo "!! empty credential pulled from the VM -- aborting" >&2; exit 1; }
 done
 
+# Where the client dials. On the local VM that is the Mac's own loopback,
+# because gvproxy forwards it in; on a real jail host it is the host itself
+# and there is no forwarder in the path at all.
+case "$JAILHOST_TRANSPORT" in
+jailmachine)
+	OVPN_REMOTE_HOST=127.0.0.1
+	OVPN_REMOTE_NOTE="# 127.0.0.1 is not a typo: gvproxy forwards the Mac's loopback udp/1194
+# into the VM. Bring the forward up with deploy/openvpn-forward.sh up."
+	;;
+ssh)
+	OVPN_REMOTE_HOST="$JAILHOST_HOST"
+	OVPN_REMOTE_NOTE="# The jail host directly -- no gvproxy forwarder in the path.
+# udp/1194 must be reachable from here (check the host firewall)."
+	;;
+esac
+
 echo "==> writing $PROFILE"
 umask 077
 cat >"$PROFILE" <<EOF
@@ -73,9 +87,8 @@ client
 dev tun
 proto udp4
 
-# 127.0.0.1 is not a typo: gvproxy forwards the Mac's loopback udp/1194 into
-# the VM. Bring the forward up with deploy/openvpn-forward.sh up.
-remote 127.0.0.1 1194
+$OVPN_REMOTE_NOTE
+remote $OVPN_REMOTE_HOST 1194
 
 resolv-retry infinite
 nobind
@@ -101,8 +114,17 @@ $TC
 EOF
 chmod 600 "$PROFILE"
 
-echo "==> adding the gvproxy udp forward"
-sh deploy/openvpn-forward.sh up
+# The forward exists only because gvproxy sits between the Mac and the local
+# VM. It is a jailmachine artifact -- deploy/openvpn-forward.sh talks to the
+# gvproxy API socket and has no meaning against any other host.
+if [ "$JAILHOST_TRANSPORT" = jailmachine ]; then
+	echo "==> adding the gvproxy udp forward"
+	sh deploy/openvpn-forward.sh up
+else
+	echo "==> skipping the gvproxy forward (JAILHOST_TRANSPORT=$JAILHOST_TRANSPORT):"
+	echo "    the client dials $OVPN_REMOTE_HOST:1194 directly. Open udp/1194 on"
+	echo "    the jail host's firewall yourself if it is not already."
+fi
 
 cat <<EOF
 

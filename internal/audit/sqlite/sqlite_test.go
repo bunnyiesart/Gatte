@@ -48,6 +48,7 @@ func TestRecordThenList_RoundTrips(t *testing.T) {
 		Timestamp:       time.Date(2026, 9, 8, 10, 30, 45, 123456789, time.FixedZone("BRT", -3*3600)),
 		Outcome:         audit.OutcomeAllowed,
 		Reason:          "",
+		SourceAddress:   "198.51.100.23",
 	}
 
 	if err := r.Record(ctx, want); err != nil {
@@ -74,6 +75,98 @@ func TestRecordThenList_RoundTrips(t *testing.T) {
 	}
 	if !gotRec.Timestamp.Equal(want.Timestamp) {
 		t.Errorf("Timestamp = %v, want %v (same instant)", gotRec.Timestamp, want.Timestamp)
+	}
+	if gotRec.SourceAddress != want.SourceAddress {
+		t.Errorf("SourceAddress = %q, want %q", gotRec.SourceAddress, want.SourceAddress)
+	}
+}
+
+// legacySchema is the audit_records table exactly as a gateway deployed
+// before design/adr/0012 created it: outcome and reason are there (they
+// were themselves retrofitted, and that retrofit is the precedent this
+// one follows), source_address is not.
+//
+// It is spelled out here rather than derived from Migrate on purpose: a
+// migration test that builds "the old schema" by calling the current
+// migration code proves nothing about the database on the live host.
+const legacySchema = `
+CREATE TABLE audit_records (
+	id               INTEGER PRIMARY KEY AUTOINCREMENT,
+	analyst_identity TEXT NOT NULL,
+	tool             TEXT NOT NULL,
+	target_upstream  TEXT NOT NULL,
+	timestamp        TEXT NOT NULL,
+	outcome          TEXT NOT NULL DEFAULT '',
+	reason           TEXT NOT NULL DEFAULT ''
+);`
+
+// TestMigrate_AddsSourceAddressToADatabaseThatPredatesIt is the
+// compatibility half of design/adr/0012 item 3. There is a live gateway
+// running against a database created before this column existed, and
+// CREATE TABLE IF NOT EXISTS is a no-op against it -- so without the
+// ALTER TABLE the new column would exist only in fresh installs, and the
+// running one would fail every write with "no such column".
+//
+// Both directions are asserted, because only one of them fails loudly:
+// the rows already on disk must still read back (with an empty address,
+// which honestly says "written before the gateway recorded one"), and a
+// record written *after* the migration must round-trip its address.
+func TestMigrate_AddsSourceAddressToADatabaseThatPredatesIt(t *testing.T) {
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	if _, err := db.Exec(legacySchema); err != nil {
+		t.Fatalf("creating the pre-0012 table: %v", err)
+	}
+	const legacyRow = `
+INSERT INTO audit_records (analyst_identity, tool, target_upstream, timestamp, outcome, reason)
+VALUES ('alice', 'casemgmt.list_cases', 'casemgmt', '2026-09-01T09:00:00Z', 'allowed', '')`
+	if _, err := db.Exec(legacyRow); err != nil {
+		t.Fatalf("seeding the pre-0012 row: %v", err)
+	}
+
+	if err := Migrate(db); err != nil {
+		t.Fatalf("Migrate against a pre-0012 database: %v", err)
+	}
+	// Idempotent: startup runs it every time, and the second run must not
+	// trip over the column the first one added.
+	if err := Migrate(db); err != nil {
+		t.Fatalf("second Migrate: %v", err)
+	}
+
+	r := New(db)
+	ctx := context.Background()
+	fresh := audit.Record{
+		AnalystIdentity: "bob",
+		Tool:            "casemgmt.list_cases",
+		TargetUpstream:  "casemgmt",
+		Timestamp:       time.Date(2026, 9, 9, 9, 0, 0, 0, time.UTC),
+		Outcome:         audit.OutcomeAllowed,
+		SourceAddress:   "203.0.113.7",
+	}
+	if err := r.Record(ctx, fresh); err != nil {
+		t.Fatalf("Record after migrating a pre-0012 database: %v", err)
+	}
+
+	got, err := r.List(ctx)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("List returned %d records, want 2 (the legacy row and the new one): %+v", len(got), got)
+	}
+	if got[0].AnalystIdentity != "alice" {
+		t.Fatalf("first record is %q, want the legacy row 'alice'", got[0].AnalystIdentity)
+	}
+	if got[0].SourceAddress != "" {
+		t.Errorf("legacy row SourceAddress = %q, want \"\" -- a row written before the column must not claim an address",
+			got[0].SourceAddress)
+	}
+	if got[1].SourceAddress != fresh.SourceAddress {
+		t.Errorf("migrated-in-place row SourceAddress = %q, want %q", got[1].SourceAddress, fresh.SourceAddress)
 	}
 }
 

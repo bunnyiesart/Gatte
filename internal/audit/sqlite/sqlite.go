@@ -36,7 +36,8 @@ CREATE TABLE IF NOT EXISTS audit_records (
 	target_upstream  TEXT NOT NULL,
 	timestamp        TEXT NOT NULL,
 	outcome          TEXT NOT NULL DEFAULT '',
-	reason           TEXT NOT NULL DEFAULT ''
+	reason           TEXT NOT NULL DEFAULT '',
+	source_address   TEXT NOT NULL DEFAULT ''
 );
 
 CREATE INDEX IF NOT EXISTS idx_audit_records_timestamp
@@ -46,18 +47,24 @@ CREATE INDEX IF NOT EXISTS idx_audit_records_timestamp
 		return fmt.Errorf("audit/sqlite: migrate: %w", err)
 	}
 
-	// outcome and reason were added after the table already existed in
-	// working databases, so CREATE TABLE IF NOT EXISTS alone would leave
-	// those without the columns. SQLite has no ADD COLUMN IF NOT EXISTS,
-	// and re-adding an existing column is an error rather than a no-op,
-	// so each is attempted and a "duplicate column" response treated as
-	// success. The DEFAULT '' matters: rows written before this migration
-	// predate the gateway's dispatch path and genuinely have no recorded
-	// outcome, and an empty string says that honestly rather than
-	// claiming they were allowed.
+	// outcome, reason and source_address were each added after the table
+	// already existed in working databases, so CREATE TABLE IF NOT EXISTS
+	// alone would leave those without the columns. SQLite has no ADD
+	// COLUMN IF NOT EXISTS, and re-adding an existing column is an error
+	// rather than a no-op, so each is attempted and a "duplicate column"
+	// response treated as success. The DEFAULT '' matters: rows written
+	// before a migration genuinely have nothing to say for the new column
+	// -- they predate the gateway's dispatch path, or predate its knowing
+	// where a call came from -- and an empty string says that honestly
+	// rather than claiming they were allowed, or claiming an address.
+	//
+	// This list only ever grows, and never in place: reordering or
+	// rewriting an entry would change what a database that has already
+	// run part of it ends up with. Append.
 	for _, col := range []string{
 		`ALTER TABLE audit_records ADD COLUMN outcome TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE audit_records ADD COLUMN reason TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE audit_records ADD COLUMN source_address TEXT NOT NULL DEFAULT ''`,
 	} {
 		if _, err := db.Exec(col); err != nil && !isDuplicateColumn(err) {
 			return fmt.Errorf("audit/sqlite: migrate: %w", err)
@@ -94,12 +101,12 @@ func (r *Recorder) Record(ctx context.Context, rec audit.Record) error {
 	}
 
 	const stmt = `
-INSERT INTO audit_records (analyst_identity, tool, target_upstream, timestamp, outcome, reason)
-VALUES (?, ?, ?, ?, ?, ?)
+INSERT INTO audit_records (analyst_identity, tool, target_upstream, timestamp, outcome, reason, source_address)
+VALUES (?, ?, ?, ?, ?, ?, ?)
 `
 	_, err := r.db.ExecContext(ctx, stmt,
 		rec.AnalystIdentity, rec.Tool, rec.TargetUpstream, rec.Timestamp.Format(timeLayout),
-		string(rec.Outcome), rec.Reason)
+		string(rec.Outcome), rec.Reason, rec.SourceAddress)
 	if err != nil {
 		return fmt.Errorf("audit/sqlite: record: %w", err)
 	}
@@ -109,7 +116,7 @@ VALUES (?, ?, ?, ?, ?, ?)
 // List implements audit.Recorder.
 func (r *Recorder) List(ctx context.Context) ([]audit.Record, error) {
 	const stmt = `
-SELECT analyst_identity, tool, target_upstream, timestamp, outcome, reason
+SELECT analyst_identity, tool, target_upstream, timestamp, outcome, reason, source_address
 FROM audit_records
 ORDER BY timestamp ASC, id ASC
 `
@@ -123,7 +130,7 @@ ORDER BY timestamp ASC, id ASC
 	for rows.Next() {
 		var rec audit.Record
 		var ts, outcome string
-		if err := rows.Scan(&rec.AnalystIdentity, &rec.Tool, &rec.TargetUpstream, &ts, &outcome, &rec.Reason); err != nil {
+		if err := rows.Scan(&rec.AnalystIdentity, &rec.Tool, &rec.TargetUpstream, &ts, &outcome, &rec.Reason, &rec.SourceAddress); err != nil {
 			return nil, fmt.Errorf("audit/sqlite: list: scan: %w", err)
 		}
 		rec.Timestamp, err = time.Parse(timeLayout, ts)

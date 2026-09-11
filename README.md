@@ -26,7 +26,7 @@ mcp-gateway serve
 ```
 
 Configuration is a documented TOML file — copy `config.example.toml`.
-`mcp-gateway help` lists the rest (`tool list|approve`, `audit`,
+`mcp-gateway help` lists the rest (`tool list|approve|revoke`, `audit`,
 `upstream list|deregister`).
 
 Registry entries must be signed to be served (`require_signed` defaults

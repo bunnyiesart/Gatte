@@ -20,27 +20,22 @@
 # Undo: ./deploy/gateway-vnet-rollback.sh
 set -eu
 
-JM_STATE_ROOT="${JM_STATE_ROOT:-$HOME/.jailmachine}"
-JM_SSH_KEY="$JM_STATE_ROOT/machines/jailmachine/ssh/id_ed25519"
-JM_SSH_PORT="${JM_SSH_PORT:-2222}"
+# shellcheck source=deploy/lib/remote.sh
+. "$(dirname "$0")/lib/remote.sh"
+
 STAGE=/tmp/gateway-vnet-stage
 
 cd "$(dirname "$0")/.."
 
-vmcp() {
-	scp -q -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no \
-		-i "$JM_SSH_KEY" -P "$JM_SSH_PORT" "$1" "root@127.0.0.1:$2"
-}
-
-echo "==> staging the conversion scripts into the VM"
-jm ssh -- mkdir -p "$STAGE"
+echo "==> staging the conversion scripts into $(remote_target)"
+remote_sh mkdir -p "$STAGE"
 for f in gateway-vnet-convert.sh gateway-vnet-rollback.sh gateway-vnet-verify.sh; do
-	vmcp "deploy/vm/$f" "$STAGE/$f"
-	jm ssh -- chmod 0755 "$STAGE/$f"
+	remote_cp "deploy/vm/$f" "$STAGE/$f"
+	remote_sh chmod 0755 "$STAGE/$f"
 done
 
 echo "==> converting the jail"
-jm ssh -- "$STAGE/gateway-vnet-convert.sh"
+remote_sh "$STAGE/gateway-vnet-convert.sh"
 
 echo
 echo "==> done. Verify with:"

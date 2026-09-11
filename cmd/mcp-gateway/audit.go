@@ -28,6 +28,11 @@ type auditFilter struct {
 	Subject string
 	// Outcome restricts to one of allowed/denied/failed.
 	Outcome audit.Outcome
+	// Source restricts to one source address, matched exactly. Exact
+	// rather than a prefix or CIDR: a subnet match is a question about
+	// the network's shape, which this command has no model of, and an
+	// operator who wants one has -json and their own tools.
+	Source string
 }
 
 // matches reports whether r passes every filter that is set.
@@ -39,6 +44,9 @@ func (f auditFilter) matches(r audit.Record) bool {
 		return false
 	}
 	if f.Outcome != "" && r.Outcome != f.Outcome {
+		return false
+	}
+	if f.Source != "" && r.SourceAddress != f.Source {
 		return false
 	}
 	return true
@@ -57,6 +65,9 @@ func (f auditFilter) describe() string {
 	if f.Outcome != "" {
 		parts = append(parts, "outcome "+string(f.Outcome))
 	}
+	if f.Source != "" {
+		parts = append(parts, "source "+f.Source)
+	}
 	if len(parts) == 0 {
 		return "none"
 	}
@@ -70,16 +81,16 @@ func cmdAudit(args []string, stdout, stderr io.Writer) int {
 	since := fs.String("since", "", "only records at or after this RFC3339 timestamp, e.g. 2026-09-08T00:00:00Z")
 	subject := fs.String("subject", "", "only records for this analyst identity (exact match)")
 	outcome := fs.String("outcome", "", "only records with this outcome: allowed, denied or failed")
+	source := fs.String("source", "", "only records from this source address (exact match)")
 	asJSON := fs.Bool("json", false, "print JSON instead of an aligned table")
-	fs.Usage = func() { auditUsage(stderr) }
-	if code, ok := opParse(fs, args); !ok {
+	if code, ok := opParse(fs, args, stdout, stderr, auditUsage); !ok {
 		return code
 	}
-	if !opNoArgs(fs, stderr) {
+	if !opNoArgs(fs, stderr, auditUsage) {
 		return exitCannotRun
 	}
 
-	filter := auditFilter{Limit: *limit, Subject: *subject}
+	filter := auditFilter{Limit: *limit, Subject: *subject, Source: *source}
 	if *limit < 0 {
 		fmt.Fprintf(stderr, "-limit must not be negative (got %d); use 0 for no limit\n", *limit)
 		return exitCannotRun
@@ -110,12 +121,28 @@ func cmdAudit(args []string, stdout, stderr io.Writer) int {
 func auditUsage(w io.Writer) {
 	fmt.Fprint(w, `Usage:
   mcp-gateway audit [-config FILE] [-limit N] [-since RFC3339]
-                    [-subject IDENTITY] [-outcome allowed|denied|failed] [-json]
+                    [-subject IDENTITY] [-outcome allowed|denied|failed]
+                    [-source ADDRESS] [-json]
 
 Prints the most recent matching records, NEWEST FIRST. OUTCOME and REASON
 are the point of the trail: outcome says whether the gateway allowed,
 denied or attempted-and-failed the call, and reason is the classification
 the caller was deliberately not told.
+
+SOURCE is where the call came from, as the gateway's reverse proxy saw
+it. One analyst identity arriving from two addresses is what a stolen
+token looks like.
+
+COUNTING: a call that was dispatched and then failed leaves two rows --
+an "allowed" one written before the call, and a "failed" one written
+after. The trail is append-only, so the first is never rewritten. Count
+"-outcome allowed" for attempts, and read a "failed" row as an annotation
+on the allowed row above it. A "-" means the record predates the column.
+
+Rows attributed to (unauthenticated) are requests refused at the door:
+no credential, or one that did not verify. The gateway deliberately does
+not distinguish those, so neither can the trail; what it has is that the
+attempt happened, when, and from where.
 
 Exit codes: 0 ok, 1 ran and found a problem (nothing matched), 2 could not run.
 `)
@@ -123,12 +150,13 @@ Exit codes: 0 ok, 1 ran and found a problem (nothing matched), 2 could not run.
 
 // auditJSON is the -json shape of one audit record.
 type auditJSON struct {
-	Timestamp time.Time `json:"timestamp"`
-	Analyst   string    `json:"analyst_identity"`
-	Tool      string    `json:"tool"`
-	Upstream  string    `json:"target_upstream"`
-	Outcome   string    `json:"outcome"`
-	Reason    string    `json:"reason,omitempty"`
+	Timestamp     time.Time `json:"timestamp"`
+	Analyst       string    `json:"analyst_identity"`
+	Tool          string    `json:"tool"`
+	Upstream      string    `json:"target_upstream"`
+	Outcome       string    `json:"outcome"`
+	Reason        string    `json:"reason,omitempty"`
+	SourceAddress string    `json:"source_address,omitempty"`
 }
 
 func runAudit(e *opEnv, filter auditFilter, asJSON bool) int {
@@ -166,12 +194,13 @@ func runAudit(e *opEnv, filter auditFilter, asJSON bool) int {
 		out := make([]auditJSON, 0, len(newestFirst))
 		for _, r := range newestFirst {
 			out = append(out, auditJSON{
-				Timestamp: r.Timestamp,
-				Analyst:   r.AnalystIdentity,
-				Tool:      r.Tool,
-				Upstream:  r.TargetUpstream,
-				Outcome:   string(r.Outcome),
-				Reason:    r.Reason,
+				Timestamp:     r.Timestamp,
+				Analyst:       r.AnalystIdentity,
+				Tool:          r.Tool,
+				Upstream:      r.TargetUpstream,
+				Outcome:       string(r.Outcome),
+				Reason:        r.Reason,
+				SourceAddress: r.SourceAddress,
 			})
 		}
 		if err := opJSON(e.stdout, out); err != nil {
@@ -202,14 +231,14 @@ func runAudit(e *opEnv, filter auditFilter, asJSON bool) int {
 		filter.describe(), len(all), opPlural(len(all), "record", "records"))
 
 	tw := opTable(e.stdout)
-	fmt.Fprintln(tw, "TIME\tANALYST\tTOOL\tUPSTREAM\tOUTCOME\tREASON")
+	fmt.Fprintln(tw, "TIME\tANALYST\tSOURCE\tTOOL\tUPSTREAM\tOUTCOME\tREASON")
 	for _, r := range newestFirst {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
-			opTime(r.Timestamp), r.AnalystIdentity, r.Tool, r.TargetUpstream, r.Outcome, opDash(r.Reason))
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			opTime(r.Timestamp), r.AnalystIdentity, opDash(r.SourceAddress), r.Tool,
+			r.TargetUpstream, r.Outcome, opDash(r.Reason))
 	}
-	if err := tw.Flush(); err != nil {
-		fmt.Fprintf(e.stderr, "writing table: %v\n", err)
-		return exitCannotRun
+	if !opFlushTable(tw, e.stderr) {
+		return exitProblem
 	}
 
 	if filter.Limit > 0 && len(matching) > len(newestFirst) {

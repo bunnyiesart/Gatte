@@ -28,6 +28,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
 	"slices"
 	"strings"
 	"sync"
@@ -1026,7 +1028,7 @@ func TestToolWithUnusableSchemaIsSkipped(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/mcp", nil)
 	req = req.WithContext(context.WithValue(req.Context(), callerContextKey{}, &caller{
-		identity: analyst,
+		gwCaller: gateway.Caller{Identity: analyst},
 		tools: []gateway.ToolDef{
 			{Name: toolListCases, Description: "fine", InputSchema: json.RawMessage(objSchema)},
 			{Name: "casemgmt.no_schema", Description: "nil schema"},
@@ -1219,6 +1221,41 @@ func TestToCallToolResult(t *testing.T) {
 		}
 	})
 
+	t.Run("structured content reaches the client", func(t *testing.T) {
+		// Dropping it would be silent data loss, and not a hypothetical
+		// one: every backend in this fleet sends structured content
+		// (design/adr/0014 and internal/gateway/stdio's own tests). It
+		// would also make the gateway's validation of that field a check on
+		// something nobody ever receives.
+		out, err := toCallToolResult(gateway.Result{
+			Content:           json.RawMessage(`[{"type":"text","text":"{\"case_id\":\"7\"}"}]`),
+			StructuredContent: json.RawMessage(`{"case_id":"7"}`),
+		})
+		if err != nil {
+			t.Fatalf("toCallToolResult: %v", err)
+		}
+		if out.StructuredContent == nil {
+			t.Fatal("structured content was dropped on the way to the client")
+		}
+		got, err := json.Marshal(out.StructuredContent)
+		if err != nil {
+			t.Fatalf("re-marshal structured content: %v", err)
+		}
+		if string(got) != `{"case_id":"7"}` {
+			t.Errorf("StructuredContent = %s, want the upstream's own %s", got, `{"case_id":"7"}`)
+		}
+	})
+
+	t.Run("no structured content stays absent, never null", func(t *testing.T) {
+		out, err := toCallToolResult(gateway.Result{Content: json.RawMessage(`[{"type":"text","text":"hi"}]`)})
+		if err != nil {
+			t.Fatalf("toCallToolResult: %v", err)
+		}
+		if out.StructuredContent != nil {
+			t.Errorf("StructuredContent = %v, want nothing: the upstream sent none", out.StructuredContent)
+		}
+	})
+
 	t.Run("malformed upstream content is refused, not forwarded", func(t *testing.T) {
 		if _, err := toCallToolResult(gateway.Result{Content: json.RawMessage(`{not json`)}); err == nil {
 			t.Fatal("invalid JSON from an upstream was accepted")
@@ -1260,7 +1297,7 @@ func (h *harness) rawCall(name string) (int, string) {
 	return res.StatusCode, body(h.t, res)
 }
 
-// TestUnservedToolCallIsAuditedAndStillOpaque is ISSUE-16 in one place.
+// TestUnservedToolCallIsAuditedAndStillOpaque is GAB-16 in one place.
 //
 // Registering only the caller's own tools means a call naming anything
 // else is answered by the SDK, never by gateway.Dispatch -- and Dispatch is
@@ -1386,4 +1423,258 @@ func TestListingIsNotAudited(t *testing.T) {
 	if rows := h.auditRows(); len(rows) != 0 {
 		t.Errorf("listing tools wrote %d audit rows, want 0: %+v", len(rows), rows)
 	}
+}
+
+// --------------------------------------------- auditing the front door
+
+// TestUnauthenticatedRequestIsAudited is
+// design/adr/0012-audit-completeness.md item 2.
+//
+// Until it existed, a rejected request produced a slog.Warn and nothing
+// else: token grinding, replay of an expired token, and the
+// wrong-audience probing that RFC 8707 exists to stop -- the attack this
+// project is proudest of blocking -- all left the trail completely empty.
+// The gateway could block them and could not show that it had.
+//
+// The three things asserted here are the three the ADR fixes on, and the
+// second and third are as important as the first:
+//
+//   - the attempt is on the trail at all;
+//   - it is attributed to a marker that cannot be read as an IdP `sub`,
+//     because a row with no identity fails audit.Record.Validate and a row
+//     borrowing a plausible-looking one is worse than no row;
+//   - the Reason is the SAME for every cause. internal/access/oidc
+//     collapses eight rejection causes into one error precisely so the
+//     gateway is not an oracle, so this layer genuinely does not know
+//     which it was, and a trail that appeared to know would be inventing.
+func TestUnauthenticatedRequestIsAudited(t *testing.T) {
+	h := newHarness(t)
+
+	// Two different causes, indistinguishable to the caller by design.
+	if got := h.post("/mcp", "", initializeBody).StatusCode; got != http.StatusUnauthorized {
+		t.Fatalf("no credential: status = %d, want 401", got)
+	}
+	if got := h.post("/mcp", "Bearer "+tokenGrind, initializeBody).StatusCode; got != http.StatusUnauthorized {
+		t.Fatalf("bad credential: status = %d, want 401", got)
+	}
+
+	rows := h.auditRows()
+	if len(rows) != 2 {
+		t.Fatalf("audit rows after two rejected requests = %d, want 2: %+v", len(rows), rows)
+	}
+
+	realSubjects := []string{analyst.Subject, responder.Subject, stranger.Subject}
+	for i, r := range rows {
+		if r.Outcome != audit.OutcomeDenied {
+			t.Errorf("row %d Outcome = %q, want %q", i, r.Outcome, audit.OutcomeDenied)
+		}
+		if r.AnalystIdentity == "" {
+			t.Errorf("row %d has an empty AnalystIdentity; audit.Record.Validate would have dropped it", i)
+		}
+		if slices.Contains(realSubjects, r.AnalystIdentity) {
+			t.Errorf("row %d is attributed to %q, a real subject: a failed authentication must never "+
+				"borrow an identity nobody proved", i, r.AnalystIdentity)
+		}
+		if r.Reason == "" {
+			t.Errorf("row %d carries no Reason", i)
+		}
+		if r.SourceAddress == "" {
+			t.Errorf("row %d records no source address; 'the attempt existed, when, and from where' "+
+				"is the entire value of this record", i)
+		}
+	}
+
+	// One generic Reason, not a classification this layer cannot honestly
+	// make. "No credential at all" and "a credential that did not verify"
+	// must read the same on the trail as they do on the wire.
+	if a, b := rows[0].Reason, rows[1].Reason; a != b {
+		t.Errorf("the two rejection causes recorded different Reasons (%q vs %q); the trail is an "+
+			"oracle the 401 deliberately is not", a, b)
+	}
+
+	// The token is a credential even after it is rejected. It must not be
+	// in the record, in any field, whole or in part.
+	for i, r := range rows {
+		joined := r.AnalystIdentity + "\x00" + r.Tool + "\x00" + r.TargetUpstream + "\x00" +
+			string(r.Outcome) + "\x00" + r.Reason + "\x00" + r.SourceAddress
+		if strings.Contains(joined, tokenGrind) {
+			t.Errorf("row %d contains the rejected token verbatim: %+v", i, r)
+		}
+		for _, fragment := range []string{"token-", "grind", "Bearer"} {
+			if strings.Contains(joined, fragment) {
+				t.Errorf("row %d contains %q, a fragment of the presented credential: %+v", i, fragment, r)
+			}
+		}
+	}
+}
+
+// tokenGrind is a credential that verifies against nothing: what a token
+// grinder's traffic looks like from here. The distinctive substrings are
+// there so the leak assertions above have something real to catch.
+const tokenGrind = "token-grind-CANARY-guessed-3"
+
+// ------------------------------------------------------- source address
+
+// forgedForwardedFor is what a malicious client writes in the hope that
+// the gateway believes it. Any implementation that reads the LEFTMOST
+// X-Forwarded-For entry records exactly this.
+const forgedForwardedFor = "10.0.0.1, 10.0.0.2"
+
+// appendingProxy stands in for the co-located nginx of
+// design/adr/0011-network-isolation.md, which forwards with
+// `$proxy_add_x_forwarded_for` -- literally "$http_x_forwarded_for,
+// $remote_addr", i.e. it APPENDS the peer it saw to whatever the client
+// sent, keeping the client's forgery in place ahead of it.
+//
+// httputil.ReverseProxy does the same thing by default and for the same
+// reason, so this is the real behaviour and not a hand-rolled imitation
+// of it: whatever the client puts in the header survives, and the true
+// peer is added on the right.
+func appendingProxy(t *testing.T, target string) *httptest.Server {
+	t.Helper()
+	u, err := url.Parse(target)
+	if err != nil {
+		t.Fatalf("parsing %q: %v", target, err)
+	}
+	proxy := httptest.NewServer(httputil.NewSingleHostReverseProxy(u))
+	t.Cleanup(proxy.Close)
+	return proxy
+}
+
+// remoteProxy is the same hop, except that the peer it appends is a fixed
+// public address rather than the loopback everything in a test shares.
+// Without it, "the rightmost X-Forwarded-For entry" and "RemoteAddr"
+// happen to be the same string here, and a handler that ignored the
+// header entirely would pass.
+func remoteProxy(t *testing.T, target, peer string) *httptest.Server {
+	t.Helper()
+	u, err := url.Parse(target)
+	if err != nil {
+		t.Fatalf("parsing %q: %v", target, err)
+	}
+	rp := &httputil.ReverseProxy{Rewrite: func(pr *httputil.ProxyRequest) {
+		pr.SetURL(u)
+		// Setting Rewrite turns ReverseProxy's own X-Forwarded-For
+		// handling off, so the append is spelled out here -- same rule as
+		// nginx's, with the peer forced.
+		prior := pr.In.Header.Get("X-Forwarded-For")
+		if prior != "" {
+			peer = prior + ", " + peer
+		}
+		pr.Out.Header.Set("X-Forwarded-For", peer)
+	}}
+	proxy := httptest.NewServer(rp)
+	t.Cleanup(proxy.Close)
+	return proxy
+}
+
+// callThrough POSTs one tools/call at base, optionally with a forged
+// X-Forwarded-For, and returns the status.
+func (h *harness) callThrough(base, tool, forgedXFF string) int {
+	h.t.Helper()
+	req, err := http.NewRequest(http.MethodPost, base+"/mcp",
+		strings.NewReader(`{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"`+tool+`","arguments":{}}}`))
+	if err != nil {
+		h.t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	req.Header.Set("Authorization", "Bearer "+tokenAnalyst)
+	if forgedXFF != "" {
+		req.Header.Set("X-Forwarded-For", forgedXFF)
+	}
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		h.t.Fatalf("POST through %s: %v", base, err)
+	}
+	defer res.Body.Close()
+	_, _ = io.Copy(io.Discard, res.Body)
+	return res.StatusCode
+}
+
+// TestSourceAddressIsTheProxyAppendedEntryNotTheClientForgedOne is the
+// crux of design/adr/0012 item 3, and the reason it is a test rather than
+// a comment.
+//
+// The obvious implementation of "the client's address" reads the FIRST
+// X-Forwarded-For entry. Under the deployment this gateway actually has,
+// that entry is the one the client typed: nginx appends, it does not
+// replace, so a client sending `X-Forwarded-For: 10.0.0.1` makes the
+// header arrive as `10.0.0.1, <real peer>`. Reading the first entry writes
+// an attacker-chosen string into the evidence field and files it as fact.
+// It would also pass every test that does not forge the header -- which is
+// why this one does.
+//
+// The correct entry is the LAST: the proxy wrote it, from the TCP peer it
+// saw. That is only true while nginx is the sole path to this port, which
+// is exactly the property ADR-0011 guarantees; if the gateway ever becomes
+// directly reachable this field becomes forgeable again, and the fix is to
+// restore that guarantee, not to start trusting a different header.
+func TestSourceAddressIsTheProxyAppendedEntryNotTheClientForgedOne(t *testing.T) {
+	t.Run("a real appending proxy in front", func(t *testing.T) {
+		h := newHarness(t)
+		proxy := appendingProxy(t, h.server.URL)
+
+		if got := h.callThrough(proxy.URL, toolListCases, forgedForwardedFor); got != http.StatusOK {
+			t.Fatalf("status = %d, want 200", got)
+		}
+
+		got := h.allowedRowFor(toolListCases)
+		if got.SourceAddress == "10.0.0.1" {
+			t.Fatalf("SourceAddress = %q -- that is the LEFTMOST entry, which the client forged; "+
+				"the recorded address is attacker-controlled", got.SourceAddress)
+		}
+		if got.SourceAddress == "10.0.0.2" {
+			t.Fatalf("SourceAddress = %q -- also the client's own forgery, merely not the first of them",
+				got.SourceAddress)
+		}
+		if got.SourceAddress != "127.0.0.1" {
+			t.Errorf("SourceAddress = %q, want %q -- the peer the proxy actually saw",
+				got.SourceAddress, "127.0.0.1")
+		}
+	})
+
+	t.Run("the appended entry differs from the proxy hop", func(t *testing.T) {
+		h := newHarness(t)
+		proxy := remoteProxy(t, h.server.URL, "198.51.100.42")
+
+		if got := h.callThrough(proxy.URL, toolListCases, "10.0.0.1"); got != http.StatusOK {
+			t.Fatalf("status = %d, want 200", got)
+		}
+
+		if got := h.allowedRowFor(toolListCases).SourceAddress; got != "198.51.100.42" {
+			t.Errorf("SourceAddress = %q, want %q: the header is either not read at all, or the "+
+				"wrong entry of it is", got, "198.51.100.42")
+		}
+	})
+
+	t.Run("no X-Forwarded-For falls back to the peer", func(t *testing.T) {
+		h := newHarness(t)
+
+		if got := h.callThrough(h.server.URL, toolListCases, ""); got != http.StatusOK {
+			t.Fatalf("status = %d, want 200", got)
+		}
+
+		// The port is dropped: X-Forwarded-For entries are bare addresses,
+		// and a field that is sometimes "ip" and sometimes "ip:port" cannot
+		// be filtered on.
+		if got := h.allowedRowFor(toolListCases).SourceAddress; got != "127.0.0.1" {
+			t.Errorf("SourceAddress = %q, want %q", got, "127.0.0.1")
+		}
+	})
+}
+
+// allowedRowFor returns the single allowed row naming tool.
+func (h *harness) allowedRowFor(tool string) audit.Record {
+	h.t.Helper()
+	var out []audit.Record
+	for _, r := range h.auditRows() {
+		if r.Tool == tool && r.Outcome == audit.OutcomeAllowed {
+			out = append(out, r)
+		}
+	}
+	if len(out) != 1 {
+		h.t.Fatalf("allowed rows for %q = %d, want exactly 1: %+v", tool, len(out), h.auditRows())
+	}
+	return out[0]
 }

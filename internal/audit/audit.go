@@ -16,6 +16,13 @@
 // blunt that without outcome alongside the other four "the log is
 // decoration, not evidence". Outcome and Reason are now required fields.
 //
+// SourceAddress arrived last, in GAB-24
+// (design/adr/0012-audit-completeness.md), for the other half of the same
+// argument: with who/what/where/when/outcome but no origin, a stolen
+// token used from the attacker's machine writes a record identical to the
+// legitimate analyst's, and the trail cannot answer the question an
+// incident actually asks.
+//
 // Still out of scope, and genuinely so: operational metrics and
 // telemetry (AGENTS.md §2, "Telemetry/observability"). This is a record
 // of what was attempted and what happened to it, not a monitoring
@@ -59,6 +66,36 @@ type Record struct {
 	// answer "why was this blocked". Free text, never parsed for a
 	// decision -- it is evidence, not control flow.
 	Reason string
+	// SourceAddress is where the call came from, as the gateway's own
+	// front door saw it (design/adr/0012-audit-completeness.md item 3).
+	//
+	// It exists because without it a stolen token used from an attacker's
+	// machine produces a record byte for byte identical to the legitimate
+	// analyst's, and "was that really Ana?" has to be answered by
+	// correlating timestamps against the reverse proxy's log -- a second
+	// source, kept by a different process, which is exactly the
+	// arrangement that makes a trail hard to trust.
+	//
+	// # What it must and must not be
+	//
+	// This field is only worth having if it is not client-controlled. The
+	// serving adapter is responsible for that, and internal/gateway/httpapi
+	// documents how: the RIGHTMOST X-Forwarded-For entry -- the one the
+	// co-located reverse proxy wrote from the TCP peer it actually saw --
+	// never the leftmost, which the client sent and the proxy merely
+	// preserved. A record holding the leftmost entry is a spoofable field
+	// filed as evidence, which is worse than no field at all.
+	//
+	// # Why it is not required
+	//
+	// Unlike Outcome, an empty SourceAddress is honest rather than a lie.
+	// A record written by a surface with no network peer has no address to
+	// state, and a row that predates this column genuinely has none
+	// (internal/audit/sqlite stores it with DEFAULT ''). Refusing such a
+	// record would mean an unauditable -- and therefore refused -- call,
+	// on account of a field that says nothing about the call itself. See
+	// Validate.
+	SourceAddress string
 }
 
 // Outcome is what happened to a call.
@@ -84,6 +121,25 @@ const (
 	// upstream did not complete it. Distinct from OutcomeDenied because
 	// "the gateway said no" and "the backend broke" are different
 	// incidents with different responses.
+	//
+	// # A failed call costs TWO rows, and counting rows will mislead you
+	//
+	// The allowed record is written *before* the call leaves the process,
+	// deliberately -- see gateway.Dispatch, which refuses any call it
+	// cannot audit first, because the attempts most worth investigating
+	// are the ones that never came back. So by the time the failure is
+	// known, the allowed row is already on disk, and
+	// design/adr/0012-audit-completeness.md decides to APPEND rather than
+	// rewrite it: a record that can be edited after the fact is state, not
+	// evidence, and the pair (allowed at T, failed at T+n) carries more
+	// than the corrected row would -- it says the call really was
+	// dispatched, and how long it ran before breaking.
+	//
+	// The price is that one failed call is two rows. Anyone counting rows
+	// to answer "how many calls were there" will over-count by exactly the
+	// number of failures. Count OutcomeAllowed rows for attempts and treat
+	// an OutcomeFailed row as an annotation on the allowed one that
+	// precedes it.
 	OutcomeFailed Outcome = "failed"
 )
 
@@ -102,6 +158,8 @@ func (o Outcome) Valid() bool {
 //   - Tool must be non-empty.
 //   - TargetUpstream must be non-empty.
 //   - Timestamp must not be the zero value (time.Time{}).
+//
+// SourceAddress is deliberately not on that list; see the field.
 //
 // Validate returns ErrInvalid, wrapped with a description of every rule
 // that failed (not just the first one encountered), on any violation; it

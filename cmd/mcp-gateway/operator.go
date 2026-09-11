@@ -118,7 +118,18 @@ func opRun(configPath string, stdout, stderr io.Writer, fn func(*opEnv) int) int
 // lands in.
 func opFlagSet(name string, stderr io.Writer) (*flag.FlagSet, *string) {
 	fs := flag.NewFlagSet("mcp-gateway "+name, flag.ContinueOnError)
-	fs.SetOutput(stderr)
+	// The flag package renders BOTH a -h request and a parse error through
+	// this one writer, and calls fs.Usage for both -- so whichever stream
+	// is wired here, one of the two ends up on the wrong one. Pointing it
+	// at stderr is what sent successful help there (`mcp-gateway audit -h |
+	// less` came back empty while the command exited 0).
+	//
+	// Both are silenced here and re-rendered by opParse, which is the one
+	// place that knows which of the two happened. Nothing is lost: opParse
+	// prints the parse error itself, so "flag provided but not defined"
+	// still reaches the operator.
+	fs.SetOutput(io.Discard)
+	fs.Usage = func() {}
 	// defaultConfigPath is shared with serve: every subcommand of this
 	// binary must read the same file when -config is omitted, or an
 	// operator ends up administering a different gateway than the one
@@ -128,14 +139,31 @@ func opFlagSet(name string, stderr io.Writer) (*flag.FlagSet, *string) {
 }
 
 // opParse parses args, mapping the flag package's two outcomes onto this
-// project's exit codes: -h is a successful request for help, anything else
-// is bad usage. The bool reports whether parsing succeeded; when it is
-// false the int is the exit code to return.
-func opParse(fs *flag.FlagSet, args []string) (int, bool) {
+// project's exit codes AND onto the right stream: -h is a successful
+// request for help, anything else is bad usage. The bool reports whether
+// parsing succeeded; when it is false the int is the exit code to return.
+//
+// usage renders this subcommand's help to a writer, and taking it as a
+// parameter is the point. Help that was asked for is output and belongs on
+// stdout; help printed alongside a complaint is part of the complaint and
+// belongs on stderr. The flag package cannot make that distinction -- it
+// has one output writer and calls Usage for both cases -- so the decision
+// is made here, where the two are already told apart for the exit code.
+//
+// The pairing is the rule, not "help goes to stdout": a command exiting 0
+// with its only output on stderr is as wrong as one exiting 2 with its
+// complaint on stdout.
+func opParse(fs *flag.FlagSet, args []string, stdout, stderr io.Writer, usage func(io.Writer)) (int, bool) {
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
+			usage(stdout)
 			return exitOK, false
 		}
+		// Printed here because opFlagSet discarded the flag package's own
+		// copy; without this the operator would see the usage text and no
+		// hint of which flag was rejected.
+		fmt.Fprintf(stderr, "%v\n\n", err)
+		usage(stderr)
 		return exitCannotRun, false
 	}
 	return exitOK, true
@@ -145,12 +173,16 @@ func opParse(fs *flag.FlagSet, args []string) (int, bool) {
 // complaining to stderr if it did not. A stray argument is usually a
 // misspelled flag, and silently ignoring it is how an operator ends up
 // believing a filter was applied when it was not.
-func opNoArgs(fs *flag.FlagSet, stderr io.Writer) bool {
+//
+// Takes usage rather than calling fs.Usage: opFlagSet makes that a no-op
+// so that opParse can choose the stream, and a helper that quietly printed
+// nothing would be worse than one that never tried.
+func opNoArgs(fs *flag.FlagSet, stderr io.Writer, usage func(io.Writer)) bool {
 	if fs.NArg() == 0 {
 		return true
 	}
 	fmt.Fprintf(stderr, "unexpected argument %q\n\n", fs.Arg(0))
-	fs.Usage()
+	usage(stderr)
 	return false
 }
 
@@ -172,6 +204,28 @@ func (l *opStringList) Set(v string) error {
 // not part of the table.
 func opTable(w io.Writer) *tabwriter.Writer {
 	return tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+}
+
+// opFlushTable flushes a table and reports whether all of it reached the
+// operator, complaining to stderr if it did not.
+//
+// It exists so the exit code for this failure is decided once. A Flush
+// fails after the command has read its data, decided what to say, and
+// written most of it -- so exitCannotRun, which every caller used to
+// return here, asserts the one thing that is certainly false by then. The
+// caller is told "this command never ran" about a command that ran, did
+// its work, and lost part of its output on the way to a full disk or a
+// closed pipe. That is exitProblem: it ran, and it found a problem.
+//
+// What it does not do is un-print the partial table. There is no undo for
+// bytes already on a terminal, which is precisely why the exit code has to
+// carry the truth.
+func opFlushTable(tw *tabwriter.Writer, stderr io.Writer) bool {
+	if err := tw.Flush(); err != nil {
+		fmt.Fprintf(stderr, "writing table: %v\n", err)
+		return false
+	}
+	return true
 }
 
 // opJSON writes v as indented JSON, the machine-readable alternative the

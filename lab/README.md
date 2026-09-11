@@ -88,7 +88,7 @@ try to resurrect them; use the Go implementation above instead.
 environment and still gets working tools:
 
     ./bin/thv secret provider environment
-    export TOOLHIVE_SECRET_SWISS_VT_KEY=vt-KEY-abc123   # etc
+    export TOOLHIVE_SECRET_THREATINTEL_VT_KEY=vt-KEY-abc123   # etc
     ./bin/thv run --name threatintel --transport stdio --group soc \
       --secret THREATINTEL_VT_KEY,target=MOCK_SECRET \
       -e MOCK_NAME=threatintel -e MOCK_EXPECT=vt-KEY-abc123 lab-threatintel:dev

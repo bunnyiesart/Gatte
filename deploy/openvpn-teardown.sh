@@ -10,7 +10,9 @@
 # touches pf, because the setup never touched pf either.
 set -eu
 
-JM_STATE_ROOT="${JM_STATE_ROOT:-$HOME/.jailmachine}"
+# shellcheck source=deploy/lib/remote.sh
+. "$(dirname "$0")/lib/remote.sh"
+
 PROFILE_DIR="${OVPN_PROFILE_DIR:-$HOME/.config/mcp-gateway-lab/openvpn}"
 KEEP_PKI="${KEEP_PKI:-0}"
 REVERT_FORWARDING="${REVERT_FORWARDING:-0}"
@@ -18,23 +20,37 @@ VPN_DIR=/usr/local/etc/openvpn
 
 cd "$(dirname "$0")/.."
 
-echo "==> removing the gvproxy forward"
-sh deploy/openvpn-forward.sh down || true
+if [ "$JAILHOST_TRANSPORT" = jailmachine ]; then
+	echo "==> removing the gvproxy forward"
+	sh deploy/openvpn-forward.sh down || true
+else
+	echo "==> no gvproxy forward to remove (JAILHOST_TRANSPORT=$JAILHOST_TRANSPORT)"
+fi
 
-echo "==> stopping and disabling openvpn in the VM"
-jm ssh -- service openvpn stop || true
-jm ssh -- sysrc -x openvpn_enable openvpn_configfile || true
+echo "==> stopping and disabling openvpn on $(remote_target)"
+remote_sh service openvpn stop || true
+remote_sh sysrc -x openvpn_enable openvpn_configfile || true
 
 if [ "$KEEP_PKI" != "1" ]; then
 	echo "==> deleting the VPN PKI, tls-crypt key and server config"
-	jm ssh -- rm -rf "$VPN_DIR/pki" "$VPN_DIR/tls-crypt.key" "$VPN_DIR/openvpn.conf"
+	remote_sh rm -rf "$VPN_DIR/pki" "$VPN_DIR/tls-crypt.key" "$VPN_DIR/openvpn.conf"
 else
 	echo "==> KEEP_PKI=1: leaving $VPN_DIR alone"
 fi
 
 if [ "$REVERT_FORWARDING" = "1" ]; then
 	echo "==> reverting net.inet.ip.forwarding"
-	jm ssh -- sh -c "sed -i '' '/^net.inet.ip.forwarding=1/d' /etc/sysctl.conf; sysctl net.inet.ip.forwarding=0"
+	# BUG, PRE-EXISTING, LEFT AS-IS ON PURPOSE: this does not edit
+	# sysctl.conf. Both transports flatten their arguments into one string
+	# for a remote shell (see deploy/lib/remote.sh, QUOTING), so the quotes
+	# around the -c argument are gone by the time the far side parses it:
+	# the remote runs `sh -c sed` -- sed with no arguments -- and then, past
+	# the `;`, the sysctl. So the runtime sysctl is reverted and the
+	# persistent line survives a reboot. It behaved exactly this way before
+	# the transport refactor and is preserved verbatim rather than quietly
+	# changed; the fix is the single-argument form:
+	#   remote_sh "sed -i '' '/^net.inet.ip.forwarding=1/d' /etc/sysctl.conf; sysctl net.inet.ip.forwarding=0"
+	remote_sh sh -c "sed -i '' '/^net.inet.ip.forwarding=1/d' /etc/sysctl.conf; sysctl net.inet.ip.forwarding=0"
 else
 	echo "==> leaving net.inet.ip.forwarding=1 (REVERT_FORWARDING=1 to undo it)"
 fi

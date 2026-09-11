@@ -358,3 +358,87 @@ func TestStatus_Valid(t *testing.T) {
 		}
 	}
 }
+
+// TestRevoked_TakesAToolBackToPending covers the half of the approval
+// lifecycle ADR-0013 adds: a human withdrawing a judgement they themselves
+// made. It is not the inverse of a rug pull and it does not fight ADR-0007
+// rule 1 -- nothing here moves a tool *into* the usable set.
+func TestRevoked_TakesAToolBackToPending(t *testing.T) {
+	id := ToolIdentity{Name: "lookup_ip", Description: "Look up an IP."}
+	tool := NewTool("threatintel", id.Name, Hash(id), testTime).Approved(testTime)
+	if !tool.Usable() {
+		t.Fatal("precondition: an approved tool at its observed hash must be usable")
+	}
+
+	revoked, err := tool.Revoked(testTime.Add(time.Hour))
+	if err != nil {
+		t.Fatalf("Revoked: %v", err)
+	}
+	if revoked.Status != StatusPending {
+		t.Errorf("Status = %q, want %q", revoked.Status, StatusPending)
+	}
+	if revoked.Usable() {
+		t.Error("a revoked tool is still usable")
+	}
+	if revoked.ApprovedHash != "" {
+		t.Errorf("ApprovedHash = %q, want the withdrawn baseline cleared -- a leftover baseline is what a later observation would re-match against", revoked.ApprovedHash)
+	}
+	if revoked.ObservedHash != Hash(id) {
+		t.Errorf("ObservedHash = %q, want the last observation kept: revoking withdraws a judgement, it does not un-see the tool", revoked.ObservedHash)
+	}
+	if !revoked.FirstSeenAt.Equal(testTime) {
+		t.Errorf("FirstSeenAt = %v, want it to stay %v", revoked.FirstSeenAt, testTime)
+	}
+	if !revoked.UpdatedAt.Equal(testTime.Add(time.Hour)) {
+		t.Errorf("UpdatedAt = %v, want it advanced", revoked.UpdatedAt)
+	}
+}
+
+// TestRevoked_IsIdempotentOnAPendingTool: revoking something already
+// pending is the operator discovering the state they wanted is the state
+// they have. Not an error, and it must not disturb the entry.
+func TestRevoked_IsIdempotentOnAPendingTool(t *testing.T) {
+	id := ToolIdentity{Name: "t", Description: "d"}
+	tool := NewTool("casemgmt", id.Name, Hash(id), testTime)
+
+	revoked, err := tool.Revoked(testTime.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("Revoked: %v", err)
+	}
+	if revoked.Status != StatusPending || revoked.ObservedHash != Hash(id) {
+		t.Errorf("Revoked(pending) = %+v, want it left pending with its observation intact", revoked)
+	}
+}
+
+// TestRevoked_RefusesToEraseAChange is the rule that keeps ADR-0007's
+// stickiness intact. `changed` is not merely "not approved": it is the
+// record that a definition a human vetted was replaced afterwards, and
+// `tool list` prints it as its own alarm. Revoking it to pending would
+// relabel a rug pull as a tool nobody has looked at yet -- destroying the
+// evidence ADR-0007 rule 1 exists to preserve, and buying nothing, since a
+// changed tool is already not being served.
+func TestRevoked_RefusesToEraseAChange(t *testing.T) {
+	honest := ToolIdentity{Name: "lookup_ip", Description: "honest"}
+	poisoned := ToolIdentity{Name: "lookup_ip", Description: "poisoned"}
+
+	tool := NewTool("threatintel", honest.Name, Hash(honest), testTime).Approved(testTime)
+	tool, err := tool.Observed(Hash(poisoned), testTime.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("Observed: %v", err)
+	}
+	if tool.Status != StatusChanged {
+		t.Fatalf("precondition: status = %q, want %q", tool.Status, StatusChanged)
+	}
+
+	if _, err := tool.Revoked(testTime.Add(2 * time.Minute)); !errors.Is(err, ErrChangedIsNotRevocable) {
+		t.Fatalf("Revoked(changed) = %v, want ErrChangedIsNotRevocable", err)
+	}
+}
+
+func TestRevoked_RejectsUnknownStatus(t *testing.T) {
+	tool := Tool{ServerName: "casemgmt", ToolName: "t", Status: Status("bogus")}
+
+	if _, err := tool.Revoked(testTime); !errors.Is(err, ErrInvalidStatus) {
+		t.Fatalf("Revoked on unknown status = %v, want ErrInvalidStatus", err)
+	}
+}

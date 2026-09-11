@@ -49,7 +49,7 @@ muda quando alguém decide que um cargo passa a poder fazer mais, e essa é
 uma decisão que merece revisão por outra pessoa antes de valer.
 
 Em arquivo versionado, mudar um papel é um commit assinado com Pull
-Request — que é exatamente o processo que o padrão de hardening já
+Request — que é exatamente o processo que o `hardening-repositorios` já
 impõe a este repositório, e o mesmo raciocínio que fez `sops+age` ganhar
 no `0003` por o arquivo cifrado ser "git-safe e revisável". Em tabela,
 alargar um papel é um comando que não deixa rastro revisável e cujo
@@ -100,4 +100,4 @@ mesma troca que a quarentena já faz ao ser "mais lenta por design".
 
 - Autor: Claude, 09 set 2026, início da Fase 6.
 - Depende de `0003`/`0005`/`0006` (onde os segredos vivem) e desbloqueia
-  ISSUE-17 (composition root) e ISSUE-18 (ligar o Definition Signer).
+  GAB-17 (composition root) e GAB-18 (ligar o Definition Signer).

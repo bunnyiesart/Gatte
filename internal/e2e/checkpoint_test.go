@@ -170,7 +170,18 @@ type stack struct {
 
 // newStack builds the whole system: four registered upstreams, each with
 // its own distinct secret, fronted by the real HTTP surface.
+//
+// The result ceiling is left unset, so these tests run against whatever
+// default a real deployment gets (design/adr/0014).
 func newStack(t *testing.T, policy *access.Policy, tokens map[string]access.Identity) *stack {
+	t.Helper()
+	return newLimitedStack(t, policy, tokens, 0)
+}
+
+// newLimitedStack is newStack with an explicit ceiling on the size of one
+// tool result, so a real backend's ordinary answer can be made to exceed
+// it without asking a mock to produce a megabyte.
+func newLimitedStack(t *testing.T, policy *access.Policy, tokens map[string]access.Identity, maxResultBytes int64) *stack {
 	t.Helper()
 
 	db, err := store.Open(":memory:")
@@ -239,13 +250,14 @@ func newStack(t *testing.T, policy *access.Policy, tokens map[string]access.Iden
 	logger := slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
 	gw, err := gateway.New(gateway.Config{
-		Registry:   reg,
-		Vault:      memVault{secrets: vaultValues},
-		Quarantine: quar,
-		Audit:      aud,
-		Policy:     policy,
-		Dialer:     gwstdio.New(),
-		Logger:     logger,
+		Registry:       reg,
+		Vault:          memVault{secrets: vaultValues},
+		Quarantine:     quar,
+		Audit:          aud,
+		Policy:         policy,
+		Dialer:         gwstdio.New(),
+		MaxResultBytes: maxResultBytes,
+		Logger:         logger,
 	})
 	if err != nil {
 		t.Fatalf("gateway.New: %v", err)
@@ -529,7 +541,7 @@ func TestCheckpoint_RoleLimitsWhatIsReachable(t *testing.T) {
 
 	s.assertNoSecretLeaked()
 
-	// The refusal above is on the trail, and that is the behaviour ISSUE-16
+	// The refusal above is on the trail, and that is the behaviour GAB-16
 	// restored: per-identity registration means an out-of-role name is
 	// refused by the SDK before gateway.Dispatch -- the only writer of
 	// denials -- ever runs, so probing used to leave no record at all.
@@ -556,5 +568,122 @@ func TestCheckpoint_RoleLimitsWhatIsReachable(t *testing.T) {
 	}
 	if denials[0].Reason == "" {
 		t.Error("denial carries no Reason; the operator reading the trail is told nothing about why")
+	}
+}
+
+// TestCheckpoint_OversizedResultNeverReachesTheClient is
+// design/adr/0014's size ceiling proven where it has to hold: a real
+// backend, a real subprocess, the real dialer, the real HTTP surface and a
+// real MCP client.
+//
+// Everything below the client is untouched -- the only change is a ceiling
+// low enough that casemgmt.list_cases exceeds it. The three things asserted
+// are the three the ADR promises, and the second is the one a unit test
+// cannot make convincingly:
+//
+//  1. the client is told the call failed;
+//  2. **not one byte of the payload crossed the wire** -- checked the same
+//     way this file checks for a leaked credential, by searching every
+//     tapped byte for content only the backend could have produced. A
+//     truncating implementation would pass (1) and fail this;
+//  3. the trail carries the pair ADR-0012 describes, allowed then failed,
+//     with the reason naming the size.
+func TestCheckpoint_OversizedResultNeverReachesTheClient(t *testing.T) {
+	policy, err := access.NewPolicy(
+		[]access.Role{{Name: "n1-triage", Tools: []string{"casemgmt.list_cases"}}},
+		map[string]string{"soc-n1": "n1-triage"},
+	)
+	if err != nil {
+		t.Fatalf("NewPolicy: %v", err)
+	}
+
+	analyst := access.Identity{Subject: "sub-analyst", Name: "Ana Lyst", Groups: []string{"soc-n1"}}
+	// 256 bytes: comfortably below casemgmt.list_cases' answer (a few hundred
+	// bytes of case JSON, sent twice -- once as a text block and once as
+	// structured content) and comfortably above nothing.
+	s := newLimitedStack(t, policy, map[string]access.Identity{"analyst-token": analyst}, 256)
+
+	sess := s.connect("analyst-token")
+
+	res, err := sess.CallTool(context.Background(), &mcp.CallToolParams{Name: "casemgmt.list_cases"})
+	if err == nil {
+		t.Fatalf("the call succeeded and returned %+v; an oversized result must be refused", res)
+	}
+
+	// The decisive assertion. "IDS Enumeration Attack" is a case title only
+	// the casemgmt mock produces, so finding it in the client-facing traffic
+	// means some part of the refused payload was forwarded -- which is what
+	// truncation would look like from out here.
+	if seen := s.tap.seen.String(); strings.Contains(seen, "IDS Enumeration Attack") {
+		t.Error("part of the refused result reached the client: a result over the ceiling must be refused whole, never truncated")
+	}
+
+	rows, err := s.audit.List(context.Background())
+	if err != nil {
+		t.Fatalf("audit list: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("audit rows = %d, want 2 (allowed, then failed): %+v", len(rows), rows)
+	}
+	if rows[0].Outcome != audit.OutcomeAllowed {
+		t.Errorf("first row Outcome = %q, want %q", rows[0].Outcome, audit.OutcomeAllowed)
+	}
+	if rows[1].Outcome != audit.OutcomeFailed {
+		t.Errorf("second row Outcome = %q, want %q", rows[1].Outcome, audit.OutcomeFailed)
+	}
+	if !strings.Contains(rows[1].Reason, "too large") {
+		t.Errorf("failure Reason = %q, want it to name the size", rows[1].Reason)
+	}
+	if rows[1].AnalystIdentity != analyst.Subject {
+		t.Errorf("the failure row attributes to %q, want %q", rows[1].AnalystIdentity, analyst.Subject)
+	}
+}
+
+// TestCheckpoint_NoLabBackendDeclaresAnOutputSchema pins the factual
+// premise design/adr/0014 rests on, against the real four.
+//
+// The ADR says schema validation is built and correct and runs against
+// nothing today, because no backend declares an output contract. That is a
+// claim about the fleet, not about this code, and a claim like that decays
+// silently -- which is how a control ends up documented as active while
+// passing over 100% of traffic (GAB-18, GAB-24).
+//
+// A failure here is not a bug. It means a backend started declaring an
+// output schema, that the validation is now live against real traffic, and
+// that ADR-0014's "nenhum dos quatro backends declara OutputSchema" needs
+// updating along with this test.
+func TestCheckpoint_NoLabBackendDeclaresAnOutputSchema(t *testing.T) {
+	policy, err := access.NewPolicy(nil, nil)
+	if err != nil {
+		t.Fatalf("NewPolicy: %v", err)
+	}
+	s := newStack(t, policy, nil)
+
+	declared := map[string][]string{}
+	for _, name := range upstreams {
+		up, err := gwstdio.New().Dial(context.Background(),
+			gateway.UpstreamSpec{Name: name, Transport: "stdio", Command: mockBinaries[name]},
+			map[string]string{"MOCK_SECRET": s.secrets[name]})
+		if err != nil {
+			t.Fatalf("dial %s: %v", name, err)
+		}
+		defs, err := up.ListTools(context.Background())
+		if err != nil {
+			t.Fatalf("list %s: %v", name, err)
+		}
+		for _, def := range defs {
+			if len(def.OutputSchema) > 0 {
+				declared[name] = append(declared[name], def.Name)
+			}
+		}
+		if err := up.Close(); err != nil {
+			t.Errorf("close %s: %v", name, err)
+		}
+	}
+
+	if len(declared) > 0 {
+		t.Errorf("a backend now declares an output schema (%v). This is not a defect: it means "+
+			"design/adr/0014's schema validation has started running against real traffic, and the ADR's "+
+			"statement that no backend declares one -- along with this test -- needs updating", declared)
 	}
 }

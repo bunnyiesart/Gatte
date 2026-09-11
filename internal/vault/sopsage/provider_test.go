@@ -3,6 +3,10 @@ package sopsage_test
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/bunnyiesart/Gatte/internal/vault"
@@ -76,4 +80,69 @@ func TestNewErrorDoesNotLeakOnMalformedPlaintext(t *testing.T) {
 	if got := err.Error(); containsFold(got, "s3cr3t") {
 		t.Fatalf("LEAK: New's error message echoes decrypted content: %q", got)
 	}
+}
+
+// TestNewRefusesAgeIdentityReadableByOthers pins GAB-26: the age identity
+// decrypts every backend credential the gateway holds, and until now
+// nothing checked its permissions -- while signer.LoadKey enforced exactly
+// this for the *signing* key, which is the less dangerous of the two.
+//
+// A group- or world-readable age identity means any local account can
+// decrypt the vault and read every production API key: precisely the
+// outcome this project was built to prevent, since the reason it exists is
+// credentials sitting readable on analyst laptops.
+//
+// Written against the pre-fix code first, where every mode below was
+// accepted, so the refusal is evidence rather than decoration.
+func TestNewRefusesAgeIdentityReadableByOthers(t *testing.T) {
+	for _, mode := range []os.FileMode{0o640, 0o644, 0o604, 0o660, 0o666, 0o777} {
+		t.Run(fmt.Sprintf("mode_%04o", mode), func(t *testing.T) {
+			dir := t.TempDir()
+			keyPath := filepath.Join(dir, "age.key")
+			if err := os.WriteFile(keyPath, []byte("AGE-SECRET-KEY-PLACEHOLDER\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			// Written 0600 then chmodded, because WriteFile's mode is
+			// masked by the process umask and would otherwise silently
+			// produce a stricter file than the case under test.
+			if err := os.Chmod(keyPath, mode); err != nil {
+				t.Fatal(err)
+			}
+			secretsPath := filepath.Join(dir, "secrets.json")
+			if err := os.WriteFile(secretsPath, []byte(`{}`), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			_, err := sopsage.New(context.Background(), secretsPath, keyPath)
+			if err == nil {
+				t.Fatalf("New accepted an age identity with mode %04o; it must be refused", mode)
+			}
+			// The message has to tell an operator what to type. A refusal
+			// they cannot act on gets worked around, not fixed.
+			if !strings.Contains(err.Error(), "chmod 600") {
+				t.Errorf("refusal does not name the fix: %v", err)
+			}
+		})
+	}
+
+	t.Run("owner_only_is_accepted", func(t *testing.T) {
+		// The control: without it, a New() that rejected everything --
+		// including a correct key -- would pass every case above.
+		dir := t.TempDir()
+		keyPath := filepath.Join(dir, "age.key")
+		if err := os.WriteFile(keyPath, []byte("AGE-SECRET-KEY-PLACEHOLDER\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(keyPath, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		secretsPath := filepath.Join(dir, "secrets.json")
+		if err := os.WriteFile(secretsPath, []byte(`{}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		_, err := sopsage.New(context.Background(), secretsPath, keyPath)
+		if err != nil && strings.Contains(err.Error(), "chmod 600") {
+			t.Fatalf("a correctly-permissioned key was refused by the permission check: %v", err)
+		}
+	})
 }

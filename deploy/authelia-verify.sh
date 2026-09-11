@@ -10,10 +10,13 @@
 # deploy/authelia-jail.md, "What is proven and what is assumed".
 set -eu
 
+# shellcheck source=deploy/lib/remote.sh
+. "$(dirname "$0")/lib/remote.sh"
+
 JAIL="${JAIL:-authelia}"
 USER_UNDER_TEST="${1:-analyst}"
 
 cd "$(dirname "$0")/.."
 
-jm ssh -- bastille cmd "$JAIL" \
+remote_sh bastille cmd "$JAIL" \
 	env "USER_UNDER_TEST=$USER_UNDER_TEST" /root/provision/authelia-verify.sh

@@ -94,8 +94,7 @@ func cmdSign(args []string, stdout, stderr io.Writer) int {
 	genKey := fs.Bool("generate-key", false,
 		"create a new Ed25519 signing key and exit; requires -out; refuses to overwrite an existing file")
 	keyOut := fs.String("out", "", "with -generate-key: path to write the new key to")
-	fs.Usage = func() { signUsage(stderr) }
-	if code, ok := opParse(fs, args); !ok {
+	if code, ok := opParse(fs, args, stdout, stderr, signUsage); !ok {
 		return code
 	}
 	if *genKey {
@@ -292,9 +291,8 @@ Create the key with, for example:
 	fmt.Fprintf(tw, "  env var names\t%s\n", opDash(strings.Join(entry.EnvVarNames, ", ")))
 	fmt.Fprintf(tw, "  key file\t%s\n", keyFile)
 	fmt.Fprintf(tw, "  public key\t%s\n", signer.KeyFingerprint(s.PublicKey()))
-	if err := tw.Flush(); err != nil {
-		fmt.Fprintf(e.stderr, "writing table: %v\n", err)
-		return exitCannotRun
+	if !opFlushTable(tw, e.stderr) {
+		return exitProblem
 	}
 	fmt.Fprint(e.stdout, "\nThe signature covers those fields and nothing else -- no secret value is\ncovered, which is why rotating a credential will not invalidate it.\n")
 

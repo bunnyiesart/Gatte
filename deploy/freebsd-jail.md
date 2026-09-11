@@ -256,9 +256,26 @@ connected keeps using the old value indefinitely. Editing the vault
 changes what the *next* connect will use and nothing else.
 
 So until the gateway restarts, "I rotated the credential" means "the old
-credential is still in active use by every connected upstream." Nothing in
-the system currently warns about this -- making it warn, or making a
-reconnect possible without a full restart, is tracked as ISSUE-20.
+credential is still in active use by every connected upstream."
+
+**The gateway warns about this now (GAB-20).** Once per
+`quarantine.refresh_interval` it re-reads each connected upstream's
+credentials and compares them against what that upstream was actually
+handed at dial time, and logs a warning naming the upstream and the
+variable if they differ:
+
+    a credential was rotated in the vault but the connected upstream is
+    STILL USING THE OLD VALUE -- rotation takes effect at the next dial,
+    so restart the gateway to make it real
+
+It compares keyed digests, never values, so nothing derived from a secret
+is kept or logged. **It does not reconnect anything** -- the restart above
+is still the step that makes a rotation real, and the warning exists to
+stop that step being forgotten. A reconnect command was considered and
+deliberately not built: it would need a control channel into the process
+that holds every backend credential, and SIGHUP is not the cheap version
+here because this service runs under `daemon -r` (see the pidfile note in
+`deploy/gateway-jail/mcp_gateway`).
 
 ### The Ed25519 signing key (ADR-0006)
 

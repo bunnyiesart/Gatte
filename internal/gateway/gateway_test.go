@@ -23,6 +23,7 @@ package gateway
 //     env map is not retained" are asserted at all.
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"encoding/json"
@@ -2668,5 +2669,49 @@ func TestDispatch_ACancelledCallIsStillAudited(t *testing.T) {
 	}
 	if rows[1].Reason != reasonCallCancelled {
 		t.Errorf("second row Reason = %q, want %q", rows[1].Reason, reasonCallCancelled)
+	}
+}
+
+// TestDispatch_AnUpstreamEchoingItsCredentialDoesNotLeakItIntoTheLog closes
+// the runtime half of a guard that only existed at dial time.
+//
+// bringUp redacts the DIAL error, with a comment saying it does so because
+// that is "the boundary where a buggy adapter's mistake would become a
+// logged secret". The same boundary exists on every CALL afterwards and
+// had no guard: a backend that echoes the credential it was handed --
+// "401: token=vt-..." is an ordinary thing for an API client to say -- put
+// that value straight into the gateway's own slog, which is then shipped
+// off the box.
+//
+// The audit RECORD was never at risk: it carries a classified reason and
+// deliberately refuses upstream free text. The log line was the exception,
+// and the exception was the leak.
+func TestDispatch_AnUpstreamEchoingItsCredentialDoesNotLeakItIntoTheLog(t *testing.T) {
+	const secret = "vt-fake-echoed-by-the-backend-9f8e"
+
+	var logged bytes.Buffer
+	h := newHarness(t, "threatintel.lookup_ip")
+	h.gw.log = slog.New(slog.NewTextHandler(&logged, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	h.register("threatintel", "THREATINTEL_VT_KEY")
+	h.vault.values["THREATINTEL_VT_KEY"] = secret
+	h.serve("threatintel", def("lookup_ip", "look up an ip"))
+	h.mustConnect()
+	h.approve("threatintel", "lookup_ip")
+
+	// The backend quotes the credential it was given back at the gateway.
+	h.dialer.upstream("threatintel").callErr = fmt.Errorf("401 from vendor: token=%s rejected", secret)
+
+	if _, err := h.gw.Dispatch(t.Context(), fromAnalyst, "threatintel.lookup_ip", nil); err == nil {
+		t.Fatal("expected the dispatch to fail")
+	}
+
+	if strings.Contains(logged.String(), secret) {
+		t.Errorf("the injected credential reached the gateway's log:\n%s", logged.String())
+	}
+	// Non-vacuity: the log must actually carry the failure, or the
+	// assertion above is passing because nothing was written at all.
+	if !strings.Contains(logged.String(), "dispatched call failed") {
+		t.Fatalf("no failure was logged, so the assertion above proves nothing:\n%s", logged.String())
 	}
 }

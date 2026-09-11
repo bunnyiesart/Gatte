@@ -122,9 +122,25 @@ func backfillChain(db *sql.DB) error {
 		rec audit.Record
 	}
 	var rows []row
+	// ONLY rows that have no hash yet. A row that already carries one is
+	// never re-hashed, and that restriction is load-bearing rather than an
+	// optimisation.
+	//
+	// The guard above -- "the meta row exists, so the backfill already
+	// ran" -- is one DELETE away from being false, and the same actor this
+	// whole ADR is about can issue it. Without this WHERE clause, dropping
+	// that single row made the next start re-chain the WHOLE table over
+	// whatever it currently held: edit a record, delete one row from a
+	// second table, restart, and the gateway itself signs the edited
+	// trail, having required the attacker to compute no hashes at all. It
+	// also overwrote the retroactive boundary, erasing the disclosure that
+	// exists so an intact result cannot be read as "authentic since
+	// written".
+	//
+	// Reproduced in TestMigrate_DeletingChainMetaDoesNotResignATamperedTrail.
 	cur, err := tx.Query(`
 SELECT id, analyst_identity, tool, target_upstream, timestamp, outcome, reason, source_address
-FROM audit_records ORDER BY id ASC`)
+FROM audit_records WHERE hash = '' ORDER BY id ASC`)
 	if err != nil {
 		return fmt.Errorf("audit/sqlite: migrate: scan for backfill: %w", err)
 	}
@@ -150,7 +166,17 @@ FROM audit_records ORDER BY id ASC`)
 	}
 	cur.Close()
 
+	// Unhashed rows chain onto whatever the existing tail already is, not
+	// onto genesis: on a database that has been chained before, the rows
+	// selected above sit after it, and restarting the chain from empty
+	// would fork it.
 	prev := audit.GenesisHash
+	if err := tx.QueryRow(
+		`SELECT hash FROM audit_records WHERE hash != '' ORDER BY id DESC LIMIT 1`,
+	).Scan(&prev); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("audit/sqlite: migrate: read chain head for backfill: %w", err)
+	}
+
 	var last int64
 	for _, r := range rows {
 		h := audit.ChainHash(prev, r.rec)

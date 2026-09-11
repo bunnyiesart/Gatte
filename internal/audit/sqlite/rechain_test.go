@@ -192,3 +192,78 @@ func TestVerifyChain_RechainedMiddleDeleteVerifiesClean(t *testing.T) {
 		t.Error("head unchanged after a re-chained deletion -- then nothing detects it")
 	}
 }
+
+// TestMigrate_DeletingChainMetaDoesNotResignATamperedTrail is the cheaper
+// attack on the same weakness rechain_test.go's other cases describe, and
+// it needs no hashing at all.
+//
+// backfillChain used the presence of the audit_chain_meta row as its only
+// "already done" guard. Delete that one row -- the same write access the
+// whole ADR is about -- and the next start re-chained EVERY row from
+// scratch over whatever the table currently held. The attacker edits a
+// record, drops one row from a second table, restarts the gateway, and the
+// gateway itself computes and stores a valid chain over the edited trail.
+// The retroactive-boundary disclosure, which exists so an intact result
+// cannot be read as "authentic since written", was overwritten in the same
+// motion.
+//
+// The fix is that a row which already carries a hash is never re-hashed.
+// Backfill is for rows that predate the chain, and only those.
+func TestMigrate_DeletingChainMetaDoesNotResignATamperedTrail(t *testing.T) {
+	db := newTestDB(t)
+	r := New(db)
+	recordN(t, r, 4)
+
+	before, err := r.VerifyChain(context.Background())
+	if err != nil {
+		t.Fatalf("VerifyChain before: %v", err)
+	}
+	if !before.Intact() {
+		t.Fatal("the trail did not verify before tampering")
+	}
+
+	// The attack: edit a record, then remove the one row that says the
+	// backfill already ran.
+	if _, err := db.Exec(`UPDATE audit_records SET analyst_identity = 'someone-else' WHERE id = 2`); err != nil {
+		t.Fatalf("tamper: %v", err)
+	}
+	if _, err := db.Exec(`DELETE FROM audit_chain_meta`); err != nil {
+		t.Fatalf("delete chain meta: %v", err)
+	}
+
+	// Restart: Migrate runs on every start and is where the backfill lives.
+	if err := Migrate(db); err != nil {
+		t.Fatalf("Migrate after tampering: %v", err)
+	}
+
+	after, err := r.VerifyChain(context.Background())
+	if err != nil {
+		t.Fatalf("VerifyChain after: %v", err)
+	}
+	if after.Intact() {
+		t.Fatal("the gateway re-signed a tampered trail: an edited record verifies clean after a " +
+			"restart, and the attacker computed no hashes to achieve it")
+	}
+	if after.FirstBreak.Position != 2 {
+		t.Errorf("break reported at %d, want 2 (the edited row)", after.FirstBreak.Position)
+	}
+	// The head is deliberately NOT asserted to move here, and the reason
+	// is worth stating because getting it wrong is how the original ADR
+	// overclaimed.
+	//
+	// This attacker edited a row and did not re-chain. The stored hashes
+	// are untouched, so the head is unchanged -- and that costs nothing,
+	// because detection comes from the break above, which is exactly what
+	// an unrewritten chain is for. The head is the signal for the OTHER
+	// attack, the one that does re-chain; that case is
+	// TestVerifyChain_RechainedMiddleEditVerifiesClean, where the break
+	// disappears and the moved head is all that is left.
+	//
+	// Two attacks, two different signals. Requiring both from one of them
+	// would be asserting a property this design does not have.
+	if before.Head != after.Head {
+		t.Errorf("the stored head moved (%s -> %s) without anything re-chaining; "+
+			"the backfill has rewritten hashes it must never touch",
+			before.Head[:12], after.Head[:12])
+	}
+}

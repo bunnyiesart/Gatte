@@ -1,0 +1,26 @@
+// Functions errcheck should not report, each with the convention it encodes.
+// See the `lint` target in the Makefile for the longer reasoning.
+
+// Writing to the terminal a CLI is already reporting through. There is
+// nothing to do with the error, and checking it would double every command
+// body. This was 315 of the original 325 findings.
+fmt.Fprintf
+fmt.Fprint
+fmt.Fprintln
+
+// Read-path cleanup in a defer: the rows are already drained or the query
+// already failed, and there is no caller left to return to.
+(*database/sql.Rows).Close
+(*database/sql.Conn).Close
+(*database/sql.DB).Close
+
+// Rollback after a successful Commit is a documented no-op; several call
+// sites already say so inline.
+(*database/sql.Tx).Rollback
+
+// Closing a file the process only READ. The write path is deliberately NOT
+// excluded and must stay checked: internal/audit/jsonl.FileSink.Close
+// returns its error to callers who act on it, because a dropped Close there
+// silently loses buffered audit records -- which is the one case where this
+// whole category stops being cosmetic.
+(*os.File).Close

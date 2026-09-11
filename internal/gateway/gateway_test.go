@@ -58,6 +58,12 @@ type fakeUpstream struct {
 	calls    []upstreamCall
 	closes   int
 	closeErr error
+	// waitForCtx makes CallTool block until the caller's context ends and
+	// then return its error -- what a real backend does when the deadline
+	// fires. Without it the fake answers instantly, so the context is
+	// still alive when the failure is handled, and a test cannot reach the
+	// path where the audit write itself happens under a DEAD context.
+	waitForCtx bool
 }
 
 type upstreamCall struct {
@@ -74,14 +80,23 @@ func (u *fakeUpstream) ListTools(context.Context) ([]ToolDef, error) {
 	return slices.Clone(u.defs), nil
 }
 
-func (u *fakeUpstream) CallTool(_ context.Context, tool string, args json.RawMessage) (Result, error) {
+func (u *fakeUpstream) CallTool(ctx context.Context, tool string, args json.RawMessage) (Result, error) {
+	// The lock is released before any blocking below: holding it across a
+	// wait would serialise every other caller behind one slow call, which
+	// no real upstream does and which would deadlock a concurrent test.
 	u.mu.Lock()
-	defer u.mu.Unlock()
 	u.calls = append(u.calls, upstreamCall{tool: tool, args: string(args)})
-	if u.callErr != nil {
-		return Result{}, u.callErr
+	wait, callErr, result := u.waitForCtx, u.callErr, u.result
+	u.mu.Unlock()
+
+	if wait {
+		<-ctx.Done()
+		return Result{}, ctx.Err()
 	}
-	return u.result, nil
+	if callErr != nil {
+		return Result{}, callErr
+	}
+	return result, nil
 }
 
 func (u *fakeUpstream) Close() error {
@@ -558,10 +573,25 @@ func TestConnect_CollidingToolNamesRouteToTheirOwnBackend(t *testing.T) {
 // TestConnect_AmbiguousNamespacedNameServesNeither covers the one shape
 // namespacing cannot disambiguate: upstream "a" with tool "b.c" and
 // upstream "a.b" with tool "c" both want the name "a.b.c".
+//
+// That shape can no longer be *registered* -- registry.UpstreamServer.
+// Validate refuses a name containing the separator, because the ambiguity is
+// not only a routing collision but an authorization one (a grant on "a"
+// reaching the tools of "a.b"). So the entry is planted directly in the fake
+// registry here, the way a row written before that rule, or by something
+// other than this binary, reaches Connect: through List, unchecked. The
+// outcome this test has always asserted is unchanged -- nothing is served
+// under the ambiguous name -- and it is now delivered one step earlier, by
+// Connect refusing the entry rather than by mergeRoutes dropping the
+// collision it would have produced.
 func TestConnect_AmbiguousNamespacedNameServesNeither(t *testing.T) {
 	h := newHarness(t, "a.b.c")
 	h.register("a")
-	h.register("a.b")
+	h.reg.mu.Lock()
+	h.reg.entries = append(h.reg.entries, registry.UpstreamServer{
+		Name: "a.b", Transport: registry.TransportStdio, Command: "/usr/bin/a.b",
+	})
+	h.reg.mu.Unlock()
 	h.serve("a", def("b.c", "from a"))
 	h.serve("a.b", def("c", "from a.b"))
 
@@ -569,18 +599,30 @@ func TestConnect_AmbiguousNamespacedNameServesNeither(t *testing.T) {
 	if !errors.Is(err, ErrUpstreamUnavailable) {
 		t.Fatalf("Connect error = %v, want one wrapping ErrUpstreamUnavailable", err)
 	}
-
-	// Approve both candidates, so that the only thing standing between the
-	// caller and a call landing on an unpredictable backend is the routing
-	// table having dropped the ambiguous name.
-	h.approve("a", "b.c")
-	h.approve("a.b", "c")
-
-	if _, err := h.gw.Dispatch(context.Background(), fromAnalyst, "a.b.c", nil); !errors.Is(err, ErrUnknownTool) {
-		t.Fatalf("Dispatch of an ambiguous name = %v, want ErrUnknownTool", err)
+	if h.dialer.wasDialed("a.b") {
+		t.Error("an upstream whose name cannot be namespaced unambiguously was dialed; it must be refused before its command runs")
 	}
-	if names := h.listNames(analyst); len(names) != 0 {
-		t.Fatalf("ListTools = %v, want nothing served under an ambiguous name", names)
+
+	// Approve the one candidate that was discovered, so that what the name
+	// resolves to is decided by the routing table and not by quarantine.
+	h.approve("a", "b.c")
+
+	// With "a.b" refused, "a.b.c" has exactly one reading left, and it is the
+	// reading every consumer of the name already assumes: the tool "b.c" of
+	// the upstream "a". The call must land there and nowhere else -- this is
+	// the property the refusal buys, and asserting it is the difference
+	// between "the ambiguity is gone" and "the name is gone".
+	if _, err := h.gw.Dispatch(context.Background(), fromAnalyst, "a.b.c", nil); err != nil {
+		t.Fatalf("Dispatch(%q) = %v, want nil -- with the ambiguous upstream refused the name belongs to %q alone", "a.b.c", err, "a")
+	}
+	if n := len(h.dialer.upstream("a").callLog()); n != 1 {
+		t.Errorf("upstream %q saw %d calls, want 1 -- the call went somewhere else", "a", n)
+	}
+	if n := len(h.dialer.upstream("a.b").callLog()); n != 0 {
+		t.Errorf("upstream %q saw %d calls, want 0 -- it was never brought up", "a.b", n)
+	}
+	if names := h.listNames(analyst); !slices.Equal(names, []string{"a.b.c"}) {
+		t.Fatalf("ListTools = %v, want exactly %v", names, []string{"a.b.c"})
 	}
 }
 
@@ -2537,5 +2579,94 @@ func TestAuditReasons_AreAStableWireContract(t *testing.T) {
 			t.Errorf("two audit reasons share the value %q -- they become indistinguishable in the trail", r)
 		}
 		seen[r] = true
+	}
+}
+
+// TestDispatch_ACallThatTimedOutIsStillAudited covers the one failure the
+// audit trail exists to carry and could not.
+//
+// ADR-0012's argument for the appended OutcomeFailed row is that "the
+// attempts most worth investigating are the ones that never came back".
+// Timeout and cancellation ARE that case -- and they were the two that
+// could not reach the trail, because auditFailure wrote the row with the
+// same context whose expiry caused the failure. The row's own INSERT was
+// cancelled before it ran.
+//
+// The result was a trail that shows a timed-out call as `allowed` and
+// nothing else: exactly the confident wrong answer to "did that query
+// actually run?" that TestDispatch_UpstreamFailureAppendsASecondRecord was
+// written to prevent, surviving for the subset of failures that matters
+// most.
+//
+// Note the ERROR path is not what broke. slog wrote its line, the caller
+// got its error, the operator saw a warning. Only the durable record was
+// missing -- which is the half nobody notices until an incident.
+func TestDispatch_ACallThatTimedOutIsStillAudited(t *testing.T) {
+	h := newHarness(t, "casemgmt.list_cases")
+	h.register("casemgmt")
+	h.serve("casemgmt", def("list_cases", "list cases"))
+	h.mustConnect()
+	h.approve("casemgmt", "list_cases")
+
+	// A real backend that misses the deadline: it is still waiting when
+	// the context ends, and returns the context's own error.
+	h.dialer.upstream("casemgmt").waitForCtx = true
+
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+
+	if _, err := h.gw.Dispatch(ctx, fromAnalyst, "casemgmt.list_cases", nil); err == nil {
+		t.Fatal("expected the dispatch to fail once the deadline fired")
+	}
+	if ctx.Err() == nil {
+		t.Fatal("the caller's context is still alive -- this test is not exercising the case it claims")
+	}
+
+	rows := h.auditRows()
+	if len(rows) != 2 {
+		t.Fatalf("audit rows = %d, want 2 (allowed + failed). A timed-out call that leaves only the "+
+			"allowed row reads as a call that succeeded: %+v", len(rows), rows)
+	}
+	if rows[0].Outcome != audit.OutcomeAllowed {
+		t.Errorf("first row Outcome = %q, want %q", rows[0].Outcome, audit.OutcomeAllowed)
+	}
+	if rows[1].Outcome != audit.OutcomeFailed {
+		t.Errorf("second row Outcome = %q, want %q", rows[1].Outcome, audit.OutcomeFailed)
+	}
+	if rows[1].Reason != reasonUpstreamTimeout {
+		t.Errorf("second row Reason = %q, want %q -- the reason classifier ran, but the row it "+
+			"classified never reached the trail", rows[1].Reason, reasonUpstreamTimeout)
+	}
+}
+
+// TestDispatch_ACancelledCallIsStillAudited is the sibling case. A caller
+// that walks away mid-call is not the backend's fault, and an operator
+// counting backend incidents needs it separated out -- which requires the
+// row to exist at all.
+func TestDispatch_ACancelledCallIsStillAudited(t *testing.T) {
+	h := newHarness(t, "casemgmt.list_cases")
+	h.register("casemgmt")
+	h.serve("casemgmt", def("list_cases", "list cases"))
+	h.mustConnect()
+	h.approve("casemgmt", "list_cases")
+
+	h.dialer.upstream("casemgmt").waitForCtx = true
+
+	ctx, cancel := context.WithCancel(t.Context())
+	go func() {
+		time.Sleep(30 * time.Millisecond)
+		cancel()
+	}()
+
+	if _, err := h.gw.Dispatch(ctx, fromAnalyst, "casemgmt.list_cases", nil); err == nil {
+		t.Fatal("expected the dispatch to fail once the caller cancelled")
+	}
+
+	rows := h.auditRows()
+	if len(rows) != 2 {
+		t.Fatalf("audit rows = %d, want 2 (allowed + failed): %+v", len(rows), rows)
+	}
+	if rows[1].Reason != reasonCallCancelled {
+		t.Errorf("second row Reason = %q, want %q", rows[1].Reason, reasonCallCancelled)
 	}
 }

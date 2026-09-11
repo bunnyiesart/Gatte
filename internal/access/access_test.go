@@ -126,7 +126,7 @@ func TestNewPolicy_ValidPolicyBuilds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewPolicy(nil, nil): %v", err)
 	}
-	if got := empty.AllowedTools(Identity{Subject: "a", Groups: []string{"soc-n1"}}); len(got) != 0 {
+	if got := empty.AllowedTools(Identity{Subject: "a", Groups: []string{"soc-n1"}}, toolUniverse); len(got) != 0 {
 		t.Errorf("AllowedTools under an empty policy = %v, want empty", got)
 	}
 }
@@ -155,7 +155,7 @@ func TestAuthorize_IdentityWithNoGroupsIsForbiddenEverything(t *testing.T) {
 			if got := p.RolesFor(id); len(got) != 0 {
 				t.Errorf("RolesFor = %v, want no roles", roleNames(got))
 			}
-			if got := p.AllowedTools(id); len(got) != 0 {
+			if got := p.AllowedTools(id, toolUniverse); len(got) != 0 {
 				t.Errorf("AllowedTools = %v, want empty", got)
 			}
 		})
@@ -177,7 +177,7 @@ func TestAuthorize_GroupsThatMapToNoRoleAreForbiddenEverything(t *testing.T) {
 	if got := p.RolesFor(id); len(got) != 0 {
 		t.Fatalf("RolesFor = %v, want no roles for unmapped groups", roleNames(got))
 	}
-	if got := p.AllowedTools(id); len(got) != 0 {
+	if got := p.AllowedTools(id, toolUniverse); len(got) != 0 {
 		t.Fatalf("AllowedTools = %v, want empty", got)
 	}
 	for _, tool := range toolUniverse {
@@ -205,7 +205,7 @@ func TestRolesFor_UnmappedGroupsAreIgnoredNotFatal(t *testing.T) {
 	}
 
 	want := []string{"casemgmt.get_case", "casemgmt.list_cases", "threatintel.lookup_ip"}
-	if got := p.AllowedTools(id); !slices.Equal(got, want) {
+	if got := p.AllowedTools(id, toolUniverse); !slices.Equal(got, want) {
 		t.Errorf("AllowedTools = %v, want exactly the mapped role's tools %v", got, want)
 	}
 	for _, tool := range want {
@@ -264,11 +264,17 @@ func TestAuthorize_ExactToolAllowedOtherwiseForbidden(t *testing.T) {
 }
 
 // TestAuthorize_HasNoWildcardMatching is the test that stops someone
-// "helpfully" adding prefix or glob semantics later. Matching is exact by
-// design: a wildcard is how a role silently gains a tool that an upstream
-// added after the role was reviewed, and nobody would see it happen. Every
-// name below would match the role's real tools under some plausible
-// globbing scheme, and every one of them must be denied.
+// "helpfully" adding prefix or glob semantics to the FLAT Role.Tools list.
+// Matching there is exact, and stayed exact when design/adr/0016 added a
+// wildcard to Role.Grants: the two forms are deliberately not the same
+// dialect, so that a "*" typed into `tools` cannot quietly become a
+// whole-backend grant. Every name below would match the role's real tools
+// under some plausible globbing scheme, and every one of them must be
+// denied.
+//
+// The roles under test here hold no Grants at all, which is what makes
+// this an assertion about the flat list specifically. The wildcard that
+// does exist is exercised in TestRoleGrants_WildcardCoversTheWholeBackend.
 func TestAuthorize_HasNoWildcardMatching(t *testing.T) {
 	p := mustPolicy(t)
 	id := Identity{Subject: "analyst-1", Groups: []string{"soc-n1"}}
@@ -301,7 +307,7 @@ func TestAuthorize_HasNoWildcardMatching(t *testing.T) {
 			if err := p.Authorize(id, tool); !errors.Is(err, ErrForbidden) {
 				t.Fatalf("Authorize(%q) = %v, want ErrForbidden -- matching must be exact, with no wildcard or prefix semantics", tool, err)
 			}
-			if slices.Contains(p.AllowedTools(id), tool) {
+			if slices.Contains(p.AllowedTools(id, nearMisses), tool) {
 				t.Fatalf("AllowedTools contains %q, want it absent", tool)
 			}
 		})
@@ -347,7 +353,7 @@ func TestAuthorize_MultipleRolesUnion(t *testing.T) {
 		"threatintel.lookup_ip",
 		"threatintel.virustotal",
 	}
-	got := p.AllowedTools(id)
+	got := p.AllowedTools(id, toolUniverse)
 	if !slices.Equal(got, want) {
 		t.Fatalf("AllowedTools = %v, want the sorted, deduplicated union %v", got, want)
 	}
@@ -451,21 +457,39 @@ func TestAuthorizeAndAllowedToolsAgree(t *testing.T) {
 		{Name: "read-only", Tools: []string{"logsearch.list_streams", "casemgmt.list_cases"}},
 		{Name: "hunter", Tools: []string{"docsearch.docsearch_api", "logsearch.search_absolute", "threatintel.shodan", "threatintel.lookup_ip"}},
 		{Name: "empty-role", Tools: nil},
-		// "*" and "casemgmt." are deliberately here: they are ordinary strings
-		// as far as this package is concerned, and holding them must grant
-		// only the tools literally named "*" and "casemgmt." -- never wildcard
-		// or prefix semantics. "" is NOT here: NewPolicy rejects an empty
-		// tool name outright, so that a bug elsewhere passing "" to the
-		// gate can never find a role that happens to hold it.
+		// "*" and "casemgmt." are deliberately here: in the FLAT list they
+		// are ordinary strings, and holding them must grant only the tools
+		// literally named "*" and "casemgmt." -- never wildcard or prefix
+		// semantics. "" is NOT here: NewPolicy rejects an empty tool name
+		// outright, so that a bug elsewhere passing "" to the gate can
+		// never find a role that happens to hold it.
 		{Name: "odd-names", Tools: []string{"*", "casemgmt."}},
+		// The per-backend form, in all three of its shapes: named ids, a
+		// whole-backend wildcard, and a role that mixes flat and granted.
+		// The property below must hold over these exactly as it does over
+		// the flat ones -- that is the point of including them.
+		{Name: "granted", Grants: map[string][]string{
+			"casemgmt":    {"list_cases", "delete_case"},
+			"threatintel": {"shodan"},
+		}},
+		{Name: "wildcarded", Grants: map[string][]string{"docsearch": {GrantAll}}},
+		{
+			Name:   "mixed",
+			Tools:  []string{"logsearch.list_streams"},
+			Grants: map[string][]string{"casemgmt": {"get_case"}},
+		},
 	}
 	groupToRole := map[string]string{
-		"soc-n1":      "n1-triage",
-		"soc-dfir":    "dfir-lead",
-		"soc-readers": "read-only",
-		"soc-hunt":    "hunter",
-		"soc-nothing": "empty-role",
-		"soc-odd":     "odd-names",
+		"soc-n1":       "n1-triage",
+		"soc-dfir":     "dfir-lead",
+		"soc-readers":  "read-only",
+		"soc-hunt":     "hunter",
+		"soc-nothing":  "empty-role",
+		"soc-odd":      "odd-names",
+		"soc-granted":  "granted",
+		"soc-wild":     "wildcarded",
+		"soc-mixed":    "mixed",
+		"soc-wild-too": "wildcarded",
 	}
 
 	p, err := NewPolicy(roles, groupToRole)
@@ -487,11 +511,17 @@ func TestAuthorizeAndAllowedToolsAgree(t *testing.T) {
 		{Subject: "empty-role-only", Groups: []string{"soc-nothing"}},
 		{Subject: "odd-names-only", Groups: []string{"soc-odd"}},
 		{Subject: "duplicated-group", Groups: []string{"soc-n1", "soc-n1"}},
+		{Subject: "granted-only", Groups: []string{"soc-granted"}},
+		{Subject: "wildcard-only", Groups: []string{"soc-wild"}},
+		{Subject: "mixed-only", Groups: []string{"soc-mixed"}},
+		{Subject: "flat-and-granted", Groups: []string{"soc-n1", "soc-granted"}},
+		{Subject: "wildcard-and-flat", Groups: []string{"soc-wild", "soc-readers"}},
+		{Subject: "every-shape", Groups: []string{"soc-n1", "soc-granted", "soc-wild", "soc-mixed", "soc-odd"}},
 	}
 
 	for _, id := range identities {
 		t.Run(id.Subject, func(t *testing.T) {
-			allowed := p.AllowedTools(id)
+			allowed := p.AllowedTools(id, toolUniverse)
 
 			// Direction 1: over the whole universe, listed <=> callable.
 			for _, tool := range toolUniverse {
@@ -507,15 +537,16 @@ func TestAuthorizeAndAllowedToolsAgree(t *testing.T) {
 			}
 
 			// Direction 2: nothing AllowedTools returns may fall outside
-			// the universe unnoticed, and every entry must be callable.
-			// This catches a tool leaking into the list from somewhere the
-			// universe does not cover.
+			// the list it was given, and every entry must be callable.
+			// The second half is not implied by direction 1 -- that one
+			// only checks names the universe happens to contain, and this
+			// one checks the output itself.
 			for _, tool := range allowed {
 				if err := p.Authorize(id, tool); err != nil {
 					t.Errorf("AllowedTools returned %q for %q but Authorize = %v", tool, id.Subject, err)
 				}
 				if !slices.Contains(toolUniverse, tool) {
-					t.Errorf("AllowedTools returned %q, which is outside the tested universe; extend toolUniverse", tool)
+					t.Errorf("AllowedTools returned %q, which was never advertised to it", tool)
 				}
 			}
 
@@ -553,14 +584,14 @@ func TestRolesForAndAllowedTools_AreDeterministic(t *testing.T) {
 	}
 
 	wantRoles := roleNames(p.RolesFor(id))
-	wantTools := p.AllowedTools(id)
+	wantTools := p.AllowedTools(id, toolUniverse)
 
 	const iterations = 100
 	for i := range iterations {
 		if got := roleNames(p.RolesFor(id)); !slices.Equal(got, wantRoles) {
 			t.Fatalf("iteration %d: RolesFor = %v, want %v on every call", i, got, wantRoles)
 		}
-		if got := p.AllowedTools(id); !slices.Equal(got, wantTools) {
+		if got := p.AllowedTools(id, toolUniverse); !slices.Equal(got, wantTools) {
 			t.Fatalf("iteration %d: AllowedTools = %v, want %v on every call", i, got, wantTools)
 		}
 	}
@@ -574,7 +605,7 @@ func TestRolesForAndAllowedTools_AreDeterministic(t *testing.T) {
 	if got := roleNames(p.RolesFor(shuffled)); !slices.Equal(got, wantRoles) {
 		t.Errorf("RolesFor with reordered group claims = %v, want %v", got, wantRoles)
 	}
-	if got := p.AllowedTools(shuffled); !slices.Equal(got, wantTools) {
+	if got := p.AllowedTools(shuffled, toolUniverse); !slices.Equal(got, wantTools) {
 		t.Errorf("AllowedTools with reordered group claims = %v, want %v", got, wantTools)
 	}
 }
@@ -594,7 +625,7 @@ func TestNewPolicy_IsDeterministicAcrossBuilds(t *testing.T) {
 		t.Fatalf("NewPolicy: %v", err)
 	}
 
-	if got, want := b.AllowedTools(id), a.AllowedTools(id); !slices.Equal(got, want) {
+	if got, want := b.AllowedTools(id, toolUniverse), a.AllowedTools(id, toolUniverse); !slices.Equal(got, want) {
 		t.Errorf("AllowedTools differs by role declaration order: %v vs %v", got, want)
 	}
 	if got, want := roleNames(b.RolesFor(id)), roleNames(a.RolesFor(id)); !slices.Equal(got, want) {
@@ -745,7 +776,7 @@ func TestPolicyIsActuallyImmutable(t *testing.T) {
 		if err := p.Authorize(id, forbidden); err == nil {
 			t.Fatal("policy authorized a tool injected by mutating the slice passed to NewPolicy")
 		}
-		if got := p.AllowedTools(id); slices.Contains(got, forbidden) {
+		if got := p.AllowedTools(id, []string{forbidden, "casemgmt.list_cases"}); slices.Contains(got, forbidden) {
 			t.Fatalf("AllowedTools leaked an injected tool: %v", got)
 		}
 	})

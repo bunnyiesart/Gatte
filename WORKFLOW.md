@@ -25,12 +25,31 @@ implementation and confirmed the language. Phase 1 starts from here.)*
 it is listed here rather than left in the prose below, because an item
 that only exists inside a closed section is an item nobody re-reads:
 
-- **The audit trail is not tamper-evident.** `audit_records` is an
-  ordinary SQLite table: no append-only constraint, no hash chaining, so
-  the write access ADR-0010 defends against also edits history. Named in
-  Phase 7 and deliberately deferred — a hash-chained trail is its own
-  design decision, and it changes the schema of a database that is live
-  on `bun`.
+- ✅ **The audit trail is not tamper-evident — closed, in two steps, and
+  the first step is smaller than it was written up as.** ADR-0015
+  hash-chained it; ADR-0017 built the external anchor — a JSONL sink
+  carrying `prev_hash`/`hash` for a shipper to forward — wired at the
+  composition root as of 11 Sep 2026 (`[audit.siem]`, optional, and the
+  startup log says when it is off).
+
+  **Read ADR-0015's correction block of 11 Sep 2026 before quoting its
+  guarantee.** The chain is an unkeyed SHA-256 in the same table it
+  authenticates and `audit.ChainHash` is exported, so an edit or deletion
+  *anywhere* — middle included — verifies clean once the attacker
+  re-chains forward, which is a dozen lines of SQL for the actor the ADR
+  names. What the chain catches alone is tampering that did not re-chain.
+  Everything else, tail truncation included, shows up only as the **head**
+  changing, so the ADR-0017 anchor is not the tail's footnote, it is the
+  detection. **What is still manual:** nobody compares the two heads
+  automatically, and there is no Graylog alert for "lines stopped arriving
+  for this chain", which is what a dead shipper looks like.
+- **Per-backend role grants are wired (ADR-0016, 11 Sep 2026).**
+  `[role.grants]` composes a role per backend and `["*"]` grants a whole
+  backend. A grant naming an unregistered backend cannot be a load-time
+  error (upstreams live in SQLite, the config loads before the database
+  opens), so it is a named warning in the `serve` startup summary; and
+  `mcp-gateway tool approve` now says which roles an approval authorizes,
+  which was ADR-0016's declared debt.
 - ✅ **GAB-20 — closed as detection-only, 10 Sep 2026.** Divergence
   detection is built (`gateway.CredentialDrift`, reported once per refresh
   tick): a credential rotated in the vault while an upstream is connected

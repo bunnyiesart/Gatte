@@ -1,4 +1,4 @@
-.PHONY: build test vet fmt-check check lab-build lab-probe devtools
+.PHONY: build test vet lint fmt-check check lab-build lab-probe devtools
 
 build:
 	go build -o bin/mcp-gateway ./cmd/mcp-gateway
@@ -103,9 +103,56 @@ devtools:
 	go install github.com/getsops/sops/v3/cmd/sops@latest
 	go install filippo.io/age/cmd/age@latest
 	go install filippo.io/age/cmd/age-keygen@latest
+	go install honnef.co/go/tools/cmd/staticcheck@latest
+	go install github.com/kisielk/errcheck@latest
+	go install github.com/securego/gosec/v2/cmd/gosec@latest
 
 vet:
 	go vet ./...
+
+# lint runs the three analyses `go vet` does not: staticcheck for
+# correctness and simplification, errcheck for errors dropped on the floor,
+# gosec for the security patterns.
+#
+# # Why each exclusion below exists, rather than a blanket -disable
+#
+# A linter whose output is mostly noise gets ignored, and then it protects
+# nothing. Each exclusion here names the convention it encodes, so a future
+# reader can disagree with the specific reason rather than with a wall of
+# suppressed rule ids.
+#
+#   errcheck, fmt.Fprint*  -- writing to stdout/stderr. There is nothing a
+#     CLI can do about a failed write to the terminal it is reporting
+#     through, and checking it would double the size of every command body.
+#     315 of the 325 findings were this one pattern.
+#   errcheck, -ignoretests -- a t.Cleanup(func(){ db.Close() }) has no
+#     caller to return an error to. Production Close() on a WRITE path is
+#     different and is NOT excluded: internal/audit/jsonl.FileSink.Close
+#     returns its error and callers check it, which is the case that
+#     matters, because a dropped Close there loses buffered audit records.
+#   gosec G104           -- the same unchecked-error class errcheck already
+#     reports, with different framing. Reported once is enough.
+#
+# gosec's remaining findings are NOT excluded and NOT currently zero. They
+# are the shape of this program and each has a named mitigation:
+#   G204 internal/gateway/stdio  -- the gateway's entire purpose is
+#     spawning backends named by a registry entry. The mitigation is that
+#     the entry is Ed25519-signed and verified at Connect before any dial
+#     (ADR-0006, ADR-0010); the signature is what makes the input untainted.
+#   G204 internal/vault/sopsage  -- shelling out to sops, ADR-0005.
+#   G304 x5                      -- opening the file a path flag names.
+#   G101 internal/vault          -- the Secret type, flagged on its name.
+#   G115 internal/signer         -- uint64(len(v)) in the canonical
+#     encoding; a negative length does not exist.
+#
+# Left visible rather than suppressed on purpose: each is a place where a
+# real control is what makes an otherwise-dangerous pattern safe, and a
+# reader running this should see them and go check that the control is
+# still there.
+lint:
+	staticcheck ./...
+	errcheck -exclude .errcheck-exclude -ignoretests ./...
+	gosec -quiet -exclude=G104 -exclude-dir=lab ./... || true
 
 fmt-check:
 	@out="$$(gofmt -l .)"; \
@@ -113,4 +160,4 @@ fmt-check:
 		echo "gofmt needs to be run on:"; echo "$$out"; exit 1; \
 	fi
 
-check: fmt-check vet test build
+check: fmt-check vet lint test build

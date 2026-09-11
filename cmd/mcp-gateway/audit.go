@@ -151,14 +151,33 @@ func auditUsage(w io.Writer) {
 
 -verify checks the trail's hash chain instead of printing records: every
 record carries a hash over its own fields and its predecessor's, so a
-record edited or deleted in the MIDDLE of the trail stops verifying. It
-cannot be combined with the filters above, which is refused rather than
-ignored.
+record that was edited or deleted WITHOUT the hashes after it being
+recomputed stops verifying. It cannot be combined with the filters above,
+which is refused rather than ignored.
 
-What -verify does NOT detect is truncation of the END: removing the last
-N records leaves a shorter chain that verifies perfectly. -verify prints
-the chain head; record that value somewhere this gateway cannot write,
-and pass it back later as -expect-head to catch that case too.
+READ THE LIMIT BEFORE YOU TRUST THE RESULT. The chain is an unkeyed
+SHA-256 stored in the same table it protects, so whoever can write the
+database file -- the actor this trail is kept against -- can edit, delete
+or insert a record and then re-chain every hash after it, and -verify
+reports an intact chain. Cutting records off the END needs no re-chaining
+at all. On its own this check catches only tampering that did not bother.
+
+What no rewrite can do is leave the CHAIN HEAD unchanged. So the head is
+the control here, not a footnote for the tail: -verify prints it; record
+that value somewhere this gateway cannot write, and pass it back later as
+-expect-head. Without that comparison an intact result means internal
+consistency and nothing more.
+
+WHERE THE EXPECTED VALUE COMES FROM, once [audit.siem] is configured: the
+newest "hash" this gateway's chain has in the SIEM. Every emitted line
+carries prev_hash and hash, so in Graylog it is the "hash" field of the
+most recent message matching chain:"NAME" -- the chain name being the one
+in audit.siem.chain. That is an anchor precisely because this process
+cannot write to it: a local trail that was truncated OR rewritten shows up
+as the head below differing from the newest hash Graylog holds, which is
+the detection the chain by itself does not give. Nothing compares the two
+automatically; while it is a manual step, the detection depends on
+somebody running it.
 
 Prints the most recent matching records, NEWEST FIRST. OUTCOME and REASON
 are the point of the trail: outcome says whether the gateway allowed,
@@ -171,7 +190,9 @@ token looks like.
 
 COUNTING: a call that was dispatched and then failed leaves two rows --
 an "allowed" one written before the call, and a "failed" one written
-after. The trail is append-only, so the first is never rewritten. Count
+after. This gateway only ever appends, so it never rewrites the first --
+which is a statement about what the gateway does, not a constraint the
+table enforces on anyone else with write access to it. Count
 "-outcome allowed" for attempts, and read a "failed" row as an annotation
 on the allowed row above it. A "-" means the record predates the column.
 
@@ -310,8 +331,9 @@ func auditFlagsIgnoredByVerify(fs *flag.FlagSet, verify bool) []string {
 //
 // It is deliberate that this prints the head on success as well as on
 // failure: the head is the value an operator records somewhere the gateway
-// cannot reach, and it is the only thing that turns tail-truncation into
-// something detectable at all.
+// cannot reach, and against an attacker who re-chains after editing -- see
+// internal/audit's package doc -- it is the only thing that turns any
+// tampering, tail truncation included, into something detectable at all.
 func runAuditVerify(e *opEnv, expectHead string) int {
 	check, err := e.auditChain().VerifyChain(e.ctx())
 	if err != nil {
@@ -342,10 +364,34 @@ func runAuditVerify(e *opEnv, expectHead string) int {
 		fmt.Fprintf(e.stdout, "migrated, not when they were written. They verify against each other,\n")
 		fmt.Fprintf(e.stdout, "which says nothing about whether they were already altered before that.\n")
 	}
-	fmt.Fprintf(e.stdout, "\nThis detects edits and deletions in the MIDDLE of the trail. Removing\n")
-	fmt.Fprintf(e.stdout, "records from the END leaves a shorter chain that still verifies. Record\n")
-	fmt.Fprintf(e.stdout, "the head above somewhere this gateway cannot write, and pass it back as\n")
-	fmt.Fprintf(e.stdout, "-expect-head to catch that too.\n")
+	fmt.Fprintf(e.stdout, "\nWhat that rules out: a record edited or removed without the hashes after\n")
+	fmt.Fprintf(e.stdout, "it being recomputed. What it does NOT rule out: the same edit followed by\n")
+	fmt.Fprintf(e.stdout, "a re-chain. This chain is an unkeyed SHA-256 kept in the table it\n")
+	fmt.Fprintf(e.stdout, "protects, so anyone who can write that file can rewrite a record and\n")
+	fmt.Fprintf(e.stdout, "recompute every hash after it, and this check still prints the line\n")
+	fmt.Fprintf(e.stdout, "above. Cutting records off the END leaves a shorter chain that verifies\n")
+	fmt.Fprintf(e.stdout, "for the same reason.\n")
+	fmt.Fprintf(e.stdout, "\nThe one thing tampering cannot avoid is changing the head. Compare the\n")
+	fmt.Fprintf(e.stdout, "head above against a value recorded earlier somewhere this gateway\n")
+	fmt.Fprintf(e.stdout, "cannot write -- pass it back as -expect-head. Until that comparison is\n")
+	fmt.Fprintf(e.stdout, "made, an intact chain is evidence of internal consistency, not of an\n")
+	fmt.Fprintf(e.stdout, "unaltered trail.\n")
+
+	// Where "somewhere this gateway cannot write" already is, when the
+	// deployment configured one. Said here rather than left to the ADR
+	// because this is the moment an operator needs the value and the only
+	// place the command knows which chain to ask for.
+	//
+	// The shipper caveat is not hedging: this process writes a file and
+	// nothing more. Whether anything reads that file is outside what any
+	// check here can establish, and an instruction that implied otherwise
+	// would be this project's own defect class in a help string.
+	if e.cfg.Audit.SIEM.Enabled() {
+		chain := e.cfg.Audit.SIEM.Chain
+		fmt.Fprintf(e.stdout, "\nThis gateway appends its trail to %s under chain %q. The expected value\n", e.cfg.Audit.SIEM.Path, chain)
+		fmt.Fprintf(e.stdout, "is the `hash` field of the newest Graylog message matching chain:%q --\n", chain)
+		fmt.Fprintf(e.stdout, "which is an anchor only while a shipper is actually forwarding that file.\n")
+	}
 
 	if expectHead != "" && !strings.EqualFold(expectHead, check.Head) {
 		fmt.Fprintf(e.stderr, "\nTRUNCATED OR REWRITTEN: head does not match the expected value.\n")

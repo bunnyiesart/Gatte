@@ -54,10 +54,40 @@ trusted_keys = [
 # require_signed is left unset on purpose: it defaults to true, and writing
 # it out invites someone to "temporarily" flip it.
 
-# Roles. Tool names are namespaced <upstream>.<tool>, matched exactly with
-# no wildcard -- a wildcard is how a role silently gains a tool an upstream
-# added later. Note docsearch self-prefixes its own tool names, so the
-# namespaced form doubles up; that is correct, not a typo.
+# Second copy of the audit trail, in JSONL, for the SOC's Graylog
+# (ADR-0017). Commented out, and enabling it is two steps and not one:
+#
+#   1. the directory must exist and be writable by the gateway's user --
+#      an unopenable path is a STARTUP FAILURE, on purpose, because the
+#      operator who asked for the sink is the one who can fix it;
+#   2. a shipper (filebeat/vector) must read the file and forward it to the
+#      Raw/Plaintext TCP input at 10.17.90.30:5555, one JSON object per
+#      line, byte-identical -- no re-wrapping, no pretty-printing, no
+#      batching. Nothing here can check that one is installed, and without
+#      it this is a file that grows and anchors nothing.
+#
+# Rotation: the sink opens O_APPEND but does NOT reopen on SIGHUP, so a
+# plain rename leaves the process writing to the rotated inode. Use
+# copytruncate, or restart after rotating. See deploy/freebsd-jail.md.
+#
+# [audit.siem]
+# path  = "/var/log/mcp-gateway/audit.jsonl"
+# chain = "gatte-jail-01"
+
+# Roles. In `tools = [...]` the names are namespaced <upstream>.<tool> and
+# matched exactly, with no wildcard. Note docsearch self-prefixes its own
+# tool names, so the namespaced form doubles up; that is correct, not a
+# typo.
+#
+# This comment used to end "-- a wildcard is how a role silently gains a
+# tool an upstream added later", and ADR-0016 verified that premise dead in
+# the code: a tool that appears on an upstream tomorrow is born `pending`
+# in Tool Quarantine, invisible and uncallable, until a human approves that
+# definition. So `[role.grants]` (per backend) does have `["*"]`. What it
+# costs is different and real -- under it, approving the definition becomes
+# the ONLY human act between that tool and every analyst in the role, and
+# "is this definition sound?" is not the same question as "who may call
+# it?". Nothing in this file uses it; read ADR-0016 before that changes.
 #
 # Every name below was read out of lab/servers/*/main.go, not guessed. That
 # matters more than it sounds: a role naming a tool that does not exist

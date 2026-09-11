@@ -84,12 +84,22 @@ func (e *opEnv) tools() quarantine.Store { return quarantinesqlite.New(e.db) }
 func (e *opEnv) signatures() signer.Store { return signersqlite.New(e.db) }
 
 // auditTrail returns the Audit Trail port, wired to SQLite.
+//
+// Deliberately NOT decorated with the JSONL sink, even when [audit.siem]
+// is configured: the console only ever reads this port (`audit` calls
+// List), and the decorator emits on write. Wrapping it here would attach
+// the serving process's sink file to every operator subcommand -- opening
+// it, and failing to start the command if it could not be opened -- for a
+// code path that never writes a record. The sink belongs to the process
+// that records; see auditRecorder in serve.go.
 func (e *opEnv) auditTrail() audit.Recorder { return auditsqlite.New(e.db) }
 
-// auditChain returns the port for checking that the stored trail has not
-// been edited (design/adr/0015-audit-tamper-evidence.md). It is a
-// separate port from Recorder because verifying is an operator action, not
-// something the gateway's dispatch path performs.
+// auditChain returns the port for checking the stored trail's internal
+// consistency and reading its head (design/adr/0015-audit-tamper-evidence.md,
+// including the 11 Sep 2026 correction: an intact chain is not a statement
+// that the trail was not edited -- the head compared against an external
+// anchor is). It is a separate port from Recorder because verifying is an
+// operator action, not something the gateway's dispatch path performs.
 func (e *opEnv) auditChain() audit.ChainVerifier { return auditsqlite.New(e.db) }
 
 // ctx returns the context operator commands run under. A console command

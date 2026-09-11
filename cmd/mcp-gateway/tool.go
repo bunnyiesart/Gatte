@@ -7,8 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
+	"strings"
 	"time"
 
+	"github.com/bunnyiesart/Gatte/internal/access"
+	"github.com/bunnyiesart/Gatte/internal/config"
+	"github.com/bunnyiesart/Gatte/internal/gateway"
 	"github.com/bunnyiesart/Gatte/internal/quarantine"
 )
 
@@ -240,6 +245,10 @@ func runToolApprove(e *opEnv, server, tool string) int {
 		}
 	}
 
+	// Printed before the transition, with everything else that makes this a
+	// decision rather than a keystroke.
+	printGrantCoverage(e.stdout, e.cfg.Roles, server, tool)
+
 	after, err := q.Approve(e.ctx(), server, tool)
 	if err != nil {
 		fmt.Fprintf(e.stderr, "quarantine: approving %s: %v\n", name, err)
@@ -425,4 +434,102 @@ the previous definition does not come back. Read the tool's current
 description and input schema on the upstream server first, if you have not.
 `)
 	return true
+}
+
+// wildcardApprovalNotice is what a `["*"]` grant makes this approval mean.
+//
+// design/adr/0016 records the collapse it describes as named debt, in those
+// words: the cost of the wildcard is stated in the ADR, in the doc of
+// access.Role.Grants and in the doc of config.Role.Grants, and was stated
+// nowhere the operator actually stands when they pay it.
+const wildcardApprovalNotice = `A "*" grant is why this matters. Under one, approving this definition is the
+ONLY remaining human act between this tool and every analyst in that role --
+nobody separately decided that THIS tool may be called by them. You are being
+asked whether the definition is sound, and you are answering "who may call
+it?" at the same time (design/adr/0016).`
+
+// printGrantCoverage names the roles that already authorize the tool being
+// approved.
+//
+// Approval and grant are two different judgements made by two different
+// sentences in two different files: approving is a claim about a
+// definition's INTEGRITY, valid fleet-wide ("this description and this
+// schema were not poisoned"); a role grant is a claim about WHO MAY CALL
+// it ("may N1 delete a case?"). Under [role.grants] with "*" the second
+// has already been answered for every tool the backend will ever
+// advertise, so this prompt is where both land at once -- and until this
+// block existed, only one of them was on screen.
+//
+// Membership is decided by access.Role.Allows, the predicate the request
+// path itself gates on, rather than by re-reading the file's shape here: a
+// second rule would be free to disagree with the gate, and this output's
+// only value is that it is not a second opinion. The explanation beside
+// each role is best-effort prose about the same answer, not a second
+// decision.
+//
+// It is deliberately not fatal when the write fails, unlike
+// printChangedWarning. A changed tool is the rug-pull decision point and
+// the approval must not happen unread; a pending tool is ordinary work,
+// and refusing to approve one because a pipe closed would be a new way for
+// the console to fail at the job it exists for.
+func printGrantCoverage(w io.Writer, roles []config.Role, server, tool string) {
+	name := gateway.Namespaced(server, tool)
+
+	type coverage struct{ role, how string }
+	var covers []coverage
+	wildcard := false
+	for _, r := range roles {
+		if !(access.Role{Name: r.Name, Tools: r.Tools, Grants: r.Grants}).Allows(name) {
+			continue
+		}
+		how, viaWildcard := grantReason(r, name)
+		wildcard = wildcard || viaWildcard
+		covers = append(covers, coverage{role: r.Name, how: how})
+	}
+
+	if len(covers) == 0 {
+		fmt.Fprintf(w, "\nNo configured role covers %s. Approving it makes the definition servable;\nit does not make it callable by anyone. Granting it is a separate edit, to a\n[[role]] in the configuration file.\n", name)
+		return
+	}
+
+	fmt.Fprintf(w, "\nApproving %s makes it callable by every analyst in %s:\n\n",
+		name, opPlural(len(covers), "this role", "these roles"))
+	width := 0
+	for _, c := range covers {
+		width = max(width, len(c.role))
+	}
+	for _, c := range covers {
+		fmt.Fprintf(w, "  %-*s  %s\n", width, c.role, c.how)
+	}
+	if wildcard {
+		fmt.Fprintf(w, "\n%s\n", wildcardApprovalNotice)
+	}
+}
+
+// grantReason describes which line of the configuration file covers name,
+// and whether it does so through a wildcard.
+//
+// It walks the grants the way access.Role.Allows walks them -- cutting at
+// the backend key plus the separator, refusing an empty remainder -- so
+// that the sentence printed beside a role names the clause that actually
+// matched. "granted" is the honest fallback: the caller has already
+// established that the role allows this tool, and a reason this function
+// cannot reconstruct must not turn into a claim about which line did it.
+func grantReason(r config.Role, name string) (string, bool) {
+	if slices.Contains(r.Tools, name) {
+		return fmt.Sprintf("tools = [%q]", name), false
+	}
+	for backend, ids := range r.Grants {
+		rest, ok := strings.CutPrefix(name, backend+gateway.NameSeparator)
+		if !ok || rest == "" {
+			continue
+		}
+		if slices.Contains(ids, access.GrantAll) {
+			return fmt.Sprintf("[role.grants] %s = [%q]   <- wildcard", backend, access.GrantAll), true
+		}
+		if slices.Contains(ids, rest) {
+			return fmt.Sprintf("[role.grants] %s names %q", backend, rest), false
+		}
+	}
+	return "granted", false
 }

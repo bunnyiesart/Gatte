@@ -130,8 +130,8 @@ which this script deliberately is not.
 ## Checking the audit trail has not been rewritten
 
 The trail is hash-chained (ADR-0015). Each record's hash covers its own
-fields and its predecessor's, so a record edited or deleted in the middle
-stops verifying:
+fields and its predecessor's, so a record edited or deleted *without the
+hashes after it being recomputed* stops verifying:
 
 ```bash
 mcp-gateway audit -verify -config /usr/local/etc/mcp-gateway/config.toml
@@ -139,10 +139,17 @@ mcp-gateway audit -verify -config /usr/local/etc/mcp-gateway/config.toml
 
 Exit 0 and `chain intact`, or exit 1 and the position of the first break.
 
-**The part that needs you, not the code.** This does not detect records
-being cut off the *end* — that leaves a shorter chain which verifies
-perfectly. The only thing that catches it is having written the head down
-somewhere the gateway cannot reach. `-verify` prints it:
+**The part that needs you, not the code.** Exit 0 is not "the trail was
+not rewritten". The chain is an unkeyed SHA-256 living in the same table
+it protects, and `audit.ChainHash` is an exported function, so somebody
+with write access to `/var/db/mcp-gateway.db` can edit a record and
+recompute every hash after it — `-verify` then prints `chain intact`
+(ADR-0015, correction of 11 Sep 2026). Records cut off the *end* leave a
+shorter chain that verifies for the same reason.
+
+The one thing none of that survives is the **chain head** changing. So the
+head is the control, and it only works if you wrote it down somewhere the
+gateway cannot reach, beforehand. `-verify` prints it:
 
 ```
 head: 9f2c…  ← copy this somewhere else
@@ -157,6 +164,62 @@ mcp-gateway audit -verify -expect-head 9f2c… -config …
 A mismatch means the trail is not the one that produced that head. Where
 the head lives is deliberately not decided here — an operator's notebook,
 a file on another host, a log shipper. Anywhere the gateway cannot write.
+
+### Where the head lives once the SIEM sink is on (ADR-0017)
+
+With `[audit.siem]` configured, the gateway appends one JSON object per
+record to a local file, and every line carries `prev_hash` and `hash`:
+
+```toml
+[audit.siem]
+path  = "/var/log/mcp-gateway/audit.jsonl"
+chain = "gatte-jail-01"
+```
+
+The expected value for `-expect-head` is then the `hash` field of the
+newest Graylog message matching `chain:"gatte-jail-01"`. `mcp-gateway audit
+-verify` prints that instruction itself once the block is set, so nobody
+has to remember the query. **Nothing compares the two automatically.**
+While it is manual, the detection depends on somebody running it — and
+there is no Graylog alert yet for "lines stopped arriving for this chain",
+which is what a dead (or deliberately killed) shipper looks like.
+
+Three things this deployment owns, because the gateway cannot:
+
+**1. A shipper has to read the file.** The Graylog input is Raw/Plaintext
+TCP at `10.17.90.30:5555` and expects exactly one JSON object per line,
+byte-identical to what the gateway wrote — the extractor is in COPY mode
+and `message` is the hash-chain anchor. A shipper must not re-wrap,
+pretty-print, or batch lines. Nothing in the gateway can check that one is
+installed; if none is, the sink is a file that grows and anchors nothing.
+
+**2. Rotation, and the reopen gap.** The file grows without bound. The sink
+opens with `O_APPEND`, so every write lands at the current end of the file
+as the kernel sees it rather than at an offset this process remembers —
+that is what makes rotation safe without a lock file. But **the process
+holds the fd and does not reopen on SIGHUP**. A plain rename therefore
+leaves the gateway writing into the rotated inode, and the shipper reading
+a file nothing appends to any more, with no error anywhere. So:
+
+- use `copytruncate` (newsyslog's `-C`/`R` behaviour, or logrotate's
+  `copytruncate`), which keeps the inode; **or**
+- rename and then restart the gateway, accepting the restart.
+
+This is a real gap, not a detail. A reopen-on-SIGHUP is the fix and does
+not exist yet.
+
+**3. The file holds no credentials and is still not world-readable.** It is
+created `0600`, and it names which analyst called which tool on which case.
+Whatever user the shipper runs as needs read access to it — grant that
+deliberately rather than by widening the mode.
+
+**4. A new field is a schema decision, not an edit.** Graylog dynamically
+maps a new field by its first observed value, so a field that first arrives
+looking numeric or date-like becomes `long`/`date` — and from then on a
+malformed value in that field drops the whole line. Pin any new field via
+`PUT /api/system/indices/mappings` on index set `6aa42d7143c0e26417f2d472`
+before it ships, or keep emitting strings. (The schema is versioned: `v`
+is `1` today, and adding a field is a version bump by ADR-0017 item 4.)
 
 **On first start after upgrading**, rows written before this existed are
 hashed during migration, and `-verify` says how many. Those verify against

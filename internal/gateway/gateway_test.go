@@ -2486,3 +2486,56 @@ func TestCredentialDrift_UnreadableVaultIsNotDrift(t *testing.T) {
 		t.Errorf("an unreadable vault was reported as drift: %+v", drift)
 	}
 }
+
+// TestAuditReasons_AreAStableWireContract pins the exact string each
+// refusal writes into the audit trail's Reason column.
+//
+// The constants alone do not protect these: renaming a constant is
+// harmless, but changing its VALUE silently rewrites a field that leaves
+// this process. Reason is read by `mcp-gateway audit`, and -- once the
+// trail is shipped to a SIEM -- matched on by saved searches and alerts
+// that live in a different system entirely, maintained by someone who
+// will not see this diff. A detection that stops firing because a word
+// changed here is the worst kind of failure: silent, and discovered
+// during the incident it was meant to catch.
+//
+// So these values are an interface. Changing one is allowed; changing one
+// WITHOUT noticing is what this prevents. If this test fails, update the
+// consumers first, then the test.
+func TestAuditReasons_AreAStableWireContract(t *testing.T) {
+	for _, tc := range []struct{ got, want string }{
+		{reasonUnknownTool, "unknown tool"},
+		{reasonForbidden, "forbidden"},
+		{reasonQuarantined, "quarantined"},
+		{reasonQuarantineUnavailable, "quarantine unavailable"},
+		{reasonNotVisible, "not visible to caller"},
+		{reasonAuthFailed, "authentication failed"},
+		{reasonUpstreamTimeout, "upstream timed out"},
+		{reasonCallCancelled, "call cancelled"},
+		{reasonUpstreamFailed, "upstream call failed"},
+		{reasonResultTooLarge, "result too large"},
+		{reasonResultSchemaViolation, "result violates output schema"},
+	} {
+		if tc.got != tc.want {
+			t.Errorf("audit reason changed: %q, was %q -- update the SIEM queries and "+
+				"saved searches that match on it BEFORE changing this test", tc.got, tc.want)
+		}
+	}
+
+	// Distinct, because two refusals that write the same word are two
+	// incidents an operator cannot tell apart.
+	seen := map[string]bool{}
+	for _, r := range []string{
+		reasonUnknownTool, reasonForbidden, reasonQuarantined, reasonQuarantineUnavailable,
+		reasonNotVisible, reasonAuthFailed, reasonUpstreamTimeout, reasonCallCancelled,
+		reasonUpstreamFailed, reasonResultTooLarge, reasonResultSchemaViolation,
+	} {
+		if r == "" {
+			t.Error("an audit reason is empty: a refusal that says nothing is a refusal nobody can act on")
+		}
+		if seen[r] {
+			t.Errorf("two audit reasons share the value %q -- they become indistinguishable in the trail", r)
+		}
+		seen[r] = true
+	}
+}

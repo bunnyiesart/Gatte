@@ -142,6 +142,34 @@ const (
 	reasonUpstreamFailed = "upstream call failed"
 )
 
+// Reasons for a call the gateway refused before it left the process.
+//
+// These four were bare string literals at their call sites until the audit
+// trail acquired a second reader. That was survivable while the only
+// consumer was a human reading `mcp-gateway audit`, who forgives a
+// reworded phrase. It stops being survivable the moment a SIEM query or an
+// alert matches on the value: rewording one of these then breaks a
+// detection somewhere else, silently, and the person who reworded it has
+// no way to know. A constant makes the string a declared interface rather
+// than an incidental one.
+const (
+	// reasonUnknownTool means no route matched the namespaced name. It is
+	// deliberately indistinguishable, to the CALLER, from a quarantined
+	// tool (ADR-0007 rule 3) -- but the operator reading the trail needs
+	// the two separated, which is what Reason is for.
+	reasonUnknownTool = "unknown tool"
+	// reasonForbidden means the caller is known and their roles do not
+	// reach this tool.
+	reasonForbidden = "forbidden"
+	// reasonQuarantined means the tool exists and is not approved, or was
+	// approved and has since changed.
+	reasonQuarantined = "quarantined"
+	// reasonQuarantineUnavailable means the approval store could not be
+	// read, so the gateway refused rather than guessing. An empty tool
+	// list and a broken approval store must not look alike.
+	reasonQuarantineUnavailable = "quarantine unavailable"
+)
+
 // redacted replaces a resolved credential value wherever one is found in
 // text that is about to leave this package.
 const redacted = "[redacted]"
@@ -1013,23 +1041,23 @@ func (g *Gateway) ListTools(ctx context.Context, id access.Identity) ([]ToolDef,
 func (g *Gateway) Dispatch(ctx context.Context, c Caller, namespacedTool string, args json.RawMessage) (Result, error) {
 	rt, up, found := g.lookup(namespacedTool)
 	if !found {
-		g.auditRefusal(ctx, c, namespacedTool, targetOf(namespacedTool), "unknown tool")
+		g.auditRefusal(ctx, c, namespacedTool, targetOf(namespacedTool), reasonUnknownTool)
 		return Result{}, ErrUnknownTool
 	}
 
 	if err := g.policy.Authorize(c.Identity, namespacedTool); err != nil {
-		g.auditRefusal(ctx, c, namespacedTool, rt.route.upstream, "forbidden")
+		g.auditRefusal(ctx, c, namespacedTool, rt.route.upstream, reasonForbidden)
 		return Result{}, err
 	}
 
 	if err := g.admit(ctx, rt.route); err != nil {
 		if errors.Is(err, ErrToolQuarantined) {
-			g.auditRefusal(ctx, c, namespacedTool, rt.route.upstream, "quarantined")
+			g.auditRefusal(ctx, c, namespacedTool, rt.route.upstream, reasonQuarantined)
 			// Internally distinct (err is ErrToolQuarantined and the log says
 			// so); opaque on the way out. See the doc comment.
 			return Result{}, ErrUnknownTool
 		}
-		g.auditRefusal(ctx, c, namespacedTool, rt.route.upstream, "quarantine unavailable")
+		g.auditRefusal(ctx, c, namespacedTool, rt.route.upstream, reasonQuarantineUnavailable)
 		return Result{}, err
 	}
 

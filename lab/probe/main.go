@@ -202,7 +202,12 @@ func run(toolName string, cmdArgs []string, stdout, stderr io.Writer) int {
 	// still be running is a data race, not just bad style: the loop
 	// keeps reading for as long as the connection is open, whether or
 	// not this function is expecting another message.
-	session.Close()
+	// Discarded explicitly: this Close is a synchronisation step, not a
+	// flush. Its job is to stop the background reader before logBuf is
+	// read, and it has done that whether or not the teardown itself
+	// erred -- there is no outcome here that should change what this
+	// function reports.
+	_ = session.Close()
 
 	// The leak check runs and is reported regardless of what happens
 	// above: whether the call succeeded, whether its result parses,

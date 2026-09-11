@@ -445,6 +445,63 @@ max_bytes = 1048576
 
 
 # ===========================================================================
+# [audit.siem] -- segunda copia da trilha, em JSONL, para o SIEM (ADR-0017)
+# ===========================================================================
+# OPCIONAL, e a secao inteira esta comentada de proposito: sem ela o gateway
+# se comporta exatamente como antes do ADR-0017 -- todo registro vai para o
+# SQLite e nada sai deste host.
+#
+# O que ela acrescenta: um SEGUNDO SINK para o MESMO `audit.Record`, uma
+# linha JSON por registro, anexada a um arquivo local que um shipper
+# (filebeat, vector, o que a implantacao ja rodar) encaminha para o Graylog.
+# Nao e um segundo fluxo: existe UM registro e UMA serializacao dele, entao
+# o SIEM e a trilha local nao podem discordar sobre o que um registro *diz*.
+# A escrita duravel vem primeiro e a linha so e emitida depois que ela
+# comitou, o que torna a divergencia unidirecional -- linha no Graylog sem
+# linha no SQLite e evidencia de que a local sumiu; o contrario e rotina
+# (shipper atrasado).
+#
+# Por que isso importa: `mcp-gateway audit -verify` detecta edicao e remocao
+# no MEIO da trilha, e nao detecta truncamento do FIM -- cortar a cauda
+# deixa uma cadeia mais curta que verifica perfeitamente. Cada linha carrega
+# `prev_hash` e `hash`, entao a cabeca mais nova que o Graylog viu e a
+# ancora externa que `-expect-head` esperava desde o ADR-0015: o gateway nao
+# tem credencial nem caminho para reescrever o que o Graylog ja indexou.
+# Isso nao faz do Graylog um cofre -- quem o compromete edita o que esta la.
+# O que muda e que passam a ser dois sistemas, com contas diferentes, e a
+# discordancia entre eles fica visivel.
+#
+# O QUE A FALHA DO SINK **NAO** FAZ: recusar a chamada. Disco cheio,
+# permissao mudada, arquivo rotacionado -- vai para o log em ERROR e e
+# engolido; a chamada segue e a analista e atendida. Estender ate aqui a
+# regra do `Dispatch` (que recusa o que nao consegue auditar) converteria
+# falha de disponibilidade em negacao, num SOC, durante um incidente, por
+# causa de um log. Na SUBIDA e o contrario: se o caminho nao abrir, o
+# processo NAO sobe -- quem pediu o sink esta presente as 10h e ausente as
+# 03h, e o erro so e acionavel no primeiro caso.
+#
+# As duas chaves andam juntas: `path` sem `chain` e recusado no
+# carregamento (a linha carrega o nome da cadeia, e uma cadeia vazia e um
+# hash sem dizer a que trilha pertence), e `chain` sem `path` tambem -- esse
+# bloco se leria como "esta trilha vai para o SIEM" e nao mandaria nada.
+#
+# Se errar: um caminho em diretorio que nao existe e falha de inicializacao
+# (desejado). Um `chain` com espaco na ponta e recusado, porque a consulta
+# que alguem escreveria no Graylog (`chain:"gatte-jail-01"`) nunca casaria.
+# Um `chain` repetido entre dois gateways mistura as cadeias e faz
+# `-expect-head` comparar com a cabeca errada.
+#
+# O arquivo cresce e a implantacao precisa rota-lo. A rotacao e segura
+# porque o sink abre em O_APPEND, mas o processo segura o fd e NAO reabre em
+# SIGHUP hoje: use `copytruncate`, ou reinicie o gateway apos um
+# rename. Ver deploy/freebsd-jail.md.
+#
+# [audit.siem]
+# path  = "/var/log/mcp-gateway/audit.jsonl"
+# chain = "gatte-jail-01"
+
+
+# ===========================================================================
 # Papeis
 # ===========================================================================
 # Cada `[[role]]` e um nome e uma lista explicita de ferramentas
@@ -454,14 +511,24 @@ max_bytes = 1048576
 # equipe de sete pessoas lembra como depurar.
 #
 # ---------------------------------------------------------------------
-# NAO EXISTE CORINGA. NEM `casemgmt.*`, NEM `*`, NEM PREFIXO.
+# EM `tools = [...]` NAO EXISTE CORINGA. EM `[role.grants]` EXISTE.
 # ---------------------------------------------------------------------
-# O casamento e exato, e a ausencia de coringa e uma decisao, nao uma
-# limitacao a ser contornada. `casemgmt.*` significa que, no dia em que o
-# servidor `casemgmt` ganhar uma ferramenta nova -- digamos `casemgmt.delete_case`
-# ou `casemgmt.merge_cases` --, todo mundo com este papel passa a poder chamar
-# ela, sem revisao, sem diff, sem ninguem decidir nada. Ampliar um papel
-# tem que ser um ato deliberado com nome e sobrenome. Escreva a linha.
+# Esta caixa dizia "NAO EXISTE CORINGA. NEM `casemgmt.*`, NEM `*`, NEM
+# PREFIXO." Continua verdade para a lista `tools` abaixo e ficou falsa para
+# `[role.grants]`, que o ADR-0016 acrescentou. Um arquivo de exemplo que
+# descreve um controle que o codigo nao aplica e exatamente o defeito que
+# este projeto persegue, entao: as duas metades, separadas.
+#
+# Em `tools = [...]`: casamento exato, sem coringa e sem prefixo.
+# `casemgmt.*` aqui nao e "todas as do casemgmt" -- seria uma ferramenta
+# chamada literalmente `*`, que nao existe. Isso era um no-op silencioso;
+# com um coringa de verdade poucas linhas abaixo no mesmo arquivo virou
+# armadilha, e hoje e RECUSADO na inicializacao com uma mensagem dizendo
+# onde o coringa realmente mora.
+#
+# Em `[role.grants]`: `["*"]` existe e concede todas as ferramentas
+# daquele backend, agora e depois. Nao e de graca -- leia o bloco
+# "Composicao por backend" logo abaixo antes de escrever um.
 #
 # Convencao desta equipe para cada entrada nova:
 #   - o nome completo e namespaced (`servidor.ferramenta`);
@@ -486,7 +553,71 @@ max_bytes = 1048576
 # realmente observou ("role reach", observadas/concedidas) e avisa sobre
 # papel que concede ferramentas e nao alcanca nenhuma -- um nome renomeado
 # no backend, ou um upstream que nao subiu. Papel com `tools = []` nao
-# entra nesse aviso: e forma documentada, nao defeito.
+# entra nesse aviso: e forma documentada, nao defeito. A conta soma as duas
+# formas; uma grant `["*"]` nao tem numero finito, entao aparece na linha
+# como `threatintel:*` em vez de virar contagem inventada.
+#
+# ---------------------------------------------------------------------
+# Composicao por backend: [role.grants] (ADR-0016)
+# ---------------------------------------------------------------------
+# A lista plana acima concede tres ferramentas de tres backends numa
+# linha -- e continua sendo a forma certa para isso, nao esta depreciada.
+# O que ela nao faz bem e conceder um backend inteiro: dar a leitura
+# completa do `threatintel` a um papel significa escrever 28 nomes a mao,
+# revisa-los, e voltar neste arquivo toda vez que o upstream ganha uma
+# ferramenta.
+#
+#     [[role]]
+#     name  = "dfir-lead"
+#     tools = ["casemgmt.list_cases"]     # a forma plana continua valendo
+#
+#       [role.grants]
+#       casemgmt    = ["get_case", "add_case_note"]
+#       threatintel = ["*"]
+#       # um backend omitido aqui nao e concedido de forma alguma:
+#       # a ausencia da chave E a negacao, por isso nao existe forma "deny"
+#
+# A chave e o nome REGISTRADO do upstream (`mcp-gateway upstream list`), e
+# os valores sao os ids de ferramenta como o proprio backend os chama, SEM
+# namespace -- a chave acima ja diz de que backend sao. As duas formas se
+# unem dentro do papel, e a uniao entre papeis continua como sempre foi.
+#
+# O que a validacao recusa na carga: chave de backend ou id vazio; qualquer
+# um dos dois com espaco na ponta; qualquer um dos dois contendo o ponto
+# (a chave e um upstream, nao um nome namespaced); `"*"` como chave de
+# backend (nao existe coringa SOBRE backends); `"*"` misturado com nomes na
+# mesma lista; id repetido; e o mesmo backend escrito duas vezes no mesmo
+# papel -- o TOML aceita a duplicata dentro de tabela aninhada e guarda
+# silenciosamente a ULTIMA, entao `casemgmt = ["get_case"]` seguido de
+# `casemgmt = ["*"]` se leria como limite e nao aplicaria nenhum.
+#
+# O que a validacao NAO consegue recusar: uma grant que nomeia um backend
+# que ninguem registrou. Upstreams vivem no SQLite e este arquivo e lido
+# antes do banco abrir, de proposito. Isso vira aviso na subida do `serve`,
+# nomeando o par (papel, backend) -- a grant carrega, e bem formada, e
+# concede nada.
+#
+# ---------------------------------------------------------------------
+# O QUE `["*"]` CUSTA -- leia antes de escrever um
+# ---------------------------------------------------------------------
+# O coringa NAO fura a quarentena. Uma ferramenta que aparecer amanha no
+# upstream nasce `pending`, invisivel e nao chamavel, ate um humano aprovar
+# aquela definicao. Isso foi verificado no codigo, nao presumido.
+#
+# O que ele faz e COLAPSAR DOIS ATOS HUMANOS EM UM. Hoje uma ferramenta
+# chega a um analista por dois caminhos que se cruzam: (a) um operador
+# aprova aquela *definicao* na quarentena, e (b) alguem acrescenta o nome
+# dela a um papel. Sob `["*"]`, (a) passa a ser o unico ato -- e os dois
+# nao sao o mesmo julgamento. (a) e sobre integridade de definicao ("esta
+# descricao e este schema nao foram envenenados"), valida para a frota
+# inteira; (b) e sobre quem pode chamar ("o N1 pode deletar caso?"). Quem
+# aprova em (a) responde a primeira pergunta, e sob coringa a resposta dele
+# vira tambem a segunda. Por isso `mcp-gateway tool approve` passou a
+# imprimir quais papeis a aprovacao autoriza.
+#
+# Residuo conhecido: um coringa em `X` tambem alcanca as ferramentas de um
+# upstream chamado `X.alguma-coisa`, porque o namespace corta no primeiro
+# ponto e os dois casos sao indistinguiveis no nome.
 
 # ---------------------------------------------------------------------------
 # n1-triage -- o analista de plantao. So consulta.
@@ -538,18 +669,29 @@ tools = [
   # ferramentas de `docsearch_search` e `docsearch_list_indices`, e o
   # gateway prefixa o nome do upstream por cima disso (lab/README.md). O
   # nome namespaced e o que sai da soma dos dois. Como o casamento e exato
-  # e nao existe coringa, escrever `docsearch.search` aqui nao concede
-  # nada -- e nao da erro nenhum, porque um papel pode legitimamente
-  # nomear ferramenta que ainda nao existe. Confira contra
+  # e nao existe coringa NESTA lista, escrever `docsearch.search` aqui nao
+  # concede nada -- e nao da erro nenhum, porque um papel pode
+  # legitimamente nomear ferramenta que ainda nao existe. Confira contra
   # `mcp-gateway tool list` ao adicionar uma linha.
   "logsearch.search_keyword",
-  "docsearch.docsearch_search",
-  "docsearch.docsearch_list_indices",
   # Enriquecimento pago/ruidoso. Fora da triagem porque uma submissao a
   # sandbox e observavel pelo adversario -- quem faz isso precisa saber o
   # que esta fazendo.
   "threatintel.virustotal",
 ]
+
+  # As duas ferramentas do Docsearch, escritas na forma por backend em vez
+  # de namespaced na lista acima. Concede exatamente o mesmo -- as duas
+  # formas se unem dentro do papel -- e serve aqui como o exemplo vivo da
+  # sintaxe: a chave e o nome REGISTRADO do upstream, os valores sao os ids
+  # como o proprio backend os chama, sem o prefixo.
+  #
+  # Nao ha `["*"]` neste arquivo de proposito. O coringa e valido e esta
+  # documentado la em cima; o que ele custa (colapsar a aprovacao da
+  # definicao e a decisao de quem pode chamar num unico ato) nao e coisa
+  # para um exemplo normalizar sem que alguem decida.
+  [role.grants]
+  docsearch = ["docsearch_search", "docsearch_list_indices"]
 
 # ---------------------------------------------------------------------------
 # onboarding -- pode autenticar, nao pode agir.

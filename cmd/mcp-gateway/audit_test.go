@@ -435,14 +435,144 @@ func TestCmdAudit_VerifyRefusesFiltersInsteadOfIgnoringThem(t *testing.T) {
 // TestAuditUsage_StatesWhatVerifyDoesNotCover holds the help text to the
 // same standard as the ADR: the limit is named, not left for the operator
 // to discover during an incident.
+//
+// The list used to require the word MIDDLE, because the text used to
+// promise that an edit in the middle "stops verifying". It does not: the
+// chain is an unkeyed SHA-256 in the table it authenticates, and anyone
+// who can write that file can re-chain forward and verify clean. So what
+// the help must now name is the re-chain, and the head as the one thing a
+// rewrite cannot leave alone.
 func TestAuditUsage_StatesWhatVerifyDoesNotCover(t *testing.T) {
 	var b bytes.Buffer
 	auditUsage(&b)
 	text := b.String()
 
-	for _, want := range []string{"-verify", "MIDDLE", "END", "-expect-head"} {
+	for _, want := range []string{"-verify", "re-chain", "unkeyed", "END", "-expect-head"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("usage does not mention %q:\n%s", want, text)
 		}
+	}
+	// The exact sentence that was false. Kept as a literal so that
+	// reintroducing it -- in this wording or by copying it back from an
+	// older revision -- fails here.
+	if strings.Contains(text, "in the MIDDLE of the trail stops verifying") {
+		t.Errorf("usage claims a middle edit stops verifying, which a forward re-chain "+
+			"makes untrue (see internal/audit/sqlite TestVerifyChain_RechainedMiddleEditVerifiesClean):\n%s", text)
+	}
+}
+
+// TestRunAuditVerify_IntactDoesNotReadAsUntampered is the regression test
+// for the claim this command used to make on success.
+//
+// "chain intact" was followed by "This detects edits and deletions in the
+// MIDDLE of the trail", which told the operator the trail had been cleared
+// of exactly the tampering it had not been cleared of. The success output
+// has to say what an intact result rules out (a change made without
+// recomputing the hashes after it) and what it does not (the same change
+// re-chained), and it has to present the head as the control rather than
+// as a footnote for the tail.
+func TestRunAuditVerify_IntactDoesNotReadAsUntampered(t *testing.T) {
+	e := newOpTestEnv(t)
+	seedAuditTrail(t, e)
+
+	if code := runAuditVerify(e.opEnv, ""); code != exitOK {
+		t.Fatalf("runAuditVerify = %d, want %d; stderr: %s", code, exitOK, e.stderrText())
+	}
+	out := e.stdoutText()
+
+	for _, want := range []string{"re-chain", "unkeyed", "-expect-head"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("success output does not mention %q -- an operator reads this as "+
+				"\"the trail was not rewritten\":\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "detects edits and deletions in the MIDDLE") {
+		t.Errorf("success output still claims middle-edit detection:\n%s", out)
+	}
+}
+
+// rechainTrail rewrites every row's prev_hash/hash in id order with
+// audit.ChainHash, which is what an attacker with write access to the
+// database file does after editing a record. Deliberately not a helper
+// shared with the adapter's tests: the point is that it needs nothing from
+// this project except one exported function and an UPDATE.
+func rechainTrail(t *testing.T, e opTestEnv) {
+	t.Helper()
+
+	records, err := e.auditTrail().List(e.ctx())
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	// List orders by timestamp; the chain is in id order. The seeded trail
+	// is written in timestamp order, so the two agree here -- asserted
+	// below by the verification passing.
+	ids, err := e.db.Query(`SELECT id FROM audit_records ORDER BY id ASC`)
+	if err != nil {
+		t.Fatalf("read ids: %v", err)
+	}
+	var rowIDs []int64
+	for ids.Next() {
+		var id int64
+		if err := ids.Scan(&id); err != nil {
+			ids.Close()
+			t.Fatalf("scan id: %v", err)
+		}
+		rowIDs = append(rowIDs, id)
+	}
+	ids.Close()
+	if len(rowIDs) != len(records) {
+		t.Fatalf("test setup: %d ids for %d records", len(rowIDs), len(records))
+	}
+
+	prev := audit.GenesisHash
+	for i, rec := range records {
+		h := audit.ChainHash(prev, rec)
+		if _, err := e.db.Exec(`UPDATE audit_records SET prev_hash = ?, hash = ? WHERE id = ?`, prev, h, rowIDs[i]); err != nil {
+			t.Fatalf("re-chain id %d: %v", rowIDs[i], err)
+		}
+		prev = h
+	}
+}
+
+// TestRunAuditVerify_RechainedEditNeedsTheAnchor is the defect at the
+// operator's surface, and the reason the head is now described as the
+// whole control: an edited record plus a forward re-chain passes -verify
+// with no complaint, and the SAME trail fails the moment the head recorded
+// beforehand is handed back with -expect-head.
+func TestRunAuditVerify_RechainedEditNeedsTheAnchor(t *testing.T) {
+	e := newOpTestEnv(t)
+	seedAuditTrail(t, e)
+
+	before, err := e.auditChain().VerifyChain(e.ctx())
+	if err != nil {
+		t.Fatalf("VerifyChain: %v", err)
+	}
+
+	if _, err := e.db.Exec(`UPDATE audit_records SET analyst_identity = 'somebody-else' WHERE id = 2`); err != nil {
+		t.Fatalf("tamper: %v", err)
+	}
+	rechainTrail(t, e)
+
+	if code := runAuditVerify(e.opEnv, ""); code != exitOK {
+		t.Fatalf("re-chained edit was reported as a break (%d); if verification really caught it, "+
+			"ADR-0015 and the help text need to change back. stderr: %s", code, e.stderrText())
+	}
+	if !strings.Contains(e.stdoutText(), "chain intact: 3 record(s)") {
+		t.Errorf("output does not report an intact chain:\n%s", e.stdoutText())
+	}
+
+	// The anchor, and nothing else, catches it.
+	e2 := newOpTestEnv(t)
+	seedAuditTrail(t, e2)
+	if _, err := e2.db.Exec(`UPDATE audit_records SET analyst_identity = 'somebody-else' WHERE id = 2`); err != nil {
+		t.Fatalf("tamper: %v", err)
+	}
+	rechainTrail(t, e2)
+	if code := runAuditVerify(e2.opEnv, before.Head); code != exitProblem {
+		t.Fatalf("the head recorded before the edit still matched (%d): then nothing at all "+
+			"detects a re-chained edit", code)
+	}
+	if !strings.Contains(e2.stderrText(), "TRUNCATED OR REWRITTEN") {
+		t.Errorf("a rewritten trail is not reported as such:\n%s", e2.stderrText())
 	}
 }

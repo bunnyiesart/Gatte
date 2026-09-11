@@ -27,11 +27,18 @@ package vault
 import (
 	"context"
 	"errors"
+	"log/slog"
 )
 
 // ErrNotFound is returned by Provider.Resolve when no secret is stored
 // under the requested name.
 var ErrNotFound = errors.New("vault: secret not found")
+
+// redactedSecret is what a Secret renders as through every formatting
+// path. It is deliberately not a plausible credential and names the type,
+// so that finding it in a log tells the reader a redaction fired rather
+// than leaving them wondering what the empty string meant.
+const redactedSecret = "vault.Secret([redacted])"
 
 // Secret is a resolved credential value. It exists as a distinct type,
 // not a bare string, precisely so that "does anything outside the
@@ -40,23 +47,74 @@ var ErrNotFound = errors.New("vault: secret not found")
 // one concrete shape to check for wherever a secret value crosses a
 // package boundary -- a fitness function can grep for vault.Secret as the
 // one sanctioned carrier.
+//
+// Being a distinct type is not by itself a guard, and until 11 Sep 2026 it
+// was mistaken for one. A struct with an unexported string field is opaque
+// to the compiler and wide open to reflection: fmt and slog read unexported
+// fields, so %v, %+v, %#v, %s, slog.Any and any enclosing struct printed
+// with %+v all rendered the plaintext. Two things close that here. The four
+// methods below occupy every hook fmt and slog consult before falling back
+// to reflection. And the value is held behind a pointer, because a method
+// cannot be reached at all when a Secret sits in an *unexported* field of
+// some other struct -- fmt cannot take that field's interface, so it
+// reflects straight through to the representation, and the representation
+// it finds must therefore be an address rather than the key itself.
 type Secret struct {
-	value string
+	// value is a pointer, not a string, for the reflection reason above.
+	// nil is the zero Secret, which Provider implementations return on
+	// every error path; Value reports it as the empty string.
+	value *string
 }
 
 // NewSecret wraps value as a Secret. It exists for Provider
 // implementations; application code should obtain a Secret only from
 // Provider.Resolve, never construct one from a value it already holds.
 func NewSecret(value string) Secret {
-	return Secret{value: value}
+	return Secret{value: &value}
 }
 
 // Value returns the resolved secret value. Callers must not log it, write
 // it to disk, or embed it in anything that itself gets logged -- keeping
 // this the only path to the plaintext is Resolve's entire contract (see
-// Provider).
+// Provider). "Only path" is now enforced against the accidents, not merely
+// asked for: printing or logging a Secret yields redactedSecret instead.
+// It is not enforced against a caller who goes after the field with
+// reflect and unsafe, and no in-process representation could be.
 func (s Secret) Value() string {
-	return s.value
+	if s.value == nil {
+		return ""
+	}
+	return *s.value
+}
+
+// String keeps the %v, %s and %q verbs -- and every fmt.Errorf that
+// interpolates a Secret -- from reaching the plaintext by reflection.
+func (s Secret) String() string {
+	return redactedSecret
+}
+
+// GoString covers %#v, which fmt routes to GoStringer and not to Stringer.
+// The rendering stays Go-shaped because that is what %#v promises a reader.
+func (s Secret) GoString() string {
+	return "vault.Secret{/* redacted */}"
+}
+
+// LogValue covers slog. slog.Any on a Stringer still formats the value
+// with fmt, so implementing Stringer alone would already redact, but
+// LogValuer is the interface slog documents for exactly this purpose and
+// is checked first; relying on the fmt fallback would make the guard an
+// accident of another package's implementation.
+func (s Secret) LogValue() slog.Value {
+	return slog.StringValue(redactedSecret)
+}
+
+// MarshalText covers encoding/json and anything else that prefers a
+// TextMarshaler. encoding/json alone was already safe -- it cannot see
+// unexported fields and rendered a Secret as {} -- but {} is silent about
+// why it is empty, and a marshaller that is not encoding/json may not
+// share that blind spot.
+func (s Secret) MarshalText() ([]byte, error) {
+	return []byte(redactedSecret), nil
 }
 
 // Provider resolves a secret reference to its current value.

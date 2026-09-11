@@ -25,18 +25,44 @@
 //
 // Records are hash-chained (design/adr/0015-audit-tamper-evidence.md):
 // each carries a hash over its own fields and its predecessor's, so a
-// record edited or removed from the MIDDLE of the trail stops verifying.
-// That covers the actor GAB-36 named -- whoever can write the database
-// file can also rewrite what it says they did.
+// record edited or removed from the trail stops verifying -- as long as
+// whoever changed it did not also recompute the hashes that follow.
 //
-// It does NOT cover truncation of the END: removing the last records
-// leaves a shorter chain that verifies perfectly. Catching that needs the
-// chain head recorded somewhere this process cannot write, which is a
-// deployment decision; ChainVerifier reports the head so that decision
-// can be made without changing this package. Do not describe this trail
-// as tamper-proof. It is tamper-evident in the middle, with the tail
-// open, and the difference matters to whoever reads it during an
-// incident.
+// That qualifier is the whole of it, and this comment used to leave it
+// out. The chain is an UNKEYED SHA-256, stored in prev_hash/hash columns
+// of the very table it authenticates, computed by ChainHash, which is
+// exported. So the actor ADR-0015 names -- whoever can write the database
+// file -- edits a record, walks the remaining rows recomputing (prev,
+// hash) forward, and VerifyChain reports Intact. The same goes for
+// deleting a middle record, or inserting a fabricated one. A hash kept
+// beside what it authenticates is not an anchor
+// (design/adr/0010-signature-trust-anchor.md), and that applies here too.
+// What the chain catches unaided is tampering that did NOT re-chain: a
+// careless edit, a partial write, anything that could not or did not run
+// this code.
+//
+// There is therefore no "middle covered, tail open" split, and this
+// comment should not be read back into one. Truncating the END leaves a
+// shorter chain that verifies; so does a re-chained edit anywhere. Every
+// case collapses into the same single residue -- the HEAD changes -- so
+// the head recorded somewhere this process cannot write is not an extra
+// for the tail, it is the only detection there is against an attacker who
+// re-chains; with no such anchor, all that is left is the careless case
+// above. ChainVerifier reports the head so
+// that comparison can be made outside this package (audit -verify
+// -expect-head). Do not describe this trail as tamper-proof, and do not
+// read an intact chain as "these records are what was written"; the
+// difference matters to whoever reads it during an incident.
+//
+// The jsonl subpackage is what makes that external head reachable in this
+// deployment (design/adr/0017-audit-jsonl-siem-sink.md): it emits each
+// record's Prev and Hash to a local file a shipper forwards to Graylog,
+// so the newest hash the SIEM holds is a head value the gateway cannot
+// retroactively edit. That closes the gap only when the sink is actually
+// wired and the shipper is actually running -- a gateway built without it
+// has no anchor at all, which by the paragraph above means no detection at
+// all against an attacker who re-chains. ChainedRecorder is the seam, not
+// the guarantee.
 //
 // Still out of scope, and genuinely so: operational metrics and
 // telemetry (AGENTS.md §2, "Telemetry/observability"). This is a record
@@ -218,8 +244,10 @@ func (r Record) Validate() error {
 type Recorder interface {
 	// Record durably stores r. It returns ErrInvalid if r.Validate()
 	// fails, and nothing is written in that case. There is no return
-	// value beyond error on success -- the audit trail is append-only,
-	// so there is no ID to hand back in this phase.
+	// value beyond error on success -- this port only ever appends, so
+	// there is no ID to hand back in this phase. ("Only ever appends"
+	// says what implementations do; it is not a constraint the storage
+	// enforces on anyone else holding the file. See the package doc.)
 	Record(ctx context.Context, r Record) error
 
 	// List returns every recorded Record in chronological order by
@@ -274,6 +302,15 @@ func Canonical(r Record) []byte {
 // followed by prev, the hash of the record before it. prev is
 // GenesisHash for the first record in a chain.
 //
+// It is unkeyed, and exported, so anyone holding a record can recompute
+// its hash -- the storage adapter, the backfill, a verifier, and equally
+// an attacker rewriting the table. That is a stated property of the
+// design, not an oversight (ADR-0015 and its 11 Sep 2026 correction): a
+// key the gateway must hold to write records is a key an attacker who can
+// write those records can generally read, so the chain buys linkage and
+// the external head anchor buys the detection. Read the package doc
+// before writing anything that treats an intact chain as authentication.
+//
 // prev is length-prefixed too: without that, a short prev followed by a
 // long one could be confused for the reverse, which would defeat the
 // point of prefixing the fields.
@@ -310,16 +347,18 @@ type ChainCheck struct {
 	Count int
 	// Head is the hash of the last record, or GenesisHash when the trail
 	// is empty. This is the value worth recording somewhere the gateway
-	// cannot reach; see FirstBreak's doc for what it does and does not
-	// buy.
+	// cannot reach -- and the only one: every form of tampering changes
+	// it, and nothing else reliably shows any of them. See FirstBreak.
 	Head string
 	// FirstBreak is nil when every record verifies.
 	//
-	// A nil FirstBreak means no record was edited or removed from the
-	// MIDDLE of the trail. It does NOT mean the trail is complete:
-	// removing records from the END leaves a shorter, perfectly valid
-	// chain (ADR-0015 item 6). Detecting that needs Head to have been
-	// recorded externally beforehand.
+	// A nil FirstBreak means no record was edited or removed WITHOUT the
+	// hashes after it being recomputed. It does not mean the trail is
+	// unaltered: the chain is unkeyed and stored beside the records it
+	// authenticates, so an edit, a deletion or an insertion followed by a
+	// forward re-chain verifies cleanly, and so does truncation of the end
+	// (ADR-0015 item 6 and its 11 Sep 2026 correction). Detecting any of
+	// those needs Head to have been recorded externally beforehand.
 	FirstBreak *ChainBreak
 	// RetroactivelyChained is how many of the leading records were
 	// hashed during migration rather than when they were written
@@ -333,10 +372,67 @@ type ChainCheck struct {
 // for what this does not cover.
 func (c ChainCheck) Intact() bool { return c.FirstBreak == nil }
 
-// ChainVerifier is the port for checking that a stored trail has not been
-// edited. It is separate from Recorder because verifying is an operator
-// action against a storage adapter, not something the gateway's hot path
-// needs; an adapter may implement one without the other.
+// ChainLink is where one stored record sits in the hash chain: the hash of
+// the record before it, and its own.
+//
+// Both are hex, and Prev is GenesisHash for the first record in a chain.
+// The pair is what an external anchor is built out of
+// (design/adr/0017-audit-jsonl-siem-sink.md): Hash of the newest record
+// held somewhere the gateway cannot write is the value ChainCheck.Head is
+// compared against, which is the only way tail truncation -- or any other
+// rewrite the attacker re-chained after, see this package's doc -- becomes
+// visible.
+type ChainLink struct {
+	// Prev is the hash of the preceding record, or GenesisHash.
+	Prev string
+	// Hash is this record's own hash, as stored.
+	Hash string
+}
+
+// ChainedRecorder is a Recorder that can also say where the record it just
+// wrote landed in the chain.
+//
+// # Why this is a second port instead of a wider Recorder
+//
+// Recorder.Record returns only an error, and that is right for its one
+// caller that matters: gateway.Dispatch refuses a call it cannot audit,
+// and it needs to know whether the write happened, not what it hashed to.
+// Widening Recorder would push a return value nobody reads onto every
+// implementation and every call site.
+//
+// The hash is nevertheless needed by exactly one consumer -- the JSONL
+// sink that ships each record to the SIEM, where prev/hash are the whole
+// point of the line -- and it is computed inside the storage adapter,
+// where the chain head is read under the same transaction as the insert
+// (ADR-0015 item 3). It cannot be recomputed outside without re-reading
+// the head, which would race.
+//
+// So: a narrow second interface, embedding Recorder, implemented by the
+// sqlite adapter and by the JSONL decorator that wraps it. Anything that
+// only stores records keeps implementing Recorder alone.
+type ChainedRecorder interface {
+	Recorder
+
+	// RecordChained durably stores r and returns the link it was written
+	// at. It returns ErrInvalid if r.Validate() fails, and nothing is
+	// written in that case.
+	//
+	// On any error the returned ChainLink is the zero value and must not
+	// be read: a zero Prev is indistinguishable from GenesisHash, so a
+	// caller that ignores the error would treat a failed write as the
+	// first record of a chain.
+	RecordChained(ctx context.Context, r Record) (ChainLink, error)
+}
+
+// ChainVerifier is the port for checking a stored trail's internal
+// consistency, and for reading the head that an external anchor is
+// compared against. It is separate from Recorder because verifying is an
+// operator action against a storage adapter, not something the gateway's
+// hot path needs; an adapter may implement one without the other.
+//
+// "Has this trail been edited" is a question it can only half answer; see
+// ChainCheck.FirstBreak and this package's doc before wording a report
+// around it.
 type ChainVerifier interface {
 	// VerifyChain walks the trail in insertion order, recomputing each
 	// record's hash from its own fields and its predecessor's, and

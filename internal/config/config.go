@@ -51,6 +51,7 @@ type Config struct {
 	Signer     Signer     `toml:"signer"`
 	Quarantine Quarantine `toml:"quarantine"`
 	Response   Response   `toml:"response"`
+	Audit      Audit      `toml:"audit"`
 
 	// Roles defines what each role may call. Order is irrelevant.
 	Roles []Role `toml:"role"`
@@ -246,6 +247,115 @@ func (r Response) MaxResultBytes() int64 {
 	return *r.MaxBytes
 }
 
+// Audit configures what happens to the Audit Trail beyond the SQLite
+// table every record is written to first. There is nothing here that can
+// turn the durable trail off; the only thing this section adds is a
+// second, downstream copy.
+type Audit struct {
+	SIEM SIEM `toml:"siem"`
+}
+
+// SIEM is the JSONL sink that a shipper forwards to the SOC's Graylog
+// (design/adr/0017-audit-jsonl-siem-sink.md).
+//
+// The whole section is optional. Omitted, the gateway behaves exactly as
+// it did before ADR-0017: every record is written to SQLite and nothing
+// leaves the host, so the chain has no external anchor. That is a real
+// gap, not a mode, and it is wider than the tail ADR-0015 item 6 named:
+// a truncated local trail verifies perfectly, and so does an edited one
+// whose following hashes were recomputed (ADR-0015's correction of
+// 11 Sep 2026). Only an anchor the gateway cannot write to makes either
+// visible.
+//
+// Present, it is present WHOLE: see Validate. A half-written block is
+// refused rather than degraded into a pass-through, because a gateway that
+// reads as though it ships to the SIEM and does not is this project's own
+// defect class.
+type SIEM struct {
+	// Path is the local file lines are appended to. Setting it is what
+	// enables the sink.
+	//
+	// Local, never a network address, and there is deliberately no key for
+	// one. Shipping is a separate process's job (filebeat, vector,
+	// whatever the deployment runs) because the gateway's request path must
+	// carry no remote dependency at all -- not even a swallowed one, since
+	// a hung TCP connect is latency and no error-swallowing hides latency.
+	//
+	// The file is opened O_APPEND and created 0600. It grows without bound
+	// and the deployment owns rotating it; see deploy/freebsd-jail.md,
+	// which also records the reopen gap that makes copytruncate the safe
+	// form today.
+	Path string `toml:"path"`
+
+	// Chain names which gateway's hash chain these lines belong to, e.g.
+	// "gatte-jail-01". Required whenever Path is set.
+	//
+	// It exists because two gateways shipping into one Graylog stream
+	// produce interleaved hashes with nothing saying which trail a head
+	// belongs to, and `mcp-gateway audit -verify -expect-head` against the
+	// wrong chain's head is a false alarm during an incident. It is also
+	// the field a Graylog query filters on, which is why Validate refuses
+	// one with whitespace on either end: `chain:"gatte-jail-01 "` is not a
+	// query anybody will think to write, so the padded value would simply
+	// never be found.
+	Chain string `toml:"chain"`
+}
+
+// Enabled reports whether the SIEM sink is configured. Path is what
+// enables it; Validate has already refused a Path without a Chain, so an
+// enabled sink is a complete one.
+func (s SIEM) Enabled() bool { return strings.TrimSpace(s.Path) != "" }
+
+// validate applies the rules that make [SIEM.Enabled] mean what it says.
+//
+// The half-written block is the whole point of this function, and it is
+// refused in BOTH directions on purpose.
+//
+// A path with no chain would die at boot inside jsonl.New, which requires
+// a chain name -- the operator would meet an error from a package they
+// never configured, three lines into startup, over a file this package had
+// already pronounced valid. That is the GAB-30 shape for the sixth time,
+// and the fix is the same one: the rule belongs where the file is checked,
+// so what loads is what serves.
+//
+// A chain with no path is the other half and is not symmetrical hygiene.
+// That block reads as "this gateway ships its trail to the SIEM under this
+// name" and ships nothing -- a control the file claims and the code does
+// not apply. Defaulting a path would be worse still: it would start
+// writing analyst-attributed records to a filename nobody chose.
+func (s SIEM) validate() []error {
+	path, chain := strings.TrimSpace(s.Path), strings.TrimSpace(s.Chain)
+	if path == "" && chain == "" {
+		return nil
+	}
+
+	var errs []error
+	switch {
+	case path == "":
+		errs = append(errs, errors.New(
+			"audit.siem.chain is set but audit.siem.path is empty: naming a chain does not ship anything. "+
+				"Set audit.siem.path to the local JSONL file a shipper reads, or remove the whole [audit.siem] block "+
+				"(without it the trail stays in SQLite and nothing leaves this host)"))
+	case s.Path != path:
+		errs = append(errs, fmt.Errorf(
+			"audit.siem.path (%q) has leading or trailing whitespace: that is a different filename, and no shipper glob would find it", s.Path))
+	}
+
+	switch {
+	case chain == "" && path != "":
+		errs = append(errs, errors.New(
+			"audit.siem.path is set but audit.siem.chain is empty: every emitted line carries the chain name, and a line "+
+				"whose chain is blank is a hash with no statement about which trail it belongs to -- which is exactly what "+
+				"`mcp-gateway audit -verify -expect-head` needs it for once a second gateway ships into the same stream. "+
+				`Name this gateway, e.g. chain = "gatte-jail-01"`))
+	case s.Chain != chain:
+		errs = append(errs, fmt.Errorf(
+			"audit.siem.chain (%q) has leading or trailing whitespace: the SIEM stores it verbatim, so the Graylog query "+
+				"an operator would write (chain:%q) would never match it", s.Chain, chain))
+	}
+	return errs
+}
+
 // Role is a named set of namespaced tools, mirroring access.Role. It
 // exists separately so the file format is not hostage to the domain type,
 // and so a config field can carry documentation the domain type has no
@@ -257,16 +367,53 @@ type Role struct {
 	// mapping ever resolves to.
 	Name string `toml:"name"`
 	// Tools are the namespaced tool names this role may call, e.g.
-	// "casemgmt.list_cases". Matched exactly -- there is no wildcard, because
-	// a wildcard is how a role silently gains a tool added upstream
-	// later.
+	// "casemgmt.list_cases". Matched exactly -- there is no wildcard in
+	// THIS list, and Validate refuses "casemgmt.*" here rather than
+	// letting it load as a name that matches nothing. A wildcard over a
+	// whole backend is written under Grants, where it is a different
+	// syntactic act.
 	//
 	// The namespace is required, and Validate refuses a bare
 	// "list_cases", because exact matching makes an un-namespaced name a
 	// grant of nothing rather than an error: the role would load, build a
 	// well-formed policy, and deny every call it was written to allow.
 	// An empty list is fine and means what it says.
+	//
+	// This flat form is NOT deprecated by Grants. Both are in the file
+	// format, both are unioned by the policy, and a role may use either or
+	// both (design/adr/0016).
 	Tools []string `toml:"tools"`
+
+	// Grants composes the role per backend, which is what
+	// design/adr/0016 calls a profile:
+	//
+	//	[[role]]
+	//	name = "n1-triage"
+	//	tools = ["casemgmt.list_cases"]
+	//	  [role.grants]
+	//	  casemgmt    = ["get_case", "add_note"]
+	//	  threatintel = ["*"]
+	//
+	// The key is an upstream's registered name; the values are that
+	// upstream's own tool ids, NOT namespaced -- the key already says
+	// which backend they are on. A backend not named here is not granted
+	// at all, which is the deny-by-default half and the reason there is no
+	// "deny" form.
+	//
+	// "*" grants every tool that backend advertises. Read ADR-0016 before
+	// using it: it does not bypass Tool Quarantine -- an unapproved tool
+	// is still invisible and uncallable -- but it does collapse two human
+	// acts into one, and the act it keeps is a judgement about a
+	// definition's integrity, not about who may call it.
+	//
+	// Validate refuses, structurally: an empty backend key or tool id,
+	// either containing the namespace separator, "*" as a backend key,
+	// "*" mixed with named tools, a repeated tool id, and a backend key
+	// written twice in one role. What it cannot refuse here is a key that
+	// names no registered upstream -- upstreams live in the SQLite
+	// registry and this package holds no handle to it. That is a
+	// serve-time diagnostic; see ADR-0016.
+	Grants map[string][]string `toml:"grants"`
 }
 
 // DefaultListen is the address used when none is configured: loopback,
@@ -311,6 +458,10 @@ func RequireLoopbackBind(listen string) error {
 	// returns false when SplitHostPort fails. "Cannot tell" must not read as
 	// "loopback" -- the same fail-closed reading ADR-0004 applies to a
 	// registry it cannot read.
+	//lint:ignore ST1005 Multi-sentence operator guidance, not a fragment meant to
+	// be wrapped into a chain. ST1005 protects the reading of "open file: %w"
+	// compositions; this one is terminal prose an operator reads at 03:00, and
+	// dropping its final period would leave a sentence hanging.
 	return fmt.Errorf(
 		"listen: %q is not a loopback address, and this gateway refuses to be network-reachable directly (design/adr/0011)\n"+
 			"It terminates no TLS, so binding here would put every analyst's bearer token on the wire in cleartext.\n"+
@@ -523,6 +674,9 @@ func (c *Config) Validate() error {
 		// gateway has never run outside test, so there is no deployment to
 		// migrate, and the alternative -- defaulting the trust anchor to
 		// something -- is not a thing a trust anchor can do.
+		//lint:ignore ST1005 Multi-sentence operator guidance with a remediation
+		// command in it; see the note on the loopback error above for why the
+		// wrapped-fragment convention does not apply.
 		errs = append(errs, errors.New(
 			"signer.require_signed is true but signer.trusted_keys is empty: "+
 				"signatures are verified against the keys listed there and nothing else, so with an empty list every entry would be refused. "+
@@ -579,6 +733,8 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	errs = append(errs, c.Audit.SIEM.validate()...)
+
 	seen := map[string]bool{}
 	for i, r := range c.Roles {
 		// access.ValidateRole rather than a restatement of it. The rules it
@@ -589,7 +745,14 @@ func (c *Config) Validate() error {
 		// being trimmed, accepted here because it is not empty *after*
 		// trimming. It loaded, every operator subcommand worked, and serve
 		// died at the next restart (GAB-30 item 2).
-		if err := access.ValidateRole(access.Role{Name: r.Name, Tools: r.Tools}); err != nil {
+		//
+		// Grants is passed too, and must be: leaving it out was not a
+		// missing feature but a silently-disabled control -- every
+		// structural rule access.validateGrants owns would have been
+		// enforced by NewPolicy at serve time and by nothing at all in
+		// front of the operator editing the file, which is GAB-30 exactly.
+		// Caught by TestLoadRejectsMalformedGrants.
+		if err := access.ValidateRole(access.Role{Name: r.Name, Tools: r.Tools, Grants: r.Grants}); err != nil {
 			errs = append(errs, fmt.Errorf("role[%d]: %w", i, err))
 		}
 		if strings.TrimSpace(r.Name) == "" {
@@ -621,10 +784,24 @@ func (c *Config) Validate() error {
 			// gateway.SplitNamespaced is the routing table's own splitter,
 			// not a copy of its shape: what it accepts is what can name a
 			// route.
-			if _, _, ok := gateway.SplitNamespaced(tool); !ok {
+			upstream, toolID, ok := gateway.SplitNamespaced(tool)
+			if !ok {
 				errs = append(errs, fmt.Errorf(
-					"role %q: tool %q is not namespaced -- a role grants UPSTREAM%sTOOL (e.g. %q), matched exactly, and there is no wildcard, so this name matches nothing and the role silently grants nothing",
+					"role %q: tool %q is not namespaced -- a role grants UPSTREAM%sTOOL (e.g. %q), matched exactly, and there is no wildcard in this list, so this name matches nothing and the role silently grants nothing",
 					r.Name, tool, gateway.NameSeparator, "casemgmt"+gateway.NameSeparator+"list_cases"))
+				continue
+			}
+			// The same silent-no-op shape as the un-namespaced name above,
+			// and newly worth naming because "*" now means something a few
+			// lines away in the file. `tools = ["casemgmt.*"]` splits,
+			// validates, and matches a tool literally called "*" -- which
+			// is to say nothing -- while reading exactly like the wildcard
+			// that [role.grants] does have. Refused rather than loaded, and
+			// the message says where the wildcard actually lives.
+			if toolID == access.GrantAll {
+				errs = append(errs, fmt.Errorf(
+					"role %q: tool %q ends in %q, which is NOT a wildcard in `tools` -- this list is matched exactly, so it would grant only a tool literally named %q. To grant every tool of %q, write it as a per-backend grant:\n\n    [role.grants]\n    %s = [%q]",
+					r.Name, tool, access.GrantAll, access.GrantAll, upstream, upstream, access.GrantAll))
 				continue
 			}
 			// Harmless to the policy, which deduplicates -- which is

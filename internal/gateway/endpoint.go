@@ -535,6 +535,28 @@ func (g *Gateway) Connect(ctx context.Context) error {
 	}
 
 	for _, entry := range entries {
+		// The registry's own contract, re-checked on the way out of the
+		// store rather than trusted from the way in. Register validates,
+		// List does not, so a row that predates a rule -- or one written by
+		// anything other than this binary -- arrives here unchecked.
+		//
+		// One clause of that contract is load-bearing for this package and
+		// is the reason this check exists at all: a name containing
+		// NameSeparator makes Namespaced(name, tool) indistinguishable from
+		// the name another upstream would produce, so the backend every
+		// consumer reads out of a client-facing name (SplitNamespaced here,
+		// access.Role.Allows resolving a per-backend grant) stops being the
+		// backend that serves the call. Serving such an entry is how a grant
+		// on "threatintel" reaches the tools of "threatintel.staging".
+		// Refusing it is what lets access.Role.Allows state that its reading
+		// and this table's agree.
+		if err := entry.Validate(); err != nil {
+			failures = append(failures, fmt.Errorf("%w: %q: registry entry is not servable: %w", ErrUpstreamUnavailable, entry.Name, err))
+			g.log.ErrorContext(ctx, "gateway: upstream refused by the registry's own entry contract",
+				slog.String("upstream", entry.Name), slog.String("detail", err.Error()))
+			continue
+		}
+
 		if err := g.verifyEntry(ctx, entry); err != nil {
 			failures = append(failures, err)
 			g.log.ErrorContext(ctx, "gateway: upstream refused by signature check",
@@ -777,6 +799,21 @@ func (g *Gateway) routesFor(ctx context.Context, upstream string, defs []ToolDef
 // Serving *either* candidate would mean a call landing on a backend nobody
 // can predict from the name -- the exact harm namespacing exists to prevent
 // -- so neither is served.
+//
+// Since 11 Sep 2026 that cross-upstream case can no longer arrive here
+// through the registry: producing it requires a registered name containing
+// the separator, which registry.UpstreamServer.Validate refuses and Connect
+// refuses again on entries read back out of the store. This is kept as the
+// second line rather than deleted because it is cheap, because it is what
+// the request path would fall back on if either of those checks were ever
+// relaxed, and because dropping a name is the only safe answer if a
+// collision does appear. Do not read its presence as evidence that the
+// registry rule is redundant with it: the case that rule closes is the one
+// where there is no collision at all. "threatintel" serving "lookup_ip" and
+// "threatintel.staging" serving "debug_exec" produce two distinct names,
+// nothing is dropped here, and a grant naming only "threatintel" still
+// reaches "threatintel.staging.debug_exec" -- an authorization hole this
+// function cannot see, because it is looking for duplicates.
 //
 // candidates is keyed by upstream name; the keys are sorted first so that
 // which upstream gets named in the error is stable rather than a product of
@@ -1336,7 +1373,12 @@ func (g *Gateway) auditRefusal(ctx context.Context, c Caller, tool, upstream, re
 		slog.String("upstream", upstream),
 		slog.String("reason", reason),
 	)
-	if err := g.record(ctx, c, tool, upstream, audit.OutcomeDenied, reason); err != nil {
+	// Same detachment as auditFailure, for the same reason: a client that
+	// disconnects mid-request cancels the context, and the record of what
+	// it was refused for would go with it.
+	writeCtx, cancel := auditWriteCtx(ctx)
+	defer cancel()
+	if err := g.record(writeCtx, c, tool, upstream, audit.OutcomeDenied, reason); err != nil {
 		g.log.ErrorContext(ctx, "gateway: refused dispatch was not audited",
 			slog.String("tool", tool), slog.String("detail", err.Error()))
 	}
@@ -1366,11 +1408,53 @@ func (g *Gateway) auditFailure(ctx context.Context, c Caller, tool, upstream str
 		// gateway lets a backend write free text into.
 		slog.String("detail", cause.Error()),
 	)
-	if err := g.record(ctx, c, tool, upstream, audit.OutcomeFailed, reason); err != nil {
+	writeCtx, cancel := auditWriteCtx(ctx)
+	defer cancel()
+	if err := g.record(writeCtx, c, tool, upstream, audit.OutcomeFailed, reason); err != nil {
 		g.log.ErrorContext(ctx, "gateway: failed dispatch was not audited -- the trail shows this call as allowed and nothing else",
 			slog.String("tool", tool), slog.String("detail", err.Error()))
 	}
 }
+
+// auditWriteCtx returns the context an audit write runs under: the
+// caller's values, detached from its cancellation, with a short deadline
+// of its own.
+//
+// # Why the caller's context cannot be used directly
+//
+// The two failures most worth recording are the ones the caller's context
+// CAUSES -- a deadline that fired, a client that went away. Writing the
+// record under that same context means the INSERT is cancelled before it
+// runs, so precisely those two never reach the trail. Measured, not
+// reasoned: a timed-out call left one row, `allowed`, which reads as a
+// call that succeeded. ADR-0012 argues the appended row exists because
+// "the attempts most worth investigating are the ones that never came
+// back"; without this, those were the only ones it could not hold.
+//
+// # Why it is not context.Background()
+//
+// Values carry: a trace or request id attached upstream stays attached, so
+// the audit write remains correlatable with the call that produced it.
+// Only cancellation is dropped.
+//
+// # Why there is still a deadline
+//
+// An audit write detached from all cancellation is a write that can hang
+// forever on a wedged database, holding a request goroutine with it. The
+// bound is generous relative to a local SQLite append and short relative
+// to any human's patience: if it is hit, the record is lost and said so
+// loudly, which is the same outcome as before this function existed, for a
+// far rarer cause.
+// The cancel func is returned rather than released internally: the caller
+// defers it, which is the only form that frees the timer as soon as the
+// write finishes instead of holding it for the whole timeout.
+func auditWriteCtx(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), auditWriteTimeout)
+}
+
+// auditWriteTimeout bounds an audit write that has been detached from the
+// caller's cancellation. See auditWriteCtx for why the bound exists at all.
+const auditWriteTimeout = 5 * time.Second
 
 // classifyFailure reduces a failed call to one of a small closed set of
 // operator-facing reasons.

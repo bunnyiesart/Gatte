@@ -84,6 +84,26 @@ escalar partes independentemente (nenhum sinal disso hoje).
   A outra metade — que um segredo já resolvido não vaza para o processo
   filho — não é estrutural e tem teste próprio,
   `TestResolveThenSpawnDoesNotLeak` em `internal/vault/sopsage/leak_test.go`.
+- **Correção de 11 set 2026 — ser um tipo distinto não era guarda nenhuma.**
+  Esta seção tratava `vault.Secret` como se o tipo já resolvesse a pergunta
+  "alguém fora da interface pública lê o valor?". Não resolvia: a fitness
+  function é estrutural (quem importa quem) e não vê o que o `fmt` faz por
+  reflexão. `Secret` era um struct com um campo `string` não exportado e
+  nenhum método de renderização, então `%v`, `%+v`, `%#v`, `%s` e
+  `slog.Any` imprimiam a chave em claro — `Value()` era um de seis caminhos
+  para o texto puro, não o único, e a frase "the only path" no doc comment
+  afirmava um controle que o código não entregava. Nenhuma chamada da
+  árvore formatava um `Secret`, então nada vazou; o que faltava era a
+  guarda que faz o *próximo* `slog.Any("cred", s)` quebrar o build em vez
+  de vazar uma chave de produção em silêncio. Fechado por
+  `String`/`GoString`/`LogValue`/`MarshalText` mais o valor atrás de um
+  ponteiro (um método não é alcançável quando o `Secret` está num campo
+  não exportado de outro struct — ali o `fmt` reflete direto na
+  representação, que por isso precisa ser um endereço). Teste:
+  `TestSecretNeverRendersPlaintext` em `internal/vault/redaction_test.go`.
+  O que continua **não** garantido, e a frase no código foi estreitada para
+  dizer isso: quem for atrás do campo com `reflect`+`unsafe` lê o valor, e
+  nenhuma representação em processo impede isso.
 - **Cuidado com o cache:** `go test` pode devolver um `pass` velho para
   estes testes mesmo depois de o código violar a regra, porque o arquivo
   varrido não é entrada declarada do teste. Por isso o `make test` usa

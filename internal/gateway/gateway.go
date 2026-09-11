@@ -61,6 +61,14 @@ func Namespaced(upstream, tool string) string {
 // SplitNamespaced splits a client-facing name back into its upstream and
 // tool parts. It splits on the *first* separator, so a tool whose own name
 // contains a dot round-trips correctly.
+//
+// That the upstream half is the upstream which actually serves the tool is
+// not a property of this function: it holds because no registered upstream
+// name may contain the separator (registry.UpstreamServer.Validate, and
+// Connect's re-check of the same contract on entries read back out of the
+// store). Without that rule this split and the routing table would disagree
+// for an upstream named "a.b", and so would access.Role.Allows, which
+// resolves a per-backend grant the same way.
 func SplitNamespaced(name string) (upstream, tool string, ok bool) {
 	upstream, tool, ok = strings.Cut(name, NameSeparator)
 	if !ok || upstream == "" || tool == "" {

@@ -190,7 +190,17 @@ func New(db *sql.DB) *Recorder {
 	return &Recorder{db: db}
 }
 
-// Record implements audit.Recorder.
+// Record implements audit.Recorder. It is RecordChained with the link
+// dropped, so there is exactly one insert path and no chance of the two
+// drifting into different transaction shapes.
+func (r *Recorder) Record(ctx context.Context, rec audit.Record) error {
+	_, err := r.RecordChained(ctx, rec)
+	return err
+}
+
+var _ audit.ChainedRecorder = (*Recorder)(nil)
+
+// RecordChained implements audit.ChainedRecorder.
 //
 // Reading the chain head and appending happen inside one BEGIN IMMEDIATE
 // transaction (design/adr/0015-audit-tamper-evidence.md, item 3). Two
@@ -200,19 +210,27 @@ func New(db *sql.DB) *Recorder {
 // a plain BEGIN because the deferred form takes the write lock only at the
 // INSERT, which is a lock upgrade, and SQLite answers a contended upgrade
 // with SQLITE_BUSY instead of waiting.
-func (r *Recorder) Record(ctx context.Context, rec audit.Record) error {
+//
+// The returned link is the pair actually written in that transaction, read
+// from the same variables the INSERT used rather than recomputed
+// afterwards: a second computation outside the transaction would race the
+// next writer and could report a predecessor this row does not have.
+//
+// On any error the zero ChainLink is returned. See the port's doc for why
+// that must not be read as "first record in the chain".
+func (r *Recorder) RecordChained(ctx context.Context, rec audit.Record) (audit.ChainLink, error) {
 	if err := rec.Validate(); err != nil {
-		return err
+		return audit.ChainLink{}, err
 	}
 
 	conn, err := r.db.Conn(ctx)
 	if err != nil {
-		return fmt.Errorf("audit/sqlite: record: %w", err)
+		return audit.ChainLink{}, fmt.Errorf("audit/sqlite: record: %w", err)
 	}
 	defer conn.Close()
 
 	if _, err := conn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
-		return fmt.Errorf("audit/sqlite: record: begin: %w", err)
+		return audit.ChainLink{}, fmt.Errorf("audit/sqlite: record: begin: %w", err)
 	}
 	committed := false
 	defer func() {
@@ -229,8 +247,10 @@ func (r *Recorder) Record(ctx context.Context, rec audit.Record) error {
 	if errors.Is(err, sql.ErrNoRows) {
 		prev = audit.GenesisHash
 	} else if err != nil {
-		return fmt.Errorf("audit/sqlite: record: read chain head: %w", err)
+		return audit.ChainLink{}, fmt.Errorf("audit/sqlite: record: read chain head: %w", err)
 	}
+
+	link := audit.ChainLink{Prev: prev, Hash: audit.ChainHash(prev, rec)}
 
 	const stmt = `
 INSERT INTO audit_records (analyst_identity, tool, target_upstream, timestamp, outcome, reason, source_address, prev_hash, hash)
@@ -239,15 +259,15 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 	if _, err := conn.ExecContext(ctx, stmt,
 		rec.AnalystIdentity, rec.Tool, rec.TargetUpstream, rec.Timestamp.Format(timeLayout),
 		string(rec.Outcome), rec.Reason, rec.SourceAddress,
-		prev, audit.ChainHash(prev, rec)); err != nil {
-		return fmt.Errorf("audit/sqlite: record: %w", err)
+		link.Prev, link.Hash); err != nil {
+		return audit.ChainLink{}, fmt.Errorf("audit/sqlite: record: %w", err)
 	}
 
 	if _, err := conn.ExecContext(ctx, `COMMIT`); err != nil {
-		return fmt.Errorf("audit/sqlite: record: commit: %w", err)
+		return audit.ChainLink{}, fmt.Errorf("audit/sqlite: record: commit: %w", err)
 	}
 	committed = true
-	return nil
+	return link, nil
 }
 
 var _ audit.ChainVerifier = (*Recorder)(nil)

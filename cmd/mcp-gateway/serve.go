@@ -2,18 +2,24 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/bunnyiesart/Gatte/internal/access"
 	"github.com/bunnyiesart/Gatte/internal/access/oidc"
+	"github.com/bunnyiesart/Gatte/internal/audit"
+	auditjsonl "github.com/bunnyiesart/Gatte/internal/audit/jsonl"
 	auditsqlite "github.com/bunnyiesart/Gatte/internal/audit/sqlite"
 	"github.com/bunnyiesart/Gatte/internal/config"
 	"github.com/bunnyiesart/Gatte/internal/gateway"
@@ -216,9 +222,19 @@ func buildServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) (
 	stack.closers = append(stack.closers, func() { _ = db.Close() })
 
 	reg := registrysqlite.New(db)
-	aud := auditsqlite.New(db)
 	quar := quarantinesqlite.New(db)
 	sigs := signersqlite.New(db)
+
+	// Opened here rather than lazily on the first record: the operator who
+	// asked for the sink is present at startup and absent at 03:00, and a
+	// sink that cannot be opened is something only they can fix. See
+	// auditRecorder for why this one failure is fatal while every failure
+	// of the same sink at request time is not.
+	aud, closeAudit, err := auditRecorder(cfg, db, logger)
+	if err != nil {
+		return fail(fmt.Errorf("audit trail: %w", err))
+	}
+	stack.closers = append(stack.closers, closeAudit)
 
 	// Credential Vault. sopsage deliberately discards sops's stderr and
 	// never wraps the decrypted bytes into an error, because both can echo
@@ -349,8 +365,72 @@ func buildServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) (
 	}
 
 	stack.refreshEvery = cfg.Quarantine.RefreshEvery()
-	stack.summary = newStartupSummary(connectCtx, cfg, listener.Addr().String(), reg, quar, startedAt, connErr)
+	// ctx, not connectCtx: connectCtx's budget belongs to Connect and is
+	// routinely all of it -- one upstream that never answers tools/list
+	// spends the lot -- so a summary built on it went silent in exactly the
+	// case it is for. newStartupSummary bounds its own reads either way;
+	// passing the startup context rather than the spent one keeps the
+	// argument honest about what it is.
+	stack.summary = newStartupSummary(ctx, cfg, listener.Addr().String(), reg, quar, startedAt, connErr)
 	return stack, nil
+}
+
+// auditRecorder returns the Audit Trail port, plus the teardown for
+// whatever it had to open.
+//
+// It returns the PORT, audit.Recorder, and never an adapter type. This is
+// the one package allowed to name an adapter (internal/fitness enforces
+// it), and naming one is not a reason for the rest of the wiring to depend
+// on which one it is -- which is the same rule opEnv's accessors in
+// operator.go follow, and the reason gateway.Config did not have to change
+// for any of this.
+//
+// Without [audit.siem] this is exactly the recorder it has always been:
+// the SQLite adapter, handed over unwrapped. Nothing else moves, and the
+// trail has no external anchor -- which, per ADR-0015's correction of
+// 11 Sep 2026, leaves more open than the tail item 6 named: an edit that
+// re-chains forward verifies clean too.
+//
+// With it, the SQLite recorder is decorated: every record is written
+// durably FIRST and emitted to the local JSONL file only after that write
+// committed (design/adr/0017 item 1). The order is what makes the two
+// copies diverge in one direction only -- a line in the SIEM with no row
+// on disk means the row was removed, while a row with no line means the
+// shipper is behind.
+//
+// # Why a failure here is fatal and the same failure later is not
+//
+// The two are the same file and deliberately not the same event. An
+// operator asked for this sink and, at startup, is the person who can act
+// on it being unavailable -- a typo in the path, a directory that does not
+// exist, a jail without the mount. At request time nobody is: the disk
+// filled at 03:00, the analyst is mid-incident, and refusing the call
+// would convert an availability fault into a denial. jsonl.Recorder
+// guarantees that second half itself (it logs at ERROR and returns nil);
+// this function is only responsible for the first.
+func auditRecorder(cfg *config.Config, db *sql.DB, logger *slog.Logger) (audit.Recorder, func(), error) {
+	// *auditsqlite.Recorder, which satisfies audit.ChainedRecorder -- the
+	// narrow second port ADR-0017 item 3 added so the decorator can read
+	// the hash the write actually produced without re-reading the head
+	// outside the transaction that computed it.
+	inner := auditsqlite.New(db)
+	if !cfg.Audit.SIEM.Enabled() {
+		return inner, func() {}, nil
+	}
+
+	sink, err := auditjsonl.OpenFile(cfg.Audit.SIEM.Path)
+	if err != nil {
+		return nil, nil, err
+	}
+	rec, err := auditjsonl.New(inner, sink, cfg.Audit.SIEM.Chain, logger)
+	if err != nil {
+		// Closed rather than leaked: the caller gets an error and nothing
+		// to clean up, which is buildServer's contract for every other
+		// resource too.
+		_ = sink.Close()
+		return nil, nil, err
+	}
+	return rec, func() { _ = sink.Close() }, nil
 }
 
 // run serves until ctx is cancelled by a signal, then shuts down.
@@ -537,9 +617,15 @@ type startupSummary struct {
 	Addr string
 	// Loopback reports whether Addr is reachable only from this host.
 	Loopback bool
-	// UpstreamsRegistered is how many entries the Upstream Registry holds.
+	// UpstreamsRegistered is how many entries the Upstream Registry holds,
+	// or -1 when that read did not return.
 	UpstreamsRegistered int
 	// UpstreamsFailed names the upstreams Connect reported a problem with.
+	//
+	// Empty carries TWO meanings and cannot tell them apart on its own:
+	// none failed, and the registry read this list is derived from never
+	// happened. UpstreamsRegistered < 0 is what separates them, and log
+	// reports the second as -1 rather than as a count of zero -- see there.
 	UpstreamsFailed []string
 	// ToolsDiscovered is how many tools were observed during this boot's
 	// Connect, and ToolsServable how many of those Tool Quarantine allows
@@ -559,25 +645,151 @@ type startupSummary struct {
 	// Roles is what each configured role reaches at this boot. See
 	// roleReach.
 	Roles []roleReach
+	// UnregisteredGrants are the [role.grants] keys that address no entry
+	// the Upstream Registry holds. See grantGap.
+	UnregisteredGrants []grantGap
+	// SIEMChain is the chain name lines are emitted under, empty when no
+	// sink is configured, and SIEMPath the file they are appended to.
+	//
+	// Reported for the reason RequireSigned is: whether the audit trail
+	// leaves this host at all decides whether the chain has an anchor --
+	// and therefore whether tampering is detectable at all, not merely
+	// whether truncation is (ADR-0015's 11 Sep 2026 correction). That is
+	// not something an operator should have to infer from the absence of a
+	// log line.
+	SIEMChain string
+	SIEMPath  string
+}
+
+// grantGap is one [role.grants] key that reaches no registered upstream --
+// "reaches" as grantReaches defines it, which is not the same as "is not
+// the name of one".
+//
+// It cannot be a load-time error. Upstreams live in the SQLite registry
+// (ADR-0001) and opRun calls loadConfig -- and so Config.Validate --
+// BEFORE openStore, deliberately, so that a wrong file fails without
+// depending on the database opening at all. So this is a startup
+// diagnostic, in the one place that holds both the file and the registry.
+type grantGap struct {
+	// Role is the role as the file names it.
+	Role string
+	// Backend is the grant key no registered upstream's tools fall under.
+	Backend string
+}
+
+// unregisteredGrants finds every (role, backend) pair whose grant reaches
+// no entry in the registry at all.
+//
+// Roles keep file order and backends are sorted, so two runs over one
+// unchanged file produce the same list -- the same reason
+// access.validateGrants sorts.
+func unregisteredGrants(roles []config.Role, entries []registry.UpstreamServer) []grantGap {
+	var gaps []grantGap
+	for _, r := range roles {
+		for _, backend := range slices.Sorted(maps.Keys(r.Grants)) {
+			reaches := slices.ContainsFunc(entries, func(e registry.UpstreamServer) bool {
+				return grantReaches(backend, r.Grants[backend], e.Name)
+			})
+			if !reaches {
+				gaps = append(gaps, grantGap{Role: r.Name, Backend: backend})
+			}
+		}
+	}
+	return gaps
+}
+
+// grantReaches reports whether one [role.grants] entry can address any
+// tool of the registered upstream called entry.
+//
+// It is not string equality on the name, and that distinction is the whole
+// of this function. access.Role.Allows matches a grant key as a prefix up
+// to the namespace separator, so the grant `threatintel = ["*"]` addresses
+// every tool of an upstream registered as `threatintel.staging`: the
+// namespaced name `threatintel.staging.lookup_ip` begins with
+// `threatintel.`. Comparing the key to entry names exactly finds no
+// `threatintel` and reports a gap, and the warning this feeds then tells
+// the operator, of a registry that holds an entry that key addresses, that
+// there is "no upstream registered for" it.
+//
+// registry.UpstreamServer.Validate now refuses a name containing the
+// separator, and gateway.Connect re-checks that contract on rows the
+// store hands back, so such an entry cannot serve tools -- which is why
+// the wrong reading no longer costs an operator a live grant they believe
+// inert. It is still the wrong reading, and this diagnostic must not lean
+// on a rule enforced in another package to make its own sentence true:
+// the question is put to access.Role.Allows, the request path's own
+// predicate, for the reason roleReaches gives. A diagnostic computed by a
+// looser or narrower rule than the gate is a second opinion, free to
+// disagree with the thing it reports on -- and this one disagreed in the
+// same log line, printing "authorizes nothing" beside a `role reach` that
+// counted those same tools as observed.
+func grantReaches(backend string, ids []string, entry string) bool {
+	if entry == backend {
+		// Said first and without asking Allows, because it holds whatever
+		// the list contains. An empty grant (`casemgmt = []`) addresses no
+		// tool, but the backend it names IS registered, and the warning
+		// this feeds says the opposite of that.
+		return true
+	}
+
+	// Beyond an exact name only the gate can say, and it is asked with the
+	// ids the grant actually names. A named id may not contain the
+	// separator (access.ValidateRole refuses one), so `threatintel =
+	// ["lookup_ip"]` genuinely cannot reach threatintel.staging, whose
+	// remainder after the key is "staging.lookup_ip": only a wildcard
+	// crosses the separator, and asking with access.GrantAll as the tool
+	// id is how that is put to Allows -- any non-empty remainder answers
+	// for a grant that covers every id its backend may ever advertise.
+	probe := access.Role{Grants: map[string][]string{backend: ids}}
+	for _, id := range ids {
+		if probe.Allows(gateway.Namespaced(entry, id)) {
+			return true
+		}
+	}
+	return false
 }
 
 // roleReach is one role's answer to "does this actually grant anything?".
 //
 // It exists because a role can be perfectly well-formed and grant nothing
-// at all. Matching is exact and there is no wildcard, so a role naming
-// tools that no connected upstream advertises authorizes an empty set --
-// no error, no log line, and the first report of it is an analyst denied
-// mid-incident (GAB-30 item 3). config.Validate now refuses the common way
-// to write that (an un-namespaced name), but it cannot refuse a correctly
-// shaped name for a tool that is simply not there: a renamed backend tool,
-// an upstream that did not come up, a typo inside the namespace.
+// at all. In the flat `tools` list matching is exact with no wildcard, so
+// a role naming tools no connected upstream advertises authorizes an empty
+// set -- no error, no log line, and the first report of it is an analyst
+// denied mid-incident (GAB-30 item 3). config.Validate now refuses the
+// common way to write that (an un-namespaced name), but it cannot refuse a
+// correctly shaped name for a tool that is simply not there: a renamed
+// backend tool, an upstream that did not come up, a typo inside the
+// namespace.
+//
+// [role.grants] adds a second way to reach nothing and does not remove
+// this one. A named grant misses the same way a flat name does; a `["*"]`
+// grant over a backend that is not registered, or did not come up, reaches
+// nothing while looking like the broadest permission in the file. See
+// Wildcards and grantGap, which answer those two separately.
 type roleReach struct {
 	// Name is the role as the file names it.
 	Name string
-	// Granted is how many tools the file lists for this role.
+	// Granted is how many tools the file names for this role: the flat
+	// `tools` list plus every tool id written under [role.grants].
+	//
+	// It counts only the FINITE half. A `["*"]` grant is not a number and
+	// is deliberately not turned into one -- see Wildcards.
 	Granted int
-	// Observed is how many of those name a tool this gateway actually saw
-	// on a connected upstream during this boot.
+	// Wildcards are the backends this role granted with "*", rendered as
+	// "backend:*".
+	//
+	// They are reported instead of counted. A wildcard grants every tool
+	// its backend advertises now and later, so any count would be a
+	// snapshot presented as a grant -- and this file already learned, from
+	// AllowedTools, that pretending to enumerate a wildcard is the claim
+	// without backing this project keeps refusing.
+	Wildcards []string
+	// Observed is how many of the tool names this gateway actually saw on a
+	// connected upstream during this boot the role allows.
+	//
+	// With a wildcard grant it can exceed Granted, and that is the honest
+	// reading rather than a bug: the role reaches more tools than the file
+	// names, which is exactly what the wildcard was written to do.
 	//
 	// It is NOT how many are callable. Tool Quarantine approval is a
 	// separate gate, and a tool that was observed but is still pending
@@ -589,16 +801,40 @@ type roleReach struct {
 // roleReaches resolves each role against the namespaced tool names this
 // boot observed.
 //
-// Matched exactly, with no normalisation, because that is how
-// access.Role.Allows matches: a count computed by a looser rule than the
-// one the request path uses would be a second opinion, free to disagree
-// with the gate it is reporting on.
+// Observation is decided by access.Role.Allows -- the very predicate the
+// request path gates on -- rather than by a rule restated here. That
+// matters more now than it did when a role was a flat list: a count
+// computed by a looser (or narrower) rule than the gate would be a second
+// opinion, free to disagree with the thing it is reporting on, and the
+// per-backend form gives it far more room to disagree in.
+//
+// Before ADR-0016 this counted r.Tools and nothing else, so a role
+// composed entirely of [role.grants] reported 0/0 -- indistinguishable
+// from an empty role, invisible in the `role reach` line, and excluded
+// from the dead-role warning that line exists to raise.
 func roleReaches(roles []config.Role, observed map[string]bool) []roleReach {
+	names := slices.Sorted(maps.Keys(observed))
+
 	out := make([]roleReach, 0, len(roles))
 	for _, r := range roles {
 		reach := roleReach{Name: r.Name, Granted: len(r.Tools)}
-		for _, tool := range r.Tools {
-			if observed[tool] {
+		for _, backend := range slices.Sorted(maps.Keys(r.Grants)) {
+			// "*" alongside names is refused by access.ValidateRole, so a
+			// list holding it holds nothing else worth counting -- and if
+			// one ever did, "*" already covers every name beside it.
+			if slices.Contains(r.Grants[backend], access.GrantAll) {
+				reach.Wildcards = append(reach.Wildcards, backend+":"+access.GrantAll)
+				continue
+			}
+			reach.Granted += len(r.Grants[backend])
+		}
+
+		// The domain type, queried directly. config.Role mirrors it field
+		// for field precisely so this conversion is the whole of the
+		// translation, and Allows is then the same code the gate runs.
+		domain := access.Role{Name: r.Name, Tools: r.Tools, Grants: r.Grants}
+		for _, name := range names {
+			if domain.Allows(name) {
 				reach.Observed++
 			}
 		}
@@ -607,9 +843,36 @@ func roleReaches(roles []config.Role, observed map[string]bool) []roleReach {
 	return out
 }
 
+// startupSummaryReadTimeout bounds the two local reads the summary makes.
+// Small, because both are SQLite queries against a database this process
+// already has open: a value long enough to matter would only ever be spent
+// waiting for a store that is not going to answer, and the summary is a
+// diagnostic that must not delay serving.
+const startupSummaryReadTimeout = 5 * time.Second
+
 // newStartupSummary gathers the counts. Every read here is best-effort:
 // a summary that cannot be built must not stop a gateway that can serve,
 // so a failing count is logged as unknown (-1) rather than returned.
+//
+// # Why the reads do not run on ctx
+//
+// Best-effort means the read is attempted, and an already-expired context
+// is not an attempt. The caller is buildServer, which has just spent a
+// deadline-bounded context on gw.Connect -- and Connect walks its entries
+// sequentially on that one context with no per-entry sub-timeout, so a
+// single upstream that accepts the spawn and never answers tools/list
+// consumes the whole budget. Running these reads on that context made
+// every one of them fail in exactly the situation the summary exists for:
+// the operator was told upstreams_registered=-1 and nothing else -- not
+// WHICH upstream hung, not that a role now reaches nothing, not that a
+// grant addresses nothing. So the reads get their own small budget.
+//
+// ctx's cancellation is deliberately not inherited with it. The reads are
+// two local queries bounded by startupSummaryReadTimeout, and a signal
+// arriving mid-startup does not make "which backend did not come up" a
+// less useful thing to have printed -- buildServer goes on to bind and
+// return regardless. Values still pass through, so anything carried on
+// ctx for tracing reaches the store.
 func newStartupSummary(
 	ctx context.Context,
 	cfg *config.Config,
@@ -619,6 +882,9 @@ func newStartupSummary(
 	startedAt time.Time,
 	connErr error,
 ) startupSummary {
+	readCtx, cancelRead := context.WithTimeout(context.WithoutCancel(ctx), startupSummaryReadTimeout)
+	defer cancelRead()
+
 	s := startupSummary{
 		Addr:                addr,
 		Loopback:            config.IsLoopbackAddr(addr),
@@ -628,12 +894,22 @@ func newStartupSummary(
 		RequireSigned:       cfg.Signer.SignaturesRequired(),
 		TrustedKeys:         len(cfg.Signer.TrustedKeys),
 	}
+	if cfg.Audit.SIEM.Enabled() {
+		s.SIEMChain, s.SIEMPath = cfg.Audit.SIEM.Chain, cfg.Audit.SIEM.Path
+	}
 
-	if entries, err := reg.List(ctx); err == nil {
+	if entries, err := reg.List(readCtx); err == nil {
 		s.UpstreamsRegistered = len(entries)
 		s.UpstreamsFailed = failedUpstreams(entries, connErr)
+		// Inside this block, so a registry that could not be read reports
+		// no gaps at all. With no entries to compare against, EVERY grant
+		// would look unregistered -- the same reason the dead-role warning
+		// below is suppressed when nothing was observed: a diagnostic that
+		// fires hardest when its own input is missing teaches people to
+		// ignore it.
+		s.UnregisteredGrants = unregisteredGrants(cfg.Roles, entries)
 	}
-	if boot, err := countTools(ctx, quar, startedAt); err == nil {
+	if boot, err := countTools(readCtx, quar, startedAt); err == nil {
 		s.ToolsDiscovered, s.ToolsServable = boot.Discovered, boot.Servable
 		s.Roles = roleReaches(cfg.Roles, boot.Names)
 	}
@@ -646,20 +922,39 @@ func newStartupSummary(
 // warnings, and a warning buried as a field of an info line is a warning
 // nobody greps for.
 func (s startupSummary) log(logger *slog.Logger) {
-	connected := s.UpstreamsRegistered - len(s.UpstreamsFailed)
+	connected, failed := s.UpstreamsRegistered-len(s.UpstreamsFailed), len(s.UpstreamsFailed)
 	if s.UpstreamsRegistered < 0 {
-		connected = -1
+		// Both unknown, for the same reason: UpstreamsFailed is filled in
+		// from the registry read that did not return, so a nil slice here
+		// means "not read", never "none failed". Printing len(nil) as 0
+		// was an affirmative claim that every registered upstream came up,
+		// made beside a registered count that admits it counted nothing --
+		// the loudest possible version of this project's defect class, in
+		// the one line an operator reads after a restart.
+		connected, failed = -1, -1
 	}
 	logger.Info("mcp-gateway: serving",
 		slog.String("listen", s.Addr),
 		slog.Int("upstreams_registered", s.UpstreamsRegistered),
 		slog.Int("upstreams_connected", connected),
-		slog.Int("upstreams_failed", len(s.UpstreamsFailed)),
+		slog.Int("upstreams_failed", failed),
 		slog.Int("tools_discovered", s.ToolsDiscovered),
 		slog.Int("tools_servable", s.ToolsServable),
 		slog.Bool("require_signed", s.RequireSigned),
 		slog.Int("trusted_keys", s.TrustedKeys),
 	)
+
+	if s.UpstreamsRegistered < 0 || s.ToolsDiscovered < 0 {
+		// Said once, and said as a warning, because every diagnostic below
+		// that depends on those reads is silent rather than reassuring: no
+		// failed-upstream line, no `role reach`, no dead-role warning, no
+		// unregistered-grant warning. Without this line their absence
+		// reads as "nothing to report".
+		logger.Warn("mcp-gateway: the startup summary could not be built -- a -1 above is UNKNOWN, not zero, and the upstream, role-reach and grant checks below did not run; `mcp-gateway upstream list` and `tool list` are the way to see what is actually registered",
+			slog.Bool("registry_read", s.UpstreamsRegistered >= 0),
+			slog.Bool("quarantine_read", s.ToolsDiscovered >= 0),
+		)
+	}
 
 	if len(s.UpstreamsFailed) > 0 {
 		logger.Error("mcp-gateway: some upstreams did not come up; the rest are being served",
@@ -679,6 +974,19 @@ func (s startupSummary) log(logger *slog.Logger) {
 		logger.Warn("mcp-gateway: require_signed=false -- a registry entry with NO signature is accepted and served (ADR-0006 declared debt); an INVALID signature is always refused regardless",
 			slog.Int("trusted_keys", s.TrustedKeys))
 	}
+	if s.SIEMChain != "" {
+		logger.Info("mcp-gateway: audit records are also emitted as JSONL for the SIEM (ADR-0017); a shipper must forward this file, and `audit -verify -expect-head` takes its expected value from the newest hash Graylog holds for this chain",
+			slog.String("chain", s.SIEMChain),
+			slog.String("path", s.SIEMPath),
+		)
+	} else {
+		// Info, not Warn: no sink is the documented default and the shape
+		// every deployment had before ADR-0017. What it costs is stated
+		// anyway, because the thing it costs -- the only detection of a
+		// rewritten trail there is -- is invisible precisely when it
+		// matters.
+		logger.Info("mcp-gateway: no audit.siem sink configured, so the trail stays in SQLite only, where a truncated tail verifies and so does an edit whose hashes were recomputed (ADR-0015 item 6 and its 11 Sep 2026 correction); set audit.siem.path and audit.siem.chain to anchor the chain head outside this host")
+	}
 	if s.ToolsDiscovered > 0 && s.ToolsServable == 0 {
 		logger.Warn("mcp-gateway: no discovered tool is approved in Tool Quarantine, so every analyst will see an empty tool list until an operator approves one",
 			slog.Int("awaiting_approval", s.ToolsDiscovered))
@@ -691,25 +999,49 @@ func (s startupSummary) log(logger *slog.Logger) {
 		parts := make([]string, 0, len(s.Roles))
 		var dead []string
 		for _, r := range s.Roles {
-			parts = append(parts, fmt.Sprintf("%s %d/%d", r.Name, r.Observed, r.Granted))
+			part := fmt.Sprintf("%s %d/%d", r.Name, r.Observed, r.Granted)
+			if len(r.Wildcards) > 0 {
+				// Appended rather than folded into the denominator: a
+				// wildcard has no finite granted count, and inventing one
+				// would report a snapshot as though it were the grant.
+				part += "+" + strings.Join(r.Wildcards, "+")
+			}
+			parts = append(parts, part)
 			// Only a role that asks for tools and reaches none. A role
 			// granting nothing on purpose (config.example.toml ships one,
 			// for someone who may authenticate but may not act) is a
 			// documented shape, and warning about it is how a warning
-			// stops being read.
-			if r.Granted > 0 && r.Observed == 0 {
+			// stops being read. A wildcard counts as asking: `threatintel
+			// = ["*"]` reaching nothing is the loudest version of this.
+			if r.Observed == 0 && (r.Granted > 0 || len(r.Wildcards) > 0) {
 				dead = append(dead, r.Name)
 			}
 		}
-		logger.Info("mcp-gateway: role reach (observed/granted tools per role; observed counts tools seen this boot, approved or not)",
+		logger.Info("mcp-gateway: role reach (observed/granted tools per role; observed counts tools seen this boot, approved or not; a `backend:*` suffix is a wildcard grant, which has no finite granted count)",
 			slog.String("roles", strings.Join(parts, ", ")))
 		if len(dead) > 0 && s.ToolsDiscovered > 0 {
 			// Suppressed when nothing was observed at all: with no
 			// upstream up, every role reaches nothing and the line above
 			// about failed upstreams is the real news.
-			logger.Warn("mcp-gateway: a role grants tools that match nothing this gateway observed, so it authorizes nothing -- check the names against `mcp-gateway tool list` (matching is exact and namespaced, with no wildcard)",
+			logger.Warn("mcp-gateway: a role grants tools that match nothing this gateway observed, so it authorizes nothing -- check the names against `mcp-gateway tool list` (in `tools` matching is exact and namespaced, with no wildcard)",
 				slog.Any("roles", dead))
 		}
+	}
+
+	if len(s.UnregisteredGrants) > 0 {
+		// One line for every pair, and deliberately NOT fatal. Writing a
+		// grant before registering the backend it is for is the normal
+		// order of work, and a gateway that refused to start because one
+		// upstream had been deregistered would be an outage manufactured by
+		// a diagnostic.
+		pairs := make([]string, 0, len(s.UnregisteredGrants))
+		for _, g := range s.UnregisteredGrants {
+			pairs = append(pairs, g.Role+" -> "+g.Backend)
+		}
+		logger.Warn("mcp-gateway: a role grants a backend this gateway has no upstream registered for, so it authorizes nothing -- register it (`mcp-gateway upstream register`) or drop the grant; the file reads as a permission and applies none",
+			slog.Any("grants", pairs),
+			slog.Int("count", len(pairs)),
+		)
 	}
 }
 

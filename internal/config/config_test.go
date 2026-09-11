@@ -668,7 +668,7 @@ tools = []
 		t.Fatalf("ToAccessPolicy: %v", err)
 	}
 	id := access.Identity{Subject: "u-new", Groups: []string{"soc-onboarding"}}
-	if tools := policy.AllowedTools(id); len(tools) != 0 {
+	if tools := policy.AllowedTools(id, []string{"casemgmt.list_cases", "casemgmt.get_case"}); len(tools) != 0 {
 		t.Errorf("AllowedTools = %v, want none", tools)
 	}
 	if err := policy.Authorize(id, "casemgmt.list_cases"); !errors.Is(err, access.ErrForbidden) {
@@ -791,6 +791,22 @@ func TestValidateAcceptsNothingToAccessPolicyRefuses(t *testing.T) {
 // ToAccessPolicy
 // -----------------------------------------------------------------------
 
+// fileToolUniverse is every namespaced name the roles in completeConfig
+// mention, plus names no role holds. access.Policy.AllowedTools filters a
+// list rather than producing one (see its doc), so the list it is asked
+// about has to contain the near misses too, or the filter is only ever
+// shown names that pass.
+var fileToolUniverse = []string{
+	"casemgmt.list_cases",
+	"casemgmt.get_case",
+	"casemgmt.delete_case",
+	"docsearch.search",
+	"threatintel.lookup_ip",
+	"threatintel.virustotal",
+	"logsearch.search_absolute",
+	"casemgmt.delete_everything",
+}
+
 func TestToAccessPolicyMatchesTheFile(t *testing.T) {
 	c := mustLoad(t, completeConfig)
 	policy, err := c.ToAccessPolicy()
@@ -832,7 +848,7 @@ func TestToAccessPolicyMatchesTheFile(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := policy.AllowedTools(access.Identity{Subject: "u-1", Groups: tc.groups})
+			got := policy.AllowedTools(access.Identity{Subject: "u-1", Groups: tc.groups}, fileToolUniverse)
 			if len(got) == 0 && len(tc.want) == 0 {
 				return
 			}
@@ -904,12 +920,12 @@ func TestToAccessPolicyDoesNotShareSlices(t *testing.T) {
 	}
 
 	id := access.Identity{Subject: "u-1", Groups: []string{"soc-n1"}}
-	before := policy.AllowedTools(id)
+	before := policy.AllowedTools(id, fileToolUniverse)
 
 	// Rewrite the config's own slice after the policy was built.
 	c.Roles[0].Tools[0] = "casemgmt.delete_everything"
 
-	after := policy.AllowedTools(id)
+	after := policy.AllowedTools(id, fileToolUniverse)
 	if !reflect.DeepEqual(before, after) {
 		t.Errorf("mutating the parsed config changed what the live policy authorizes: %v -> %v", before, after)
 	}

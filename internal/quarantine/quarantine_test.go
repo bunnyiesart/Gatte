@@ -53,6 +53,9 @@ func TestHash_IsDeterministicAndFieldSensitive(t *testing.T) {
 		InputSchema: []byte(`{"type":"object"}`),
 	}
 
+	//lint:ignore SA4000 Both sides identical is the POINT: this asserts Hash is
+	// deterministic. Two calls, same input, results must match. Rewriting it to
+	// satisfy the linter would delete the property under test.
 	if Hash(base) != Hash(base) {
 		t.Fatal("Hash is not deterministic for the same identity")
 	}

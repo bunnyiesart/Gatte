@@ -32,6 +32,19 @@ var (
 	ErrInvalid = errors.New("registry: invalid upstream server")
 )
 
+// nameSeparator is the character the gateway joins an upstream's name to a
+// tool's own name with, to build the namespaced names clients see.
+//
+// It is a third declaration of gateway.NameSeparator (internal/access holds
+// the second), and it is a debt paid knowingly for the same reason that one
+// is: internal/gateway imports this package, so this package cannot import
+// it back. This package genuinely needs the value, because the one rule
+// below that is a security control rather than hygiene is stated in terms of
+// it. The two are pinned equal by TestRegistryNameSeparatorMatchesGateway in
+// name_external_test.go, which sits in package registry_test precisely so it
+// may import both and fail the build the day they diverge.
+const nameSeparator = "."
+
 // Transport identifies how the gateway reaches an upstream MCP server.
 type Transport string
 
@@ -64,7 +77,7 @@ type UpstreamServer struct {
 
 // Validate checks that s satisfies the registry's entry contract:
 //
-//   - Name must be non-empty.
+//   - Name must be non-empty and must not contain the namespace separator.
 //   - Transport must be exactly TransportStdio or TransportHTTP.
 //   - If Transport is TransportStdio, Command must be non-empty.
 //   - If Transport is TransportHTTP, URL must be non-empty.
@@ -76,6 +89,28 @@ type UpstreamServer struct {
 func (s UpstreamServer) Validate() error {
 	if strings.TrimSpace(s.Name) == "" {
 		return fmt.Errorf("%w: name must not be empty", ErrInvalid)
+	}
+	// A security control, not naming hygiene. Every client-facing tool name
+	// is this name joined to a tool's own name by nameSeparator, and every
+	// consumer of such a name recovers the upstream half by cutting at the
+	// *first* separator: gateway.SplitNamespaced, access.Role.Allows
+	// resolving a per-backend grant, `tool approve` reporting which roles an
+	// approval serves. A name that already contains the separator makes that
+	// cut land inside it, so the upstream those callers name is not the
+	// upstream that serves the call -- a grant naming "threatintel" reaches
+	// every approved tool of a separately registered "threatintel.staging",
+	// which is authorization deciding about one backend while routing
+	// dispatches to another. Refusing the character here is what makes the
+	// two readings coincide, and it is the closure ADR-0016 leaves to this
+	// package.
+	//
+	// Only the separator is refused, not every prefix relationship:
+	// "threatintel" is a prefix of "threatintelx" and no name built for
+	// "threatintelx" can ever begin with "threatintel" plus the separator,
+	// so that pair is unambiguous and legal.
+	if strings.Contains(s.Name, nameSeparator) {
+		return fmt.Errorf("%w: name %q must not contain %q -- it is the separator between an upstream's name and a tool's, so a name containing it would make this upstream's tools indistinguishable from another upstream's",
+			ErrInvalid, s.Name, nameSeparator)
 	}
 
 	switch s.Transport {

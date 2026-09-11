@@ -256,6 +256,21 @@ func ValidateRole(r Role) error {
 		errs = append(errs, fmt.Errorf("%w: role with empty name", ErrInvalidPolicy))
 	}
 	for _, tool := range r.Tools {
+		// Edge whitespace is refused here for the same reason it is refused
+		// on a role name and on a grant key -- and this entry was the one
+		// place it was not, which made it the one place it costs most.
+		//
+		// Matching is exact (see Allows), so `"casemgmt.list_cases "` never
+		// equals the namespaced name the routing table holds. It does not
+		// fail: it grants NOTHING, on a line that reads as a grant, and the
+		// only symptom is an analyst seeing a shorter tool list than the
+		// config describes. That is the silent-empty-grant shape GAB-30 was
+		// filed about, surviving in the oldest field of the three.
+		if tool != strings.TrimSpace(tool) {
+			errs = append(errs, fmt.Errorf("%w: role %q tool %q has leading or trailing whitespace: "+
+				"matching is exact, so this entry would grant nothing while reading as a grant",
+				ErrInvalidPolicy, r.Name, tool))
+		}
 		if strings.TrimSpace(tool) == "" {
 			errs = append(errs, fmt.Errorf("%w: role %q has an empty tool name", ErrInvalidPolicy, r.Name))
 		}

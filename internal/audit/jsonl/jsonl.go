@@ -88,6 +88,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"sync"
@@ -182,6 +183,11 @@ type Sink interface {
 type FileSink struct {
 	mu sync.Mutex
 	f  *os.File
+	// w is what Emit actually writes to, and is f on every sink this
+	// package builds. It exists as a seam because the one failure mode
+	// that matters here -- a write that stops partway -- cannot be
+	// provoked through a real file without filling a disk.
+	w io.Writer
 }
 
 var _ Sink = (*FileSink)(nil)
@@ -206,7 +212,30 @@ func OpenFile(path string) (*FileSink, error) {
 	if err != nil {
 		return nil, fmt.Errorf("audit/jsonl: open sink: %w", err)
 	}
-	return &FileSink{f: f}, nil
+
+	// The mode argument above applies ONLY when OpenFile creates the file.
+	// On a file that already exists it is ignored entirely, so a sink
+	// reopened after a rotation -- or created by hand, or left behind by a
+	// previous deployment with a wider mode -- kept whatever permissions it
+	// already had while this package's doc promised 0600. The promise is
+	// enforced here instead of asserted above.
+	//
+	// Narrowing rather than refusing: a gateway that will not start because
+	// its log file is group-readable turns a permissions wart into an
+	// outage, and the fix (tighten it) is the same either way.
+	info, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return nil, fmt.Errorf("audit/jsonl: stat sink: %w", err)
+	}
+	if perm := info.Mode().Perm(); perm&^DefaultFileMode != 0 {
+		if err := f.Chmod(DefaultFileMode); err != nil {
+			f.Close()
+			return nil, fmt.Errorf("audit/jsonl: sink %s is mode %#o and could not be narrowed to %#o: %w",
+				path, perm, DefaultFileMode, err)
+		}
+	}
+	return &FileSink{f: f, w: f}, nil
 }
 
 // Emit implements Sink.
@@ -224,10 +253,28 @@ func (s *FileSink) Emit(_ context.Context, line Line) error {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.f == nil {
+	// Liveness is a property of the writer Emit uses, not of the file
+	// handle beside it: those are the same thing on every sink this
+	// package builds, and only the writer is the thing being written to.
+	if s.w == nil {
 		return errors.New("audit/jsonl: sink is closed")
 	}
-	if _, err := s.f.Write(buf); err != nil {
+	n, err := s.w.Write(buf)
+	if err != nil {
+		// A write that stopped partway has left a headless JSON stump at
+		// the end of the file, and O_APPEND means the NEXT record starts
+		// exactly where it stopped -- merging a good record onto a broken
+		// one and losing both. Terminating the stump costs one byte and
+		// turns silent loss into one corrupt line a parser will reject
+		// loudly, with every record after it intact.
+		//
+		// Best effort by construction: if the first write failed there is
+		// every chance this one does too, and there is nothing further to
+		// try. What matters is that the attempt is made before the next
+		// Emit runs.
+		if n > 0 && n < len(buf) {
+			_, _ = s.w.Write([]byte("\n"))
+		}
 		return fmt.Errorf("audit/jsonl: write line: %w", err)
 	}
 	return nil
@@ -242,7 +289,7 @@ func (s *FileSink) Close() error {
 		return nil
 	}
 	err := s.f.Close()
-	s.f = nil
+	s.f, s.w = nil, nil
 	if err != nil {
 		return fmt.Errorf("audit/jsonl: close sink: %w", err)
 	}

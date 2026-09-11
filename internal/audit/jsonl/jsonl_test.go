@@ -614,3 +614,29 @@ func TestFileSinkModeIsNotWorldReadable(t *testing.T) {
 		t.Fatalf("sink file mode is %v, want no group or other access", info.Mode().Perm())
 	}
 }
+
+// TestOpenFile_NarrowsAnExistingWideFile: the mode argument to os.OpenFile
+// applies only on creation, so a sink file that already exists kept
+// whatever permissions it had while the package doc promised 0600. A
+// rotation that recreates the file with the shipper's umask is the
+// ordinary way this happens.
+func TestOpenFile_NarrowsAnExistingWideFile(t *testing.T) {
+	path := t.TempDir() + "/audit.jsonl"
+	if err := os.WriteFile(path, []byte("{}\n"), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	s, err := jsonl.OpenFile(path)
+	if err != nil {
+		t.Fatalf("OpenFile: %v", err)
+	}
+	defer s.Close()
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if got := info.Mode().Perm(); got != jsonl.DefaultFileMode {
+		t.Errorf("sink mode = %#o, want %#o -- an existing file keeps its own mode unless this is enforced", got, jsonl.DefaultFileMode)
+	}
+}

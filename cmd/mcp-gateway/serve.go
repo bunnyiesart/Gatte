@@ -577,7 +577,15 @@ func (s *serveStack) refreshLoop(ctx context.Context, logger *slog.Logger) {
 		// whether its credential was rotated underneath it -- and a
 		// rotation is exactly the kind of thing somebody does during the
 		// incident that also makes a backend flaky.
-		s.reportCredentialDrift(refreshCtx, logger)
+		// Its OWN context, derived from ctx. refreshCtx was cancelled the
+		// moment Refresh returned, a dozen lines above, so passing it here
+		// handed the drift check a context that was already dead. Nothing
+		// failed visibly only because the vault in use does not consult
+		// it -- the check was one ctx-honouring vault.Provider away from
+		// reporting no drift, forever, while looking like it ran.
+		driftCtx, driftCancel := context.WithTimeout(ctx, refreshTimeout)
+		s.reportCredentialDrift(driftCtx, logger)
+		driftCancel()
 	}
 }
 
@@ -591,6 +599,17 @@ func (s *serveStack) refreshLoop(ctx context.Context, logger *slog.Logger) {
 // a backend during an incident is a bigger decision than this loop is
 // entitled to make (the reconnect command is the other half of GAB-20).
 func (s *serveStack) reportCredentialDrift(ctx context.Context, logger *slog.Logger) {
+	// A dead context here means the check cannot have run, and the danger
+	// is that "no drift reported" and "drift never looked for" are the same
+	// silence. Say which one happened, and say it at Error: a rotation
+	// going unnoticed is what this whole loop exists to prevent.
+	if err := ctx.Err(); err != nil {
+		logger.Error("mcp-gateway: credential drift was NOT checked this tick -- the check was handed an expired context, "+
+			"so a rotated credential still in use would go unreported",
+			slog.String("detail", err.Error()))
+		return
+	}
+
 	drift := s.gateway.CredentialDrift(ctx)
 	if len(drift) == 0 {
 		return

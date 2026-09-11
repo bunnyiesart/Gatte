@@ -517,3 +517,30 @@ func TestRolesFor_NilGrantsStayNil(t *testing.T) {
 		t.Errorf("Tools = %v, want the role's flat list", got[0].Tools)
 	}
 }
+
+// TestValidateRole_RefusesEdgeWhitespaceInAToolsEntry closes the last place
+// this check was missing.
+//
+// A role name, a grant backend key and a grant tool id all refused edge
+// whitespace already. A `tools` entry did not -- and it is the entry where
+// the omission costs most, because Allows matches exactly: a trailing space
+// makes the line grant nothing while reading as a grant, and the only
+// symptom is an analyst seeing a shorter list than the file describes.
+func TestValidateRole_RefusesEdgeWhitespaceInAToolsEntry(t *testing.T) {
+	for _, tool := range []string{"casemgmt.list_cases ", " casemgmt.list_cases", "casemgmt.list_cases\t"} {
+		err := ValidateRole(Role{Name: "n1", Tools: []string{tool}})
+		if err == nil {
+			t.Errorf("tool %q was accepted; it grants nothing and says nothing", tool)
+			continue
+		}
+		if !strings.Contains(err.Error(), "whitespace") {
+			t.Errorf("tool %q: error does not explain the problem: %v", tool, err)
+		}
+	}
+
+	// Control: the trimmed form must still be accepted, or the check above
+	// is passing because everything fails.
+	if err := ValidateRole(Role{Name: "n1", Tools: []string{"casemgmt.list_cases"}}); err != nil {
+		t.Errorf("a well-formed role was refused: %v", err)
+	}
+}

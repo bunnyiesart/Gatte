@@ -135,8 +135,24 @@ func rejectUnknownKeys(path string, md toml.MetaData) error {
 func rejectCollapsedMapKeys(path string, md toml.MetaData, c *Config) error {
 	written := map[string]int{}
 	for _, key := range md.Keys() {
-		if len(key) == 3 && key[0] == "role" && key[1] == "grants" {
+		switch {
+		case len(key) == 3 && key[0] == "role" && key[1] == "grants":
 			written["role.grants."+key[2]]++
+		// The same decoder behaviour drops a repeated ARRAY key, and two of
+		// them matter more than the grants do.
+		//
+		// signer.trusted_keys is the trust anchor: writing it twice inside
+		// [signer] keeps the last list and silently discards the first, so
+		// a file that looks like it trusts four keys can be running on one.
+		// ADR-0010 moved this list out of the database precisely so it
+		// would be reviewable in the config -- losing half of it to a
+		// decoder rule nobody sees defeats that.
+		//
+		// role.tools is the older half of a grant and drops the same way.
+		case len(key) == 2 && key[0] == "role" && key[1] == "tools":
+			written["role.tools"]++
+		case len(key) == 2 && key[0] == "signer" && key[1] == "trusted_keys":
+			written["signer.trusted_keys"]++
 		}
 	}
 
@@ -145,6 +161,15 @@ func rejectCollapsedMapKeys(path string, md toml.MetaData, c *Config) error {
 		for backend := range r.Grants {
 			survived["role.grants."+backend]++
 		}
+		// Counting DECLARED, not non-empty: `tools = []` is a real
+		// declaration and must count, or a role written that way would
+		// look like a dropped key.
+		if r.Tools != nil {
+			survived["role.tools"]++
+		}
+	}
+	if c.Signer.TrustedKeys != nil {
+		survived["signer.trusted_keys"]++
 	}
 
 	var lost []string

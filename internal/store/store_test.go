@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"sync"
 	"testing"
 )
@@ -109,5 +110,55 @@ func TestSeparateInMemoryStoresAreIsolated(t *testing.T) {
 	}
 	if _, err := b.Exec(`SELECT 1 FROM only_in_a`); err == nil {
 		t.Fatal("b can see a's table -- the two in-memory stores are sharing a database")
+	}
+}
+
+// TestOpen_PragmasApplyToEveryPooledConnection is a regression test for a
+// bug this file had: the pragmas were set with db.Exec, which configures
+// one connection out of however many database/sql opens, so
+// foreign_keys read as ON from the first connection and OFF from the
+// rest. The setting looked enabled and mostly was not.
+//
+// The test holds several connections open AT ONCE, which is what forces
+// the pool to create new ones rather than hand back the configured one.
+func TestOpen_PragmasApplyToEveryPooledConnection(t *testing.T) {
+	db, err := Open(t.TempDir() + "/pragmas.db")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	const want = 4
+	conns := make([]*sql.Conn, 0, want)
+	defer func() {
+		for _, c := range conns {
+			c.Close()
+		}
+	}()
+	for i := range want {
+		c, err := db.Conn(context.Background())
+		if err != nil {
+			t.Fatalf("conn %d: %v", i, err)
+		}
+		conns = append(conns, c)
+	}
+
+	for i, c := range conns {
+		var fk int
+		if err := c.QueryRowContext(context.Background(), "PRAGMA foreign_keys").Scan(&fk); err != nil {
+			t.Fatalf("conn %d: read foreign_keys: %v", i, err)
+		}
+		if fk != 1 {
+			t.Errorf("conn %d: foreign_keys = %d, want 1", i, fk)
+		}
+
+		var busy int
+		if err := c.QueryRowContext(context.Background(), "PRAGMA busy_timeout").Scan(&busy); err != nil {
+			t.Fatalf("conn %d: read busy_timeout: %v", i, err)
+		}
+		if busy == 0 {
+			t.Errorf("conn %d: busy_timeout = 0, want a wait -- a contended write returns "+
+				"SQLITE_BUSY immediately with this unset", i)
+		}
 	}
 }

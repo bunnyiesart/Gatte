@@ -86,6 +86,12 @@ func (e *opEnv) signatures() signer.Store { return signersqlite.New(e.db) }
 // auditTrail returns the Audit Trail port, wired to SQLite.
 func (e *opEnv) auditTrail() audit.Recorder { return auditsqlite.New(e.db) }
 
+// auditChain returns the port for checking that the stored trail has not
+// been edited (design/adr/0015-audit-tamper-evidence.md). It is a
+// separate port from Recorder because verifying is an operator action, not
+// something the gateway's dispatch path performs.
+func (e *opEnv) auditChain() audit.ChainVerifier { return auditsqlite.New(e.db) }
+
 // ctx returns the context operator commands run under. A console command
 // is a foreground, single-shot action: it inherits the process lifetime
 // and is cancelled by the operator pressing Ctrl-C, not by a deadline

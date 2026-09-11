@@ -39,22 +39,44 @@ import (
 // alternative and is deliberately not used: it shares one database across
 // the whole process, so two independent Open(":memory:") calls would
 // collide with each other, trading this bug for a worse one in tests.
+// # Why the pragmas are in the DSN and not Exec'd
+//
+// A PRAGMA is per-CONNECTION, and database/sql hands out a pool. Setting
+// one with db.Exec configures whichever connection happened to serve that
+// call and leaves every connection the pool opens later on the SQLite
+// defaults -- so the setting appears to be on, and silently is not for
+// most of the process's work.
+//
+// That was not theoretical here: foreign_keys was Exec'd, which means
+// referential integrity was enforced on one connection out of however many
+// the pool grew to. It surfaced while adding busy_timeout for the audit
+// chain's serialised append (ADR-0015 item 3), whose concurrency test kept
+// failing with SQLITE_BUSY against a timeout that was, on that connection,
+// never set. modernc.org/sqlite applies `_pragma=` DSN parameters to every
+// connection it opens, which is the only form that means what it says.
 func Open(path string) (*sql.DB, error) {
-	db, err := sql.Open("sqlite", path)
+	dsn := path
+	if path != ":memory:" {
+		// busy_timeout: without it SQLite answers a contended write lock
+		// by returning SQLITE_BUSY at once rather than waiting, and the
+		// second writer simply loses its write. WAL narrows that window --
+		// readers stop blocking writers -- but writers still exclude each
+		// other. Five seconds is a ceiling on waiting, not a target.
+		dsn = "file:" + path + "?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)"
+	}
+
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("store: open %s: %w", path, err)
 	}
 	if path == ":memory:" {
 		db.SetMaxOpenConns(1)
-	}
-	if _, err := db.Exec("PRAGMA foreign_keys = ON"); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("store: enable foreign_keys: %w", err)
-	}
-	if path != ":memory:" {
-		if _, err := db.Exec("PRAGMA journal_mode = WAL"); err != nil {
+		// Safe as an Exec only because the pool is pinned to exactly one
+		// connection above; on any other path this would be the bug
+		// described here.
+		if _, err := db.Exec("PRAGMA foreign_keys = ON"); err != nil {
 			db.Close()
-			return nil, fmt.Errorf("store: enable WAL: %w", err)
+			return nil, fmt.Errorf("store: enable foreign_keys: %w", err)
 		}
 	}
 	return db, nil

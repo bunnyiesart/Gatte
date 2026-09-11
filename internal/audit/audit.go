@@ -23,6 +23,21 @@
 // legitimate analyst's, and the trail cannot answer the question an
 // incident actually asks.
 //
+// Records are hash-chained (design/adr/0015-audit-tamper-evidence.md):
+// each carries a hash over its own fields and its predecessor's, so a
+// record edited or removed from the MIDDLE of the trail stops verifying.
+// That covers the actor GAB-36 named -- whoever can write the database
+// file can also rewrite what it says they did.
+//
+// It does NOT cover truncation of the END: removing the last records
+// leaves a shorter chain that verifies perfectly. Catching that needs the
+// chain head recorded somewhere this process cannot write, which is a
+// deployment decision; ChainVerifier reports the head so that decision
+// can be made without changing this package. Do not describe this trail
+// as tamper-proof. It is tamper-evident in the middle, with the tail
+// open, and the difference matters to whoever reads it during an
+// incident.
+//
 // Still out of scope, and genuinely so: operational metrics and
 // telemetry (AGENTS.md §2, "Telemetry/observability"). This is a record
 // of what was attempted and what happened to it, not a monitoring
@@ -31,6 +46,9 @@ package audit
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"time"
@@ -210,4 +228,118 @@ type Recorder interface {
 	// recorded yet, List returns an empty, non-nil slice and a nil
 	// error -- an empty audit trail is not an error condition.
 	List(ctx context.Context) ([]Record, error)
+}
+
+// chainTag is a domain-separation prefix, length-prefixed like every other
+// field, so canonical bytes produced here can never be mistaken for -- or
+// replayed into -- another context that happens to use the same TLV shape.
+// The signer package carries its own tag for the same reason.
+const chainTag = "mcp-gateway/audit/chain/v1"
+
+// GenesisHash is the previous-hash value the first record in a chain links
+// from. It is the empty string rather than a hash of nothing, so "this
+// record starts the chain" is distinguishable from "this record links to
+// something whose hash happened to be all zeroes".
+const GenesisHash = ""
+
+// Canonical returns the bytes a record's chain hash is computed over
+// (design/adr/0015-audit-tamper-evidence.md, item 1).
+//
+// # Why the encoding is length-prefixed
+//
+// Every string is written as an 8-byte big-endian length followed by its
+// raw bytes. Naive concatenation would make Tool "ab" + Reason "c" and
+// Tool "a" + Reason "bc" hash identically, so a record could be rewritten
+// into a different one that chains just as well -- which is the whole
+// property this is here to provide. With lengths in front, no byte string
+// spans a field boundary and no boundary is ambiguous.
+//
+// The timestamp is encoded as RFC3339 with nanoseconds, matching how the
+// sqlite adapter stores it, so a record hashes the same before it is
+// written and after it is read back.
+func Canonical(r Record) []byte {
+	var buf []byte
+	buf = appendField(buf, chainTag)
+	buf = appendField(buf, r.AnalystIdentity)
+	buf = appendField(buf, r.Tool)
+	buf = appendField(buf, r.TargetUpstream)
+	buf = appendField(buf, r.Timestamp.Format(time.RFC3339Nano))
+	buf = appendField(buf, string(r.Outcome))
+	buf = appendField(buf, r.Reason)
+	buf = appendField(buf, r.SourceAddress)
+	return buf
+}
+
+// ChainHash returns the hex-encoded SHA-256 over r's canonical bytes
+// followed by prev, the hash of the record before it. prev is
+// GenesisHash for the first record in a chain.
+//
+// prev is length-prefixed too: without that, a short prev followed by a
+// long one could be confused for the reverse, which would defeat the
+// point of prefixing the fields.
+func ChainHash(prev string, r Record) string {
+	buf := Canonical(r)
+	buf = appendField(buf, prev)
+	sum := sha256.Sum256(buf)
+	return hex.EncodeToString(sum[:])
+}
+
+// appendField appends the 8-byte big-endian length of v followed by v.
+func appendField(buf []byte, v string) []byte {
+	buf = binary.BigEndian.AppendUint64(buf, uint64(len(v)))
+	return append(buf, v...)
+}
+
+// ChainBreak describes the first place a chain stops verifying.
+type ChainBreak struct {
+	// Position is the 1-based position of the offending record in
+	// insertion order.
+	Position int
+	// Record is the record as it currently reads on disk.
+	Record Record
+	// Want is the hash the record should carry, recomputed from its own
+	// fields and its predecessor's hash.
+	Want string
+	// Got is the hash stored alongside it.
+	Got string
+}
+
+// ChainCheck is the result of verifying the audit chain.
+type ChainCheck struct {
+	// Count is how many records were examined.
+	Count int
+	// Head is the hash of the last record, or GenesisHash when the trail
+	// is empty. This is the value worth recording somewhere the gateway
+	// cannot reach; see FirstBreak's doc for what it does and does not
+	// buy.
+	Head string
+	// FirstBreak is nil when every record verifies.
+	//
+	// A nil FirstBreak means no record was edited or removed from the
+	// MIDDLE of the trail. It does NOT mean the trail is complete:
+	// removing records from the END leaves a shorter, perfectly valid
+	// chain (ADR-0015 item 6). Detecting that needs Head to have been
+	// recorded externally beforehand.
+	FirstBreak *ChainBreak
+	// RetroactivelyChained is how many of the leading records were
+	// hashed during migration rather than when they were written
+	// (ADR-0015 item 4). Those records verify against each other, which
+	// says nothing about whether they were already altered before the
+	// migration ran. Zero for a trail that has only ever been chained.
+	RetroactivelyChained int
+}
+
+// Intact reports whether every record verified. See ChainCheck.FirstBreak
+// for what this does not cover.
+func (c ChainCheck) Intact() bool { return c.FirstBreak == nil }
+
+// ChainVerifier is the port for checking that a stored trail has not been
+// edited. It is separate from Recorder because verifying is an operator
+// action against a storage adapter, not something the gateway's hot path
+// needs; an adapter may implement one without the other.
+type ChainVerifier interface {
+	// VerifyChain walks the trail in insertion order, recomputing each
+	// record's hash from its own fields and its predecessor's, and
+	// reports the first mismatch.
+	VerifyChain(ctx context.Context) (ChainCheck, error)
 }

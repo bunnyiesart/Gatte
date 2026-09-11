@@ -452,6 +452,31 @@ const DefaultListen = "127.0.0.1:8080"
 // disables a check.
 func RequireLoopbackBind(listen string) error {
 	if IsLoopbackAddr(listen) {
+		// The host half is settled; the PORT half was not checked at all,
+		// which left this function open to the very defect its own doc says
+		// it was moved into config to close. `listen = "127.0.0.1:https!"`
+		// passed here, worked in every operator subcommand, and killed
+		// serve at net.Listen -- the operator fixing what Validate listed
+		// meeting a different error from the same unchanged file.
+		//
+		// LookupPort rather than a numeric parse: net.Listen accepts a
+		// service name, so rejecting one here would refuse a config that
+		// actually works.
+		_, port, err := net.SplitHostPort(listen)
+		if err != nil {
+			return fmt.Errorf("listen: %q is not a host:port address: %w", listen, err)
+		}
+		// LookupPort("") returns 0 with no error, and ":" is a real thing
+		// an operator types when deleting a port to "use the default".
+		// There is no default here; net.Listen would pick a random one.
+		if port == "" {
+			return fmt.Errorf("listen: %q has no port. This gateway does not choose one for you -- "+
+				"an ephemeral port is a gateway nothing can reach", listen)
+		}
+		if _, err := net.LookupPort("tcp", port); err != nil {
+			return fmt.Errorf("listen: %q has no usable port: %q is neither a number in 0-65535 nor a known service name. "+
+				"This is refused here rather than at startup so the whole address is checked in one place", listen, port)
+		}
 		return nil
 	}
 	// Note this also refuses an address that cannot be parsed: IsLoopbackAddr
@@ -608,6 +633,27 @@ func (c *Config) Validate() error {
 	}
 	if strings.TrimSpace(c.Database) == "" {
 		errs = append(errs, errors.New("database: required (path to the SQLite file)"))
+	}
+
+	// Edge whitespace in a path is refused, not trimmed away.
+	//
+	// audit.siem.path already refused it, with a written rationale; the
+	// other path fields were checked with TrimSpace and then USED
+	// untrimmed, so `database = " /var/db/x.db"` passed validation and then
+	// opened a different file -- one with a leading space in its name,
+	// created on the spot. Trimming silently would be worse: it would mean
+	// the file the operator wrote and the file the gateway uses differ,
+	// with nothing saying so.
+	for _, f := range []struct{ name, value string }{
+		{"database", c.Database},
+		{"vault.secrets_file", c.Vault.SecretsFile},
+		{"vault.age_key_file", c.Vault.AgeKeyFile},
+		{"signer.key_file", c.Signer.KeyFile},
+	} {
+		if f.value != "" && f.value != strings.TrimSpace(f.value) {
+			errs = append(errs, fmt.Errorf("%s: %q has leading or trailing whitespace; "+
+				"the path is used as written, so this names a different file than it appears to", f.name, f.value))
+		}
 	}
 
 	// The three OIDC identifiers go through access.ResourceIdentifier, the

@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"strings"
 	"testing"
 	"time"
 
@@ -265,5 +266,37 @@ func TestMigrate_DeletingChainMetaDoesNotResignATamperedTrail(t *testing.T) {
 		t.Errorf("the stored head moved (%s -> %s) without anything re-chaining; "+
 			"the backfill has rewritten hashes it must never touch",
 			before.Head[:12], after.Head[:12])
+	}
+}
+
+// TestVerifyChain_AnUnreadableTimestampIsABreakNotAnError: one damaged row
+// must not make the whole trail unreadable.
+//
+// Returning an error for a timestamp that will not parse handed an attacker
+// a cheaper move than re-chaining anything: corrupt a single character in
+// one row and `audit -verify` answers with a parse error instead of with
+// the trail, so nothing else in it gets checked or shown. A damaged row is
+// exactly what this function exists to report.
+func TestVerifyChain_AnUnreadableTimestampIsABreakNotAnError(t *testing.T) {
+	db := newTestDB(t)
+	r := New(db)
+	recordN(t, r, 4)
+
+	if _, err := db.Exec(`UPDATE audit_records SET timestamp = 'not-a-timestamp' WHERE id = 2`); err != nil {
+		t.Fatalf("tamper: %v", err)
+	}
+
+	check, err := r.VerifyChain(context.Background())
+	if err != nil {
+		t.Fatalf("VerifyChain returned an error instead of reporting the damaged row: %v", err)
+	}
+	if check.Intact() {
+		t.Fatal("a row with an unreadable timestamp verified clean")
+	}
+	if check.FirstBreak.Position != 2 {
+		t.Errorf("break at position %d, want 2", check.FirstBreak.Position)
+	}
+	if !strings.Contains(check.FirstBreak.Want, "unreadable") {
+		t.Errorf("the break does not say the row is unreadable: %q", check.FirstBreak.Want)
 	}
 }

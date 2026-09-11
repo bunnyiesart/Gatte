@@ -461,3 +461,50 @@ func TestLoadRejectsADuplicatedToolsList(t *testing.T) {
 		t.Errorf("the error does not name the key that was lost: %v", err)
 	}
 }
+
+// TestValidate_RejectsAnUnusablePort closes the other half of the string
+// RequireLoopbackBind was moved into config to check. The host was
+// validated; the port was not, so an address that Validate accepted still
+// killed serve at net.Listen -- GAB-30's shape, in the function written to
+// end it.
+func TestValidate_RejectsAnUnusablePort(t *testing.T) {
+	for _, listen := range []string{"127.0.0.1:https!", "127.0.0.1:99999", "127.0.0.1:"} {
+		if err := RequireLoopbackBind(listen); err == nil {
+			t.Errorf("listen %q was accepted; net.Listen will refuse it at startup", listen)
+		}
+	}
+	// Controls: a number and a real service name must both still pass, or
+	// the check above is rejecting everything.
+	for _, listen := range []string{"127.0.0.1:8080", "localhost:http"} {
+		if err := RequireLoopbackBind(listen); err != nil {
+			t.Errorf("listen %q was refused but is usable: %v", listen, err)
+		}
+	}
+}
+
+// TestValidate_RejectsWhitespacePaddedPaths: audit.siem.path already
+// refused edge whitespace with a written reason; the other path fields were
+// trimmed for the emptiness check and then used as written, so the file
+// validated and the file opened were different ones.
+func TestValidate_RejectsWhitespacePaddedPaths(t *testing.T) {
+	// Replacing the existing line, not appending one: a bare key appended
+	// to this fixture lands in whatever table happens to be last, which
+	// would test a different key entirely.
+	for _, tc := range []struct{ field, from, to string }{
+		{"database",
+			`database = "/var/db/mcp-gateway/mcp-gateway.db"`,
+			`database = " /var/db/mcp-gateway/mcp-gateway.db"`},
+		{"vault.secrets_file",
+			`secrets_file = "/usr/local/etc/mcp-gateway/secrets.enc.json"`,
+			`secrets_file = "/usr/local/etc/mcp-gateway/secrets.enc.json "`},
+	} {
+		src := strings.Replace(completeConfig, tc.from, tc.to, 1)
+		if src == completeConfig {
+			t.Fatalf("%s: the fixture line moved; this subtest is not exercising what it claims", tc.field)
+		}
+		err := loadErr(t, src)
+		if !strings.Contains(err.Error(), "whitespace") {
+			t.Errorf("%s: the error does not mention the whitespace: %v", tc.field, err)
+		}
+	}
+}

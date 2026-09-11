@@ -335,7 +335,28 @@ FROM audit_records ORDER BY id ASC`)
 		}
 		rec.Timestamp, err = time.Parse(timeLayout, ts)
 		if err != nil {
-			return audit.ChainCheck{}, fmt.Errorf("audit/sqlite: verify: parse timestamp: %w", err)
+			// A row whose timestamp will not parse is a row that has been
+			// damaged -- which is the thing this function exists to
+			// report, not a reason to stop reporting. Returning an error
+			// here made ONE bad row turn the whole trail unreadable, and
+			// handed an attacker a cheaper move than re-chaining: corrupt
+			// a single timestamp and `audit -verify` answers with an error
+			// instead of with the trail.
+			//
+			// It is recorded as the first break and the walk stops, because
+			// nothing after it can be chained to something unreadable.
+			if check.FirstBreak == nil {
+				rec.Timestamp = time.Time{}
+				check.FirstBreak = &audit.ChainBreak{
+					Position: check.Count + 1,
+					Record:   rec,
+					Want:     "unreadable: " + err.Error(),
+					Got:      storedHash,
+				}
+			}
+			check.Count++
+			check.Head = storedHash
+			return check, nil
 		}
 		rec.Outcome = audit.Outcome(outcome)
 

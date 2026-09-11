@@ -667,6 +667,9 @@ type startupSummary struct {
 	// UnregisteredGrants are the [role.grants] keys that address no entry
 	// the Upstream Registry holds. See grantGap.
 	UnregisteredGrants []grantGap
+	// EmptyGrants are [role.grants] entries written with no tools. Legal,
+	// reaching nothing, and reported by nothing until this field existed.
+	EmptyGrants []grantGap
 	// SIEMChain is the chain name lines are emitted under, empty when no
 	// sink is configured, and SIEMPath the file they are appended to.
 	//
@@ -702,6 +705,32 @@ type grantGap struct {
 // Roles keep file order and backends are sorted, so two runs over one
 // unchanged file produce the same list -- the same reason
 // access.validateGrants sorts.
+// emptyGrants lists the [role.grants] entries written with no tools.
+//
+// An empty list is LEGAL: the access package treats a staged grant as a
+// deliberate shape, and refusing it would break a config someone wrote on
+// purpose. But it reaches nothing, and it fell between every diagnostic
+// here -- unregisteredGrants asks whether the backend is registered, and it
+// is; the "role authorizes nothing" check counts roles with no grants, and
+// this role has one. A grant that reaches nothing was the one kind nobody
+// reported, which is the whole complaint.
+//
+// Its own function rather than a flag on grantGap, because it is a
+// different complaint with a different fix: that one says "register the
+// backend or drop the grant", this one says "the list is empty and you may
+// have meant to fill it".
+func emptyGrants(roles []config.Role) []grantGap {
+	var gaps []grantGap
+	for _, r := range roles {
+		for _, backend := range slices.Sorted(maps.Keys(r.Grants)) {
+			if len(r.Grants[backend]) == 0 {
+				gaps = append(gaps, grantGap{Role: r.Name, Backend: backend})
+			}
+		}
+	}
+	return gaps
+}
+
 func unregisteredGrants(roles []config.Role, entries []registry.UpstreamServer) []grantGap {
 	var gaps []grantGap
 	for _, r := range roles {
@@ -928,6 +957,10 @@ func newStartupSummary(
 		// ignore it.
 		s.UnregisteredGrants = unregisteredGrants(cfg.Roles, entries)
 	}
+	// OUTSIDE the block above, deliberately: an empty grant list is a fact
+	// about the config file alone. It needs no registry to detect, so a
+	// registry that could not be read must not also hide this.
+	s.EmptyGrants = emptyGrants(cfg.Roles)
 	if boot, err := countTools(readCtx, quar, startedAt); err == nil {
 		s.ToolsDiscovered, s.ToolsServable = boot.Discovered, boot.Servable
 		s.Roles = roleReaches(cfg.Roles, boot.Names)
@@ -1047,6 +1080,15 @@ func (s startupSummary) log(logger *slog.Logger) {
 		}
 	}
 
+	if len(s.EmptyGrants) > 0 {
+		pairs := make([]string, 0, len(s.EmptyGrants))
+		for _, g := range s.EmptyGrants {
+			pairs = append(pairs, g.Role+" -> "+g.Backend)
+		}
+		logger.Warn("mcp-gateway: a role grants a backend an EMPTY tool list, which is legal and reaches nothing -- "+
+			"working as written if that is staging; a missing list if it was meant to grant something",
+			slog.String("grants", strings.Join(pairs, ", ")))
+	}
 	if len(s.UnregisteredGrants) > 0 {
 		// One line for every pair, and deliberately NOT fatal. Writing a
 		// grant before registering the backend it is for is the normal

@@ -854,3 +854,33 @@ func TestReportCredentialDrift_RefusesAnExpiredContextLoudly(t *testing.T) {
 		t.Errorf("reported below Error: a rotation going unnoticed is what the loop exists to prevent:\n%s", out)
 	}
 }
+
+// TestUnregisteredGrants_ReportsAnEmptyGrantList: an empty grant list is
+// legal (the access package treats a staged grant as a real shape), but it
+// reaches nothing and used to be reported by nothing. The "backend not
+// registered" check saw a registered backend; the "role authorizes nothing"
+// check saw a role that has a grant. It fell exactly between them.
+func TestUnregisteredGrants_ReportsAnEmptyGrantList(t *testing.T) {
+	roles := []config.Role{{Name: "staged", Grants: map[string][]string{"casemgmt": {}}}}
+	entries := []registry.UpstreamServer{{Name: "casemgmt"}}
+
+	// unregisteredGrants must NOT report it -- casemgmt is registered, and
+	// that function answers a different question. This is the sibling test
+	// to TestUnregisteredGrants_EmptyGrantListOnARegisteredBackendIsNotAGap.
+	if gaps := unregisteredGrants(roles, entries); len(gaps) != 0 {
+		t.Errorf("unregisteredGrants reported an empty grant on a registered backend: %+v", gaps)
+	}
+
+	gaps := emptyGrants(roles)
+	if len(gaps) != 1 {
+		t.Fatalf("emptyGrants = %d, want 1 -- this is the case that was invisible to every diagnostic: %+v", len(gaps), gaps)
+	}
+	if gaps[0].Role != "staged" || gaps[0].Backend != "casemgmt" {
+		t.Errorf("gap = %+v, want staged -> casemgmt", gaps[0])
+	}
+
+	// Control: a populated grant is not reported.
+	if ok := emptyGrants([]config.Role{{Name: "n1", Grants: map[string][]string{"casemgmt": {"get_case"}}}}); len(ok) != 0 {
+		t.Errorf("a working grant was reported as empty: %+v", ok)
+	}
+}

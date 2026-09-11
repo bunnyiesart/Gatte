@@ -34,8 +34,10 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"slices"
@@ -282,10 +284,17 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	id, ok := h.authenticate(w, r)
+	// Resolved once, here, and carried from this point on. Deriving it
+	// again further in would be a second opinion about which address to
+	// believe, and the whole difficulty of sourceAddress is that there is
+	// exactly one right answer and several plausible wrong ones.
+	source := sourceAddress(r)
+
+	id, ok := h.authenticate(w, r, source)
 	if !ok {
 		return
 	}
+	c := gateway.Caller{Identity: id, SourceAddress: source}
 
 	// The caller's tool list is resolved here, before delegating, for two
 	// reasons. It makes getServer total -- it cannot fail, so it never has
@@ -303,11 +312,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	h.log.DebugContext(r.Context(), "httpapi: authenticated request",
 		slog.String("subject", id.Subject),
+		slog.String("source", source),
 		slog.Any("roles", roleNames(h.policy, id)),
 		slog.Int("tools", len(tools)),
 	)
 
-	ctx := context.WithValue(r.Context(), callerContextKey{}, &caller{identity: id, tools: tools})
+	ctx := context.WithValue(r.Context(), callerContextKey{}, &caller{gwCaller: c, tools: tools})
 	h.mcpHandler.ServeHTTP(w, r.WithContext(ctx))
 }
 
@@ -315,7 +325,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // authenticate reads and verifies the request's bearer credential. On
 // failure it has already written the 401 response and reports false.
-func (h *Handler) authenticate(w http.ResponseWriter, r *http.Request) (access.Identity, bool) {
+//
+// source is passed in rather than derived here so that the address on the
+// 401's audit record is the same string the request would have carried
+// had it succeeded.
+func (h *Handler) authenticate(w http.ResponseWriter, r *http.Request, source string) (access.Identity, bool) {
 	// Warn -- loudly, and without ever touching the value -- when a client
 	// puts a credential in the URL. It is ignored either way (nothing below
 	// reads the query string), but a SOC wants to know that a token has
@@ -329,13 +343,13 @@ func (h *Handler) authenticate(w http.ResponseWriter, r *http.Request) (access.I
 
 	token, ok := bearerToken(r.Header)
 	if !ok {
-		h.rejectUnauthenticated(w, r, "no usable Authorization: Bearer credential", nil)
+		h.rejectUnauthenticated(w, r, source, "no usable Authorization: Bearer credential", nil)
 		return access.Identity{}, false
 	}
 
 	id, err := h.verifier.Verify(r.Context(), token)
 	if err != nil {
-		h.rejectUnauthenticated(w, r, "token verification failed", err)
+		h.rejectUnauthenticated(w, r, source, "token verification failed", err)
 		return access.Identity{}, false
 	}
 	if strings.TrimSpace(id.Subject) == "" {
@@ -343,7 +357,7 @@ func (h *Handler) authenticate(w http.ResponseWriter, r *http.Request) (access.I
 		// the oidc adapter enforces it. This is the belt to those braces: an
 		// Identity with no Subject would produce audit records attributed to
 		// nobody, which is the one thing this gateway exists to prevent.
-		h.rejectUnauthenticated(w, r, "verifier returned an identity with no subject", nil)
+		h.rejectUnauthenticated(w, r, source, "verifier returned an identity with no subject", nil)
 		return access.Identity{}, false
 	}
 
@@ -421,9 +435,25 @@ func credentialInQuery(u *url.URL) bool {
 // under which the challenge cannot be used to classify the failure. What it
 // does carry is `resource_metadata` (RFC 9728 section 5.1), which is what a
 // compliant client actually needs: where to go to get a token.
-func (h *Handler) rejectUnauthenticated(w http.ResponseWriter, r *http.Request, reason string, cause error) {
+//
+// # It is also audited
+//
+// The slog line below is for whoever is watching the process; it is not
+// evidence, and until design/adr/0012 it was the only trace a rejected
+// request left. gateway.RecordAuthFailure now puts the attempt on the
+// audit trail too, so that token grinding and wrong-audience probing show
+// up in the artifact a SOC actually reads after an incident.
+//
+// Note what is passed to it and what is not: the source address, and
+// nothing else. Not `reason` -- the *operator-facing* classification here
+// is finer-grained than the record's, and deliberately so, because the
+// record is written by one component for every surface while this log
+// line belongs to this one. Certainly not the token, which this function
+// is never given.
+func (h *Handler) rejectUnauthenticated(w http.ResponseWriter, r *http.Request, source, reason string, cause error) {
 	attrs := []slog.Attr{
 		slog.String("reason", reason),
+		slog.String("source", source),
 		slog.String("path", r.URL.Path),
 	}
 	if cause != nil {
@@ -433,9 +463,93 @@ func (h *Handler) rejectUnauthenticated(w http.ResponseWriter, r *http.Request, 
 		attrs = append(attrs, slog.String("detail", cause.Error()))
 	}
 	h.log.LogAttrs(r.Context(), slog.LevelWarn, "httpapi: rejected request", attrs...)
+	h.gateway.RecordAuthFailure(r.Context(), source)
 
 	w.Header().Set("WWW-Authenticate", h.challenge)
 	writeGeneric(w, classUnauthenticated)
+}
+
+// ---------------------------------------------------------- source address
+
+// forwardedForHeader is the de-facto header the co-located reverse proxy
+// records the client's address in.
+const forwardedForHeader = "X-Forwarded-For"
+
+// sourceAddress returns the address this request came from, for
+// audit.Record.SourceAddress: the RIGHTMOST X-Forwarded-For entry, or
+// RemoteAddr's host when the header is absent.
+//
+// # Why the rightmost entry, and why that is not the obvious choice
+//
+// This is the one place in this package where the obvious implementation
+// is the vulnerability. Almost every "get the client IP" snippet reads
+// the FIRST X-Forwarded-For entry, on the reasoning that the header reads
+// client-first through the chain of proxies. That reasoning is sound and
+// the conclusion is wrong here, because of how the header is produced.
+//
+// The gateway is reachable only through the co-located nginx
+// (design/adr/0011-network-isolation.md), which forwards with
+// `$proxy_add_x_forwarded_for`. That variable expands to
+// `"$http_x_forwarded_for, $remote_addr"` -- it APPENDS to whatever the
+// client sent and preserves it. So a client that sends
+//
+//	X-Forwarded-For: 10.0.0.1
+//
+// causes the header to arrive here as `10.0.0.1, <the real peer>`. The
+// leftmost entry is a string the attacker typed. Reading it would write
+// an attacker-chosen value into the field an investigation trusts, which
+// is worse than having no field: an absent address is a known gap, a
+// forged one is a wrong answer nobody has reason to question.
+//
+// The rightmost entry is the one nginx wrote, from the TCP peer it
+// actually saw. It is the only entry in the header that was not supplied
+// by somebody upstream of our own trust boundary.
+//
+// # The assumption this rests on, stated out loud
+//
+// This is correct exactly while nginx is the *only* path to this port --
+// the property ADR-0011 establishes and the VNET jail makes measurable.
+// If the gateway ever becomes directly reachable, a client can send its
+// own complete X-Forwarded-For with no proxy appending anything, the
+// rightmost entry becomes attacker-chosen too, and this field is
+// forgeable again. The fix then is to restore ADR-0011's guarantee. It is
+// NOT to start trusting some other header: there is no header a directly
+// reachable server can believe, because the client writes all of them.
+//
+// # Two smaller decisions
+//
+// The port is dropped from RemoteAddr. X-Forwarded-For entries are bare
+// addresses, and a column that is sometimes `ip` and sometimes `ip:port`
+// cannot be filtered or grouped on. The cost is real -- the source port
+// distinguishes two NATed sessions -- and it is paid knowingly: the
+// proxy's own log keeps ports, and consistency in the trail is worth more
+// than a detail the header could never carry anyway.
+//
+// Multiple X-Forwarded-For headers are joined before the split, because
+// RFC 9110 section 5.3 makes repeated field lines equivalent to one
+// comma-joined line, and an attacker who can pick between the two
+// spellings should not be able to pick a different answer.
+func sourceAddress(r *http.Request) string {
+	if forwarded := r.Header.Values(forwardedForHeader); len(forwarded) > 0 {
+		entries := strings.Split(strings.Join(forwarded, ","), ",")
+		for i := len(entries) - 1; i >= 0; i-- {
+			if entry := strings.TrimSpace(entries[i]); entry != "" {
+				return entry
+			}
+		}
+	}
+
+	// No header: this request did not come through the proxy, which in a
+	// correct deployment means it came from the loopback the proxy shares
+	// with us. RemoteAddr is then the peer itself and there is nothing
+	// better to want.
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		return host
+	}
+	// Not host:port -- a Unix socket, or a server that set RemoteAddr to
+	// something else. Recorded verbatim rather than dropped: an odd string
+	// an operator has to interpret still beats an empty column.
+	return r.RemoteAddr
 }
 
 // fail writes the generic response for an internal failure and logs the
@@ -463,9 +577,14 @@ func (h *Handler) fail(w http.ResponseWriter, r *http.Request, id access.Identit
 type callerContextKey struct{}
 
 // caller is everything ServeHTTP established about one authenticated
-// request: who is asking, and exactly which tools they may see.
+// request: who is asking, from where, and exactly which tools they may
+// see.
 type caller struct {
-	identity access.Identity
+	// gwCaller is what the Gateway is handed for every record it writes
+	// about this request. Resolved once in ServeHTTP and carried, never
+	// re-derived: the identity so a handler cannot be induced to dispatch
+	// as somebody else, and the source address for the same reason.
+	gwCaller gateway.Caller
 	tools    []gateway.ToolDef
 }
 
@@ -541,14 +660,14 @@ func (h *Handler) getServer(r *http.Request) *mcp.Server {
 			// reviewing the quarantine ever saw.
 			Description: def.Description,
 			InputSchema: schema,
-		}, h.dispatchTool(c.identity, def.Name))
+		}, h.dispatchTool(c.gwCaller, def.Name))
 		served[def.Name] = struct{}{}
 	}
 
 	// Installed after the registrations so served is complete, and last so
 	// it is the outermost middleware -- it must observe every tools/call,
 	// including any the SDK's own middleware might later short-circuit.
-	srv.AddReceivingMiddleware(h.recordUnservedToolCalls(c.identity, served))
+	srv.AddReceivingMiddleware(h.recordUnservedToolCalls(c.gwCaller, served))
 	return srv
 }
 
@@ -562,7 +681,7 @@ const methodToolsCall = "tools/call"
 //
 // # Why here
 //
-// The gap it closes (ISSUE-16) is that per-identity registration and denial
+// The gap it closes (GAB-16) is that per-identity registration and denial
 // auditing, each correct alone, cancel each other out: an unserved name is
 // answered by the SDK's own tools/call implementation, which never calls
 // gateway.Dispatch, which is the only writer of denials. Three places
@@ -612,7 +731,7 @@ const methodToolsCall = "tools/call"
 // A tool that *is* served is left alone: its handler calls
 // gateway.Dispatch, which records the attempt itself. So every tools/call
 // produces exactly one record, from exactly one of the two paths.
-func (h *Handler) recordUnservedToolCalls(id access.Identity, served map[string]struct{}) mcp.Middleware {
+func (h *Handler) recordUnservedToolCalls(c gateway.Caller, served map[string]struct{}) mcp.Middleware {
 	return func(next mcp.MethodHandler) mcp.MethodHandler {
 		return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
 			if method == methodToolsCall {
@@ -621,7 +740,7 @@ func (h *Handler) recordUnservedToolCalls(id access.Identity, served map[string]
 				// name to attribute a record to.
 				if params, ok := req.GetParams().(*mcp.CallToolParamsRaw); ok && params != nil {
 					if _, offered := served[params.Name]; !offered {
-						h.gateway.RecordRefusedProbe(ctx, id, params.Name)
+						h.gateway.RecordRefusedProbe(ctx, c, params.Name)
 					}
 				}
 			}
@@ -636,7 +755,7 @@ func (h *Handler) recordUnservedToolCalls(id access.Identity, served map[string]
 // The identity is captured from the request that built this server, not
 // read from anywhere at call time, so a handler cannot be induced to
 // dispatch as somebody else.
-func (h *Handler) dispatchTool(id access.Identity, namespaced string) mcp.ToolHandler {
+func (h *Handler) dispatchTool(c gateway.Caller, namespaced string) mcp.ToolHandler {
 	return func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		var args json.RawMessage
 		if req != nil && req.Params != nil {
@@ -647,14 +766,14 @@ func (h *Handler) dispatchTool(id access.Identity, namespaced string) mcp.ToolHa
 			args = req.Params.Arguments
 		}
 
-		res, err := h.gateway.Dispatch(ctx, id, namespaced, args)
+		res, err := h.gateway.Dispatch(ctx, c, namespaced, args)
 		if err != nil {
-			return nil, h.rejectCall(ctx, id, namespaced, err)
+			return nil, h.rejectCall(ctx, c.Identity, namespaced, err)
 		}
 
 		out, err := toCallToolResult(res)
 		if err != nil {
-			return nil, h.rejectCall(ctx, id, namespaced,
+			return nil, h.rejectCall(ctx, c.Identity, namespaced,
 				fmt.Errorf("upstream result is not representable: %w", err))
 		}
 		return out, nil
@@ -695,10 +814,19 @@ func toCallToolResult(res gateway.Result) (*mcp.CallToolResult, error) {
 
 	// Marshal first so invalid JSON from an upstream is caught here, with
 	// the error naming nothing but "not representable".
+	//
+	// structuredContent carries `omitempty` so that an upstream that sent
+	// none produces a result with the field absent, rather than one whose
+	// structuredContent is a literal null -- the same distinction the stdio
+	// adapter preserves on the way in. By this point the gateway has
+	// already measured it and, where the tool declared an output schema,
+	// validated it (design/adr/0014); what reaches here is either allowed
+	// through whole or never reaches here at all.
 	payload, err := json.Marshal(struct {
-		Content json.RawMessage `json:"content"`
-		IsError bool            `json:"isError"`
-	}{Content: content, IsError: res.IsError})
+		Content           json.RawMessage `json:"content"`
+		StructuredContent json.RawMessage `json:"structuredContent,omitempty"`
+		IsError           bool            `json:"isError"`
+	}{Content: content, StructuredContent: res.StructuredContent, IsError: res.IsError})
 	if err != nil {
 		return nil, err
 	}
@@ -783,40 +911,18 @@ func (h *Handler) serveMetadata(w http.ResponseWriter, r *http.Request) {
 
 // resourceIdentifier parses and validates a resource or issuer identifier.
 //
-// RFC 9728 section 2 and RFC 8707 section 2 both require an absolute URI
-// with no fragment. This adds one rule of its own: the scheme must be https
-// unless the host is a loopback address (or the operator has explicitly
-// opted out). A resource identifier advertised over http:// is an
-// instruction to every client that reads it to put a bearer token on the
-// wire in cleartext.
+// The rule itself is [access.ResourceIdentifier], and this is a two-line
+// wrapper on purpose: config.Validate has to apply exactly the same rule,
+// in front of the operator editing the file, and the version of this that
+// lived here alone is why `audience = "mcp-gateway"` used to validate and
+// then kill serve (GAB-30 item 1). The only thing added here is the name of
+// the knob a caller of this package would reach for.
 func resourceIdentifier(raw string, allowInsecure bool) (*url.URL, error) {
-	u, err := url.Parse(raw)
-	if err != nil {
-		return nil, fmt.Errorf("%q is not a valid URI", raw)
+	u, err := access.ResourceIdentifier(raw, allowInsecure)
+	if errors.Is(err, access.ErrInsecureResourceIdentifier) {
+		return nil, fmt.Errorf("%w (set AllowInsecureResourceURLs to override)", err)
 	}
-	if !u.IsAbs() || u.Host == "" {
-		return nil, fmt.Errorf("%q must be an absolute URI with a host", raw)
-	}
-	if u.Fragment != "" || strings.Contains(raw, "#") {
-		return nil, fmt.Errorf("%q must not carry a fragment (RFC 9728 section 2)", raw)
-	}
-	if u.RawQuery != "" {
-		return nil, fmt.Errorf("%q must not carry a query string", raw)
-	}
-	if u.Scheme != "https" && !allowInsecure && !isLoopbackHost(u.Hostname()) {
-		return nil, fmt.Errorf("%q must use https: an http resource identifier tells clients to send bearer tokens in cleartext (set AllowInsecureResourceURLs to override)", raw)
-	}
-	return u, nil
-}
-
-// isLoopbackHost reports whether host names the local machine, the one case
-// where http:// is not a credential-on-the-wire problem.
-func isLoopbackHost(host string) bool {
-	switch strings.ToLower(host) {
-	case "localhost", "127.0.0.1", "::1":
-		return true
-	}
-	return strings.HasPrefix(host, "127.")
+	return u, err
 }
 
 // metadataPathsFor returns the paths the metadata document is served from:

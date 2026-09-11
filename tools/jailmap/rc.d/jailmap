@@ -1,0 +1,69 @@
+#!/bin/sh
+#
+# rc.d script for jailmap, installed at /usr/local/etc/rc.d/jailmap on the
+# jail host.
+#
+# PROVIDE: jailmap
+# REQUIRE: NETWORKING DAEMON
+# KEYWORD: shutdown
+
+. /etc/rc.subr
+
+name="jailmap"
+rcvar="jailmap_enable"
+
+load_rc_config $name
+
+: ${jailmap_enable:="NO"}
+: ${jailmap_listen:="127.0.0.1:8088"}
+: ${jailmap_interval:="500ms"}
+: ${jailmap_window:="5m"}
+: ${jailmap_logdir:="/var/log/jailmap"}
+: ${jailmap_logfile:="${jailmap_logdir}/jailmap.log"}
+: ${jailmap_rundir:="/var/run/jailmap"}
+
+# Runs as root, and that is not laziness -- it is the honest cost of what
+# this tool does. Reading another jail's sockets and process table requires
+# privilege no unprivileged account has, and there is no FreeBSD capability
+# that grants "observe jails" without granting more.
+#
+# What limits the blast radius instead is the program: every external
+# command it runs comes from a whitelist, jexec is pinned to ifconfig as its
+# only inner command, and there is a test that fails if anything capable of
+# changing state is added. Root that can only read is a different thing from
+# root that can do anything, and the enforcement is in the binary rather
+# than in this file.
+jailmap_user="root"
+
+pidfile="${jailmap_rundir}/${name}.pid"
+child_pidfile="${jailmap_rundir}/${name}.child.pid"
+procname="/usr/sbin/daemon"
+command="/usr/sbin/daemon"
+
+# -P holds the supervisor's pid, -p the child's. Learned from the gateway's
+# own rc.d script: -p alone with -r produces a service that cannot be
+# stopped, because rc.subr signals the child and the supervisor immediately
+# restarts it.
+command_args="-f -r -S -T ${name} -o ${jailmap_logfile} \
+    -P ${pidfile} -p ${child_pidfile} \
+    /usr/local/bin/jailmap serve \
+        -listen ${jailmap_listen} \
+        -interval ${jailmap_interval} \
+        -window ${jailmap_window}"
+
+start_precmd="${name}_prestart"
+
+jailmap_prestart()
+{
+	install -d -m 0750 "${jailmap_logdir}" || err 1 "cannot create ${jailmap_logdir}"
+	install -d -m 0755 "${jailmap_rundir}" || err 1 "cannot create ${jailmap_rundir}"
+
+	# jailmap refuses a non-loopback listen address itself, with no
+	# override flag, for the same reason the gateway does: it is an
+	# unauthenticated live map of every jail's listeners, addresses and
+	# connections. Nothing is re-checked here -- a second implementation
+	# of a security check is a second thing to drift.
+	return 0
+}
+
+run_rc_command "$1"

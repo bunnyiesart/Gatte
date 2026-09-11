@@ -95,7 +95,11 @@ database = "/var/db/mcp-gateway/mcp-gateway.db"
 # URL base do provedor, usada para a descoberta OIDC
 # (`<issuer>/.well-known/openid-configuration`).
 #
-# Obrigatorio. Precisa ser URL absoluta.
+# Obrigatorio. Precisa ser URI absoluta em https, sem query e sem
+# fragmento -- http so e aceito para host de loopback (desenvolvimento
+# local). Mesma regra do `audience` abaixo, e pelo mesmo motivo: por
+# padrao este valor tambem entra na metadata RFC 9728 como
+# `authorization_servers`.
 #
 # Se errar: o gateway nao consegue buscar as chaves de assinatura e recusa
 # todo token -- falha fechada, e o modo certo de falhar. Confira tambem que
@@ -112,6 +116,18 @@ issuer = "https://id.soc.internal/realms/soc"
 # para este gateway. E precisamente o que a RFC 8707 existe para impedir.
 # Um analista com token valido do Grafana nao tem, por isso, permissao de
 # chamar ferramenta de DFIR aqui.
+#
+# Precisa ser URI absoluta em https, sem query e sem fragmento (http so
+# para loopback). Isso e mais estrito do que um `aud` de JWT precisa ser --
+# "mcp-gateway" seria audiencia valida -- e o motivo e que este campo faz
+# dois trabalhos: ele tambem e publicado como `resource` na metadata
+# RFC 9728, que exige URI absoluta, e anunciar uma http ali manda todo
+# cliente que le o documento colocar bearer token em claro na rede.
+#
+# Antes isto era checado so na subida do `serve`: `audience = "mcp-gateway"`
+# passava na validacao, funcionava em todo subcomando de operador, e
+# derrubava o gateway no restart seguinte. Hoje a validacao usa o mesmo
+# predicado que monta a metadata, entao o que carrega aqui e o que sobe.
 #
 # Se errar: audiencia divergente do que o IdP emite = todo token e recusado
 # com 401. Audiencia larga demais (ou compartilhada entre servicos) =
@@ -283,6 +299,152 @@ require_signed = true
 
 
 # ===========================================================================
+# [quarantine] -- Tool Quarantine (ADR-0007 e ADR-0013)
+# ===========================================================================
+# A quarentena guarda a impressao digital de cada ferramenta aprovada. Para
+# perceber que um upstream reescreveu uma ferramenta *depois* da aprovacao,
+# alguem precisa medir de novo -- e e isso que esta secao configura.
+
+[quarantine]
+
+# De quanto em quanto tempo o gateway re-executa `tools/list` contra cada
+# upstream **ja conectado** e passa o resultado pela quarentena.
+#
+# Padrao quando omitido: "5m".
+#
+# ---------------------------------------------------------------------
+# NAO EXISTE VALOR QUE DESLIGA. E DE PROPOSITO.
+# ---------------------------------------------------------------------
+# Nem 0, nem "never", nem um booleano ao lado. Ate a ADR-0013 esta
+# re-observacao simplesmente nao existia: `Observe` so era chamado por
+# `Connect`, e `Connect` rodava uma vez, no arranque. Um backend que
+# reescrevia a descricao de uma ferramenta as 09:00 continuava sendo servido
+# com ela ate alguem reiniciar o processo -- semanas, num gateway de SOC. O
+# componente feito para pegar tool poisoning (OWASP MCP03) nao disparava
+# enquanto o gateway fazia o seu trabalho.
+#
+# Quem nao quiser pagar o custo **aumenta o intervalo**. Essa escolha fica
+# visivel neste arquivo, como um numero que um revisor pode discutir, em vez
+# de virar um booleano que alguem desliga "por um minuto" durante um
+# incidente e que se descobre ainda desligado um trimestre depois. E
+# exatamente assim que o padrao do `require_signed` apodreceu ate a ADR-0006
+# escrever o gatilho dele.
+#
+# O que se compra e se paga:
+#   - custo: um `tools/list` por upstream por intervalo, para sempre. Com os
+#     quatro backends desta frota e "5m", sao 48 requisicoes por hora contra
+#     servidores que respondem consulta de analista em segundos. E ruido.
+#   - beneficio: a janela em que uma ferramenta envenenada continua sendo
+#     servida sob a aprovacao antiga passa a ser, no maximo, um intervalo.
+#
+# **A janela nao fecha, so encolhe.** Entre dois ciclos a ferramenta
+# reescrita ainda e servida. Diminuir o intervalo diminui a janela e
+# multiplica o custo; isso e uma troca explicita, nao um defeito, e nao
+# existe valor que leve a janela a zero.
+#
+# Nao confunda essa janela com decisao de operador: `tool approve` e
+# `tool revoke` valem na chamada seguinte, sem reinicio e sem esperar
+# ciclo nenhum -- o gate e relido a cada listagem e a cada chamada.
+#
+# Repare no que este ciclo NAO faz: ele nao le o registro, nao disca e nao
+# fecha conexao. Upstream registrado depois do arranque so entra com um
+# reinicio; isso e trabalho do `Connect`, e faze-lo em ticker derrubaria
+# toda conexao viva (cortando chamadas em voo e respawnando todo
+# subprocesso) a cada intervalo.
+#
+# Se errar: escrever um numero cru e a pegadinha real -- TOML le inteiro
+# como NANOSSEGUNDOS, entao `refresh_interval = 300` sao 300ns e nao cinco
+# minutos, o que marteleria todos os backends em laco fechado. Por isso
+# qualquer valor abaixo de 1s e recusado na inicializacao. Escreva a
+# unidade. Valor zero ou negativo tambem e recusado, pelo motivo do bloco
+# acima. Um intervalo muito longo ("6h") nao da erro nenhum e e uma escolha
+# legitima -- so entenda que a janela de exposicao passa a ser de seis
+# horas.
+refresh_interval = "5m"
+
+
+# ===========================================================================
+# [response] -- o que um backend pode responder (ADR-0014)
+# ===========================================================================
+# Esta secao configura o unico dos dois controles de resposta que tem efeito
+# hoje. Vale dizer os dois em voz alta, porque a diferenca importa:
+#
+#   1. **Teto de tamanho** (esta secao). Vale para toda chamada, sem depender
+#      de cooperacao de backend nenhum.
+#   2. **Validacao de esquema de saida.** Quando uma tool declara
+#      `outputSchema`, o `structuredContent` da resposta e conferido contra
+#      ele e divergencia e recusa. Nao tem ajuste aqui e nao tem como
+#      desligar: ou o backend declarou um contrato, ou nao ha o que conferir.
+#      **Nenhum dos quatro backends desta frota declara `outputSchema`** --
+#      conferido, nao presumido --, entao hoje esse controle nao roda contra
+#      trafego nenhum. Ele fica pronto para o dia em que rodar.
+#
+# ---------------------------------------------------------------------
+# O QUE ISTO **NAO** E: DETECCAO DE PROMPT INJECTION.
+# ---------------------------------------------------------------------
+# O gateway nao tenta descobrir se o texto de um resultado esta tentando
+# instruir o modelo. Sem heuristica de "parece um prompt", sem lista de
+# frases proibidas, e nao ha ajuste aqui que ligue isso. Validar esquema
+# prova *forma*, nunca conteudo: um resultado pode passar no esquema
+# inteiro e trazer, num campo que o esquema declara como string, uma
+# instrucao enderecada ao modelo. Filtro de conteudo em linguagem natural
+# erra o suficiente nos dois sentidos -- deixa passar e barra trabalho
+# legitimo -- para virar um controle que as pessoas desligam. A defesa real
+# e o resultado chegar ao modelo marcado como dado nao confiavel, o que e
+# propriedade do cliente MCP, nao deste gateway. Nao leia esta secao como
+# se ela cobrisse isso.
+
+[response]
+
+# Tamanho maximo, **em bytes**, de um resultado de tool: os blocos de
+# conteudo serializados mais o `structuredContent` serializado.
+#
+# Padrao quando omitido: 1048576 (1 MiB).
+#
+# ---------------------------------------------------------------------
+# ESTOURAR O TETO E RECUSA, NAO E TRUNCAMENTO. E NAO EXISTE VALOR QUE
+# DESLIGA.
+# ---------------------------------------------------------------------
+# O resultado nao chega ao cliente, e a recusa vai para o Audit Trail como
+# uma segunda linha `failed` (ADR-0012). Truncar seria entregar ao modelo um
+# documento cortado no meio sem dizer que foi cortado -- mentir para o
+# proprio consumidor do dado. Zero ou negativo e recusado na inicializacao,
+# pelo mesmo motivo de `quarantine.refresh_interval`: quem precisa de mais
+# espaco **aumenta o numero**, e isso fica visivel no arquivo.
+#
+# O que se compra e se paga:
+#   - o que se evita: um backend comprometido (ou so uma consulta ruim) que
+#     devolve dezenas de megabytes consome memoria do gateway e, pior,
+#     **inunda a janela de contexto do modelo**, empurrando para fora tudo
+#     o que o analista realmente perguntou. Isso e ataque mesmo quando nao
+#     e intencional.
+#   - o que custa: uma consulta legitima muito grande passa a ser recusada
+#     inteira.
+#
+# Por que 1 MiB e nao mais: um megabyte de JSON e da ordem de 250 mil
+# tokens, ou seja, ja e a janela inteira da maioria dos contextos. Acima
+# disso um unico resultado *e* o contexto, e teto de 10 MiB nao seria
+# controle de inundacao, seria formalidade. Por que nao menos: uma pagina de
+# algumas centenas de linhas de log do Logsearch ou do Docsearch da dezenas
+# de kilobytes, as vezes poucas centenas -- 1 MiB deixa cerca de uma ordem
+# de grandeza de folga sobre a maior resposta legitima desta frota.
+#
+# Detalhe que nao da para adivinhar: um backend feito com o SDK Go manda a
+# mesma carga duas vezes, uma como bloco de texto JSON e outra como
+# `structuredContent`, e os quatro mocks do lab fazem exatamente isso. Os
+# dois trafegam, entao os dois contam -- na pratica esses backends gastam
+# cerca do dobro do proprio tamanho contra o teto.
+#
+# Se errar: um numero pequeno demais e o erro que machuca, porque a recusa
+# e total -- `max_bytes = 8` sao oito bytes e nao oito megabytes, e
+# recusaria toda resposta da frota. Por isso qualquer valor abaixo de 4096 e
+# recusado na inicializacao. Um numero grande demais nao da erro nenhum e
+# tambem nao avisa: a primeira evidencia sera um analista dizendo que o
+# assistente "esqueceu" o que ele tinha perguntado.
+max_bytes = 1048576
+
+
+# ===========================================================================
 # Papeis
 # ===========================================================================
 # Cada `[[role]]` e um nome e uma lista explicita de ferramentas
@@ -309,6 +471,22 @@ require_signed = true
 # Um papel com `tools = []` e valido e as vezes e o que se quer: alguem que
 # pode autenticar mas nao pode agir (um estagiario em onboarding, uma conta
 # de servico que so existe para o health check ver 200).
+#
+# O namespace nao e opcional e a validacao recusa quem o esquecer. Como o
+# casamento e exato e nao ha coringa, `tools = ["list_cases"]` nao e erro de
+# digitacao que quebra alto: e um papel bem formado que autoriza
+# exatamente nada, e quem descobre isso e o analista negado no meio de um
+# incidente. `name` tambem nao pode ter espaco na ponta -- "analyst " e uma
+# chave diferente de "analyst", entao seria um papel que existe, parece
+# certo no arquivo, e nenhum `group_to_role` alcanca. Ferramenta repetida
+# dentro do mesmo papel tambem e recusada: nao muda nada para a politica,
+# que deduplica, e por isso mesmo ficaria um ano no arquivo.
+#
+# Na subida, o log diz quantas ferramentas de cada papel o gateway
+# realmente observou ("role reach", observadas/concedidas) e avisa sobre
+# papel que concede ferramentas e nao alcanca nenhuma -- um nome renomeado
+# no backend, ou um upstream que nao subiu. Papel com `tools = []` nao
+# entra nesse aviso: e forma documentada, nao defeito.
 
 # ---------------------------------------------------------------------------
 # n1-triage -- o analista de plantao. So consulta.

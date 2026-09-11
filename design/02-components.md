@@ -71,7 +71,7 @@ it as the actor most often forgotten.
   Credential Vault (`adr/0006`). The real operational hazard rotation does
   carry — credentials resolve at *dial* time, so an already-connected
   upstream keeps the old value until restart — is documented in
-  `deploy/freebsd-jail.md` ("Rotating credentials") and tracked as ISSUE-20.
+  `deploy/freebsd-jail.md` ("Rotating credentials") and tracked as GAB-20.
 
 ## Granularity check (desintegradores vs. integradores, §02 §7)
 

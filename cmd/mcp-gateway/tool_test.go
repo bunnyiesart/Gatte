@@ -9,10 +9,10 @@ import (
 	"github.com/bunnyiesart/Gatte/internal/quarantine"
 )
 
-// casemgmtListCases is a plausible tool definition; changedIrisListCases is
+// irisListCases is a plausible tool definition; changedIrisListCases is
 // the same tool after its description was rewritten -- the rug pull.
 var (
-	casemgmtListCases = quarantine.ToolIdentity{
+	irisListCases = quarantine.ToolIdentity{
 		Name:        "list_cases",
 		Description: "List CASEMGMT cases.",
 		InputSchema: []byte(`{"type":"object","properties":{}}`),
@@ -31,12 +31,12 @@ func TestRunToolList_ShowsTheWholeApprovalQueue(t *testing.T) {
 	e := newOpTestEnv(t)
 
 	// pending: seen once, never approved.
-	mustObserve(t, e, "casemgmt", casemgmtListCases)
+	mustObserve(t, e, "casemgmt", irisListCases)
 	// approved and unchanged: usable.
 	mustObserve(t, e, "logsearch", quarantine.ToolIdentity{Name: "search", Description: "Search logs."})
 	mustApprove(t, e, "logsearch", "search")
 	// changed: approved, then the definition moved under us.
-	mustObserve(t, e, "threatintel", casemgmtListCases)
+	mustObserve(t, e, "threatintel", irisListCases)
 	mustApprove(t, e, "threatintel", "list_cases")
 	mustObserve(t, e, "threatintel", changedIrisListCases)
 
@@ -58,7 +58,7 @@ func TestRunToolList_ShowsTheWholeApprovalQueue(t *testing.T) {
 
 func TestRunToolList_JSONReportsUsableSeparatelyFromStatus(t *testing.T) {
 	e := newOpTestEnv(t)
-	mustObserve(t, e, "casemgmt", casemgmtListCases)
+	mustObserve(t, e, "casemgmt", irisListCases)
 	mustApprove(t, e, "casemgmt", "list_cases")
 	mustObserve(t, e, "casemgmt", changedIrisListCases)
 
@@ -84,7 +84,7 @@ func TestRunToolList_JSONReportsUsableSeparatelyFromStatus(t *testing.T) {
 
 func TestRunToolList_ServerFilter(t *testing.T) {
 	e := newOpTestEnv(t)
-	mustObserve(t, e, "casemgmt", casemgmtListCases)
+	mustObserve(t, e, "casemgmt", irisListCases)
 	mustObserve(t, e, "logsearch", quarantine.ToolIdentity{Name: "search", Description: "Search logs."})
 
 	requireExit(t, runToolList(e.opEnv, "casemgmt", false), exitOK, "tool list -server casemgmt")
@@ -119,7 +119,7 @@ func TestRunToolList_EmptyQuarantineIsAProblem(t *testing.T) {
 // changes that.
 func TestRunToolApprove_PendingBecomesUsable(t *testing.T) {
 	e := newOpTestEnv(t)
-	before := mustObserve(t, e, "casemgmt", casemgmtListCases)
+	before := mustObserve(t, e, "casemgmt", irisListCases)
 	if before.Usable() {
 		t.Fatal("a newly observed tool must not be usable")
 	}
@@ -150,7 +150,7 @@ func TestRunToolApprove_PendingBecomesUsable(t *testing.T) {
 // fingerprints, and admit that the old definition was never kept.
 func TestRunToolApprove_ChangedToolSaysItIsRebaselining(t *testing.T) {
 	e := newOpTestEnv(t)
-	mustObserve(t, e, "casemgmt", casemgmtListCases)
+	mustObserve(t, e, "casemgmt", irisListCases)
 	approved := mustApprove(t, e, "casemgmt", "list_cases")
 	changed := mustObserve(t, e, "casemgmt", changedIrisListCases)
 
@@ -188,7 +188,7 @@ func TestRunToolApprove_ChangedToolSaysItIsRebaselining(t *testing.T) {
 
 func TestRunToolApprove_AlreadyApprovedAtThisDefinitionIsANoop(t *testing.T) {
 	e := newOpTestEnv(t)
-	mustObserve(t, e, "casemgmt", casemgmtListCases)
+	mustObserve(t, e, "casemgmt", irisListCases)
 	mustApprove(t, e, "casemgmt", "list_cases")
 
 	requireExit(t, runToolApprove(e.opEnv, "casemgmt", "list_cases"), exitOK, "re-approve")
@@ -209,7 +209,7 @@ func TestRunToolApprove_UnobservedToolIsAProblem(t *testing.T) {
 		{
 			name:   "server observed, tool not",
 			server: "casemgmt", tool: "delete_everything",
-			setup: func(e opTestEnv) { e.tools().Observe(context.Background(), "casemgmt", casemgmtListCases) }, //nolint:errcheck // fixture
+			setup: func(e opTestEnv) { e.tools().Observe(context.Background(), "casemgmt", irisListCases) }, //nolint:errcheck // fixture
 		},
 	}
 
@@ -236,6 +236,9 @@ func TestCmdTool_BadUsage(t *testing.T) {
 		{"unknown subcommand", []string{"reject"}},
 		{"approve with one argument", []string{"approve", "casemgmt"}},
 		{"approve with three arguments", []string{"approve", "casemgmt", "list_cases", "please"}},
+		{"revoke with no arguments", []string{"revoke"}},
+		{"revoke with one argument", []string{"revoke", "casemgmt"}},
+		{"revoke with three arguments", []string{"revoke", "casemgmt", "list_cases", "please"}},
 		{"list with a stray argument", []string{"list", "casemgmt"}},
 	}
 
@@ -248,4 +251,80 @@ func TestCmdTool_BadUsage(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestRunToolRevoke_ApprovedBecomesPendingAgain is the missing return path
+// GAB-33 named: before `tool revoke`, the only way out of an approval was
+// to delete the database. The gate is re-read per call, so what this test
+// changes in the store is what the very next dispatch sees --
+// TestRevoke_TakesEffectOnTheVeryNextCall in internal/gateway proves that
+// half against a live routing table.
+func TestRunToolRevoke_ApprovedBecomesPendingAgain(t *testing.T) {
+	e := newOpTestEnv(t)
+	mustObserve(t, e, "casemgmt", irisListCases)
+	approved := mustApprove(t, e, "casemgmt", "list_cases")
+	if !approved.Usable() {
+		t.Fatal("precondition: an approved tool must be usable")
+	}
+
+	requireExit(t, runToolRevoke(e.opEnv, "casemgmt", "list_cases"), exitOK, "tool revoke")
+	got := e.stdoutText()
+	for _, want := range []string{
+		"Revoked casemgmt.list_cases",
+		"no longer served",
+		"mcp-gateway tool approve casemgmt list_cases",
+	} {
+		requireContains(t, got, want, "tool revoke")
+	}
+
+	after, err := e.tools().Get(context.Background(), "casemgmt", "list_cases")
+	if err != nil {
+		t.Fatalf("reading back: %v", err)
+	}
+	if after.Status != quarantine.StatusPending {
+		t.Errorf("status = %q, want %q", after.Status, quarantine.StatusPending)
+	}
+	if after.Usable() {
+		t.Errorf("the tool is still usable after a revoke: %+v", after)
+	}
+	if after.ApprovedHash != "" {
+		t.Errorf("ApprovedHash = %q, want the withdrawn baseline cleared", after.ApprovedHash)
+	}
+}
+
+// TestRunToolRevoke_ChangedToolIsRefused: revoking a changed tool would
+// relabel a rug pull as "never looked at", which is the one thing ADR-0007
+// rule 1 exists to prevent. It is also pointless -- a changed tool is
+// already not served -- so the command says both.
+func TestRunToolRevoke_ChangedToolIsRefused(t *testing.T) {
+	e := newOpTestEnv(t)
+	mustObserve(t, e, "casemgmt", irisListCases)
+	mustApprove(t, e, "casemgmt", "list_cases")
+	mustObserve(t, e, "casemgmt", changedIrisListCases)
+
+	requireExit(t, runToolRevoke(e.opEnv, "casemgmt", "list_cases"), exitProblem, "revoke changed")
+	requireContains(t, e.stderrText(), "already not being served", "revoke changed")
+
+	after, err := e.tools().Get(context.Background(), "casemgmt", "list_cases")
+	if err != nil {
+		t.Fatalf("reading back: %v", err)
+	}
+	if after.Status != quarantine.StatusChanged {
+		t.Errorf("status = %q, want the change record left intact as %q", after.Status, quarantine.StatusChanged)
+	}
+}
+
+func TestRunToolRevoke_PendingIsANoop(t *testing.T) {
+	e := newOpTestEnv(t)
+	mustObserve(t, e, "casemgmt", irisListCases)
+
+	requireExit(t, runToolRevoke(e.opEnv, "casemgmt", "list_cases"), exitOK, "revoke pending")
+	requireContains(t, e.stdoutText(), "was not approved", "revoke pending")
+}
+
+func TestRunToolRevoke_UnobservedToolIsAProblem(t *testing.T) {
+	e := newOpTestEnv(t)
+
+	requireExit(t, runToolRevoke(e.opEnv, "casemgmt", "list_cases"), exitProblem, "revoke unobserved")
+	requireContains(t, e.stderrText(), "no quarantine entry", "revoke unobserved")
 }

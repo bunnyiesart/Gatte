@@ -21,9 +21,12 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"net/url"
+	"net"
 	"strings"
 	"time"
+
+	"github.com/bunnyiesart/Gatte/internal/access"
+	"github.com/bunnyiesart/Gatte/internal/gateway"
 )
 
 // ErrInvalid is returned for a configuration that parses but cannot be
@@ -43,9 +46,11 @@ type Config struct {
 	// signatures. Never holds a secret (design/adr/0001).
 	Database string `toml:"database"`
 
-	OIDC   OIDC   `toml:"oidc"`
-	Vault  Vault  `toml:"vault"`
-	Signer Signer `toml:"signer"`
+	OIDC       OIDC       `toml:"oidc"`
+	Vault      Vault      `toml:"vault"`
+	Signer     Signer     `toml:"signer"`
+	Quarantine Quarantine `toml:"quarantine"`
+	Response   Response   `toml:"response"`
 
 	// Roles defines what each role may call. Order is irrelevant.
 	Roles []Role `toml:"role"`
@@ -62,10 +67,25 @@ type Config struct {
 // does not obtain them.
 type OIDC struct {
 	// Issuer is the provider's base URL, used for discovery.
+	//
+	// An absolute https URI (http is allowed only for a loopback host, for
+	// local development), with no query and no fragment -- see Audience
+	// for why the shape is fixed rather than merely "absolute".
 	Issuer string `toml:"issuer"`
 	// Audience is this gateway's own resource identifier. A token minted
 	// for a different service of the same IdP must not be accepted here
 	// (RFC 8707), which is why this is required and has no default.
+	//
+	// It must be an absolute https URI with no query and no fragment
+	// (loopback http excepted). That is stricter than a JWT `aud` claim
+	// needs to be -- "mcp-gateway" is a perfectly legal audience value --
+	// and the reason is that this field does double duty: it is also
+	// published as `resource` in the RFC 9728 protected-resource metadata,
+	// which requires an absolute URI, and advertising an http one would
+	// instruct every client that reads it to put a bearer token on the
+	// wire in cleartext. Validate applies exactly the predicate the
+	// metadata document is built with, so a value that loads is a value
+	// that serves.
 	Audience string `toml:"audience"`
 	// GroupsClaim names the claim carrying group membership. Providers
 	// differ; making it configurable is what keeps the gateway
@@ -136,23 +156,184 @@ type Signer struct {
 	RequireSigned *bool `toml:"require_signed"`
 }
 
+// Quarantine tunes the Tool Quarantine's periodic re-observation of the
+// connected upstreams (design/adr/0013-quarantine-refresh-and-removal.md).
+type Quarantine struct {
+	// RefreshInterval is how often the gateway re-runs `tools/list` against
+	// every connected upstream and feeds the answers back through the
+	// quarantine, so that a tool rewritten under an existing approval is
+	// noticed.
+	//
+	// **There is deliberately no value that turns this off.** Not 0, not
+	// "never", not a boolean beside it. Re-observation is the only thing
+	// that makes rug-pull detection fire on a running gateway, and a switch
+	// for it would be flipped off "for a minute" during an incident and
+	// found still off a quarter later -- exactly how require_signed's
+	// default rotted until ADR-0006 wrote its trigger down. Somebody who
+	// does not want to pay the cost raises the interval, and that choice
+	// stays legible in the file as a number a reviewer can argue with.
+	//
+	// The cost being traded is one `tools/list` per upstream per interval,
+	// forever. The thing being bought is a shorter window in which a
+	// poisoned definition is still served: that window IS the interval, and
+	// it never reaches zero.
+	//
+	// A pointer for the same reason Signer.RequireSigned is one: the zero
+	// value cannot be told apart from an operator writing `refresh_interval
+	// = "0s"`, and "unset" quietly meaning "disabled" is the failure this
+	// field is shaped to prevent. Unset means DefaultRefreshInterval;
+	// written as zero or negative is refused by Validate.
+	RefreshInterval *time.Duration `toml:"refresh_interval"`
+}
+
+// Response bounds what a backend is allowed to answer with
+// (design/adr/0014-response-validation-scope.md).
+type Response struct {
+	// MaxBytes is the largest tool result, in bytes, the gateway will pass
+	// on to a client: the serialised content blocks plus the serialised
+	// structured content. A result over it is REFUSED and recorded, never
+	// truncated -- handing a model a document cut off mid-sentence, with
+	// nothing saying it was cut, is a lie told to the consumer of the data.
+	//
+	// The harm being bounded is not only memory. A backend answering with
+	// tens of megabytes floods the model's context, pushing out everything
+	// the analyst actually asked about; that is an attack whether or not
+	// anybody intended it, and it needs no cooperation from the analyst to
+	// happen.
+	//
+	// **There is deliberately no value that turns this off.** Not 0, not a
+	// boolean beside it -- the same rule, for the same reason, as
+	// Quarantine.RefreshInterval. This is also the only control in ADR-0014
+	// with an effect on today's fleet, since no backend declares an output
+	// schema, so an off switch here would switch off the whole of it.
+	// Somebody who needs more room raises the number, and that choice stays
+	// legible in the file.
+	//
+	// A pointer for the reason Signer.RequireSigned and
+	// Quarantine.RefreshInterval are pointers: the zero value cannot be
+	// told apart from an operator writing `max_bytes = 0`, and reading that
+	// as "unset, so use the default" would silently ignore what somebody
+	// wrote while they believed they had lifted the limit. Unset means the
+	// default; written as zero or negative is refused by Validate, which
+	// tells them there is no off switch and what to do instead.
+	MaxBytes *int64 `toml:"max_bytes"`
+}
+
+// MinResultBytes is the smallest ceiling the file may ask for.
+//
+// Like MinRefreshInterval it exists to catch one specific mistake rather
+// than to police taste. The unit here is BYTES, and the realistic slip is
+// somebody thinking in megabytes and writing `max_bytes = 8`. That is not
+// a tight limit, it is an outage: every result the fleet can produce is
+// refused, and the first report of it is an analyst mid-incident. Four
+// kibibytes is below anything a real backend answers with and far above
+// any number written by someone who meant megabytes.
+const MinResultBytes int64 = 4096
+
+// MaxResultBytes reports the ceiling on one tool result, resolving the
+// unset case to the default.
+//
+// The default is gateway.DefaultMaxResultBytes and is deliberately not
+// restated here: two constants for one number is how the file's
+// documentation and the code's behaviour drift apart. Read that constant
+// for the argument behind its value -- both why not larger and why not
+// smaller, since a ceiling below real traffic is an outage and one above
+// the context window is a formality.
+func (r Response) MaxResultBytes() int64 {
+	if r.MaxBytes == nil {
+		return gateway.DefaultMaxResultBytes
+	}
+	return *r.MaxBytes
+}
+
 // Role is a named set of namespaced tools, mirroring access.Role. It
 // exists separately so the file format is not hostage to the domain type,
 // and so a config field can carry documentation the domain type has no
 // reason to.
 type Role struct {
-	// Name identifies the role, referenced from group_to_role.
+	// Name identifies the role, referenced from group_to_role. Leading or
+	// trailing whitespace is refused rather than trimmed: "analyst " is a
+	// different map key from "analyst", so it would define a role no group
+	// mapping ever resolves to.
 	Name string `toml:"name"`
 	// Tools are the namespaced tool names this role may call, e.g.
 	// "casemgmt.list_cases". Matched exactly -- there is no wildcard, because
 	// a wildcard is how a role silently gains a tool added upstream
 	// later.
+	//
+	// The namespace is required, and Validate refuses a bare
+	// "list_cases", because exact matching makes an un-namespaced name a
+	// grant of nothing rather than an error: the role would load, build a
+	// well-formed policy, and deny every call it was written to allow.
+	// An empty list is fine and means what it says.
 	Tools []string `toml:"tools"`
 }
 
 // DefaultListen is the address used when none is configured: loopback,
 // so an unconfigured gateway is not exposed to the network.
 const DefaultListen = "127.0.0.1:8080"
+
+// RequireLoopbackBind reports whether listen is an address this gateway
+// may serve on (design/adr/0011-network-exposure-and-tls-termination.md
+// item 1), returning a refusal naming the fix if it is not.
+//
+// This used to warn and continue, and then it refused -- but from inside
+// `serve`, three lines into startup, over a value this package had already
+// pronounced valid. The rule lives here now because the set of acceptable
+// listen addresses is part of the configuration contract, not a startup
+// detail: Validate applies it, every subcommand that loads a file gets the
+// same answer, and what loads is what serves. That is the GAB-30 shape,
+// found a fourth time.
+//
+// The refusal itself is unchanged, and its force is the control. Under
+// ADR-0011 the gateway terminates no TLS and holds no certificate, so a
+// non-loopback bind is not a slightly weaker deployment -- it is every
+// analyst's bearer token crossing the network in cleartext, along with the
+// case data and IOCs behind it. A warning hands that decision to whoever
+// is in a hurry at the time.
+//
+// Reaching this gateway from another machine is a job for something in
+// front of it: a TLS-terminating reverse proxy sharing this jail, itself
+// reachable only over the VPN. That is why the message names the fix
+// rather than just the problem.
+//
+// There is deliberately no override. An `allow_insecure_bind` would be
+// switched on once "just to test" and never switched off -- the exact
+// mechanism by which require_signed would have rotted had ADR-0006 not
+// written its trigger down. If terminating TLS here ever becomes right,
+// that is an amendment to ADR-0011 with a real listen_tls, not a flag that
+// disables a check.
+func RequireLoopbackBind(listen string) error {
+	if IsLoopbackAddr(listen) {
+		return nil
+	}
+	// Note this also refuses an address that cannot be parsed: IsLoopbackAddr
+	// returns false when SplitHostPort fails. "Cannot tell" must not read as
+	// "loopback" -- the same fail-closed reading ADR-0004 applies to a
+	// registry it cannot read.
+	return fmt.Errorf(
+		"listen: %q is not a loopback address, and this gateway refuses to be network-reachable directly (design/adr/0011)\n"+
+			"It terminates no TLS, so binding here would put every analyst's bearer token on the wire in cleartext.\n"+
+			"Set listen to 127.0.0.1:PORT and put a TLS-terminating reverse proxy in front of it, in this same jail.",
+		listen)
+}
+
+// IsLoopbackAddr reports whether a host:port address is reachable only
+// from this machine. An address it cannot parse, and the wildcard bind, are
+// reported as not loopback: the fail-loud reading, since the cost of a
+// spurious warning is one log line and the cost of a missed one is an
+// unnoticed exposure.
+func IsLoopbackAddr(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
 
 // DefaultGroupsClaim matches the most common provider convention.
 const DefaultGroupsClaim = "groups"
@@ -163,6 +344,45 @@ const DefaultConnectTimeout = 30 * time.Second
 // DefaultRequireSigned is what signer.require_signed means when the file
 // does not say. See the field's own doc for why it changed.
 const DefaultRequireSigned = true
+
+// DefaultRefreshInterval is how often an unconfigured gateway re-observes
+// its connected upstreams.
+//
+// Five minutes is the conservative end of a real trade, and both halves are
+// worth stating. What it costs: one `tools/list` per upstream every five
+// minutes -- for this fleet, four backends, so 48 requests an hour, against
+// backends that answer analyst queries measured in seconds. That is noise.
+// What it buys: the window in which a rewritten tool is still served under
+// its old approval is at most five minutes, instead of the weeks a SOC
+// gateway can go between restarts, which is what it was before ADR-0013.
+//
+// Five rather than one because a minute's window is not meaningfully safer
+// than five for an attack that has to be noticed and acted on by a human
+// anyway, and it multiplies the standing load by five for that. Five rather
+// than an hour because an hour is long enough that "when did this start
+// being served?" stops having a useful answer during an incident review.
+const DefaultRefreshInterval = 5 * time.Minute
+
+// MinRefreshInterval is the shortest interval the file may ask for.
+//
+// It exists to catch one specific mistake rather than to police taste.
+// TOML decodes a bare integer into a time.Duration as *nanoseconds*, so
+// `refresh_interval = 300` -- which any reader would take for five minutes
+// -- is 300ns, and would spin `tools/list` against every backend in a hot
+// loop with no error anywhere. Anything below a second is that typo, not a
+// decision; a real one is written with a unit.
+const MinRefreshInterval = time.Second
+
+// RefreshEvery reports how often the connected upstreams are re-observed,
+// resolving the unset case to DefaultRefreshInterval. Validate has already
+// refused a non-positive value, so what this returns is always usable as a
+// ticker period.
+func (q Quarantine) RefreshEvery() time.Duration {
+	if q.RefreshInterval == nil {
+		return DefaultRefreshInterval
+	}
+	return *q.RefreshInterval
+}
 
 // SignaturesRequired reports whether an unsigned registry entry may be
 // served, resolving the unset case to DefaultRequireSigned.
@@ -226,13 +446,35 @@ func (c *Config) Validate() error {
 	if strings.TrimSpace(c.Listen) == "" {
 		c.Listen = DefaultListen
 	}
+	// Applied here rather than only in the serving process: GAB-30 again,
+	// the fourth instance. `listen = "0.0.0.0:9443"` used to load cleanly,
+	// work in every operator subcommand, and kill serve at the next
+	// restart -- the operator fixing what this function listed met a
+	// different error from the same unchanged file. One predicate, two
+	// callers.
+	if err := RequireLoopbackBind(c.Listen); err != nil {
+		errs = append(errs, err)
+	}
 	if strings.TrimSpace(c.Database) == "" {
 		errs = append(errs, errors.New("database: required (path to the SQLite file)"))
 	}
 
+	// The three OIDC identifiers go through access.ResourceIdentifier, the
+	// same predicate the RFC 9728 metadata document is built with at boot,
+	// rather than a looser rule restated here.
+	//
+	// That is the whole of GAB-30 item 1. This used to accept any non-empty
+	// audience and any absolute-URL issuer, while the serving process
+	// required an absolute https URI with no query and no fragment. So
+	// `audience = "mcp-gateway"` -- an unremarkable JWT `aud` value -- and
+	// `issuer = "http://idp.internal:8080"` both validated, worked for
+	// every operator subcommand, and killed serve. The operator fixed what
+	// this function listed, restarted, and met a different error from the
+	// same unchanged file. One predicate, two callers, no gap to fall
+	// through.
 	if strings.TrimSpace(c.OIDC.Issuer) == "" {
 		errs = append(errs, errors.New("oidc.issuer: required"))
-	} else if err := requireAbsoluteURL(c.OIDC.Issuer); err != nil {
+	} else if _, err := access.ResourceIdentifier(strings.TrimSpace(c.OIDC.Issuer), false); err != nil {
 		errs = append(errs, fmt.Errorf("oidc.issuer: %w", err))
 	}
 	if strings.TrimSpace(c.OIDC.Audience) == "" {
@@ -240,12 +482,23 @@ func (c *Config) Validate() error {
 		// accepting tokens minted for some other service of the same IdP,
 		// which RFC 8707 exists to prevent.
 		errs = append(errs, errors.New("oidc.audience: required (this gateway's resource identifier; never defaulted)"))
+	} else if _, err := access.ResourceIdentifier(strings.TrimSpace(c.OIDC.Audience), false); err != nil {
+		errs = append(errs, fmt.Errorf("oidc.audience: %w -- this value is not only the token's `aud` claim, it is also published as `resource` in the RFC 9728 metadata document, and that document may only carry an absolute https URI", err))
 	}
 	if strings.TrimSpace(c.OIDC.GroupsClaim) == "" {
 		c.OIDC.GroupsClaim = DefaultGroupsClaim
 	}
 	if len(c.OIDC.AuthorizationServers) == 0 && c.OIDC.Issuer != "" {
 		c.OIDC.AuthorizationServers = []string{c.OIDC.Issuer}
+	}
+	for i, raw := range c.OIDC.AuthorizationServers {
+		// Checked even when it was defaulted from Issuer just above, which
+		// duplicates one error in that case. That is the cheaper side of
+		// the trade: an operator seeing the same URL named twice loses a
+		// second, and a list nobody checked is a startup failure.
+		if _, err := access.ResourceIdentifier(strings.TrimSpace(raw), false); err != nil {
+			errs = append(errs, fmt.Errorf("oidc.authorization_servers[%d]: %w", i, err))
+		}
 	}
 
 	if strings.TrimSpace(c.Vault.SecretsFile) == "" {
@@ -279,26 +532,109 @@ func (c *Config) Validate() error {
 		))
 	}
 
+	if c.Quarantine.RefreshInterval != nil {
+		switch d := *c.Quarantine.RefreshInterval; {
+		case d <= 0:
+			// The one value this field must never accept. See the field's doc
+			// for why there is no off switch; the message says what to do
+			// instead, because somebody who wrote a zero here wanted
+			// something and should be told how to ask for it.
+			errs = append(errs, errors.New(
+				"quarantine.refresh_interval: must be positive -- there is deliberately no value that "+
+					"disables re-observation, because it is the only thing that notices an upstream rewriting "+
+					"an already-approved tool. If the cost is the problem, raise the interval "+
+					`(quarantine.refresh_interval = "30m") rather than switching the check off`,
+			))
+		case d < MinRefreshInterval:
+			errs = append(errs, fmt.Errorf(
+				"quarantine.refresh_interval: %s is shorter than the %s minimum -- if you wrote a bare number, "+
+					"note that TOML reads it as NANOSECONDS, so `refresh_interval = 300` is 300ns and not five "+
+					`minutes. Write the unit: refresh_interval = "5m"`,
+				d, MinRefreshInterval,
+			))
+		}
+	}
+
+	if c.Response.MaxBytes != nil {
+		switch n := *c.Response.MaxBytes; {
+		case n <= 0:
+			// The one value this field must never accept. See the field's doc
+			// for why there is no off switch; the message says what to do
+			// instead, because somebody who wrote a zero here wanted something
+			// and should be told how to ask for it.
+			errs = append(errs, errors.New(
+				"response.max_bytes: must be positive -- there is deliberately no value that disables the "+
+					"result ceiling, because it is the only part of the response check that runs against today's "+
+					"backends (none of them declares an output schema), and a result over the limit is refused "+
+					"rather than truncated. If a real query needs more room, raise the limit "+
+					`(response.max_bytes = 4194304) rather than switching the check off`,
+			))
+		case n < MinResultBytes:
+			errs = append(errs, fmt.Errorf(
+				"response.max_bytes: %d is below the %d minimum (MinResultBytes) -- note the unit is BYTES, so "+
+					"`max_bytes = 8` is eight bytes and not eight megabytes, and would refuse every result this "+
+					"fleet can produce. Write the whole number: max_bytes = 8388608",
+				n, MinResultBytes,
+			))
+		}
+	}
+
 	seen := map[string]bool{}
 	for i, r := range c.Roles {
+		// access.ValidateRole rather than a restatement of it. The rules it
+		// owns -- a name that is empty, or that carries leading or trailing
+		// whitespace, or a tool name that is blank -- used to be written
+		// out again here, slightly differently, and `name = "analyst "`
+		// lived in the difference: rejected by access.NewPolicy for not
+		// being trimmed, accepted here because it is not empty *after*
+		// trimming. It loaded, every operator subcommand worked, and serve
+		// died at the next restart (GAB-30 item 2).
+		if err := access.ValidateRole(access.Role{Name: r.Name, Tools: r.Tools}); err != nil {
+			errs = append(errs, fmt.Errorf("role[%d]: %w", i, err))
+		}
 		if strings.TrimSpace(r.Name) == "" {
-			errs = append(errs, fmt.Errorf("role[%d]: name is required", i))
+			// Nothing below says anything useful about a role with no
+			// usable name, and "role %q" would print the empty string.
 			continue
 		}
 		if seen[r.Name] {
 			errs = append(errs, fmt.Errorf("role %q: defined more than once", r.Name))
 		}
 		seen[r.Name] = true
-		if len(r.Tools) == 0 {
-			// Allowed, and worth stating: a role granting nothing is a
-			// legitimate way to define someone who may authenticate but
-			// may not act.
-			continue
-		}
+
+		// A role granting nothing is legitimate and deliberately not
+		// flagged: it is how someone who may authenticate but may not act
+		// is defined, and config.example.toml ships one.
+		granted := map[string]bool{}
 		for _, tool := range r.Tools {
 			if strings.TrimSpace(tool) == "" {
-				errs = append(errs, fmt.Errorf("role %q: contains an empty tool name", r.Name))
+				continue // Already reported by ValidateRole.
 			}
+			// GAB-30 item 3, and the quiet one: nothing crashes. The
+			// policy matches the namespaced names the Gateway Endpoint
+			// advertises, exactly, with no wildcard -- so `tools =
+			// ["list_cases"]` is a well-formed policy that grants
+			// precisely nothing, and the first report of it is an analyst
+			// denied mid-incident with neither the file nor the startup
+			// log explaining why.
+			//
+			// gateway.SplitNamespaced is the routing table's own splitter,
+			// not a copy of its shape: what it accepts is what can name a
+			// route.
+			if _, _, ok := gateway.SplitNamespaced(tool); !ok {
+				errs = append(errs, fmt.Errorf(
+					"role %q: tool %q is not namespaced -- a role grants UPSTREAM%sTOOL (e.g. %q), matched exactly, and there is no wildcard, so this name matches nothing and the role silently grants nothing",
+					r.Name, tool, gateway.NameSeparator, "casemgmt"+gateway.NameSeparator+"list_cases"))
+				continue
+			}
+			// Harmless to the policy, which deduplicates -- which is
+			// exactly why it would sit in the file for a year. It is
+			// almost always a paste or a half-finished rename, and the
+			// person who should see it is the reviewer of that diff.
+			if granted[tool] {
+				errs = append(errs, fmt.Errorf("role %q: tool %q is listed more than once", r.Name, tool))
+			}
+			granted[tool] = true
 		}
 	}
 
@@ -315,15 +651,4 @@ func (c *Config) Validate() error {
 		return nil
 	}
 	return errors.Join(append([]error{ErrInvalid}, errs...)...)
-}
-
-func requireAbsoluteURL(raw string) error {
-	u, err := url.Parse(raw)
-	if err != nil {
-		return errors.New("not a valid URL")
-	}
-	if !u.IsAbs() || u.Host == "" {
-		return errors.New("must be an absolute URL")
-	}
-	return nil
 }

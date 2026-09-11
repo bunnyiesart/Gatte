@@ -63,7 +63,7 @@ trusted_keys = [
 # matters more than it sounds: a role naming a tool that does not exist
 # fails SILENTLY -- the analyst just sees a shorter tool list, with no error
 # anywhere. The shipped example config had exactly this bug for docsearch
-# (ISSUE-30), and a first draft of this file invented `logsearch.search`,
+# (GAB-30), and a first draft of this file invented `logsearch.search`,
 # `threatintel.whois` and `casemgmt.create_case`, none of which are real.
 [[role]]
 name = "analyst"

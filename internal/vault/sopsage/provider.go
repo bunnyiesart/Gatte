@@ -53,6 +53,10 @@ type Provider struct {
 // being decrypted on some failure paths, so they are deliberately
 // discarded rather than surfaced.
 func New(ctx context.Context, secretsFile, ageKeyFile string) (*Provider, error) {
+	if err := requireOwnerOnly(ageKeyFile); err != nil {
+		return nil, err
+	}
+
 	plaintext, err := decrypt(ctx, secretsFile, ageKeyFile)
 	if err != nil {
 		return nil, err
@@ -77,6 +81,64 @@ func (p *Provider) Resolve(_ context.Context, name string) (vault.Secret, error)
 		return vault.Secret{}, fmt.Errorf("%w: %q", vault.ErrNotFound, name)
 	}
 	return vault.NewSecret(value), nil
+}
+
+// requireOwnerOnly refuses an age identity that any account other than its
+// owner can read (GAB-26).
+//
+// config.Vault.AgeKeyFile has always *documented* this requirement --
+// "must be owner-only on disk; this project's one knowingly-accepted
+// plaintext-on-disk exposure" -- and until now nothing enforced it, while
+// signer.LoadKey enforced exactly the same rule for the signing key. That
+// asymmetry had it backwards: compromising the signing key lets an
+// attacker vouch for registry entries, but compromising this one hands
+// over *every backend credential the gateway holds*. It is the more
+// dangerous of the two and it was the unchecked one.
+//
+// # Why this cannot be TOCTOU-free, unlike signer.LoadKey
+//
+// LoadKey stats the descriptor it then reads from, so nothing can swap the
+// file between check and use. That is impossible here: this process never
+// reads the age identity at all. It hands the *path* to sops(1) in
+// SOPS_AGE_KEY_FILE, and sops opens it itself, so there is unavoidably a
+// window between this check and that open.
+//
+// The check is still worth making. It catches the case that actually
+// happens -- a key provisioned or copied with the wrong mode, sitting
+// readable for weeks -- and it fails loudly at startup in front of the
+// operator who just installed it. What it does not do is defend against an
+// attacker who can already write to that directory at exactly the right
+// moment, and pretending otherwise would be the kind of overclaim this
+// project keeps finding in other people's software.
+//
+// Deliberately duplicated rather than shared with signer.LoadKey: the two
+// have different lifetimes (that one holds the descriptor and reads it,
+// this one only validates and closes), and internal/vault/sopsage importing
+// internal/signer would be an adapter reaching into an unrelated domain --
+// the exact dependency the fitness functions forbid. If a third call site
+// ever appears, extract it then.
+func requireOwnerOnly(path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("sopsage: cannot open the age identity %s: %w", path, err)
+	}
+	defer f.Close()
+
+	info, err := f.Stat()
+	if err != nil {
+		return fmt.Errorf("sopsage: cannot stat the age identity %s: %w", path, err)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("sopsage: the age identity %s is not a regular file", path)
+	}
+	if perm := info.Mode().Perm(); perm&0o077 != 0 {
+		return fmt.Errorf(
+			"sopsage: the age identity %s is group- or world-readable (mode %04o); "+
+				"it decrypts every backend credential, so anyone who can read it holds them all -- chmod 600 %s",
+			path, perm, path,
+		)
+	}
+	return nil
 }
 
 // decrypt runs `sops --decrypt --input-type json --output-type json

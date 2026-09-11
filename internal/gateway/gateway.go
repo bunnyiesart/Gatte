@@ -20,6 +20,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/bunnyiesart/Gatte/internal/access"
 )
 
 // Sentinel errors.
@@ -83,6 +85,25 @@ type ToolDef struct {
 	// Not reformatted or canonicalized anywhere in this system: see
 	// design/adr/0007.
 	InputSchema json.RawMessage
+
+	// OutputSchema is the raw JSON schema an upstream declares for the
+	// StructuredContent of this tool's results (SEP-2106), or nil when it
+	// declares none. Passed through unaltered, like InputSchema.
+	//
+	// **Optional, and empty for every backend in this fleet today** --
+	// checked, not assumed (design/adr/0014). When it is present, Dispatch
+	// holds the result to it and refuses a divergence; when it is absent
+	// there is no schema validation, and the gateway does not invent one
+	// from a response it has seen.
+	//
+	// Deliberately NOT part of the quarantine fingerprint. identityOf
+	// hashes name, description and input schema, which is what ADR-0007
+	// approved and what every stored approval was computed over; folding
+	// this in would invalidate every existing approval and is an amendment
+	// to that ADR rather than a detail of this one. The consequence, stated
+	// so nobody has to discover it: an upstream can widen its own output
+	// schema without the quarantine flipping the tool to changed.
+	OutputSchema json.RawMessage
 }
 
 // Result is an upstream's response to a tool call, passed back to the
@@ -90,6 +111,12 @@ type ToolDef struct {
 type Result struct {
 	// Content is the raw JSON of the MCP result's content field.
 	Content json.RawMessage
+	// StructuredContent is the raw JSON of the result's structuredContent
+	// field (SEP-2106), or nil when the upstream sent none. Like Content it
+	// is bytes, not a decoded value: this package measures it and, when the
+	// tool declared an OutputSchema, validates it -- and hands on exactly
+	// what arrived either way.
+	StructuredContent json.RawMessage
 	// IsError reports a tool-level error (the call reached the tool and
 	// the tool refused), as distinct from a transport or routing failure.
 	IsError bool
@@ -142,6 +169,36 @@ type UpstreamSpec struct {
 	Args    []string
 	// URL is the endpoint to reach, for http.
 	URL string
+}
+
+// Caller is everything the Gateway is told about who is making one call:
+// the identity a token attested, and the address the serving surface saw
+// the request arrive from.
+//
+// The two are a struct rather than two parameters on purpose. They are
+// both strings-in-a-trenchcoat at the call site, and transposing them
+// would compile and would quietly file a subject as a source address; a
+// field name makes that mistake impossible. They are kept apart inside
+// the struct for the opposite reason: Identity is *attested* -- the IdP
+// signed for it -- while SourceAddress is merely *observed*, and only as
+// trustworthy as the guarantee that the co-located reverse proxy is the
+// sole path to this port (design/adr/0011). Nothing in this package ever
+// makes an authorization decision on SourceAddress, and nothing should:
+// it is evidence for an operator, not an input to a gate.
+type Caller struct {
+	// Identity is the verified caller. Its Subject is what the audit
+	// trail attributes to.
+	Identity access.Identity
+	// SourceAddress is where the request came from, already reduced to
+	// one address by the serving adapter -- for HTTP, the rightmost
+	// X-Forwarded-For entry, which is the one the proxy wrote rather than
+	// the one the client sent. See internal/gateway/httpapi.sourceAddress
+	// and audit.Record.SourceAddress.
+	//
+	// Empty is allowed and means "no address was available", which is an
+	// honest thing for a surface with no network peer to say. It is not a
+	// reason to refuse a call.
+	SourceAddress string
 }
 
 // route is one entry in the routing table: which live connection serves a

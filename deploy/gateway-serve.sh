@@ -1,6 +1,7 @@
 #!/usr/bin/env sh
 # Runs on the MAC. Cross-compiles the gateway and the four lab mocks for
-# freebsd/arm64, stages them plus the deployment templates into the
+# the jail host's own architecture, stages them plus the deployment
+# templates into the
 # jailmachine VM, and runs deploy/vm/gateway-serve-provision.sh there.
 #
 # This exists for the same reason deploy/authelia-jail.sh does: a sequence
@@ -15,9 +16,10 @@
 #   ./deploy/gateway-serve-verify.sh     # start it and prove it works
 set -eu
 
+# shellcheck source=deploy/lib/remote.sh
+. "$(dirname "$0")/lib/remote.sh"
+
 GW_JAIL="${GW_JAIL:-mcp-gateway-test}"
-JM_STATE_ROOT="${JM_STATE_ROOT:-$HOME/.jailmachine}"
-JM_SSH_KEY="$JM_STATE_ROOT/machines/jailmachine/ssh/id_ed25519"
 STAGE=/tmp/mcp-gateway-deploy
 # Not /tmp/mcp-gateway-build: an earlier stream left a plain FILE at that
 # exact path, and `mkdir -p` on it fails rather than being the no-op the
@@ -30,28 +32,36 @@ cd "$(dirname "$0")/.."
 # initialize handshake, so it is worth being a commit rather than "dev".
 VERSION="${VERSION:-$(git rev-parse --short HEAD 2>/dev/null || echo dev)}"
 
-scp_vm() {
-	scp -q -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no \
-		-i "$JM_SSH_KEY" -P 2222 "$@"
-}
-
-echo "==> cross-compiling for freebsd/arm64 (version $VERSION)"
+# The target architecture is ASKED FOR, not assumed. This script hardcoded
+# arm64 -- correct for the jailmachine VM it was written against, and wrong
+# for the amd64 box the lab moved to. It cross-compiled happily, staged the
+# binaries, and only fell over later; a wrong-architecture binary that did
+# get installed would have failed at exec time with a message about the
+# format, a long way from the cause.
+GOARCH="${GOARCH:-$(remote_sh uname -m 2>/dev/null)}"
+case "$GOARCH" in
+	x86_64|amd64) GOARCH=amd64 ;;
+	aarch64|arm64) GOARCH=arm64 ;;
+	"") echo "!! could not determine the jail host's architecture" >&2; exit 1 ;;
+	*) echo "!! unsupported jail host architecture: $GOARCH" >&2; exit 1 ;;
+esac
+echo "==> cross-compiling for freebsd/$GOARCH (version $VERSION)"
 mkdir -p "$BUILD"
-GOOS=freebsd GOARCH=arm64 CGO_ENABLED=0 \
+GOOS=freebsd GOARCH="$GOARCH" CGO_ENABLED=0 \
 	go build -ldflags "-s -w -X main.buildVersion=$VERSION" \
 	-o "$BUILD/mcp-gateway" ./cmd/mcp-gateway
 for m in casemgmt logsearch docsearch threatintel; do
 	# The mocks are the four upstreams. CGO_ENABLED=0 for the same reason
 	# as the gateway: a static binary that does not care what libc the jail
 	# has.
-	GOOS=freebsd GOARCH=arm64 CGO_ENABLED=0 \
+	GOOS=freebsd GOARCH="$GOARCH" CGO_ENABLED=0 \
 		go build -ldflags "-s -w" -o "$BUILD/mock-$m" "./lab/servers/$m"
 done
 ls -l "$BUILD" | sed 's/^/    /'
 
-echo "==> staging into the VM at $STAGE"
-jm ssh -- "rm -rf $STAGE && mkdir -p $STAGE"
-scp_vm "$BUILD/mcp-gateway" "$BUILD/mock-casemgmt" "$BUILD/mock-logsearch" \
+echo "==> staging into $(remote_target) at $STAGE"
+remote_sh "rm -rf $STAGE && mkdir -p $STAGE"
+remote_cp "$BUILD/mcp-gateway" "$BUILD/mock-casemgmt" "$BUILD/mock-logsearch" \
 	"$BUILD/mock-docsearch" "$BUILD/mock-threatintel" \
 	deploy/gateway-jail/config.toml.template \
 	deploy/gateway-jail/mcp_gateway \
@@ -60,10 +70,10 @@ scp_vm "$BUILD/mcp-gateway" "$BUILD/mock-casemgmt" "$BUILD/mock-logsearch" \
 	deploy/vm/gateway-serve-verify.sh \
 	deploy/vm/gateway-token.sh \
 	deploy/vm/gateway-upstreams.sh \
-	"root@127.0.0.1:$STAGE/"
+	"$STAGE/"
 
 echo "==> provisioning jail $GW_JAIL"
-jm ssh -- "GW_JAIL=$GW_JAIL STAGE=$STAGE sh $STAGE/gateway-serve-provision.sh"
+remote_sh "GW_JAIL=$GW_JAIL STAGE=$STAGE sh $STAGE/gateway-serve-provision.sh"
 
 echo
 echo "==> done. Jail $GW_JAIL is at 10.17.90.10; nginx terminates TLS there and"

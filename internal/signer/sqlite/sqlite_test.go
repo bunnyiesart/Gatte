@@ -29,7 +29,7 @@ func newTestDB(t *testing.T) *sql.DB {
 	return db
 }
 
-func casemgmtEntry() registry.UpstreamServer {
+func irisEntry() registry.UpstreamServer {
 	return registry.UpstreamServer{
 		Name:        "casemgmt",
 		Transport:   registry.TransportStdio,
@@ -85,7 +85,7 @@ func TestPutThenGet_PreservesBytesExactly(t *testing.T) {
 	st := New(db)
 	ctx := context.Background()
 
-	entry := casemgmtEntry()
+	entry := irisEntry()
 	sgn := newSigner(t)
 	want := sgn.Sign(entry)
 
@@ -126,7 +126,7 @@ func TestPut_ReplacesAnExistingSignature(t *testing.T) {
 	st := New(db)
 	ctx := context.Background()
 
-	entry := casemgmtEntry()
+	entry := irisEntry()
 	first := newSigner(t).Sign(entry)
 	if err := st.Put(ctx, entry.Name, first); err != nil {
 		t.Fatalf("Put (first): %v", err)
@@ -161,7 +161,7 @@ func TestPut_RejectsMalformedSignature(t *testing.T) {
 	st := New(db)
 	ctx := context.Background()
 
-	valid := newSigner(t).Sign(casemgmtEntry())
+	valid := newSigner(t).Sign(irisEntry())
 
 	tests := map[string]signer.Signature{
 		"zero value":       {},
@@ -188,7 +188,7 @@ func TestDelete_RemovesThenReportsNotFound(t *testing.T) {
 	st := New(db)
 	ctx := context.Background()
 
-	entry := casemgmtEntry()
+	entry := irisEntry()
 	if err := st.Put(ctx, entry.Name, newSigner(t).Sign(entry)); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
@@ -222,8 +222,8 @@ func TestSignaturesAreKeyedPerEntry(t *testing.T) {
 
 	s := newSigner(t)
 
-	casemgmt := casemgmtEntry()
-	threatintel := casemgmtEntry()
+	casemgmt := irisEntry()
+	threatintel := irisEntry()
 	threatintel.Name = "threatintel"
 	threatintel.Args = []string{"run", "--rm", "-i", "threatintel-mcp:latest"}
 	threatintel.EnvVarNames = []string{"THREATINTEL_SHODAN_API_KEY", "THREATINTEL_VIRUSTOTAL_API_KEY"}

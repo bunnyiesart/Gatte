@@ -10,8 +10,15 @@ import (
 	"github.com/bunnyiesart/Gatte/internal/audit"
 )
 
+// The two addresses the seeded trail is written from. Distinct so a
+// filter that ignores the field, or matches on the wrong one, shows up.
+const (
+	analystAddress  = "198.51.100.14"
+	strangerAddress = "203.0.113.200"
+)
+
 // seedAuditTrail writes a small, deliberately mixed trail: two analysts,
-// three outcomes, three timestamps an hour apart.
+// three outcomes, two source addresses, three timestamps an hour apart.
 func seedAuditTrail(t *testing.T, e opTestEnv) []audit.Record {
 	t.Helper()
 	base := time.Date(2026, 9, 8, 9, 0, 0, 0, time.UTC)
@@ -22,6 +29,7 @@ func seedAuditTrail(t *testing.T, e opTestEnv) []audit.Record {
 			TargetUpstream:  "casemgmt",
 			Timestamp:       base,
 			Outcome:         audit.OutcomeAllowed,
+			SourceAddress:   analystAddress,
 		},
 		{
 			AnalystIdentity: "bob@soc.example",
@@ -30,14 +38,19 @@ func seedAuditTrail(t *testing.T, e opTestEnv) []audit.Record {
 			Timestamp:       base.Add(time.Hour),
 			Outcome:         audit.OutcomeDenied,
 			Reason:          "quarantined",
+			SourceAddress:   analystAddress,
 		},
 		{
+			// Alice again -- from somewhere Alice does not sit. One
+			// identity, two addresses, which is the shape of a stolen
+			// token and the reason the column exists.
 			AnalystIdentity: "alice@soc.example",
 			Tool:            "logsearch.search",
 			TargetUpstream:  "logsearch",
 			Timestamp:       base.Add(2 * time.Hour),
 			Outcome:         audit.OutcomeFailed,
 			Reason:          "upstream timeout",
+			SourceAddress:   strangerAddress,
 		},
 	}
 	for _, r := range records {
@@ -236,5 +249,76 @@ func TestCmdAudit_BadFlags(t *testing.T) {
 			requireExit(t, cmdAudit(tc.args, &out, &errBuf), exitCannotRun, tc.name)
 			requireContains(t, errBuf.String(), tc.want, tc.name)
 		})
+	}
+}
+
+// TestRunAudit_ShowsAndFiltersOnSourceAddress: the column exists to
+// answer "was that really Ana, or somebody with Ana's token?", and it
+// only answers it if an operator can both see it and narrow to it.
+// Rendering it without a filter would mean grepping; filtering without
+// rendering would mean trusting the filter.
+func TestRunAudit_ShowsAndFiltersOnSourceAddress(t *testing.T) {
+	e := newOpTestEnv(t)
+	seedAuditTrail(t, e)
+
+	requireExit(t, runAudit(e.opEnv, auditFilter{Limit: auditDefaultLimit}, false), exitOK, "audit")
+	got := e.stdoutText()
+	requireContains(t, got, "SOURCE", "audit")
+	for _, want := range []string{analystAddress, strangerAddress} {
+		requireContains(t, got, want, "audit")
+	}
+
+	// Same analyst identity, two addresses: the trail can separate them.
+	e2 := newOpTestEnv(t)
+	seedAuditTrail(t, e2)
+	requireExit(t, runAudit(e2.opEnv, auditFilter{Limit: auditDefaultLimit, Source: strangerAddress}, false),
+		exitOK, "audit -source")
+	narrowed := e2.stdoutText()
+	requireContains(t, narrowed, "logsearch.search", "audit -source")
+	for _, absent := range []string{"casemgmt.list_cases", "threatintel.whois"} {
+		if strings.Contains(narrowed, absent) {
+			t.Errorf("-source %s showed %q, a record from a different address\n%s",
+				strangerAddress, absent, narrowed)
+		}
+	}
+	requireContains(t, narrowed, "source "+strangerAddress, "audit -source")
+}
+
+// TestRunAudit_JSONCarriesSourceAddress: -json is what a script reads,
+// and a field missing there is a field that does not exist for anything
+// automated.
+func TestRunAudit_JSONCarriesSourceAddress(t *testing.T) {
+	e := newOpTestEnv(t)
+	seedAuditTrail(t, e)
+
+	requireExit(t, runAudit(e.opEnv, auditFilter{Limit: 1, Outcome: audit.OutcomeFailed}, true), exitOK, "audit -json")
+
+	var got []auditJSON
+	if err := json.Unmarshal(e.out.Bytes(), &got); err != nil {
+		t.Fatalf("output is not JSON: %v\n%s", err, e.stdoutText())
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d records, want 1", len(got))
+	}
+	if got[0].SourceAddress != strangerAddress {
+		t.Errorf("source_address = %q, want %q", got[0].SourceAddress, strangerAddress)
+	}
+}
+
+// TestAuditUsage_DoesNotPromiseWhatTheTrailCannotDeliver.
+//
+// The help text is part of the interface. Two things about it are
+// load-bearing after design/adr/0012: `failed` is now a real outcome
+// something writes (before GAB-24 it was advertised and unreachable, so
+// -outcome failed could only ever come back empty), and a failed call
+// costs two rows, which anyone counting rows has to be told before they
+// count.
+func TestAuditUsage_DoesNotPromiseWhatTheTrailCannotDeliver(t *testing.T) {
+	var buf bytes.Buffer
+	auditUsage(&buf)
+	usage := buf.String()
+
+	for _, want := range []string{"-source", "two", "failed"} {
+		requireContains(t, usage, want, "audit usage")
 	}
 }

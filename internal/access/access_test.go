@@ -817,3 +817,59 @@ func TestNewPolicyRejectsMalformedNames(t *testing.T) {
 		})
 	}
 }
+
+// TestResourceIdentifier covers the predicate that decides what
+// oidc.audience, oidc.issuer and oidc.authorization_servers may hold. It
+// lives here, and not in the HTTP adapter that renders the metadata
+// document, because two callers now depend on the same answer: the adapter
+// at boot, and config.Validate in front of the operator who just edited the
+// file. Two copies of this rule is how GAB-30 happened.
+func TestResourceIdentifier(t *testing.T) {
+	tests := []struct {
+		name          string
+		raw           string
+		allowInsecure bool
+		wantErr       string
+	}{
+		{name: "https with a path", raw: "https://gw.soc.internal/mcp"},
+		{name: "https bare host", raw: "https://gw.soc.internal"},
+		{name: "loopback http", raw: "http://127.0.0.1:8080/mcp"},
+		{name: "loopback http by name", raw: "http://localhost:8080/mcp"},
+		{name: "ipv6 loopback http", raw: "http://[::1]:8080/mcp"},
+		{name: "http when explicitly allowed", raw: "http://gw.soc.internal/mcp", allowInsecure: true},
+
+		{name: "opaque string", raw: "mcp-gateway", wantErr: "absolute URI"},
+		{name: "scheme with no host", raw: "https:///mcp", wantErr: "absolute URI"},
+		{name: "routable http", raw: "http://gw.soc.internal/mcp", wantErr: "https"},
+		{name: "query string", raw: "https://gw.soc.internal/mcp?v=1", wantErr: "query"},
+		{name: "fragment", raw: "https://gw.soc.internal/mcp#f", wantErr: "fragment"},
+		// An empty fragment leaves URL.Fragment empty but still ships a
+		// "#" to every client that reads the metadata, which RFC 9728
+		// section 2 forbids outright.
+		{name: "empty fragment", raw: "https://gw.soc.internal/mcp#", wantErr: "fragment"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			u, err := ResourceIdentifier(tc.raw, tc.allowInsecure)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("ResourceIdentifier(%q) = %v, want it accepted", tc.raw, err)
+				}
+				if u == nil {
+					t.Fatal("accepted the value but returned no URL")
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("ResourceIdentifier(%q) accepted a value the metadata document cannot carry", tc.raw)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("error %q does not mention %q", err, tc.wantErr)
+			}
+			if !strings.Contains(err.Error(), tc.raw) {
+				t.Errorf("error %q does not echo the offending value", err)
+			}
+		})
+	}
+}

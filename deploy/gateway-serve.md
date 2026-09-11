@@ -220,22 +220,140 @@ backend to describe the credential it was handed; that is a test fixture,
 not a capability an analyst should have. Both gates say no independently,
 which is the point.
 
-The consequence is worth stating plainly: **credential injection is not
-proven end to end through the gateway in this deployment**, because the
-tool that would prove it cannot be called. What is proven is one step
-short of that -- `procstat -e` on each of the four child processes shows
-the variable *names* the vault resolved into them, and shows that the child
-environment is built rather than inherited:
+That is the steady state, and it is what the deployment is in right now.
+It was suspended once, deliberately and reversibly, to close the one gap
+this arrangement creates -- see the next section.
+
+`procstat -e` on each of the four child processes shows the variable
+*names* the vault resolved into them, shows that each child sees **only**
+its own declared variables, and shows that the child environment is built
+rather than inherited:
 
 ```
-casemgmt [23513]: HOME CASEMGMT_API_TOKEN MOCK_EXPECT MOCK_SECRET PATH
-logsearch [23512]: LOGSEARCH_API_TOKEN HOME MOCK_EXPECT MOCK_SECRET PATH
-docsearch [23514]: HOME MOCK_EXPECT MOCK_SECRET DOCSEARCH_PASSWORD PATH
-threatintel [23515]: HOME MOCK_EXPECT MOCK_SECRET PATH THREATINTEL_VT_KEY
+casemgmt       [26128]: HOME CASEMGMT_API_TOKEN MOCK_EXPECT MOCK_SECRET PATH
+logsearch    [26127]: LOGSEARCH_API_TOKEN HOME MOCK_EXPECT MOCK_SECRET PATH
+docsearch [26129]: HOME MOCK_EXPECT MOCK_SECRET DOCSEARCH_PASSWORD PATH
+threatintel      [26130]: HOME MOCK_EXPECT MOCK_SECRET PATH THREATINTEL_VT_KEY
 ```
 
-To prove the value as well, run `lab/probe` against a mock directly -- that
-is what it is for, and it does not need the gateway.
+No backend holds another backend's credential: `CASEMGMT_API_TOKEN` appears in
+`casemgmt` and nowhere else, and so on for all four. The only shared names are
+`MOCK_SECRET`/`MOCK_EXPECT`, which are shared *by construction* -- see "One
+vault, one namespace".
+
+## Credential injection, proven by value -- 09 Sep 2026
+
+Names arriving is not values arriving. This was closed by granting the four
+fixture tools for one session and taking them away again.
+
+**The grant.** A dedicated role in the jail's `config.toml`, granting the
+four `*_credcheck` tools and *nothing else*, with the `dfir-leads` group
+remapped to it for the duration:
+
+```toml
+[[role]]
+name = "credcheck-fixture"
+tools = [
+  "casemgmt.casemgmt_credcheck", "logsearch.logsearch_credcheck",
+  "docsearch.docsearch_credcheck", "threatintel.threatintel_credcheck",
+]
+```
+
+A separate role rather than four lines bolted onto `dfir-lead`, for two
+reasons. The privilege stays minimal -- being able to ask a backend to
+describe its own credential carries no other capability with it -- and
+reverting is deleting a block that announces itself rather than spotting
+four lines inside a role that is supposed to have eight. `analyst` was left
+mapped to `analyst` throughout, so it remained the live control. There is
+no third Authelia group to map to, and that jail's configuration is not
+this stream's to edit, so an existing group had to be borrowed.
+
+Borrowing `dfir-leads` costs something and it is worth naming: for the
+duration, `dfirlead` was *not* a dfir-lead. It saw the six tools it gets
+from `soc-analysts` -- it is in both groups, and a caller's roles union --
+plus the four fixtures, and lost `threatintel.enrich` and
+`docsearch.docsearch_list_indices` until the revert. Its `tools/list`
+held ten names, not twelve, and that is the union working, not a bug.
+
+**Positive.** All four called through the real path -- `POST
+https://mcp.soc.internal/` from the VM host, TLS verified against the SOC
+CA, nginx, then the gateway -- with an Authelia RS256 token for `dfirlead`:
+
+```
+casemgmt.casemgmt_credcheck              HTTP 200  {"received_expected_secret":true,"fingerprint":"9ae421de"}
+logsearch.logsearch_credcheck        HTTP 200  {"received_expected_secret":true,"fingerprint":"9ae421de"}
+docsearch.docsearch_credcheck  HTTP 200  {"received_expected_secret":true,"fingerprint":"9ae421de"}
+threatintel.threatintel_credcheck            HTTP 200  {"received_expected_secret":true,"fingerprint":"9ae421de"}
+```
+
+`9ae421de` was then computed independently from the vault --
+`sops --decrypt | jq -j .MOCK_SECRET | openssl dgst -sha256`, first eight
+hex characters -- and matches. So the claim is not merely "the backend
+received something that equalled what it was told to expect", it is "the
+backend received **the value stored in the vault under that name**". The
+same computation over the other four keys gives `364a3616`, `7c37447c`,
+`f814cc2c`, `0c0db8d8`: different fingerprints, so `9ae421de` identifies
+`MOCK_SECRET` specifically and not some other entry.
+
+All four report the same fingerprint because all four *share* that
+credential, for the reason "One vault, one namespace" gives. That is the
+existing caveat showing up as a measurement rather than as prose.
+
+**Negative controls.** A positive with no negative proves the tool can say
+`true`, not that it can say `false`. Two were run, both restored:
+
+  1. *Per-backend.* `threatintel` was deregistered and re-registered without
+     `-env MOCK_SECRET` (and re-signed -- the signature covers the env
+     name list, so it had to be). `threatintel` then reported
+     `{"received_expected_secret":false,"fingerprint":"e3b0c442"}` -- the
+     fingerprint of the empty string -- while `casemgmt`, `logsearch` and
+     `docsearch` still reported `true`/`9ae421de` **in the same run**.
+     The four results are independent, not one constant echoed four times.
+  2. *By value.* `MOCK_EXPECT` in the vault was re-encrypted to a fresh
+     random value, `MOCK_SECRET` untouched. All four then reported
+     `false` -- with `fingerprint` still `9ae421de`. The boolean is a real
+     comparison; the fingerprint tracks what was delivered and is not
+     derived from the boolean.
+
+Both were restored (registry re-registered and re-signed; `secrets.json`
+restored from a pre-change copy) and all four returned to
+`true`/`9ae421de`.
+
+**The gates were still gates.** During the window, `analyst` -- unchanged,
+mapped only to `analyst` -- saw six tools with no `*_credcheck` among them,
+and calling `casemgmt.casemgmt_credcheck` by name got
+`{"code":-32602,"message":"unknown tool \"casemgmt.casemgmt_credcheck\""}`. The
+Audit Trail recorded every one of those calls: `allowed` for `dfirlead`,
+`denied` with reason `not visible to caller` for `analyst`.
+
+**Reverted.** `config.toml` was restored from the pre-change copy and
+`diff` against it is empty; after a restart `dfirlead` sees its usual eight
+tools and all four `*_credcheck` calls return `unknown tool`. The full
+acceptance test was then re-run green, which also rebuilt the database and
+put the four fixtures back to `pending`.
+
+Two things the revert surfaced, neither patched:
+
+  - **`mcp-gateway tool` has no `revoke`.** Approval is one-way from the
+    CLI; the only route from `approved` back to `pending` is deleting the
+    database. Here that was free, because the acceptance test deletes it
+    every run anyway -- on anything real it means an operator who approves
+    a tool by mistake has no supported way to un-approve it.
+  - **`upstream deregister` does not clear that upstream's tool
+    approvals.** Deregistering `threatintel` and re-registering it -- a new
+    registry entry, a different `-env` list, a fresh signature -- left all
+    three `threatintel` tools `approved` and immediately servable. Approvals are
+    keyed by upstream *name* and tool definition, not by the registry
+    entry that was reviewed. The definition fingerprint still catches a
+    tool whose name, description or schema changed, so this is not an open
+    door; what it means is that a replacement advertising *identical*
+    definitions inherits the approvals of the thing it replaced, and the
+    quarantine never sees a new upstream. Measured for a re-registration
+    of the same binary; the same-binary case is the one that was run, and
+    a different-binary case is inference from the same mechanism.
+
+To prove the same property without any of this, run `lab/probe` against a
+mock directly -- that is what it is for, and it does not need the gateway.
 
 ## The acceptance test rebuilds the database every run
 
@@ -335,11 +453,41 @@ run three times in a row, green each time.
    printed; a leak check that echoes what it is hunting for has created the
    leak it was testing for.
 
+   Re-run after the credcheck session above, with real secret values now
+   having flowed through tool *results* rather than only into child
+   environments: still clean, all six keys, all three files (87 request
+   lines in the nginx access log by then, so the grep was not clean for
+   want of anything to find). That re-run added the control the original
+   lacked -- every vault value planted in a scratch file inside the jail
+   and searched for with the **same** grep invocation, which found all six.
+   A clean grep with a broken method is worthless; this one is now known to
+   work. Same treatment for the bearer token. The re-run also passes each
+   value to `grep -F -f` through a `0600` pattern file rather than on the
+   command line, which is a small improvement on step 14 of
+   `deploy/vm/gateway-serve-verify.sh` -- that one still puts the value in
+   an argv that is visible in `ps(1)` for an instant, as its own comment
+   admits.
+
 ## What this does NOT prove
 
-  - **That credential injection delivers the right value.** See above --
-    the tool that would prove it is deliberately unreachable. Only variable
-    names are observed.
+  - ~~**That credential injection delivers the right value.**~~ Closed on
+    09 Sep 2026 -- see "Credential injection, proven by value". All four
+    backends reported `received_expected_secret: true` through TLS ->
+    nginx -> gateway, with a fingerprint matching the vault's own value,
+    and two negative controls showed the check can report `false`. What is
+    still **not** proven by it: that a backend can be given a credential
+    *no other backend has*. The four mocks all read `MOCK_SECRET`, the
+    vault is keyed by variable name, so they necessarily share one value
+    (see "One vault, one namespace"). The per-backend keys
+    (`CASEMGMT_API_TOKEN` and friends) are correctly isolated -- `procstat -e`
+    shows each in exactly one child -- but the mocks do not read them, so
+    no credcheck confirms their *values*.
+  - **That the acceptance test covers any of this.**
+    `deploy/vm/gateway-serve-verify.sh` was **not** changed: it still
+    leaves the four fixtures pending and granted to nobody, which is the
+    correct steady state. The credential-injection proof above was a
+    one-off session, reverted, and re-running the acceptance test will not
+    reproduce it.
   - **Anything from a VPN client.** The client in every test is the VM
     host, which reaches `10.17.90.10` across `socbr0`. That is external to
     the jail, which is the property that mattered, but no Mac was connected
@@ -351,7 +499,7 @@ run three times in a row, green each time.
     audited is a design question, not a bug found here.
   - **That the recorded analyst identity is legible.** The trail stores the
     token's `sub` (`bb7502ab-...`), not `analyst`. Correlating a record to
-    a human needs the IdP. Related to ISSUE-24 (no source address in the
+    a human needs the IdP. Related to GAB-24 (no source address in the
     trail either), which is why `nginx.conf` logs `$remote_addr`.
   - **Restart survival across a VM reboot.** `mcp_gateway_enable=YES` is
     set and the service starts cleanly from `service`, but the VM was not

@@ -120,6 +120,12 @@ install -m 0755 "$STAGE/mcp-gateway" "$GW_JAIL_ROOT$GW"
 for m in $MOCKS; do
 	install -m 0755 "$STAGE/mock-$m" "$GW_JAIL_ROOT$LIBEXEC/lab-$m"
 done
+# A jail created from a bare release has no /usr/local/etc/rc.d until some
+# package makes one, and install(1) does not create intermediate
+# directories. On a jail that had already run this script the directory
+# existed, so the omission only surfaced against a freshly created jail --
+# which is exactly the case a provisioning script has to get right.
+install -d -m 0755 "$GW_JAIL_ROOT/usr/local/etc/rc.d"
 install -m 0555 "$STAGE/mcp_gateway" "$GW_JAIL_ROOT/usr/local/etc/rc.d/mcp_gateway"
 j "$GW version" | sed 's/^/    /'
 

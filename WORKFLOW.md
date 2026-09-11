@@ -16,10 +16,49 @@ doesn't have to reconstruct where things stand.
 - [x] Phase 4 — Access Control
 - [x] Phase 5 — Gateway Endpoint (first end-to-end integration point)
 - [x] Phase 6 — Operator Console
-- [ ] Phase 7 — Hardening pass (net-new controls from `AGENTS.md` §2)
+- [x] Phase 7 — Hardening pass (net-new controls from `AGENTS.md` §2)
 
 *(Gate 0 satisfied 08 Sep 2026: bunnyiesart explicitly authorized moving to
 implementation and confirmed the language. Phase 1 starts from here.)*
+
+**Every phase is closed. What remains is filed work, not a phase** — and
+it is listed here rather than left in the prose below, because an item
+that only exists inside a closed section is an item nobody re-reads:
+
+- **The audit trail is not tamper-evident.** `audit_records` is an
+  ordinary SQLite table: no append-only constraint, no hash chaining, so
+  the write access ADR-0010 defends against also edits history. Named in
+  Phase 7 and deliberately deferred — a hash-chained trail is its own
+  design decision, and it changes the schema of a database that is live
+  on `bun`.
+- ✅ **GAB-20 — closed as detection-only, 10 Sep 2026.** Divergence
+  detection is built (`gateway.CredentialDrift`, reported once per refresh
+  tick): a credential rotated in the vault while an upstream is connected
+  is now visible instead of silent, which was the actual defect — the
+  operator believed they had rotated while the old value stayed in use.
+
+  **The reconnect half was deliberately not built**, and the reason is in
+  the deployment rather than in taste. It cannot be a console subcommand:
+  there is no channel from the console to the serving process (no admin
+  socket, no signal handler beyond SIGINT/SIGTERM), and a live connection
+  is memory in another process, not a row the console can read. Building
+  it means opening a control channel into the one process that holds every
+  backend credential.
+
+  SIGHUP looked like the cheap version and is a trap here. `deploy/gateway-jail/mcp_gateway`
+  runs the gateway under `daemon -r`, and its pidfile holds the
+  *supervisor's* pid — the script records, as a measured failure, that
+  signalling the child under `-r` makes daemon(8) restart it while
+  `service stop` reports success. So `kill -HUP` on the service pidfile
+  would hit daemon(8), which forwards SIGTERM and not SIGHUP, and hitting
+  the child instead is the documented footgun.
+
+  Restart is the remedy and is the path that already works: SIGTERM
+  reaches the child, the graceful shutdown reaps the stdio upstreams, and
+  `-r` brings it back even if startup races the IdP. There is no session
+  state to lose (ADR-0008 forbids a session ever standing in for
+  authentication), which is exactly why a restart is cheap here and would
+  not be in a stateful service.
 
 ## Gate 0 — before any phase below starts
 
@@ -314,7 +353,7 @@ aliasing the routing table, the same defect class already caught in
 out-of-role tool probe was refused but not audited, because `httpapi`'s
 per-identity registration means the call never reaches `Dispatch`, the only
 writer of denials. It was pinned in the checkpoint as current behaviour so
-that fixing it would fail loudly. **ISSUE-16 closed it:** `httpapi` now
+that fixing it would fail loudly. **GAB-16 closed it:** `httpapi` now
 records the attempt itself, attributed to the caller and carrying a reason,
 without changing what the caller is told. The checkpoint asserts the
 denial row rather than its absence
@@ -342,7 +381,7 @@ reaps upstream subprocesses. Alongside it: `upstream list|register|
 deregister`, `tool list|approve`, `sign`, `audit`. Configuration is TOML
 (`config.example.toml`, ADR-0009).
 
-**ISSUE-17 and ISSUE-18 both closed by this phase.** The gateway can be run,
+**GAB-17 and GAB-18 both closed by this phase.** The gateway can be run,
 and the Definition Signer -- built in Phase 3 and invoked from nowhere
 until now -- verifies every entry before anything is spawned. A tampered
 entry is never dialed, which is the only ordering that means anything.
@@ -376,7 +415,7 @@ resolve at *dial* time, so rotating one does nothing for an
 already-connected upstream until restart, and nothing said so anywhere.
 Now documented in `deploy/freebsd-jail.md` ("Rotating credentials") and in
 the `internal/vault` package doc; a reconnect command and divergence
-detection are ISSUE-20.
+detection are GAB-20.
 
 **Next: Phase 7 — the deferred hardening controls.**
 
@@ -384,13 +423,56 @@ detection are ISSUE-20.
 
 Address what `AGENTS.md` §2 names as explicitly undesigned:
 
-- Telemetry/observability (OWASP MCP08) — beyond what Audit Trail already
-  gives.
-- Response-schema validation on tool *results* before they re-enter model
-  context (prompt-injection-via-result mitigation).
-- Token-passthrough prevention beyond credential stripping — only if/when
-  an HTTP-facing, OAuth-authenticated endpoint is added; not needed for
-  the current all-stdio backend set.
+- ✅ **Telemetry/observability (OWASP MCP08) — mostly delivered before this
+  phase reached it, 09 Sep 2026.** Written as an open item, it turned out
+  GAB-24 / `design/adr/0012-audit-completeness.md` had already closed the
+  substance: a failed call now records `OutcomeFailed`, authentication
+  failures are recorded at all (they produced *zero* records before), and
+  every record carries a source address taken from the rightmost
+  `X-Forwarded-For` entry — the one the proxy wrote, not the one a client
+  can forge. All three are running in the deployment on `bun`.
+
+  **What is genuinely left, and the original list never named it: the trail
+  is not tamper-evident.** `audit_records` is an ordinary SQLite table with
+  no append-only constraint and no hash chaining, so the same database
+  write access that ADR-0010 exists to defend against also permits editing
+  or deleting history. Filed rather than done here, because a hash-chained
+  trail is a design decision of its own and not a hardening tweak.
+- ✅ **Response validation on tool *results* — done 10 Sep 2026**, and the
+  statement of this item changed on the way in. It used to read
+  "prompt-injection-via-result mitigation", and that is not what schema
+  validation is: a schema proves *shape*, and a result can satisfy its
+  schema perfectly while carrying an instruction addressed to the model in
+  a string field the schema declares as a string.
+  `design/adr/0014-response-validation-scope.md` records the correction and
+  what was built instead:
+  - **A result size ceiling, always enforced** (`response.max_bytes`,
+    default 1 MiB). This is the half with an effect today. Exceeding it is
+    a refusal recorded with `OutcomeFailed`, never a truncation.
+  - **`StructuredContent` validated against `Tool.OutputSchema`** when a
+    backend declares one. None of the four does today — checked, not
+    assumed, and pinned by a test — so this runs against no traffic yet and
+    is not claimed as an active control.
+  - **No injection detection.** No heuristics, no phrase lists, no test,
+    because no promise. Injection via result stays open; the defence is the
+    result reaching the model marked as untrusted data, which is the MCP
+    client's property and not this gateway's.
+- ✅ **Token-passthrough prevention — satisfied structurally, verified
+  10 Sep 2026.** The HTTP-facing OAuth endpoint this item was waiting on
+  now exists, so the condition was checked rather than left pending.
+
+  Nothing forwards the analyst's token because **nothing downstream holds
+  it**. `access.TokenVerifier` consumes the raw token at the edge and
+  returns an `Identity`; `gateway.Caller` carries that `Identity` and a
+  source address and no credential; `Dispatch` is never given one; and the
+  child environment is built from nothing rather than appended to
+  `os.Environ` (`internal/gateway/stdio`, and see `access_test.go`'s
+  `TestIdentity_CarriesNoCredentialField`).
+
+  That distinction is the point: this is not "the code remembers not to
+  forward it", which decays. There is no variable to forward. The MCP
+  spec's MUST is met by the shape of the types, and the fitness functions
+  keep the shape.
 
 ## Continuous, not phased
 

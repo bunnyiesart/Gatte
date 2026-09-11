@@ -43,6 +43,21 @@ const defaultConfigPath = "mcp-gateway.toml"
 // process per restart.
 const shutdownTimeout = 15 * time.Second
 
+// refreshTimeout bounds one round of periodic re-observation: a
+// `tools/list` against each connected upstream (gateway.Refresh).
+//
+// It is the same order as the startup connect and for the same reason -- a
+// backend that accepts the request and then stalls must not hold the loop
+// forever. If it is exceeded, the upstreams that did answer are refreshed
+// and the ones that did not keep their previous observation, which is
+// exactly what Refresh does with any other listing failure.
+//
+// Ticks that arrive while a refresh is still running are dropped rather
+// than queued (the loop is a single goroutine calling Refresh
+// synchronously), so a refresh interval shorter than this cannot pile
+// overlapping rounds onto the backends.
+const refreshTimeout = 30 * time.Second
+
 // readHeaderTimeout bounds how long a client may take to send its request
 // headers. Set, unlike ReadTimeout and WriteTimeout, because MCP over
 // streamable HTTP legitimately holds a response open for the length of a
@@ -59,18 +74,28 @@ const readHeaderTimeout = 10 * time.Second
 // registry, an address already in use) and exitOK for a clean shutdown.
 func cmdServe(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
-	fs.SetOutput(stderr)
+	// Discarded and Usage neutered for the reason opFlagSet gives: the flag
+	// package renders -h and a parse error through the same writer, and
+	// opParse is where the two are told apart.
+	fs.SetOutput(io.Discard)
+	fs.Usage = func() {}
 	configPath := fs.String("config", defaultConfigPath, "path to the TOML configuration file")
-	fs.Usage = func() {
-		fmt.Fprint(stderr, "Usage: mcp-gateway serve [-config path]\n\nRuns the gateway until SIGINT or SIGTERM.\n\nFlags:\n")
+	// serve builds its own flag set rather than using opFlagSet -- it takes
+	// no other operator flags -- so its usage renderer is written out here.
+	// It still goes through opParse, which is what maps -h onto exit 0 and
+	// onto stdout.
+	usage := func(w io.Writer) {
+		fmt.Fprint(w, "Usage: mcp-gateway serve [-config path]\n\nRuns the gateway until SIGINT or SIGTERM.\n\nFlags:\n")
+		fs.SetOutput(w)
 		fs.PrintDefaults()
+		fs.SetOutput(io.Discard)
 	}
-	if err := fs.Parse(args); err != nil {
-		return exitCannotRun
+	if code, ok := opParse(fs, args, stdout, stderr, usage); !ok {
+		return code
 	}
 	if fs.NArg() > 0 {
 		fmt.Fprintf(stderr, "serve: unexpected argument %q\n", fs.Arg(0))
-		fs.Usage()
+		usage(stderr)
 		return exitCannotRun
 	}
 
@@ -116,6 +141,16 @@ type serveStack struct {
 	gateway  *gateway.Gateway
 	summary  startupSummary
 
+	// refreshEvery is how often the connected upstreams are re-observed.
+	// Always positive -- config.Validate refuses anything else, because
+	// there is deliberately no value that turns re-observation off.
+	refreshEvery time.Duration
+
+	// maxResultBytes is the ceiling on one tool result, as the Gateway was
+	// built with it. Always positive, for the same reason and by the same
+	// rule as refreshEvery (design/adr/0014).
+	maxResultBytes int64
+
 	// closers release what buildServer acquired, and are run in reverse.
 	closers []func()
 }
@@ -152,15 +187,25 @@ func buildServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) (
 	// First line, before anything can fail: an operator reading a log that
 	// stops three lines down still learns which address this process was
 	// told to expose and whether signature enforcement is on.
+	stack.maxResultBytes = cfg.Response.MaxResultBytes()
 	logger.Info("mcp-gateway: starting",
 		slog.String("version", buildVersion),
 		slog.String("listen", cfg.Listen),
 		slog.Bool("require_signed", cfg.Signer.SignaturesRequired()),
+		// Stated at boot because a result refused for size looks, from the
+		// analyst's side, exactly like a backend that broke. Whoever is
+		// paged needs the number it hit, and the alternative is reading it
+		// out of a config file they may not have in front of them.
+		slog.Int64("max_result_bytes", stack.maxResultBytes),
 	)
 	// Before anything is opened, spawned or connected: if this process must
 	// not be reachable, finding that out after building the whole stack
 	// would mean spawning every upstream subprocess only to exit.
-	if err := requireLoopbackBind(cfg.Listen); err != nil {
+	//
+	// config.Validate applies the same predicate, so a file that loaded has
+	// already passed it; this is the composition root refusing to act on a
+	// Config nobody validated rather than a second opinion about the rule.
+	if err := config.RequireLoopbackBind(cfg.Listen); err != nil {
 		return fail(err)
 	}
 
@@ -223,7 +268,7 @@ func buildServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) (
 		Audit:      aud,
 		Policy:     policy,
 		Dialer:     gwstdio.New(gwstdio.WithClientInfo("mcp-gateway", buildVersion)),
-		// Wiring these is ISSUE-18 plus ADR-0010, and they are the reason
+		// Wiring these is GAB-18 plus ADR-0010, and they are the reason
 		// gateway.verifyEntry exists: without a Store the gateway checks no
 		// entry's integrity at all, and without a Verifier it would check
 		// each signature against the key that arrived with it, which checks
@@ -231,7 +276,12 @@ func buildServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) (
 		Signatures:    sigs,
 		Verifier:      sigVerifier,
 		RequireSigned: cfg.Signer.SignaturesRequired(),
-		Logger:        logger,
+		// design/adr/0014. The Gateway resolves a missing or nonsensical
+		// value to its own default, so this cannot switch the ceiling off;
+		// passing it explicitly is what makes the configured number the one
+		// in effect rather than the one in the file.
+		MaxResultBytes: stack.maxResultBytes,
+		Logger:         logger,
 	})
 	if err != nil {
 		return fail(err)
@@ -298,6 +348,7 @@ func buildServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) (
 		ErrorLog: slog.NewLogLogger(logger.Handler(), slog.LevelWarn),
 	}
 
+	stack.refreshEvery = cfg.Quarantine.RefreshEvery()
 	stack.summary = newStartupSummary(connectCtx, cfg, listener.Addr().String(), reg, quar, startedAt, connErr)
 	return stack, nil
 }
@@ -312,6 +363,27 @@ func buildServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) (
 // invisible until the host runs out of processes.
 func (s *serveStack) run(ctx context.Context, logger *slog.Logger) int {
 	s.summary.log(logger)
+
+	// Started before the listener accepts anything: the first analyst call
+	// and the first re-observation are independent, and there is no reason
+	// to serve for one interval with the loop not yet running.
+	//
+	// Its own cancel, derived from ctx, so that both ways out of this
+	// function stop it -- the signal path cancels ctx, and the
+	// server-died path below cancels this. Waiting for it to exit before
+	// returning is not tidiness: run's caller closes the database on the
+	// way out, and a refresh still writing observations into a closed
+	// database is a confusing error at the worst possible moment.
+	refreshCtx, stopRefresh := context.WithCancel(ctx)
+	refreshDone := make(chan struct{})
+	go func() {
+		defer close(refreshDone)
+		s.refreshLoop(refreshCtx, logger)
+	}()
+	defer func() {
+		stopRefresh()
+		<-refreshDone
+	}()
 
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- s.server.Serve(s.listener) }()
@@ -355,6 +427,107 @@ func (s *serveStack) run(ctx context.Context, logger *slog.Logger) int {
 	return code
 }
 
+// refreshLoop re-observes the connected upstreams every refreshEvery until
+// ctx is cancelled.
+//
+// This loop is the whole of GAB-23's fix at the process level, and what it
+// exists to prevent is worth stating where somebody will read it while
+// deciding whether to keep it. Before it, quarantine.Store.Observe was
+// reachable only from gateway.Connect, and Connect ran once, at boot: a
+// backend that rewrote an approved tool's description was re-measured only
+// when a human restarted the process, which for a SOC gateway can be weeks.
+// The control built to catch rug pulls (OWASP MCP03) could not fire while
+// the gateway was doing its job.
+//
+// **The window is not closed, only bounded.** Between two ticks a tool
+// poisoned upstream is still served under its old approval, for up to
+// quarantine.refresh_interval. Shortening it means lowering the interval
+// and paying one `tools/list` per upstream more often. That is the trade
+// ADR-0013 makes explicitly; it is not a bug and there is no version of
+// this that reaches zero.
+//
+// A failed round changes nothing and brings nothing down -- see
+// gateway.Refresh -- so this loop never stops on an error. It logs and
+// waits for the next tick, because the alternative (a loop that gives up
+// after a bad night) is a security control that silently stopped.
+func (s *serveStack) refreshLoop(ctx context.Context, logger *slog.Logger) {
+	logger.Info("mcp-gateway: re-observing upstream tool definitions periodically",
+		slog.Duration("every", s.refreshEvery),
+		slog.Duration("timeout", refreshTimeout),
+	)
+
+	ticker := time.NewTicker(s.refreshEvery)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+
+		// Bounded, and derived from ctx so a shutdown cuts a round in
+		// flight rather than waiting for a stalled backend to answer.
+		refreshCtx, cancel := context.WithTimeout(ctx, refreshTimeout)
+		err := s.gateway.Refresh(refreshCtx)
+		cancel()
+
+		switch {
+		case err == nil:
+		case errors.Is(err, gateway.ErrClosed):
+			// Shutdown won the race with this tick. Nothing to report and
+			// nothing left to refresh.
+			return
+		default:
+			// Partial by construction: gateway.Refresh has already logged
+			// each upstream's own failure with its detail, and every
+			// upstream that did answer has been re-observed. One line here
+			// so the failure is visible as a recurring event rather than
+			// only as scattered per-upstream errors.
+			logger.Error("mcp-gateway: some upstreams were not re-observed; their previous tool definitions and quarantine state stand",
+				slog.String("detail", err.Error()))
+		}
+
+		// Rides the same tick as the re-observation, and for the same
+		// reason: both answer "is what we are serving still what we
+		// think?", and both bound a window rather than closing one.
+		//
+		// Run even when Refresh above failed. The two are independent --
+		// a backend that would not answer `tools/list` says nothing about
+		// whether its credential was rotated underneath it -- and a
+		// rotation is exactly the kind of thing somebody does during the
+		// incident that also makes a backend flaky.
+		s.reportCredentialDrift(refreshCtx, logger)
+	}
+}
+
+// reportCredentialDrift says, once per tick, which connected upstreams are
+// still running on a credential the vault no longer holds.
+//
+// It is a Warn and not an Error because nothing is broken: the upstream is
+// serving fine, on the old value. That is precisely the problem -- see
+// gateway.CredentialDrift. The operator's remedy today is a restart; there
+// is deliberately no automatic reconnect here, because silently re-dialing
+// a backend during an incident is a bigger decision than this loop is
+// entitled to make (the reconnect command is the other half of GAB-20).
+func (s *serveStack) reportCredentialDrift(ctx context.Context, logger *slog.Logger) {
+	drift := s.gateway.CredentialDrift(ctx)
+	if len(drift) == 0 {
+		return
+	}
+
+	// Upstream name and variable name only. Neither is a secret, and
+	// nothing derived from a value appears here or anywhere else.
+	pairs := make([]string, 0, len(drift))
+	for _, d := range drift {
+		pairs = append(pairs, d.Upstream+"."+d.VarName)
+	}
+	logger.Warn("mcp-gateway: a credential was rotated in the vault but the connected upstream is STILL USING THE OLD VALUE -- rotation takes effect at the next dial, so restart the gateway to make it real",
+		slog.Any("credentials", pairs),
+		slog.Int("count", len(pairs)),
+	)
+}
+
 // startupSummary is what an operator is told once the process is about to
 // serve: enough to answer "is this thing actually working, and how
 // exposed is it?" without reading the configuration file.
@@ -383,6 +556,55 @@ type startupSummary struct {
 	// know required *by whom*, and a list that shrank to one during a
 	// rotation is worth seeing before the last key is retired.
 	TrustedKeys int
+	// Roles is what each configured role reaches at this boot. See
+	// roleReach.
+	Roles []roleReach
+}
+
+// roleReach is one role's answer to "does this actually grant anything?".
+//
+// It exists because a role can be perfectly well-formed and grant nothing
+// at all. Matching is exact and there is no wildcard, so a role naming
+// tools that no connected upstream advertises authorizes an empty set --
+// no error, no log line, and the first report of it is an analyst denied
+// mid-incident (GAB-30 item 3). config.Validate now refuses the common way
+// to write that (an un-namespaced name), but it cannot refuse a correctly
+// shaped name for a tool that is simply not there: a renamed backend tool,
+// an upstream that did not come up, a typo inside the namespace.
+type roleReach struct {
+	// Name is the role as the file names it.
+	Name string
+	// Granted is how many tools the file lists for this role.
+	Granted int
+	// Observed is how many of those name a tool this gateway actually saw
+	// on a connected upstream during this boot.
+	//
+	// It is NOT how many are callable. Tool Quarantine approval is a
+	// separate gate, and a tool that was observed but is still pending
+	// counts here -- the question this answers is "do these names refer to
+	// anything", not "may anyone call them".
+	Observed int
+}
+
+// roleReaches resolves each role against the namespaced tool names this
+// boot observed.
+//
+// Matched exactly, with no normalisation, because that is how
+// access.Role.Allows matches: a count computed by a looser rule than the
+// one the request path uses would be a second opinion, free to disagree
+// with the gate it is reporting on.
+func roleReaches(roles []config.Role, observed map[string]bool) []roleReach {
+	out := make([]roleReach, 0, len(roles))
+	for _, r := range roles {
+		reach := roleReach{Name: r.Name, Granted: len(r.Tools)}
+		for _, tool := range r.Tools {
+			if observed[tool] {
+				reach.Observed++
+			}
+		}
+		out = append(out, reach)
+	}
+	return out
 }
 
 // newStartupSummary gathers the counts. Every read here is best-effort:
@@ -399,7 +621,7 @@ func newStartupSummary(
 ) startupSummary {
 	s := startupSummary{
 		Addr:                addr,
-		Loopback:            isLoopbackAddr(addr),
+		Loopback:            config.IsLoopbackAddr(addr),
 		UpstreamsRegistered: -1,
 		ToolsDiscovered:     -1,
 		ToolsServable:       -1,
@@ -411,8 +633,9 @@ func newStartupSummary(
 		s.UpstreamsRegistered = len(entries)
 		s.UpstreamsFailed = failedUpstreams(entries, connErr)
 	}
-	if discovered, servable, err := countTools(ctx, quar, startedAt); err == nil {
-		s.ToolsDiscovered, s.ToolsServable = discovered, servable
+	if boot, err := countTools(ctx, quar, startedAt); err == nil {
+		s.ToolsDiscovered, s.ToolsServable = boot.Discovered, boot.Servable
+		s.Roles = roleReaches(cfg.Roles, boot.Names)
 	}
 	return s
 }
@@ -460,10 +683,50 @@ func (s startupSummary) log(logger *slog.Logger) {
 		logger.Warn("mcp-gateway: no discovered tool is approved in Tool Quarantine, so every analyst will see an empty tool list until an operator approves one",
 			slog.Int("awaiting_approval", s.ToolsDiscovered))
 	}
+
+	if len(s.Roles) > 0 {
+		// One line for all of them: with two to four roles this is a
+		// sentence, and a line per role would push the warning below off
+		// the top of a small terminal.
+		parts := make([]string, 0, len(s.Roles))
+		var dead []string
+		for _, r := range s.Roles {
+			parts = append(parts, fmt.Sprintf("%s %d/%d", r.Name, r.Observed, r.Granted))
+			// Only a role that asks for tools and reaches none. A role
+			// granting nothing on purpose (config.example.toml ships one,
+			// for someone who may authenticate but may not act) is a
+			// documented shape, and warning about it is how a warning
+			// stops being read.
+			if r.Granted > 0 && r.Observed == 0 {
+				dead = append(dead, r.Name)
+			}
+		}
+		logger.Info("mcp-gateway: role reach (observed/granted tools per role; observed counts tools seen this boot, approved or not)",
+			slog.String("roles", strings.Join(parts, ", ")))
+		if len(dead) > 0 && s.ToolsDiscovered > 0 {
+			// Suppressed when nothing was observed at all: with no
+			// upstream up, every role reaches nothing and the line above
+			// about failed upstreams is the real news.
+			logger.Warn("mcp-gateway: a role grants tools that match nothing this gateway observed, so it authorizes nothing -- check the names against `mcp-gateway tool list` (matching is exact and namespaced, with no wildcard)",
+				slog.Any("roles", dead))
+		}
+	}
 }
 
-// countTools reports how many tools this boot's Connect observed and how
-// many of those are servable.
+// bootTools is what the Tool Quarantine holds for this boot: the counts the
+// summary reports, and the namespaced names the roles are resolved against.
+//
+// Names carries every tool observed this boot, servable or not, because the
+// question it answers is whether a role's tool names refer to anything real
+// -- see roleReach.Observed.
+type bootTools struct {
+	Discovered int
+	Servable   int
+	Names      map[string]bool
+}
+
+// countTools reports how many tools this boot's Connect observed, how many
+// of those are servable, and what they are called.
 //
 // "This boot" is decided by UpdatedAt: gateway.Connect hands every tool of
 // every upstream it brought up to quarantine.Store.Observe, and
@@ -478,21 +741,23 @@ func (s startupSummary) log(logger *slog.Logger) {
 // the single gate ADR-0007 rule 3 requires, and a second opinion here
 // would be a second implementation of it, free to drift from the one the
 // gateway enforces.
-func countTools(ctx context.Context, quar quarantine.Store, startedAt time.Time) (discovered, servable int, err error) {
+func countTools(ctx context.Context, quar quarantine.Store, startedAt time.Time) (bootTools, error) {
 	tools, err := quar.List(ctx, "")
 	if err != nil {
-		return 0, 0, err
+		return bootTools{}, err
 	}
+	boot := bootTools{Names: map[string]bool{}}
 	for _, t := range tools {
 		if t.UpdatedAt.Before(startedAt) {
 			continue
 		}
-		discovered++
+		boot.Discovered++
+		boot.Names[gateway.Namespaced(t.ServerName, t.ToolName)] = true
 		if t.Usable() {
-			servable++
+			boot.Servable++
 		}
 	}
-	return discovered, servable, nil
+	return boot, nil
 }
 
 // failedUpstreams names the registered upstreams that Connect reported a
@@ -524,55 +789,11 @@ func failedUpstreams(entries []registry.UpstreamServer, connErr error) []string 
 	return failed
 }
 
-// requireLoopbackBind refuses to start on anything but loopback
-// (design/adr/0011-network-exposure-and-tls-termination.md item 1).
-//
-// This used to warn and continue. It does not any more, and the change is
-// the control: under ADR-0011 the gateway terminates no TLS and holds no
-// certificate, so a non-loopback bind is not a slightly weaker deployment
-// -- it is every analyst's bearer token crossing the network in cleartext,
-// along with the case data and IOCs behind it. A warning hands that
-// decision to whoever is in a hurry at the time.
-//
-// Reaching this gateway from another machine is a job for something in
-// front of it: a TLS-terminating reverse proxy sharing this jail, itself
-// reachable only over the VPN. That is why the message names the fix
-// rather than just the problem.
-//
-// There is deliberately no override flag. An `allow_insecure_bind` would
-// be switched on once "just to test" and never switched off -- the exact
-// mechanism by which require_signed would have rotted had ADR-0006 not
-// written its trigger down. If terminating TLS here ever becomes right,
-// that is an amendment to ADR-0011 with a real listen_tls, not a flag that
-// disables a check.
-func requireLoopbackBind(listen string) error {
-	if isLoopbackAddr(listen) {
-		return nil
-	}
-	// Note this also refuses an address that cannot be parsed: isLoopbackAddr
-	// returns false when SplitHostPort fails. "Cannot tell" must not read as
-	// "loopback" -- the same fail-closed reading ADR-0004 applies to a
-	// registry it cannot read.
-	return fmt.Errorf(
-		"listen: %q is not a loopback address, and this gateway refuses to be network-reachable directly (design/adr/0011)\n"+
-			"It terminates no TLS, so binding here would put every analyst's bearer token on the wire in cleartext.\n"+
-			"Set listen to 127.0.0.1:PORT and put a TLS-terminating reverse proxy in front of it, in this same jail.",
-		listen)
-}
-
-// isLoopbackAddr reports whether a host:port address is reachable only
-// from this machine. An address it cannot parse, and the wildcard bind, are
-// reported as not loopback: the fail-loud reading, since the cost of a
-// spurious warning is one log line and the cost of a missed one is an
-// unnoticed exposure.
-func isLoopbackAddr(addr string) bool {
-	host, _, err := net.SplitHostPort(addr)
-	if err != nil {
-		return false
-	}
-	if strings.EqualFold(host, "localhost") {
-		return true
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
-}
+// The loopback rule (ADR-0011 item 1) used to live here, as
+// requireLoopbackBind and isLoopbackAddr. It moved to
+// config.RequireLoopbackBind and config.IsLoopbackAddr: the set of
+// acceptable listen addresses is part of the configuration contract, and
+// while the predicate lived only in this file, `listen = "0.0.0.0:9443"`
+// passed config.Validate, worked in every operator subcommand, and killed
+// serve at the next restart -- the fourth instance of the GAB-30 shape.
+// Read that function for the reasoning; this file only applies it.

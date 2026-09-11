@@ -26,6 +26,8 @@ func cmdTool(args []string, stdout, stderr io.Writer) int {
 		return toolList(rest, stdout, stderr)
 	case "approve":
 		return toolApprove(rest, stdout, stderr)
+	case "revoke":
+		return toolRevoke(rest, stdout, stderr)
 	case "-h", "--help", "help":
 		toolUsage(stdout)
 		return exitOK
@@ -40,11 +42,16 @@ func toolUsage(w io.Writer) {
 	fmt.Fprint(w, `Usage:
   mcp-gateway tool list [-config FILE] [-server NAME] [-json]
   mcp-gateway tool approve [-config FILE] SERVER TOOL
+  mcp-gateway tool revoke [-config FILE] SERVER TOOL
 
 "list" is the approval queue: it shows every tool the gateway has observed,
 including the pending and changed ones, which are precisely the ones that
 need a human. A tool is usable only when an operator approved it AND the
 definition being advertised now still matches what was approved.
+
+"revoke" is the way back: it withdraws an approval and returns the tool to
+pending, so a running gateway stops serving it on the very next call. It
+does not need a restart and does not touch the upstream.
 
 Exit codes: 0 ok, 1 ran and found a problem, 2 could not run.
 `)
@@ -55,11 +62,10 @@ func toolList(args []string, stdout, stderr io.Writer) int {
 	fs, configPath := opFlagSet("tool list", stderr)
 	server := fs.String("server", "", "only show tools on this upstream server")
 	asJSON := fs.Bool("json", false, "print JSON instead of an aligned table")
-	fs.Usage = func() { toolUsage(stderr) }
-	if code, ok := opParse(fs, args); !ok {
+	if code, ok := opParse(fs, args, stdout, stderr, toolUsage); !ok {
 		return code
 	}
-	if !opNoArgs(fs, stderr) {
+	if !opNoArgs(fs, stderr, toolUsage) {
 		return exitCannotRun
 	}
 	return opRun(*configPath, stdout, stderr, func(e *opEnv) int {
@@ -140,9 +146,8 @@ func runToolList(e *opEnv, server string, asJSON bool) int {
 			changed = append(changed, t.ServerName+"."+t.ToolName)
 		}
 	}
-	if err := tw.Flush(); err != nil {
-		fmt.Fprintf(e.stderr, "writing table: %v\n", err)
-		return exitCannotRun
+	if !opFlushTable(tw, e.stderr) {
+		return exitProblem
 	}
 
 	fmt.Fprintf(e.stdout, "\n%d %s. USABLE is the gateway's own gate: a tool that is not usable is\nneither listed to clients nor dispatched.\n",
@@ -176,8 +181,7 @@ func runToolList(e *opEnv, server string, asJSON bool) int {
 // toolApprove approves one quarantined tool.
 func toolApprove(args []string, stdout, stderr io.Writer) int {
 	fs, configPath := opFlagSet("tool approve", stderr)
-	fs.Usage = func() { toolUsage(stderr) }
-	if code, ok := opParse(fs, args); !ok {
+	if code, ok := opParse(fs, args, stdout, stderr, toolUsage); !ok {
 		return code
 	}
 	if fs.NArg() != 2 {
@@ -218,7 +222,17 @@ func runToolApprove(e *opEnv, server, tool string) int {
 	// printed before the change, not after it.
 	switch before.Status {
 	case quarantine.StatusChanged:
-		printChangedWarning(e.stdout, name, before)
+		// The approval does not happen if the warning did not. This is the
+		// rug-pull decision point: approving here re-baselines a definition
+		// somebody rewrote after a human vetted it, and the only thing
+		// standing between the operator and that is the block below. An
+		// approval recorded after the explanation was lost to a full disk
+		// or a closed pipe is an approval nobody was actually shown the
+		// case for.
+		if !printChangedWarning(e.stdout, e.stderr, name, before) {
+			fmt.Fprintf(e.stderr, "\nNOT approved: %s is a CHANGED tool and the warning explaining what approving\nit would do could not be printed in full. Re-run this command somewhere the\noutput survives.\n", name)
+			return exitProblem
+		}
 	case quarantine.StatusApproved:
 		if before.Usable() {
 			fmt.Fprintf(e.stdout, "%s was already approved at exactly this definition (sha256:%s).\nNothing to do; it is usable.\n", name, before.ObservedHash)
@@ -239,9 +253,8 @@ func runToolApprove(e *opEnv, server, tool string) int {
 		fmt.Fprintf(tw, "  was\tpending (first seen %s)\n", opTime(before.FirstSeenAt))
 		fmt.Fprintf(tw, "  now\tapproved\n")
 		fmt.Fprintf(tw, "  approved fingerprint\tsha256:%s\n", after.ApprovedHash)
-		if err := tw.Flush(); err != nil {
-			fmt.Fprintf(e.stderr, "writing table: %v\n", err)
-			return exitCannotRun
+		if !opFlushTable(tw, e.stderr) {
+			return exitProblem
 		}
 		fmt.Fprint(e.stdout, "\nThat fingerprint is now the baseline. If this tool's name, description or\ninput schema changes on the upstream server, the gateway will mark it\nchanged at the next discovery and stop serving it until you look again.\n")
 	case quarantine.StatusChanged:
@@ -249,9 +262,8 @@ func runToolApprove(e *opEnv, server, tool string) int {
 		tw := opTable(e.stdout)
 		fmt.Fprintf(tw, "  previous baseline\tsha256:%s  (no longer accepted)\n", before.ApprovedHash)
 		fmt.Fprintf(tw, "  new baseline\tsha256:%s\n", after.ApprovedHash)
-		if err := tw.Flush(); err != nil {
-			fmt.Fprintf(e.stderr, "writing table: %v\n", err)
-			return exitCannotRun
+		if !opFlushTable(tw, e.stderr) {
+			return exitProblem
 		}
 		fmt.Fprint(e.stdout, "\nThe tool is usable again, and future changes are detected against the new\nbaseline -- not against the definition you originally approved.\n")
 	default:
@@ -272,6 +284,105 @@ func runToolApprove(e *opEnv, server, tool string) int {
 	return exitOK
 }
 
+// toolRevoke withdraws the approval on one quarantined tool.
+func toolRevoke(args []string, stdout, stderr io.Writer) int {
+	fs, configPath := opFlagSet("tool revoke", stderr)
+	if code, ok := opParse(fs, args, stdout, stderr, toolUsage); !ok {
+		return code
+	}
+	if fs.NArg() != 2 {
+		fmt.Fprint(stderr, "revoke takes exactly two arguments: the server name and the tool name\n\n")
+		toolUsage(stderr)
+		return exitCannotRun
+	}
+	server, tool := fs.Arg(0), fs.Arg(1)
+
+	return opRun(*configPath, stdout, stderr, func(e *opEnv) int {
+		return runToolRevoke(e, server, tool)
+	})
+}
+
+// runToolRevoke returns one tool to pending.
+//
+// This is the move an incident asks for -- "I no longer trust this tool,
+// stop serving it" -- and before ADR-0013 the console had no way to make
+// it: approval was one-way, and the only route back to pending was deleting
+// the database. The output is written to say plainly what did and did not
+// happen, because a revoke is easy to over-read: it stops this gateway
+// serving the tool, and it does nothing else at all.
+func runToolRevoke(e *opEnv, server, tool string) int {
+	q := e.tools()
+	name := server + "." + tool
+
+	// Read first, like approve does: what an operator needs to be told
+	// depends on the state before the transition, and Revoke returns the
+	// state after it.
+	before, err := q.Get(e.ctx(), server, tool)
+	switch {
+	case errors.Is(err, quarantine.ErrNotFound):
+		fmt.Fprintf(e.stderr, "no quarantine entry for tool %q on server %q.\n\nThere is nothing to revoke: this gateway has never observed that tool. See\nwhat it has:\n\n    mcp-gateway tool list -server %s\n", tool, server, server)
+		return exitProblem
+	case errors.Is(err, quarantine.ErrInvalidStatus):
+		fmt.Fprintf(e.stderr, "the stored quarantine entry for %s has an unrecognised status: %v\nThat row is corrupt or was hand-edited. Refusing to touch it.\n", name, err)
+		return exitProblem
+	case err != nil:
+		fmt.Fprintf(e.stderr, "quarantine: %v\n", err)
+		return exitCannotRun
+	}
+
+	if before.Status == quarantine.StatusPending {
+		fmt.Fprintf(e.stdout, "%s was not approved -- it is already pending, and already not being served.\nNothing to do.\n", name)
+		return exitOK
+	}
+
+	after, err := q.Revoke(e.ctx(), server, tool)
+	switch {
+	case errors.Is(err, quarantine.ErrChangedIsNotRevocable):
+		// Refused, and the message has to explain a refusal that sounds
+		// unhelpful until you know what `changed` is holding. See
+		// quarantine.Tool.Revoked.
+		fmt.Fprintf(e.stderr, "%s is CHANGED, and a changed tool cannot be revoked.\n\nIt is already not being served, so revoking would stop nothing. What it\nwould do is relabel the entry as pending -- as though this tool were merely\nnew and unreviewed -- and that would erase the one record the gateway keeps\nof a definition being replaced after a human approved it. That record is\nwhat makes the rug pull visible in:\n\n    mcp-gateway tool list -server %s\n\nIf the new definition is legitimate, approve it (which re-baselines to it).\nIf it is not, leave the tool exactly as it is: changed, unusable, and\nvisible.\n", name, server)
+		return exitProblem
+	case err != nil:
+		fmt.Fprintf(e.stderr, "quarantine: revoking %s: %v\n", name, err)
+		return exitCannotRun
+	}
+
+	fmt.Fprintf(e.stdout, "Revoked %s.\n\n", name)
+	tw := opTable(e.stdout)
+	fmt.Fprintf(tw, "  was\tapproved at sha256:%s\n", before.ApprovedHash)
+	fmt.Fprintf(tw, "  now\t%s\n", after.Status)
+	fmt.Fprintf(tw, "  still observed as\tsha256:%s\n", after.ObservedHash)
+	if !opFlushTable(tw, e.stderr) {
+		return exitProblem
+	}
+
+	fmt.Fprintf(e.stdout, `
+It is no longer served: a running gateway re-reads this decision on every
+listing and every call, so the tool is gone from analysts' tool lists and
+uncallable from the next call onwards. No restart, no reconnection.
+
+What this did NOT do: it did not tell the upstream anything, did not stop
+the server from advertising the tool, and did not delete what the gateway
+has seen -- the observed fingerprint above is kept. Revoking withdraws a
+human judgement; it does not un-see a tool.
+
+Approving it again is the way back, and it re-baselines to whatever the
+upstream is advertising at that moment:
+
+    mcp-gateway tool approve %s %s
+`, server, tool)
+
+	if after.Usable() {
+		// Should not happen: Revoked() returns a pending tool and pending is
+		// never usable. Say so loudly rather than let an operator believe a
+		// tool stopped being served when it did not.
+		fmt.Fprintf(e.stdout, "\nWARNING: %s is still usable after being revoked (status %s). The gateway\nwill keep serving it. This is a bug -- report it.\n", name, after.Status)
+		return exitProblem
+	}
+	return exitOK
+}
+
 // printChangedWarning explains, before the approval happens, what
 // approving a changed tool actually does.
 //
@@ -282,7 +393,12 @@ func runToolApprove(e *opEnv, server, tool string) int {
 // kept, and says that approving moves the baseline forward. This is the
 // rug-pull decision point, and "approved" on its own would be too quiet
 // for it.
-func printChangedWarning(w io.Writer, name string, before quarantine.Tool) {
+//
+// It reports whether the whole warning reached w. The Flush used to be
+// ignored here, which meant a half-printed warning was indistinguishable
+// from a warning nobody needed -- see the caller for why that decides
+// whether the approval happens at all.
+func printChangedWarning(w, stderr io.Writer, name string, before quarantine.Tool) bool {
 	fmt.Fprintf(w, "CHANGED TOOL -- READ THIS BEFORE APPROVING\n\n")
 	tw := opTable(w)
 	fmt.Fprintf(tw, "  tool\t%s\n", name)
@@ -290,7 +406,9 @@ func printChangedWarning(w io.Writer, name string, before quarantine.Tool) {
 	fmt.Fprintf(tw, "  change noticed\t%s\n", opTime(before.UpdatedAt))
 	fmt.Fprintf(tw, "  fingerprint approved before\tsha256:%s\n", before.ApprovedHash)
 	fmt.Fprintf(tw, "  fingerprint being approved now\tsha256:%s\n", before.ObservedHash)
-	tw.Flush()
+	if !opFlushTable(tw, stderr) {
+		return false
+	}
 	fmt.Fprint(w, `
 Something in this tool's name, description or input schema changed after an
 operator approved it. The quarantine stores fingerprints, not definitions,
@@ -306,4 +424,5 @@ re-baselines this tool to whatever the server is advertising right now, and
 the previous definition does not come back. Read the tool's current
 description and input schema on the upstream server first, if you have not.
 `)
+	return true
 }

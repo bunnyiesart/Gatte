@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"slices"
 	"strings"
@@ -35,9 +36,14 @@ import (
 //     reports the *names* of the variables the child was spawned with, which
 //     is the only way to observe an inherited variable that credcheck knows
 //     nothing about.
+//   - outputfixture is this package's own fixture (testdata/outputfixture);
+//     it declares an output schema and returns structured content, which no
+//     lab backend does, so it is the only traffic that exercises that half
+//     of a result at all (design/adr/0014).
 var fixtureBinaries struct {
-	casemgmt   string
-	envfixture string
+	casemgmt      string
+	envfixture    string
+	outputfixture string
 }
 
 func TestMain(m *testing.M) {
@@ -58,6 +64,7 @@ func TestMain(m *testing.M) {
 
 		fixtureBinaries.casemgmt = build("casemgmt", "../../../lab/servers/casemgmt")
 		fixtureBinaries.envfixture = build("envfixture", "./testdata/envfixture")
+		fixtureBinaries.outputfixture = build("outputfixture", "./testdata/outputfixture")
 
 		return m.Run()
 	}())
@@ -80,8 +87,8 @@ func newSecret(t *testing.T) string {
 	return hex.EncodeToString(buf)
 }
 
-// casemgmtSpec is the upstream spec for the compiled casemgmt mock.
-func casemgmtSpec() gateway.UpstreamSpec {
+// irisSpec is the upstream spec for the compiled casemgmt mock.
+func irisSpec() gateway.UpstreamSpec {
 	return gateway.UpstreamSpec{Name: "casemgmt", Transport: "stdio", Command: fixtureBinaries.casemgmt}
 }
 
@@ -128,7 +135,7 @@ func firstText(t *testing.T, res gateway.Result) string {
 }
 
 func TestDialListsToolsWithSchemasIntact(t *testing.T) {
-	up := dial(t, New(), casemgmtSpec(), nil)
+	up := dial(t, New(), irisSpec(), nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 	defer cancel()
@@ -185,7 +192,7 @@ func TestDialListsToolsWithSchemasIntact(t *testing.T) {
 
 func TestCallToolRoundTripsInjectedCredential(t *testing.T) {
 	secret := newSecret(t)
-	up := dial(t, New(), casemgmtSpec(), map[string]string{
+	up := dial(t, New(), irisSpec(), map[string]string{
 		"MOCK_SECRET": secret,
 		"MOCK_EXPECT": secret,
 	})
@@ -222,7 +229,7 @@ func TestCallToolRoundTripsInjectedCredential(t *testing.T) {
 // hands back is searched for the literal value.
 func TestSecretNeverCrossesTheAPIBoundary(t *testing.T) {
 	secret := newSecret(t)
-	up := dial(t, New(), casemgmtSpec(), map[string]string{
+	up := dial(t, New(), irisSpec(), map[string]string{
 		"MOCK_SECRET": secret,
 		"MOCK_EXPECT": secret,
 	})
@@ -485,7 +492,7 @@ func TestDialRejectsEnvNameThatSmugglesAValue(t *testing.T) {
 	defer cancel()
 
 	secret := newSecret(t)
-	up, err := New().Dial(ctx, casemgmtSpec(), map[string]string{"TOKEN=" + secret: "x"})
+	up, err := New().Dial(ctx, irisSpec(), map[string]string{"TOKEN=" + secret: "x"})
 	if err == nil {
 		_ = up.Close()
 		t.Fatal("Dial accepted an environment variable name containing \"=\"")
@@ -504,7 +511,7 @@ func TestCloseIsIdempotentAndCallsFailAfterClose(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 	defer cancel()
 
-	up, err := New().Dial(ctx, casemgmtSpec(), nil)
+	up, err := New().Dial(ctx, irisSpec(), nil)
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
@@ -574,27 +581,27 @@ func mapKeys[K comparable, V any](m map[K]V) func(func(K) bool) {
 	}
 }
 
-// TestRawSchemaPassesRawJSONThrough covers the branches of rawSchema that a
+// TestRawJSONPassesRawJSONThrough covers the branches of rawJSON that a
 // live dial does not reach today (the SDK hands us a decoded map), so that
 // a future SDK version that starts handing back json.RawMessage still gets
 // byte-for-byte pass-through rather than a re-encode.
-func TestRawSchemaPassesRawJSONThrough(t *testing.T) {
+func TestRawJSONPassesRawJSONThrough(t *testing.T) {
 	// Deliberately non-canonical: keys out of alphabetical order, odd
 	// spacing. Raw input must come out exactly as it went in.
 	raw := json.RawMessage(`{"type":"object", "properties":{"b":{},"a":{}}}`)
-	got, err := rawSchema(raw)
+	got, err := rawJSON(raw)
 	if err != nil {
-		t.Fatalf("rawSchema: %v", err)
+		t.Fatalf("rawJSON: %v", err)
 	}
 	if string(got) != string(raw) {
-		t.Errorf("rawSchema reformatted a raw schema:\n got %s\nwant %s", got, raw)
+		t.Errorf("rawJSON reformatted a raw schema:\n got %s\nwant %s", got, raw)
 	}
 	if &got[0] == &raw[0] {
-		t.Error("rawSchema returned an alias of its input rather than a copy")
+		t.Error("rawJSON returned an alias of its input rather than a copy")
 	}
 
-	if got, err := rawSchema(nil); err != nil || got != nil {
-		t.Errorf("rawSchema(nil) = %s, %v; want nil, nil", got, err)
+	if got, err := rawJSON(nil); err != nil || got != nil {
+		t.Errorf("rawJSON(nil) = %s, %v; want nil, nil", got, err)
 	}
 }
 
@@ -629,4 +636,202 @@ func TestNewAppliesOptions(t *testing.T) {
 		t.Error("DefaultInheritedEnv returned the package's own slice; mutating it changed the default policy")
 	}
 	_ = fmt.Sprint(names)
+}
+
+// ---------------------------------------------------------------------------
+// Output schemas and structured content (design/adr/0014)
+// ---------------------------------------------------------------------------
+
+// outputFixtureSpec is the upstream spec for the compiled outputfixture.
+func outputFixtureSpec() gateway.UpstreamSpec {
+	return gateway.UpstreamSpec{Name: "outputfixture", Transport: "stdio", Command: fixtureBinaries.outputfixture}
+}
+
+// TestDialCarriesADeclaredOutputSchema: the gateway can only hold a result
+// to a contract it was told about, so a dropped OutputSchema is a control
+// that silently never runs -- the GAB-18 and GAB-24 failure, twice
+// already paid for in this project.
+func TestDialCarriesADeclaredOutputSchema(t *testing.T) {
+	up := dial(t, New(), outputFixtureSpec(), nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+
+	defs, err := up.ListTools(ctx)
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	byName := make(map[string]gateway.ToolDef, len(defs))
+	for _, def := range defs {
+		byName[def.Name] = def
+	}
+
+	ok, found := byName["structured_ok"]
+	if !found {
+		t.Fatalf("ListTools did not return structured_ok; got %v", slices.Sorted(mapKeys(byName)))
+	}
+	if len(ok.OutputSchema) == 0 {
+		t.Fatal("structured_ok declares an output schema and it did not survive the dial")
+	}
+	var schema struct {
+		Type       string                     `json:"type"`
+		Required   []string                   `json:"required"`
+		Properties map[string]json.RawMessage `json:"properties"`
+	}
+	if err := json.Unmarshal(ok.OutputSchema, &schema); err != nil {
+		t.Fatalf("output schema is not valid JSON (%s): %v", ok.OutputSchema, err)
+	}
+	if schema.Type != "object" {
+		t.Errorf("output schema type = %q, want \"object\"", schema.Type)
+	}
+	if _, has := schema.Properties["case_id"]; !has {
+		t.Errorf("output schema lost its case_id property: %s", ok.OutputSchema)
+	}
+	if !slices.Contains(schema.Required, "case_id") {
+		t.Errorf("output schema lost its required list: %s", ok.OutputSchema)
+	}
+}
+
+// TestListToolsReportsNoOutputSchemaWhenTheUpstreamDeclaresNone pins the
+// other half, and it is the case that matters in production today: the lab
+// casemgmt backend declares no output schema, and nothing on this path may
+// invent one. A synthesized schema would be a contract nobody published
+// and an operator never approved, enforced against every later answer.
+func TestListToolsReportsNoOutputSchemaWhenTheUpstreamDeclaresNone(t *testing.T) {
+	up := dial(t, New(), irisSpec(), nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+
+	defs, err := up.ListTools(ctx)
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	for _, def := range defs {
+		if len(def.OutputSchema) != 0 {
+			t.Errorf("casemgmt tool %q came back with an output schema (%s); the backend declares none",
+				def.Name, def.OutputSchema)
+		}
+	}
+}
+
+// TestCallToolCarriesStructuredContentUnaltered covers both answers the
+// fixture can give, and the second is the important one.
+//
+// The dialer's job is to carry what the upstream said, exactly, including
+// when what it said violates the upstream's own published contract.
+// Judging that is the Gateway Endpoint's job (gateway.checkResult); an
+// adapter that repaired or dropped a non-conforming result here would
+// disarm the check one layer up and leave its tests passing against
+// traffic no backend ever produces.
+func TestCallToolCarriesStructuredContentUnaltered(t *testing.T) {
+	up := dial(t, New(), outputFixtureSpec(), nil)
+
+	for _, tc := range []struct{ tool, want string }{
+		{tool: "structured_ok", want: `{"case_id":"7"}`},
+		{tool: "structured_bad", want: `{"case_id":7}`},
+	} {
+		t.Run(tc.tool, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+			defer cancel()
+
+			res, err := up.CallTool(ctx, tc.tool, nil)
+			if err != nil {
+				t.Fatalf("CallTool(%q): %v", tc.tool, err)
+			}
+			if res.IsError {
+				t.Fatalf("CallTool(%q) reported a tool-level error: %s", tc.tool, res.Content)
+			}
+			if len(res.StructuredContent) == 0 {
+				t.Fatalf("CallTool(%q) dropped the structured content the fixture sent", tc.tool)
+			}
+			var got, want any
+			if err := json.Unmarshal(res.StructuredContent, &got); err != nil {
+				t.Fatalf("structured content is not valid JSON (%s): %v", res.StructuredContent, err)
+			}
+			if err := json.Unmarshal([]byte(tc.want), &want); err != nil {
+				t.Fatalf("test fixture expectation is not valid JSON: %v", err)
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Errorf("structured content = %s, want %s", res.StructuredContent, tc.want)
+			}
+		})
+	}
+}
+
+// TestCallToolReportsNoStructuredContentWhenThereIsNone: a result with no
+// structuredContent must arrive as nil and not as, say, a JSON null. The
+// gateway reads emptiness as "the upstream sent none", and a four-byte
+// "null" would be both a schema violation and four bytes counted against
+// the size ceiling.
+//
+// The fixture is used rather than a lab backend because every lab backend
+// sends structured content -- see
+// TestLabBackendsSendStructuredContentWithoutDeclaringASchema, which
+// records that surprise where it belongs.
+func TestCallToolReportsNoStructuredContentWhenThereIsNone(t *testing.T) {
+	up := dial(t, New(), outputFixtureSpec(), nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+
+	res, err := up.CallTool(ctx, "no_structure", nil)
+	if err != nil {
+		t.Fatalf("CallTool(no_structure): %v", err)
+	}
+	if len(res.StructuredContent) != 0 {
+		t.Errorf("StructuredContent = %s, want nothing: the backend sent none", res.StructuredContent)
+	}
+	if len(res.Content) == 0 {
+		t.Error("the content blocks went missing along with the structured content")
+	}
+}
+
+// TestLabBackendsSendStructuredContentWithoutDeclaringASchema records a
+// fact about this fleet that is easy to get backwards, and that changes
+// what the size ceiling is actually measuring.
+//
+// design/adr/0014 checked that no backend declares an output schema, and
+// that is true. It does not follow that no backend sends structured
+// content: the SDK's generic AddTool fills structuredContent in from
+// whatever the handler returns, so every one of these tools sends the same
+// payload twice -- once as a JSON text block and once as structured
+// content -- while declaring no contract for either.
+//
+// Two consequences, both worth having pinned by a test rather than
+// rediscovered. The gateway forwards both halves, so dropping structured
+// content would be silent data loss; and the size ceiling counts both, so
+// a backend of this shape spends roughly twice its payload against the
+// limit. Neither is a defect, and neither is guessable from the ADR.
+func TestLabBackendsSendStructuredContentWithoutDeclaringASchema(t *testing.T) {
+	up := dial(t, New(), irisSpec(), nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+
+	res, err := up.CallTool(ctx, "list_cases", nil)
+	if err != nil {
+		t.Fatalf("CallTool(list_cases): %v", err)
+	}
+	if len(res.StructuredContent) == 0 {
+		t.Fatal("casemgmt.list_cases sent no structured content; if the lab mocks changed shape, " +
+			"the note above and the size arithmetic that depends on it need re-reading")
+	}
+	// Compared as values, not as bytes, and the difference is itself the
+	// point: the SDK hands this side of the wire a decoded map, so the
+	// structured content we re-marshal comes back with its keys in
+	// alphabetical order while the text block keeps the struct's own. That
+	// is the re-marshal rawJSON's doc comment warns about, visible in real
+	// traffic.
+	var fromText, fromStructured any
+	if err := json.Unmarshal([]byte(firstText(t, res)), &fromText); err != nil {
+		t.Fatalf("decode the text block: %v", err)
+	}
+	if err := json.Unmarshal(res.StructuredContent, &fromStructured); err != nil {
+		t.Fatalf("decode the structured content: %v", err)
+	}
+	if !reflect.DeepEqual(fromText, fromStructured) {
+		t.Errorf("the text block and the structured content are not the same payload:\n text %s\n struct %s",
+			firstText(t, res), res.StructuredContent)
+	}
 }

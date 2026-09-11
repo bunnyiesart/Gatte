@@ -9,9 +9,14 @@
 // of the connection. Changing the underlying store afterwards affects
 // only the *next* dial: an already-connected upstream keeps the old value
 // until the gateway restarts. This matters because rotation usually means
-// someone believes the old credential is compromised, and nothing here
-// currently tells them it is still in use. See deploy/freebsd-jail.md
-// ("Rotating credentials") and ISSUE-20.
+// someone believes the old credential is compromised.
+//
+// Something does tell them now (GAB-20): the Gateway keeps a keyed digest
+// of what each upstream was handed at dial time and re-compares it against
+// the vault once per refresh tick, so a rotation that has not taken effect
+// is reported instead of silent. It is a warning and not a fix -- the
+// upstream keeps the old value until the gateway is restarted, which is
+// the remedy. See deploy/freebsd-jail.md ("Rotating credentials").
 //
 // Per the ports & adapters split this project follows
 // (docs/context/05-testabilidade-e-contratos.md), this package

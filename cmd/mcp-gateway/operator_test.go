@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -164,7 +165,7 @@ database = "` + filepath.Join(dir, "gateway.db") + `"
 
 [oidc]
 issuer = "https://idp.example.internal"
-audience = "mcp-gateway"
+audience = "https://gw.example.internal/mcp"
 
 [vault]
 secrets_file = "` + filepath.Join(dir, "secrets.json") + `"
@@ -322,6 +323,192 @@ func TestUpstreamRegister_DoesNotEchoAValuePassedToEnv(t *testing.T) {
 	}
 	requireContains(t, both, "CASEMGMT_API_KEY", "register with NAME=value")
 	requireContains(t, both, "not echoed", "register with NAME=value")
+}
+
+// TestHelpIsNotBadUsage is GAB-25(c). Exit code 2 means "could not run --
+// bad usage" (see main.go's package doc), and asking for help is neither:
+// the binary was asked to print its usage and did exactly that. A script
+// that treats 2 as a failure -- which is what the convention tells it to do
+// -- sees a failure that did not happen.
+//
+// Driven through run() rather than each cmd* function, because the dispatch
+// is part of what is being pinned.
+func TestHelpIsNotBadUsage(t *testing.T) {
+	for _, args := range [][]string{
+		{"-h"}, {"--help"}, {"help"},
+		{"serve", "-h"}, {"serve", "--help"},
+		{"audit", "-h"}, {"audit", "--help"},
+		{"sign", "-h"},
+		{"upstream", "-h"},
+		{"upstream", "list", "-h"},
+		{"upstream", "register", "-h"},
+		{"upstream", "deregister", "-h"},
+		{"tool", "-h"},
+		{"tool", "list", "-h"},
+		{"tool", "approve", "-h"},
+		{"tool", "revoke", "-h"},
+	} {
+		name := strings.Join(args, " ")
+		t.Run(name, func(t *testing.T) {
+			var out, errBuf bytes.Buffer
+			requireExit(t, run(args, &out, &errBuf), exitOK, name)
+			if out.Len()+errBuf.Len() == 0 {
+				t.Errorf("%s: exited 0 without printing any usage text", name)
+			}
+		})
+	}
+}
+
+// TestHelpGoesToStdout is the other half of GAB-25(c). Fixing the exit code
+// left the streams inconsistent: `mcp-gateway -h`, `upstream -h` and
+// `tool -h` are dispatched by hand and print to stdout, while every
+// flag-parsed subcommand printed the same text to stderr, because
+// opFlagSet hands the whole FlagSet's output to stderr and the flag
+// package renders -h through it.
+//
+// Exit code 0 and output on stderr is a contradiction: the convention this
+// binary documents says 0 means the command did what was asked, and
+// stderr is where a command says it could not. It also breaks the obvious
+// thing to do with help -- `mcp-gateway audit -h | less` came back empty.
+//
+// Bad usage still goes to stderr, and that pairing is the actual rule:
+// asked-for output on stdout, complaints on stderr.
+func TestHelpGoesToStdout(t *testing.T) {
+	for _, args := range [][]string{
+		{"-h"},
+		{"serve", "-h"},
+		{"audit", "-h"},
+		{"sign", "-h"},
+		{"upstream", "-h"},
+		{"upstream", "list", "-h"},
+		{"upstream", "register", "-h"},
+		{"upstream", "deregister", "-h"},
+		{"tool", "-h"},
+		{"tool", "list", "-h"},
+		{"tool", "approve", "-h"},
+		{"tool", "revoke", "-h"},
+	} {
+		name := strings.Join(args, " ")
+		t.Run(name, func(t *testing.T) {
+			var out, errBuf bytes.Buffer
+			requireExit(t, run(args, &out, &errBuf), exitOK, name)
+
+			if out.Len() == 0 {
+				t.Errorf("%s: exited 0 but wrote nothing to stdout\n--- stderr ---\n%s", name, errBuf.String())
+			}
+			if errBuf.Len() != 0 {
+				t.Errorf("%s: a successful help request wrote to stderr:\n%s", name, errBuf.String())
+			}
+			if !strings.Contains(out.String(), "Usage") {
+				t.Errorf("%s: stdout does not look like usage text:\n%s", name, out.String())
+			}
+		})
+	}
+}
+
+// TestBadUsageGoesToStderr is the pair of the test above: the rule is not
+// "help on stdout", it is "what was asked for on stdout, complaints on
+// stderr". Moving help without checking this would just invert the bug.
+func TestBadUsageGoesToStderr(t *testing.T) {
+	for _, args := range [][]string{
+		{"audit", "-nosuchflag"},
+		{"sign", "-nosuchflag"},
+		{"upstream", "list", "-nosuchflag"},
+		{"tool", "list", "-nosuchflag"},
+		{"serve", "-nosuchflag"},
+		{"upstream", "list", "stray-argument"},
+	} {
+		name := strings.Join(args, " ")
+		t.Run(name, func(t *testing.T) {
+			var out, errBuf bytes.Buffer
+			requireExit(t, run(args, &out, &errBuf), exitCannotRun, name)
+
+			if errBuf.Len() == 0 {
+				t.Errorf("%s: bad usage said nothing on stderr", name)
+			}
+			if out.Len() != 0 {
+				t.Errorf("%s: bad usage wrote to stdout:\n%s", name, out.String())
+			}
+		})
+	}
+}
+
+// failingWriter refuses every write, standing in for the full filesystem or
+// closed pipe a tabwriter Flush actually fails on.
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) {
+	return 0, errors.New("no space left on device")
+}
+
+// TestTableFlushFailureIsAProblemNotAFailureToRun is the other half of
+// GAB-25(c). A Flush fails after the command has read its data, decided
+// what to say, and printed most of it; reporting exitCannotRun there tells
+// a caller the command never ran, which is the one thing that is certainly
+// false by that point.
+func TestTableFlushFailureIsAProblemNotAFailureToRun(t *testing.T) {
+	commands := map[string]func(e opTestEnv) int{
+		"upstream list": func(e opTestEnv) int { return runUpstreamList(e.opEnv, false) },
+		"tool list":     func(e opTestEnv) int { return runToolList(e.opEnv, "", false) },
+		"tool approve":  func(e opTestEnv) int { return runToolApprove(e.opEnv, "casemgmt", "list_cases") },
+		"audit":         func(e opTestEnv) int { return runAudit(e.opEnv, auditFilter{Limit: 10}, false) },
+		"sign":          func(e opTestEnv) int { return runSign(e.opEnv, "casemgmt") },
+	}
+	for name, run := range commands {
+		t.Run(name, func(t *testing.T) {
+			e := newOpTestEnv(t)
+			useSigningKey(t, e)
+			mustRegister(t, e, stdioEntry("casemgmt"))
+			mustObserve(t, e, "casemgmt", quarantine.ToolIdentity{
+				Name:        "list_cases",
+				Description: "List CASEMGMT cases.",
+				InputSchema: []byte(`{"type":"object"}`),
+			})
+			mustRecord(t, e, audit.Record{
+				AnalystIdentity: "analyst@soc.example",
+				Tool:            "casemgmt.list_cases",
+				TargetUpstream:  "casemgmt",
+				Timestamp:       time.Date(2026, 9, 8, 9, 15, 0, 0, time.UTC),
+				Outcome:         audit.OutcomeAllowed,
+			})
+
+			// Only stdout fails: stderr must stay usable, or the operator
+			// is told nothing at all.
+			e.opEnv.stdout = failingWriter{}
+			requireExit(t, run(e), exitProblem, name)
+			requireContains(t, e.stderrText(), "writing table", name)
+		})
+	}
+}
+
+// TestToolApprove_ChangedToolIsNotApprovedIfTheWarningWasNotPrinted: the
+// Flush in printChangedWarning used to be discarded, so the block
+// explaining what approving a rug-pulled tool does could be lost and the
+// approval would go through anyway. Approving a CHANGED tool is the one
+// operation in this console that re-baselines a definition somebody
+// rewrote after a human vetted it; an approval recorded without the
+// operator having been shown the case for it is the console deciding on
+// their behalf.
+func TestToolApprove_ChangedToolIsNotApprovedIfTheWarningWasNotPrinted(t *testing.T) {
+	e := newOpTestEnv(t)
+	mustObserve(t, e, "casemgmt", irisListCases)
+	mustApprove(t, e, "casemgmt", "list_cases")
+	changed := mustObserve(t, e, "casemgmt", changedIrisListCases)
+	if changed.Status != quarantine.StatusChanged {
+		t.Fatalf("precondition: status is %q, want %q", changed.Status, quarantine.StatusChanged)
+	}
+
+	e.opEnv.stdout = failingWriter{}
+	requireExit(t, runToolApprove(e.opEnv, "casemgmt", "list_cases"), exitProblem, "approve changed")
+	requireContains(t, e.stderrText(), "NOT approved", "approve changed")
+
+	after, err := e.tools().Get(context.Background(), "casemgmt", "list_cases")
+	if err != nil {
+		t.Fatalf("reading back: %v", err)
+	}
+	if after.Status != quarantine.StatusChanged || after.Usable() {
+		t.Errorf("the tool was re-baselined anyway: %+v", after)
+	}
 }
 
 // TestOperatorCommands_UnreadableConfigCannotRun pins the exit-code

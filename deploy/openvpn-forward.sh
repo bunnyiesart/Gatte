@@ -8,7 +8,20 @@
 #
 # The forward lives in the running gvproxy process, not on disk. It does NOT
 # survive `jm stop` / `jm start` -- run `up` again after a VM restart.
+#
+# JAILMACHINE ONLY. This script does not use deploy/lib/remote.sh and cannot:
+# it drives gvproxy's HTTP API over a unix socket in the jm state root, which
+# exists only because the VM's network is a userspace gateway on this Mac. A
+# jail host on a real network needs no forwarder -- reach udp/1194 directly
+# and open the host firewall instead. See deploy/README.md, "What does not
+# port".
 set -eu
+
+if [ "${JAILHOST_TRANSPORT:-jailmachine}" != jailmachine ]; then
+	echo "$0 is jailmachine-only; JAILHOST_TRANSPORT=$JAILHOST_TRANSPORT has no gvproxy." >&2
+	echo "Reach udp/1194 on the jail host directly." >&2
+	exit 2
+fi
 
 JM_STATE_ROOT="${JM_STATE_ROOT:-$HOME/.jailmachine}"
 API_SOCK="$JM_STATE_ROOT/machines/jailmachine/api.sock"

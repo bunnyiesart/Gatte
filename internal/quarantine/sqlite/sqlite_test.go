@@ -340,7 +340,7 @@ func TestSameToolNameOnDifferentServersAreDistinctEntries(t *testing.T) {
 		t.Fatalf("Approve(logsearch): %v", err)
 	}
 
-	logsearchTool, err := s.Get(ctx, "logsearch", "search")
+	graylogTool, err := s.Get(ctx, "logsearch", "search")
 	if err != nil {
 		t.Fatalf("Get(logsearch): %v", err)
 	}
@@ -348,7 +348,7 @@ func TestSameToolNameOnDifferentServersAreDistinctEntries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get(docsearch): %v", err)
 	}
-	if !logsearchTool.Usable() {
+	if !graylogTool.Usable() {
 		t.Error("logsearch/search not usable after approval")
 	}
 	if openTool.Usable() {
@@ -418,22 +418,22 @@ func TestList_FilteredByServerAndAcrossAll(t *testing.T) {
 		}
 	}
 
-	casemgmtTools, err := s.List(ctx, "casemgmt")
+	irisTools, err := s.List(ctx, "casemgmt")
 	if err != nil {
 		t.Fatalf("List(casemgmt): %v", err)
 	}
-	if len(casemgmtTools) != 2 {
-		t.Fatalf("List(casemgmt) returned %d tools, want 2: %+v", len(casemgmtTools), casemgmtTools)
+	if len(irisTools) != 2 {
+		t.Fatalf("List(casemgmt) returned %d tools, want 2: %+v", len(irisTools), irisTools)
 	}
-	for _, tool := range casemgmtTools {
+	for _, tool := range irisTools {
 		if tool.ServerName != "casemgmt" {
 			t.Errorf("List(casemgmt) returned a tool from %q", tool.ServerName)
 		}
 	}
 	// Ordered by server then tool name.
-	if casemgmtTools[0].ToolName != "get_case" || casemgmtTools[1].ToolName != "list_cases" {
+	if irisTools[0].ToolName != "get_case" || irisTools[1].ToolName != "list_cases" {
 		t.Errorf("List(casemgmt) order = [%s %s], want [get_case list_cases]",
-			casemgmtTools[0].ToolName, casemgmtTools[1].ToolName)
+			irisTools[0].ToolName, irisTools[1].ToolName)
 	}
 
 	all, err := s.List(ctx, "")
@@ -511,5 +511,181 @@ func TestObserve_IdempotentForAnUnchangedTool(t *testing.T) {
 	}
 	if len(all) != 1 {
 		t.Fatalf("List returned %d tools after two observations of one tool, want 1", len(all))
+	}
+}
+
+// TestForget_RemovesOnlyThatServersEntries is what `upstream deregister`
+// leans on. State that survives the thing it described ends up vouching for
+// a replacement (ADR-0006 item 3, ADR-0013 item 2), so removing an upstream
+// has to remove what was said about its tools -- and nothing else's.
+func TestForget_RemovesOnlyThatServersEntries(t *testing.T) {
+	s, _ := newTestStore(t)
+	ctx := context.Background()
+
+	for _, tool := range []string{"list_cases", "get_case"} {
+		if _, err := s.Observe(ctx, "casemgmt", identity(tool, "d")); err != nil {
+			t.Fatalf("Observe: %v", err)
+		}
+		if _, err := s.Approve(ctx, "casemgmt", tool); err != nil {
+			t.Fatalf("Approve: %v", err)
+		}
+	}
+	if _, err := s.Observe(ctx, "logsearch", identity("search", "d")); err != nil {
+		t.Fatalf("Observe: %v", err)
+	}
+
+	n, err := s.Forget(ctx, "casemgmt")
+	if err != nil {
+		t.Fatalf("Forget: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("Forget removed %d entries, want 2", n)
+	}
+	for _, tool := range []string{"list_cases", "get_case"} {
+		if _, err := s.Get(ctx, "casemgmt", tool); !errors.Is(err, quarantine.ErrNotFound) {
+			t.Errorf("Get(casemgmt, %q) = %v, want ErrNotFound after Forget", tool, err)
+		}
+	}
+	if _, err := s.Get(ctx, "logsearch", "search"); err != nil {
+		t.Errorf("Forget(casemgmt) disturbed another server's entry: %v", err)
+	}
+}
+
+// TestForget_OfAnUnknownServerIsNotAnError: deregistering an upstream the
+// gateway never connected to leaves nothing to remove, and that is a
+// perfectly ordinary outcome. Making it an error would put a scary line in
+// front of an operator doing something entirely routine.
+func TestForget_OfAnUnknownServerIsNotAnError(t *testing.T) {
+	s, _ := newTestStore(t)
+
+	n, err := s.Forget(context.Background(), "ghost")
+	if err != nil {
+		t.Fatalf("Forget of an unknown server: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("Forget removed %d entries, want 0", n)
+	}
+}
+
+// TestForget_ThenObservingTheSameDefinitionStartsOverAtPending is the
+// property the fingerprint alone cannot deliver. The replacement advertises
+// byte-identical definitions, so its hash matches the approved baseline
+// exactly; only the entry having been removed keeps it out of the usable
+// set.
+func TestForget_ThenObservingTheSameDefinitionStartsOverAtPending(t *testing.T) {
+	s, _ := newTestStore(t)
+	ctx := context.Background()
+
+	id := identity("list_cases", "List CASEMGMT cases.")
+	if _, err := s.Observe(ctx, "casemgmt", id); err != nil {
+		t.Fatalf("Observe: %v", err)
+	}
+	approved, err := s.Approve(ctx, "casemgmt", "list_cases")
+	if err != nil {
+		t.Fatalf("Approve: %v", err)
+	}
+
+	if _, err := s.Forget(ctx, "casemgmt"); err != nil {
+		t.Fatalf("Forget: %v", err)
+	}
+
+	after, err := s.Observe(ctx, "casemgmt", id)
+	if err != nil {
+		t.Fatalf("Observe after Forget: %v", err)
+	}
+	if after.ObservedHash != approved.ApprovedHash {
+		t.Fatalf("precondition: the replacement's fingerprint is %q, want it identical to the approved %q -- "+
+			"a test whose definitions differ proves nothing here", after.ObservedHash, approved.ApprovedHash)
+	}
+	if after.Status != quarantine.StatusPending || after.Usable() {
+		t.Errorf("after Forget: status=%q usable=%v, want pending and not usable", after.Status, after.Usable())
+	}
+	if !after.FirstSeenAt.Equal(after.UpdatedAt) {
+		t.Errorf("FirstSeenAt=%v UpdatedAt=%v, want a genuinely new entry rather than a resurrected one",
+			after.FirstSeenAt, after.UpdatedAt)
+	}
+}
+
+// TestRevoke_ThroughTheAdapter proves the transition survives persistence,
+// and that the adapter did not grow its own opinion about it.
+func TestRevoke_ThroughTheAdapter(t *testing.T) {
+	s, _ := newTestStore(t)
+	ctx := context.Background()
+
+	id := identity("lookup_ip", "Look up an IP.")
+	if _, err := s.Observe(ctx, "threatintel", id); err != nil {
+		t.Fatalf("Observe: %v", err)
+	}
+	if _, err := s.Approve(ctx, "threatintel", "lookup_ip"); err != nil {
+		t.Fatalf("Approve: %v", err)
+	}
+
+	revoked, err := s.Revoke(ctx, "threatintel", "lookup_ip")
+	if err != nil {
+		t.Fatalf("Revoke: %v", err)
+	}
+	if revoked.Status != quarantine.StatusPending || revoked.Usable() {
+		t.Errorf("Revoke returned status=%q usable=%v, want pending and not usable", revoked.Status, revoked.Usable())
+	}
+
+	stored, err := s.Get(ctx, "threatintel", "lookup_ip")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if stored.Status != quarantine.StatusPending || stored.ApprovedHash != "" || stored.Usable() {
+		t.Errorf("stored entry = %+v, want pending with no baseline", stored)
+	}
+	if stored.ObservedHash != quarantine.Hash(id) {
+		t.Errorf("ObservedHash = %q, want the observation kept", stored.ObservedHash)
+	}
+
+	// Re-approving is the way back, and it works from the revoked state:
+	// revoking is not a one-way door either.
+	back, err := s.Approve(ctx, "threatintel", "lookup_ip")
+	if err != nil {
+		t.Fatalf("Approve after Revoke: %v", err)
+	}
+	if !back.Usable() {
+		t.Errorf("re-approval after a revoke did not restore the tool: %+v", back)
+	}
+}
+
+func TestRevoke_UnknownToolIsNotFound(t *testing.T) {
+	s, _ := newTestStore(t)
+
+	if _, err := s.Revoke(context.Background(), "casemgmt", "ghost"); !errors.Is(err, quarantine.ErrNotFound) {
+		t.Errorf("Revoke of an unobserved tool = %v, want ErrNotFound", err)
+	}
+}
+
+// TestRevoke_RefusesAChangedTool: the adapter must not launder away the
+// evidence of a rug pull either. See Tool.Revoked.
+func TestRevoke_RefusesAChangedTool(t *testing.T) {
+	s, _ := newTestStore(t)
+	ctx := context.Background()
+
+	if _, err := s.Observe(ctx, "threatintel", identity("lookup_ip", "honest")); err != nil {
+		t.Fatalf("Observe: %v", err)
+	}
+	if _, err := s.Approve(ctx, "threatintel", "lookup_ip"); err != nil {
+		t.Fatalf("Approve: %v", err)
+	}
+	changed, err := s.Observe(ctx, "threatintel", identity("lookup_ip", "poisoned"))
+	if err != nil {
+		t.Fatalf("Observe(poisoned): %v", err)
+	}
+	if changed.Status != quarantine.StatusChanged {
+		t.Fatalf("precondition: status = %q, want changed", changed.Status)
+	}
+
+	if _, err := s.Revoke(ctx, "threatintel", "lookup_ip"); !errors.Is(err, quarantine.ErrChangedIsNotRevocable) {
+		t.Fatalf("Revoke of a changed tool = %v, want ErrChangedIsNotRevocable", err)
+	}
+	stored, err := s.Get(ctx, "threatintel", "lookup_ip")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if stored.Status != quarantine.StatusChanged {
+		t.Errorf("status = %q after a refused revoke, want it left %q", stored.Status, quarantine.StatusChanged)
 	}
 }

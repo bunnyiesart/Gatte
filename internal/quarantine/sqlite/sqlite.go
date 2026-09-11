@@ -5,9 +5,9 @@
 // quarantine package itself contains no infrastructure detail.
 //
 // This adapter deliberately holds no policy. Every state transition is
-// computed by the domain (quarantine.NewTool, Tool.Observed,
-// Tool.Approved) and merely written here, so the rules that decide whether
-// a tool is usable can never diverge between the Go code and an UPDATE
+// computed by the domain (quarantine.NewTool, Tool.Observed, Tool.Approved,
+// Tool.Revoked) and merely written here, so the rules that decide whether a
+// tool is usable can never diverge between the Go code and an UPDATE
 // statement.
 package sqlite
 
@@ -137,6 +137,69 @@ func (s *Store) Approve(ctx context.Context, serverName, toolName string) (quara
 		return quarantine.Tool{}, fmt.Errorf("quarantine/sqlite: approve %q/%q: commit: %w", serverName, toolName, err)
 	}
 	return next, nil
+}
+
+// Revoke implements quarantine.Store.
+//
+// Read and write share one transaction for the same reason Observe's do: a
+// discovery cycle running concurrently must not compute its next state from
+// a row this method is about to replace, which would let an observation
+// write back the approval a human just withdrew.
+//
+// The refusal of a changed tool is the domain's (Tool.Revoked), not this
+// adapter's. Nothing here decides anything about status -- if it did, there
+// would be two implementations of the rule and one of them would be in SQL.
+func (s *Store) Revoke(ctx context.Context, serverName, toolName string) (quarantine.Tool, error) {
+	now := time.Now().UTC()
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return quarantine.Tool{}, fmt.Errorf("quarantine/sqlite: revoke %q/%q: %w", serverName, toolName, err)
+	}
+	defer tx.Rollback() //nolint:errcheck // no-op once Commit succeeded
+
+	prev, err := get(ctx, tx, serverName, toolName)
+	if err != nil {
+		return quarantine.Tool{}, fmt.Errorf("quarantine/sqlite: revoke %q/%q: %w", serverName, toolName, err)
+	}
+
+	next, err := prev.Revoked(now)
+	if err != nil {
+		return quarantine.Tool{}, fmt.Errorf("quarantine/sqlite: revoke %q/%q: %w", serverName, toolName, err)
+	}
+	if err := update(ctx, tx, next); err != nil {
+		return quarantine.Tool{}, fmt.Errorf("quarantine/sqlite: revoke %q/%q: %w", serverName, toolName, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return quarantine.Tool{}, fmt.Errorf("quarantine/sqlite: revoke %q/%q: commit: %w", serverName, toolName, err)
+	}
+	return next, nil
+}
+
+// Forget implements quarantine.Store.
+//
+// One DELETE, no transaction: it is a single statement, and there is no
+// read whose result something else could invalidate underneath it.
+//
+// No schema change was needed for this, or for Revoke. Both work the
+// existing quarantined_tools table -- a DELETE by server_name and an UPDATE
+// the domain computed -- so a gateway upgraded in place keeps running
+// against the database it already has, with Migrate doing exactly what it
+// did before.
+func (s *Store) Forget(ctx context.Context, serverName string) (int, error) {
+	const stmt = `DELETE FROM quarantined_tools WHERE server_name = ?`
+
+	res, err := s.db.ExecContext(ctx, stmt, serverName)
+	if err != nil {
+		return 0, fmt.Errorf("quarantine/sqlite: forget %q: %w", serverName, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		// The rows are gone either way; only the count is unknown. Report
+		// the failure rather than returning a number that was never counted.
+		return 0, fmt.Errorf("quarantine/sqlite: forget %q: counting removed entries: %w", serverName, err)
+	}
+	return int(n), nil
 }
 
 // Get implements quarantine.Store.

@@ -13,31 +13,44 @@
 # several places where it is deliberately not production-shaped.
 set -eu
 
-JM_STATE_ROOT="${JM_STATE_ROOT:-$HOME/.jailmachine}"
-JM_SSH_KEY="$JM_STATE_ROOT/machines/jailmachine/ssh/id_ed25519"
-JM_SSH_PORT="${JM_SSH_PORT:-2222}"
+# shellcheck source=deploy/lib/remote.sh
+. "$(dirname "$0")/lib/remote.sh"
+
 STAGE=/tmp/authelia-stage
 
 cd "$(dirname "$0")/.."
 
-vmcp() {
-	scp -q -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no \
-		-i "$JM_SSH_KEY" -P "$JM_SSH_PORT" "$1" "root@127.0.0.1:$2"
-}
-
 echo "==> ensuring the SOC CA exists"
 ./deploy/soc-ca-bootstrap.sh
 
-echo "==> staging the jail payload into the VM"
-jm ssh -- mkdir -p "$STAGE"
+echo "==> staging the jail payload into $(remote_target)"
+remote_sh mkdir -p "$STAGE"
 for f in authelia-host-setup.sh authelia-provision.sh authelia-verify.sh \
          authelia-configuration.yml authelia-nginx.conf; do
-	vmcp "deploy/vm/$f" "$STAGE/$f"
+	remote_cp "deploy/vm/$f" "$STAGE/$f"
 done
-jm ssh -- chmod 0755 "$STAGE/authelia-host-setup.sh"
+remote_sh chmod 0755 "$STAGE/authelia-host-setup.sh"
 
-echo "==> running the host-side setup in the VM"
-jm ssh -- env "STAGE=$STAGE" "$STAGE/authelia-host-setup.sh"
+echo "==> running the host-side setup on the jail host"
+# Every tunable has to be named here explicitly. Environment does not cross
+# an SSH boundary, so a variable set on the workstation is simply absent on
+# the far side and the remote default applies -- silently, and looking like
+# success.
+#
+# That is not hypothetical: provisioning this against the new host with
+# JAIL_IP=10.17.90.20 produced a certificate whose SAN said 10.17.89.20 and
+# an /etc/hosts entry pointing at an address that does not exist on that
+# network. The script reported "provisioned" and exited 0. OIDC discovery
+# from the gateway would have failed later, a long way from the cause.
+#
+# Defaults live on the remote side; these lines only forward an override
+# when one was given, so an unset variable still means "use the default".
+remote_sh env \
+	"STAGE=$STAGE" \
+	${JAIL_IP:+"JAIL_IP=$JAIL_IP"} \
+	${GATEWAY_IP:+"GATEWAY_IP=$GATEWAY_IP"} \
+	${AUTHELIA_JAIL:+"AUTHELIA_JAIL=$AUTHELIA_JAIL"} \
+	"$STAGE/authelia-host-setup.sh"
 
 echo
 echo "==> done. Verify with:"

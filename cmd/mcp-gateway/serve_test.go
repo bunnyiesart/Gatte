@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -600,6 +601,79 @@ func TestStartupSummary_RequireSignedIsVisible(t *testing.T) {
 	}
 }
 
+// TestStartupSummary_RoleReachIsVisible is the boot-time half of GAB-30
+// item 3. A role whose tool names match nothing the gateway serves is not
+// an error anywhere -- the policy is well-formed, it just authorizes a set
+// of names no upstream advertises -- so without this line the first report
+// is an analyst being denied mid-incident.
+//
+// A role that grants nothing *on purpose* (the "onboarding" role in
+// config.example.toml) must not be warned about: it is a documented,
+// legitimate shape, and warning about it is how a warning stops being read.
+func TestStartupSummary_RoleReachIsVisible(t *testing.T) {
+	logger, logs := serveTestLogger()
+	startupSummary{
+		Addr:            "127.0.0.1:8080",
+		Loopback:        true,
+		RequireSigned:   true,
+		ToolsDiscovered: 4,
+		ToolsServable:   4,
+		Roles: []roleReach{
+			{Name: "n1-triage", Granted: 3, Observed: 3},
+			{Name: "typo-squad", Granted: 2, Observed: 0},
+			{Name: "onboarding", Granted: 0, Observed: 0},
+		},
+	}.log(logger)
+
+	out := logs.String()
+	for _, want := range []string{"n1-triage", "typo-squad", "onboarding"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the startup log does not state role %q's reach:\n%s", want, out)
+		}
+	}
+
+	var warned string
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "WARN") && strings.Contains(line, "typo-squad") {
+			warned = line
+		}
+	}
+	if warned == "" {
+		t.Errorf("a role granting 2 tools that match nothing observed was not warned about:\n%s", out)
+	}
+	if strings.Contains(warned, "onboarding") {
+		t.Errorf("a role that deliberately grants nothing was reported as broken:\n%s", warned)
+	}
+}
+
+// TestRoleReaches checks the arithmetic against what the gateway actually
+// advertises: namespaced names, matched exactly, because that is how
+// access.Role.Allows matches them.
+func TestRoleReaches(t *testing.T) {
+	observed := map[string]bool{
+		"casemgmt.list_cases":   true,
+		"casemgmt.get_case":     true,
+		"threatintel.lookup_ip": true,
+	}
+	roles := []config.Role{
+		{Name: "n1-triage", Tools: []string{"casemgmt.list_cases", "threatintel.lookup_ip"}},
+		// The GAB-30 shape: legal config, well-formed policy, grants nothing.
+		{Name: "un-namespaced", Tools: []string{"list_cases"}},
+		{Name: "half", Tools: []string{"casemgmt.get_case", "logsearch.search_relative"}},
+		{Name: "onboarding"},
+	}
+
+	want := []roleReach{
+		{Name: "n1-triage", Granted: 2, Observed: 2},
+		{Name: "un-namespaced", Granted: 1, Observed: 0},
+		{Name: "half", Granted: 2, Observed: 1},
+		{Name: "onboarding", Granted: 0, Observed: 0},
+	}
+	if got := roleReaches(roles, observed); !reflect.DeepEqual(got, want) {
+		t.Errorf("roleReaches = %+v, want %+v", got, want)
+	}
+}
+
 // TestStartupSummary_NonLoopbackIsWarned: a non-loopback bind is the
 // operator's decision, but it must never be an invisible one.
 func TestStartupSummary_NonLoopbackIsWarned(t *testing.T) {
@@ -612,31 +686,6 @@ func TestStartupSummary_NonLoopbackIsWarned(t *testing.T) {
 	}
 	if !strings.Contains(out, "NON-LOOPBACK") {
 		t.Errorf("a non-loopback bind was not warned about:\n%s", out)
-	}
-}
-
-func TestIsLoopbackAddr(t *testing.T) {
-	for _, tc := range []struct {
-		addr string
-		want bool
-	}{
-		{"127.0.0.1:8080", true},
-		{"127.9.9.9:8080", true},
-		{"[::1]:8080", true},
-		{"localhost:8080", true},
-		{"LocalHost:8080", true},
-		{"0.0.0.0:8080", false},
-		{"[::]:8080", false},
-		{"10.0.0.5:8080", false},
-		{"gw.soc.internal:8080", false},
-		// Unparseable is reported as exposed on purpose: a spurious
-		// warning costs one line, a missed one costs an exposure.
-		{"garbage", false},
-		{"", false},
-	} {
-		if got := isLoopbackAddr(tc.addr); got != tc.want {
-			t.Errorf("isLoopbackAddr(%q) = %t, want %t", tc.addr, got, tc.want)
-		}
 	}
 }
 
@@ -659,50 +708,208 @@ func TestFailedUpstreams(t *testing.T) {
 	}
 }
 
-// TestRequireLoopbackBind pins ADR-0011 item 1: the gateway refuses to
-// start on any address that is not loopback, rather than warning and
-// carrying on.
+// TestBuildServer_RefusesANonLoopbackBind keeps ADR-0011 item 1 pinned at
+// the composition root after the predicate itself moved into
+// internal/config (where the rule now lives, is applied by Validate, and
+// has its own table of cases).
 //
-// The refusal is the whole control. Under ADR-0011 the gateway terminates
-// no TLS and holds no certificate, so a non-loopback bind is not "less
-// protected" -- it is every analyst's bearer token in cleartext, plus the
-// case data and IOCs behind it. A warning delegates that to whoever is in
-// a hurry; a refusal does not.
-//
-// Written against the pre-ADR-0011 code first, where every case below
-// passed, so that the test is evidence and not decoration.
-func TestRequireLoopbackBind(t *testing.T) {
-	refused := []string{
-		"0.0.0.0:8080",     // the one an operator reaches for
-		"10.17.89.10:8080", // a jail's own address
-		"[::]:8080",        // the IPv6 equivalent of 0.0.0.0
-		"192.168.1.5:8080",
+// What is asserted here is different from what is asserted there, and both
+// are needed: that buildServer applies the rule *before* it acquires
+// anything. A process that opened the database, decrypted the vault and
+// spawned every upstream subprocess only to then refuse to listen has done
+// a great deal of work on behalf of a configuration it was always going to
+// reject -- and, more to the point, has already put every backend
+// credential into a child process.
+func TestBuildServer_RefusesANonLoopbackBind(t *testing.T) {
+	cfg := &config.Config{
+		Listen: "0.0.0.0:8080",
+		// Deliberately nothing else. If the bind check runs first, as it
+		// must, none of the missing pieces is ever reached.
 	}
-	for _, addr := range refused {
-		t.Run("refuses "+addr, func(t *testing.T) {
-			if err := requireLoopbackBind(addr); err == nil {
-				t.Errorf("requireLoopbackBind(%q) = nil, want refusal", addr)
-			}
-		})
+	logger, _ := serveTestLogger()
+
+	stack, err := buildServer(context.Background(), cfg, logger)
+	if err == nil {
+		t.Fatal("buildServer accepted a non-loopback bind")
+	}
+	if stack != nil {
+		t.Error("buildServer returned both an error and a stack; the caller has no way to know it must clean up")
+	}
+	if !strings.Contains(err.Error(), "loopback") {
+		t.Errorf("the refusal does not say what is wrong with the address: %v", err)
+	}
+}
+
+// TestBuildServer_ResultCeilingIsWired is a wiring test in the same family
+// as TestBuildServer_RefreshIntervalIsWired and for the same reason: a
+// setting an operator writes and the process ignores is worse than no
+// setting, because the file reads as though it applied. Here it would read
+// as though results were bounded.
+func TestBuildServer_ResultCeilingIsWired(t *testing.T) {
+	tests := []struct {
+		name  string
+		tweak func(*strings.Builder)
+		want  int64
+	}{
+		{
+			name:  "silent file gets the documented default",
+			tweak: nil,
+			want:  gateway.DefaultMaxResultBytes,
+		},
+		{
+			name:  "configured value is used",
+			tweak: func(b *strings.Builder) { fmt.Fprintf(b, "[response]\nmax_bytes = %d\n", 65536) },
+			want:  65536,
+		},
 	}
 
-	allowed := []string{"127.0.0.1:8080", "[::1]:8080", "localhost:8080"}
-	for _, addr := range allowed {
-		t.Run("allows "+addr, func(t *testing.T) {
-			if err := requireLoopbackBind(addr); err != nil {
-				t.Errorf("requireLoopbackBind(%q) = %v, want nil", addr, err)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			fx := newServeFixture(t, tc.tweak)
+			logger, logs := serveTestLogger()
+
+			stack, err := buildServer(context.Background(), fx.cfg, logger)
+			if err != nil {
+				t.Fatalf("buildServer: %v", err)
+			}
+			defer stack.close()
+
+			if stack.maxResultBytes != tc.want {
+				t.Errorf("maxResultBytes = %d, want %d", stack.maxResultBytes, tc.want)
+			}
+			// And an operator can read the number in effect out of the
+			// startup log. A refused oversized result looks like a broken
+			// backend from the analyst's side, and the first thing whoever
+			// is paged needs is the limit it hit.
+			if !strings.Contains(logs.String(), fmt.Sprintf("max_result_bytes=%d", tc.want)) {
+				t.Errorf("the startup log does not state the result ceiling in effect:\n%s", logs.String())
 			}
 		})
 	}
+}
 
-	// An address that cannot be parsed is refused too. "Cannot tell" is not
-	// "loopback" -- the same fail-closed reading ADR-0004 applies to an
-	// unreadable registry.
-	for _, addr := range []string{"", "8080", "not an address"} {
-		t.Run("refuses unparseable "+addr, func(t *testing.T) {
-			if err := requireLoopbackBind(addr); err == nil {
-				t.Errorf("requireLoopbackBind(%q) = nil, want refusal", addr)
+// ---------------------------------------------------------------------------
+// Periodic re-observation (ADR-0013 / GAB-23)
+// ---------------------------------------------------------------------------
+
+// TestBuildServer_RefreshIntervalIsWired: the configured interval has to
+// reach the loop that uses it. This is a wiring test in the same family as
+// TestBuildServer_TrustAnchorIsWired -- a setting an operator writes and
+// the process ignores is worse than no setting, because the file reads as
+// though it applied.
+func TestBuildServer_RefreshIntervalIsWired(t *testing.T) {
+	tests := []struct {
+		name  string
+		tweak func(*strings.Builder)
+		want  time.Duration
+	}{
+		{
+			name:  "silent file gets the documented default",
+			tweak: nil,
+			want:  config.DefaultRefreshInterval,
+		},
+		{
+			name:  "configured value is used",
+			tweak: func(b *strings.Builder) { fmt.Fprintf(b, "[quarantine]\nrefresh_interval = %q\n", "45m") },
+			want:  45 * time.Minute,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			fx := newServeFixture(t, tc.tweak)
+			logger, _ := serveTestLogger()
+
+			stack, err := buildServer(context.Background(), fx.cfg, logger)
+			if err != nil {
+				t.Fatalf("buildServer: %v", err)
+			}
+			defer stack.close()
+
+			if stack.refreshEvery != tc.want {
+				t.Errorf("refreshEvery = %v, want %v", stack.refreshEvery, tc.want)
 			}
 		})
+	}
+}
+
+// TestServeStack_RefreshLoopTicks is the "somebody actually calls it" half
+// of GAB-23, and it matters more than it looks: the defect being fixed was
+// never that re-observation was wrong, it was that the only code path to it
+// ran once at boot and nothing else ever reached it. A Refresh method with
+// no caller would reproduce that exactly.
+//
+// The proof does not need an upstream. gateway.Refresh returns ErrClosed on
+// a closed Gateway and the loop stops on that, so a loop that returns from
+// a closed gateway without its context being cancelled is a loop that
+// ticked and called Refresh. A loop that never calls Refresh hangs here and
+// the test times out.
+func TestServeStack_RefreshLoopTicks(t *testing.T) {
+	fx := newServeFixture(t, nil)
+	logger, logs := serveTestLogger()
+
+	stack, err := buildServer(context.Background(), fx.cfg, logger)
+	if err != nil {
+		t.Fatalf("buildServer: %v", err)
+	}
+	defer stack.close()
+
+	// Set directly rather than through the config file: config.Validate
+	// refuses anything under a second, deliberately, and this test needs a
+	// tick inside a test's patience.
+	stack.refreshEvery = 10 * time.Millisecond
+	if err := stack.gateway.Close(); err != nil {
+		t.Fatalf("closing the gateway: %v", err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		stack.refreshLoop(context.Background(), logger)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the refresh loop never called Refresh -- nothing re-observes the upstreams, which is GAB-23 all over again")
+	}
+
+	// And an operator can see that it is running at all, with the interval
+	// they chose. The window in which a poisoned tool is still served IS
+	// that interval, so it belongs in the log rather than only in the file.
+	if !strings.Contains(logs.String(), "re-observing upstream tool definitions periodically") {
+		t.Errorf("the startup log does not say that periodic re-observation is on:\n%s", logs.String())
+	}
+}
+
+// TestServeStack_RefreshLoopStopsWhenCancelled: run's caller closes the
+// database on the way out, so a loop still writing observations after that
+// would surface as a confusing error during shutdown.
+func TestServeStack_RefreshLoopStopsWhenCancelled(t *testing.T) {
+	fx := newServeFixture(t, nil)
+	logger, _ := serveTestLogger()
+
+	stack, err := buildServer(context.Background(), fx.cfg, logger)
+	if err != nil {
+		t.Fatalf("buildServer: %v", err)
+	}
+	defer stack.close()
+
+	// Long enough that a tick cannot be what ends the loop: only the
+	// cancellation can.
+	stack.refreshEvery = time.Hour
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		stack.refreshLoop(ctx, logger)
+	}()
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the refresh loop outlived its context")
 	}
 }

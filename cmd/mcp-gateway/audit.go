@@ -168,16 +168,27 @@ that value somewhere this gateway cannot write, and pass it back later as
 -expect-head. Without that comparison an intact result means internal
 consistency and nothing more.
 
-WHERE THE EXPECTED VALUE COMES FROM, once [audit.siem] is configured: the
-newest "hash" this gateway's chain has in the SIEM. Every emitted line
-carries prev_hash and hash, so in Graylog it is the "hash" field of the
-most recent message matching chain:"NAME" -- the chain name being the one
-in audit.siem.chain. That is an anchor precisely because this process
-cannot write to it: a local trail that was truncated OR rewritten shows up
-as the head below differing from the newest hash Graylog holds, which is
-the detection the chain by itself does not give. Nothing compares the two
-automatically; while it is a manual step, the detection depends on
-somebody running it.
+WHERE THE EXPECTED VALUE COMES FROM, once [audit.siem] is configured.
+Every emitted line carries prev_hash and hash, and both are queryable
+fields in Graylog alongside chain:"NAME" from audit.siem.chain.
+
+The head is NOT "the newest message". Graylog orders by arrival and ts is
+the caller's clock; neither is the chain's order, which is insertion order
+here. Two records written in one tick arrive either way round, so "newest"
+picks one at random and is wrong half the time -- a false alarm on a trail
+nobody touched. The head is the line whose hash appears as no other line's
+prev_hash: fetch the recent lines for the chain and find the one nothing
+links back to.
+
+WHAT THIS ANCHOR IS WORTH. It detects a local trail that was truncated or
+rewritten, which the chain alone cannot. It does NOT survive an attacker
+who noticed the shipper: this process ships those lines, so whoever
+controls this host can truncate the trail and append a forged line whose
+hash matches the shortened chain. Nothing in a line binds it to this
+gateway -- they are not signed. Real protection against a lost or
+rolled-back database and against an attacker who ignored the sink; none at
+all against one who did not. Nothing compares the two automatically
+either.
 
 Prints the most recent matching records, NEWEST FIRST. OUTCOME and REASON
 are the point of the trail: outcome says whether the gateway allowed,

@@ -176,10 +176,33 @@ path  = "/var/log/mcp-gateway/audit.jsonl"
 chain = "gatte-jail-01"
 ```
 
-The expected value for `-expect-head` is then the `hash` field of the
-newest Graylog message matching `chain:"gatte-jail-01"`. `mcp-gateway audit
--verify` prints that instruction itself once the block is set, so nobody
-has to remember the query. **Nothing compares the two automatically.**
+### Getting `-expect-head` right, and what it is worth
+
+**"The newest Graylog message" is not the chain head, and using it will
+produce false alarms.** Graylog orders by arrival, and `ts` is the caller's
+own clock — neither is the chain's order, which is insertion order in the
+gateway's database. Two records written in the same tick arrive in either
+order, so "newest" picks one of them at random and half the time it is not
+the tip.
+
+The chain head is the line whose `hash` appears as no other line's
+`prev_hash`. In Graylog that is a two-step check rather than a sort: take
+the recent lines for the chain, and find the one nothing links back to.
+
+**And the harder limit, which no query fixes.** This anchor works only
+against an attacker who cannot write to the SIEM. The gateway ships lines
+to it, so whoever controls the gateway host controls what the shipper
+sends: they can truncate the local trail *and* append a forged line whose
+`hash` matches the shortened chain, and `-expect-head` then agrees. Nothing
+in the line binds it to this gateway — there is no signature on it.
+
+That makes the anchor real protection against a *lost* or *rolled-back*
+database, and against an attacker who never noticed the shipper, and no
+protection at all against one who did. Closing it means signing the lines
+with a key the gateway does not hold, which is a decision this deployment
+has not taken.
+
+**Nothing compares the two automatically.**
 While it is manual, the detection depends on somebody running it — and
 there is no Graylog alert yet for "lines stopped arriving for this chain",
 which is what a dead (or deliberately killed) shipper looks like.
@@ -202,7 +225,12 @@ leaves the gateway writing into the rotated inode, and the shipper reading
 a file nothing appends to any more, with no error anywhere. So:
 
 - use `copytruncate` (newsyslog's `-C`/`R` behaviour, or logrotate's
-  `copytruncate`), which keeps the inode; **or**
+  `copytruncate`), which keeps the inode — **and loses whatever is written
+  between the copy and the truncate.** That window is small and it is not
+  zero: a record emitted in it is copied nowhere and then erased. For an
+  audit trail that is a silently missing line, and the chain will show it,
+  because the next line's `prev_hash` names a record the SIEM never got;
+  **or**
 - rename and then restart the gateway, accepting the restart.
 
 This is a real gap, not a detail. A reopen-on-SIGHUP is the fix and does

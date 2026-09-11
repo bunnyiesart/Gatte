@@ -71,7 +71,20 @@ func TestNewErrorDoesNotLeakOnMalformedPlaintext(t *testing.T) {
 	// A JSON object, since sops itself refuses to encrypt anything else
 	// as a top-level document -- but with a nested value where this
 	// adapter's contract requires a flat object of string values.
-	secretsFile, ageKeyFile := newFixtureRaw(t, `{"NESTED":{"leaked":"s3cr3t"}}`)
+	// The marker is in the KEY as well as the value, and that is the whole
+	// difference between this test and the one it replaces.
+	//
+	// The old fixture put the marker only in a nested VALUE. encoding/json's
+	// UnmarshalTypeError names the offending FIELD and the Go type -- never
+	// the data -- so %w-wrapping it, the exact mutation this test's own
+	// comment says it guards against, would not have echoed the marker and
+	// the test would have passed. It could only ever catch a much cruder
+	// leak (the whole plaintext interpolated), while claiming to catch the
+	// subtle one.
+	//
+	// With the marker in the key, wrapping the json error DOES surface it,
+	// so the test now fails for the mutation it was written for.
+	secretsFile, ageKeyFile := newFixtureRaw(t, `{"s3cr3t":{"leaked":"s3cr3t"}}`)
 
 	_, err := sopsage.New(context.Background(), secretsFile, ageKeyFile)
 	if err == nil {

@@ -131,3 +131,105 @@ func TestValidate_RequiresAnOutcome(t *testing.T) {
 		})
 	}
 }
+
+// chainRec is a well-formed record for the chain tests. Fields the test
+// varies are set by the caller.
+func chainRec() Record {
+	return Record{
+		AnalystIdentity: "ana",
+		Tool:            "casemgmt.list_cases",
+		TargetUpstream:  "casemgmt",
+		Timestamp:       time.Date(2026, 9, 11, 12, 0, 0, 0, time.UTC),
+		Outcome:         OutcomeAllowed,
+	}
+}
+
+// TestCanonical_FieldBoundariesCannotShift is the reason the encoding is
+// length-prefixed rather than concatenated. Without the lengths, moving a
+// byte from one field to the next produces identical bytes, so a record
+// could be rewritten into a DIFFERENT record that chains just as well --
+// which is precisely the property the chain exists to provide.
+func TestCanonical_FieldBoundariesCannotShift(t *testing.T) {
+	for _, tc := range []struct{ name, a1, a2, b1, b2 string }{
+		{"tool/reason", "ab", "c", "a", "bc"},
+		{"identity/tool", "xy", "z", "x", "yz"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			left, right := chainRec(), chainRec()
+			switch tc.name {
+			case "tool/reason":
+				left.Tool, left.Reason = tc.a1, tc.a2
+				right.Tool, right.Reason = tc.b1, tc.b2
+			case "identity/tool":
+				left.AnalystIdentity, left.Tool = tc.a1, tc.a2
+				right.AnalystIdentity, right.Tool = tc.b1, tc.b2
+			}
+
+			if string(Canonical(left)) == string(Canonical(right)) {
+				t.Fatal("two different records produced identical canonical bytes -- " +
+					"a record can be rewritten into another without breaking the chain")
+			}
+			if ChainHash(GenesisHash, left) == ChainHash(GenesisHash, right) {
+				t.Error("two different records hash identically")
+			}
+		})
+	}
+}
+
+// TestCanonical_EveryFieldIsCovered: a field left out of the canonical
+// bytes can be edited freely without the chain noticing, which is the
+// quiet way this control becomes decorative.
+func TestCanonical_EveryFieldIsCovered(t *testing.T) {
+	for _, tc := range []struct {
+		field  string
+		mutate func(*Record)
+	}{
+		{"AnalystIdentity", func(r *Record) { r.AnalystIdentity = "mallory" }},
+		{"Tool", func(r *Record) { r.Tool = "casemgmt.get_case" }},
+		{"TargetUpstream", func(r *Record) { r.TargetUpstream = "logsearch" }},
+		{"Timestamp", func(r *Record) { r.Timestamp = r.Timestamp.Add(time.Hour) }},
+		{"Outcome", func(r *Record) { r.Outcome = OutcomeDenied }},
+		{"Reason", func(r *Record) { r.Reason = "forbidden" }},
+		{"SourceAddress", func(r *Record) { r.SourceAddress = "10.0.0.9" }},
+	} {
+		t.Run(tc.field, func(t *testing.T) {
+			base := chainRec()
+			altered := chainRec()
+			tc.mutate(&altered)
+
+			if ChainHash(GenesisHash, base) == ChainHash(GenesisHash, altered) {
+				t.Errorf("editing %s does not change the hash -- that field is outside the chain "+
+					"and can be rewritten undetected", tc.field)
+			}
+		})
+	}
+}
+
+// TestChainHash_DependsOnThePredecessor: without this, every record hashes
+// independently and reordering or removing one is invisible.
+func TestChainHash_DependsOnThePredecessor(t *testing.T) {
+	rec := chainRec()
+	first := ChainHash(GenesisHash, rec)
+	second := ChainHash(first, rec)
+
+	if first == second {
+		t.Fatal("the same record hashes identically under different predecessors -- " +
+			"the links carry no ordering and a record could be moved or removed undetected")
+	}
+	if ChainHash(first, rec) != second {
+		t.Error("ChainHash is not deterministic")
+	}
+}
+
+// TestChainCheck_IntactIsAboutTheMiddleOnly documents, in the type's own
+// tests, that Intact does not mean complete -- the distinction ADR-0015
+// item 6 turns on.
+func TestChainCheck_IntactIsAboutTheMiddleOnly(t *testing.T) {
+	if !(ChainCheck{Count: 3}).Intact() {
+		t.Error("a check with no break should report intact")
+	}
+	broken := ChainCheck{Count: 3, FirstBreak: &ChainBreak{Position: 2}}
+	if broken.Intact() {
+		t.Error("a check carrying a break should not report intact")
+	}
+}

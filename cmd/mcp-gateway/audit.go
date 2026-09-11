@@ -3,8 +3,10 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"time"
 
@@ -83,11 +85,33 @@ func cmdAudit(args []string, stdout, stderr io.Writer) int {
 	outcome := fs.String("outcome", "", "only records with this outcome: allowed, denied or failed")
 	source := fs.String("source", "", "only records from this source address (exact match)")
 	asJSON := fs.Bool("json", false, "print JSON instead of an aligned table")
+	verify := fs.Bool("verify", false, "check the trail's hash chain instead of printing records")
+	expectHead := fs.String("expect-head", "", "with -verify, fail unless the chain head equals this hash")
 	if code, ok := opParse(fs, args, stdout, stderr, auditUsage); !ok {
 		return code
 	}
 	if !opNoArgs(fs, stderr, auditUsage) {
 		return exitCannotRun
+	}
+
+	// -verify reads the chain, not the filtered view, so a filter passed
+	// alongside it would be silently ignored -- and an operator who
+	// believes they verified "only Ana's records" has been told something
+	// false by omission, which is the failure mode this whole component
+	// exists to avoid. Refuse instead.
+	if ignored := auditFlagsIgnoredByVerify(fs, *verify); len(ignored) > 0 {
+		fmt.Fprintf(stderr, "-verify checks the whole chain and cannot be filtered; remove %s\n",
+			strings.Join(ignored, ", "))
+		return exitCannotRun
+	}
+	if *expectHead != "" && !*verify {
+		fmt.Fprint(stderr, "-expect-head only means something with -verify\n")
+		return exitCannotRun
+	}
+	if *verify {
+		return opRun(*configPath, stdout, stderr, func(e *opEnv) int {
+			return runAuditVerify(e, *expectHead)
+		})
 	}
 
 	filter := auditFilter{Limit: *limit, Subject: *subject, Source: *source}
@@ -123,6 +147,18 @@ func auditUsage(w io.Writer) {
   mcp-gateway audit [-config FILE] [-limit N] [-since RFC3339]
                     [-subject IDENTITY] [-outcome allowed|denied|failed]
                     [-source ADDRESS] [-json]
+  mcp-gateway audit -verify [-config FILE] [-expect-head HASH]
+
+-verify checks the trail's hash chain instead of printing records: every
+record carries a hash over its own fields and its predecessor's, so a
+record edited or deleted in the MIDDLE of the trail stops verifying. It
+cannot be combined with the filters above, which is refused rather than
+ignored.
+
+What -verify does NOT detect is truncation of the END: removing the last
+N records leaves a shorter chain that verifies perfectly. -verify prints
+the chain head; record that value somewhere this gateway cannot write,
+and pass it back later as -expect-head to catch that case too.
 
 Prints the most recent matching records, NEWEST FIRST. OUTCOME and REASON
 are the point of the trail: outcome says whether the gateway allowed,
@@ -246,4 +282,85 @@ func runAudit(e *opEnv, filter auditFilter, asJSON bool) int {
 			len(matching)-len(newestFirst), opPlural(len(matching)-len(newestFirst), "record is", "records are"))
 	}
 	return exitOK
+}
+
+// auditFlagsIgnoredByVerify returns the names of the record-filtering
+// flags the operator set that -verify would not honour. Empty when
+// -verify was not requested, or when nothing conflicting was passed.
+func auditFlagsIgnoredByVerify(fs *flag.FlagSet, verify bool) []string {
+	if !verify {
+		return nil
+	}
+	conflicts := map[string]bool{
+		"limit": true, "since": true, "subject": true, "outcome": true,
+		"source": true, "json": true,
+	}
+	var ignored []string
+	fs.Visit(func(f *flag.Flag) {
+		if conflicts[f.Name] {
+			ignored = append(ignored, "-"+f.Name)
+		}
+	})
+	sort.Strings(ignored)
+	return ignored
+}
+
+// runAuditVerify walks the audit trail's hash chain and reports what it
+// found (design/adr/0015-audit-tamper-evidence.md item 5).
+//
+// It is deliberate that this prints the head on success as well as on
+// failure: the head is the value an operator records somewhere the gateway
+// cannot reach, and it is the only thing that turns tail-truncation into
+// something detectable at all.
+func runAuditVerify(e *opEnv, expectHead string) int {
+	check, err := e.auditChain().VerifyChain(e.ctx())
+	if err != nil {
+		fmt.Fprintf(e.stderr, "audit trail: %v\n", err)
+		return exitCannotRun
+	}
+
+	if check.FirstBreak != nil {
+		b := check.FirstBreak
+		fmt.Fprintf(e.stderr, "TAMPERED: the audit trail does not verify.\n\n")
+		fmt.Fprintf(e.stderr, "  first break at record %d of %d\n", b.Position, check.Count)
+		fmt.Fprintf(e.stderr, "  record now reads  %s  %s  %s -> %s  (%s)\n",
+			b.Record.Timestamp.Format(time.RFC3339), b.Record.AnalystIdentity,
+			b.Record.Tool, b.Record.TargetUpstream, b.Record.Outcome)
+		fmt.Fprintf(e.stderr, "  hash expected     %s\n", b.Want)
+		fmt.Fprintf(e.stderr, "  hash stored       %s\n\n", b.Got)
+		fmt.Fprintf(e.stderr, "A record at or before this position was edited or removed. Records after\n")
+		fmt.Fprintf(e.stderr, "it are not re-verified against it, so this is the earliest damage, not\n")
+		fmt.Fprintf(e.stderr, "necessarily the only damage.\n")
+		return exitProblem
+	}
+
+	fmt.Fprintf(e.stdout, "chain intact: %d record(s)\n", check.Count)
+	fmt.Fprintf(e.stdout, "head: %s\n", headOrNone(check.Head))
+	if check.RetroactivelyChained > 0 {
+		fmt.Fprintf(e.stdout, "\nNote: the first %d record(s) were hashed when this database was\n",
+			check.RetroactivelyChained)
+		fmt.Fprintf(e.stdout, "migrated, not when they were written. They verify against each other,\n")
+		fmt.Fprintf(e.stdout, "which says nothing about whether they were already altered before that.\n")
+	}
+	fmt.Fprintf(e.stdout, "\nThis detects edits and deletions in the MIDDLE of the trail. Removing\n")
+	fmt.Fprintf(e.stdout, "records from the END leaves a shorter chain that still verifies. Record\n")
+	fmt.Fprintf(e.stdout, "the head above somewhere this gateway cannot write, and pass it back as\n")
+	fmt.Fprintf(e.stdout, "-expect-head to catch that too.\n")
+
+	if expectHead != "" && !strings.EqualFold(expectHead, check.Head) {
+		fmt.Fprintf(e.stderr, "\nTRUNCATED OR REWRITTEN: head does not match the expected value.\n")
+		fmt.Fprintf(e.stderr, "  expected  %s\n", expectHead)
+		fmt.Fprintf(e.stderr, "  found     %s\n", headOrNone(check.Head))
+		return exitProblem
+	}
+	return exitOK
+}
+
+// headOrNone renders an empty head as something an operator will not
+// mistake for a hash they failed to copy.
+func headOrNone(head string) string {
+	if head == audit.GenesisHash {
+		return "(none -- the trail is empty)"
+	}
+	return head
 }

@@ -322,3 +322,127 @@ func TestAuditUsage_DoesNotPromiseWhatTheTrailCannotDeliver(t *testing.T) {
 		requireContains(t, usage, want, "audit usage")
 	}
 }
+
+// TestRunAuditVerify_IntactTrailReportsTheHead covers the success path,
+// and asserts the two things the output exists to carry: the head an
+// operator anchors externally, and the plain statement that this does not
+// cover truncation. An "all good" that omits the second is the kind of
+// reassurance this project keeps finding and removing.
+func TestRunAuditVerify_IntactTrailReportsTheHead(t *testing.T) {
+	e := newOpTestEnv(t)
+	seedAuditTrail(t, e)
+
+	if code := runAuditVerify(e.opEnv, ""); code != exitOK {
+		t.Fatalf("runAuditVerify = %d, want %d; stderr: %s", code, exitOK, e.stderrText())
+	}
+	out := e.stdoutText()
+	if !strings.Contains(out, "chain intact: 3 record(s)") {
+		t.Errorf("output does not report the count:\n%s", out)
+	}
+	if !strings.Contains(out, "head: ") {
+		t.Errorf("output does not print the head, which is the only thing that makes "+
+			"truncation detectable later:\n%s", out)
+	}
+	for _, want := range []string{"END", "shorter chain", "-expect-head"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output does not mention %q -- an operator could read this as "+
+				"proof the trail is complete:\n%s", want, out)
+		}
+	}
+}
+
+// TestRunAuditVerify_EditedRecordIsReported is the point of the whole
+// feature, exercised through the operator's actual entry point rather
+// than the adapter.
+func TestRunAuditVerify_EditedRecordIsReported(t *testing.T) {
+	e := newOpTestEnv(t)
+	seedAuditTrail(t, e)
+
+	if _, err := e.db.Exec(`UPDATE audit_records SET outcome = 'allowed' WHERE id = 2`); err != nil {
+		t.Fatalf("tamper: %v", err)
+	}
+
+	if code := runAuditVerify(e.opEnv, ""); code != exitProblem {
+		t.Fatalf("runAuditVerify = %d, want %d (ran and found a problem)", code, exitProblem)
+	}
+	errText := e.stderrText()
+	if !strings.Contains(errText, "TAMPERED") {
+		t.Errorf("stderr does not say the trail is tampered:\n%s", errText)
+	}
+	if !strings.Contains(errText, "record 2 of 3") {
+		t.Errorf("stderr does not locate the break:\n%s", errText)
+	}
+	// The operator must not read "first break" as "only break".
+	if !strings.Contains(errText, "not\nnecessarily the only damage") {
+		t.Errorf("stderr does not warn that later damage is not re-checked:\n%s", errText)
+	}
+}
+
+// TestRunAuditVerify_ExpectHead covers the anchor: the same intact chain
+// passes or fails depending only on whether the head matches what the
+// operator recorded earlier. This is what turns tail-truncation from
+// invisible into caught.
+func TestRunAuditVerify_ExpectHead(t *testing.T) {
+	e := newOpTestEnv(t)
+	seedAuditTrail(t, e)
+
+	check, err := e.auditChain().VerifyChain(e.ctx())
+	if err != nil {
+		t.Fatalf("VerifyChain: %v", err)
+	}
+
+	if code := runAuditVerify(e.opEnv, check.Head); code != exitOK {
+		t.Errorf("matching head returned %d, want %d; stderr: %s", code, exitOK, e.stderrText())
+	}
+
+	e2 := newOpTestEnv(t)
+	seedAuditTrail(t, e2)
+	if code := runAuditVerify(e2.opEnv, "0000000000000000000000000000000000000000000000000000000000000000"); code != exitProblem {
+		t.Errorf("mismatched head returned %d, want %d", code, exitProblem)
+	}
+	if !strings.Contains(e2.stderrText(), "TRUNCATED OR REWRITTEN") {
+		t.Errorf("a head mismatch is not reported as such:\n%s", e2.stderrText())
+	}
+}
+
+// TestCmdAudit_VerifyRefusesFiltersInsteadOfIgnoringThem: silently
+// ignoring a filter would tell an operator they verified a subset when
+// they verified everything -- or nothing of what they asked for.
+func TestCmdAudit_VerifyRefusesFiltersInsteadOfIgnoringThem(t *testing.T) {
+	for _, args := range [][]string{
+		{"-verify", "-subject", "alice@soc.example"},
+		{"-verify", "-outcome", "denied"},
+		{"-verify", "-limit", "5"},
+		{"-verify", "-json"},
+	} {
+		var out, errb bytes.Buffer
+		if code := cmdAudit(args, &out, &errb); code != exitCannotRun {
+			t.Errorf("cmdAudit(%v) = %d, want %d", args, code, exitCannotRun)
+		}
+		if !strings.Contains(errb.String(), "cannot be filtered") {
+			t.Errorf("cmdAudit(%v) stderr does not explain the refusal: %s", args, errb.String())
+		}
+	}
+
+	// And -expect-head without -verify is a no-op the operator would
+	// never be told about.
+	var out, errb bytes.Buffer
+	if code := cmdAudit([]string{"-expect-head", "abc"}, &out, &errb); code != exitCannotRun {
+		t.Errorf("bare -expect-head = %d, want %d", code, exitCannotRun)
+	}
+}
+
+// TestAuditUsage_StatesWhatVerifyDoesNotCover holds the help text to the
+// same standard as the ADR: the limit is named, not left for the operator
+// to discover during an incident.
+func TestAuditUsage_StatesWhatVerifyDoesNotCover(t *testing.T) {
+	var b bytes.Buffer
+	auditUsage(&b)
+	text := b.String()
+
+	for _, want := range []string{"-verify", "MIDDLE", "END", "-expect-head"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("usage does not mention %q:\n%s", want, text)
+		}
+	}
+}

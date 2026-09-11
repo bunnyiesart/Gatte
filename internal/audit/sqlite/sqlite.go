@@ -8,6 +8,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -65,10 +66,105 @@ CREATE INDEX IF NOT EXISTS idx_audit_records_timestamp
 		`ALTER TABLE audit_records ADD COLUMN outcome TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE audit_records ADD COLUMN reason TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE audit_records ADD COLUMN source_address TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE audit_records ADD COLUMN prev_hash TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE audit_records ADD COLUMN hash TEXT NOT NULL DEFAULT ''`,
 	} {
 		if _, err := db.Exec(col); err != nil && !isDuplicateColumn(err) {
 			return fmt.Errorf("audit/sqlite: migrate: %w", err)
 		}
+	}
+
+	const metaStmt = `
+CREATE TABLE IF NOT EXISTS audit_chain_meta (
+	id                      INTEGER PRIMARY KEY CHECK (id = 1),
+	retroactive_boundary_id INTEGER NOT NULL
+);
+`
+	if _, err := db.Exec(metaStmt); err != nil {
+		return fmt.Errorf("audit/sqlite: migrate: %w", err)
+	}
+	return backfillChain(db)
+}
+
+// backfillChain hashes rows that predate the chain, in id order, and
+// records where that backfill stopped
+// (design/adr/0015-audit-tamper-evidence.md, item 4).
+//
+// It runs once: the presence of the meta row is what says it already ran,
+// so a second call is a no-op even though rows keep being appended. On a
+// fresh database it writes boundary 0 -- nothing was retroactive -- which
+// is what makes "has this database ever been backfilled" answerable
+// without guessing from row contents.
+//
+// The backfill produces a chain that verifies. It does NOT make the rows
+// it covers trustworthy: if one was already altered, this signs the
+// altered version without complaint. That is exactly why the boundary is
+// stored rather than discarded -- so VerifyChain can say how much of an
+// intact result rests on it.
+func backfillChain(db *sql.DB) error {
+	var boundary int64
+	err := db.QueryRow(`SELECT retroactive_boundary_id FROM audit_chain_meta WHERE id = 1`).Scan(&boundary)
+	if err == nil {
+		return nil // already backfilled
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("audit/sqlite: migrate: read chain meta: %w", err)
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("audit/sqlite: migrate: begin backfill: %w", err)
+	}
+	defer tx.Rollback()
+
+	type row struct {
+		id  int64
+		rec audit.Record
+	}
+	var rows []row
+	cur, err := tx.Query(`
+SELECT id, analyst_identity, tool, target_upstream, timestamp, outcome, reason, source_address
+FROM audit_records ORDER BY id ASC`)
+	if err != nil {
+		return fmt.Errorf("audit/sqlite: migrate: scan for backfill: %w", err)
+	}
+	for cur.Next() {
+		var r row
+		var ts, outcome string
+		if err := cur.Scan(&r.id, &r.rec.AnalystIdentity, &r.rec.Tool, &r.rec.TargetUpstream,
+			&ts, &outcome, &r.rec.Reason, &r.rec.SourceAddress); err != nil {
+			cur.Close()
+			return fmt.Errorf("audit/sqlite: migrate: scan for backfill: %w", err)
+		}
+		r.rec.Timestamp, err = time.Parse(timeLayout, ts)
+		if err != nil {
+			cur.Close()
+			return fmt.Errorf("audit/sqlite: migrate: parse timestamp for backfill: %w", err)
+		}
+		r.rec.Outcome = audit.Outcome(outcome)
+		rows = append(rows, r)
+	}
+	if err := cur.Err(); err != nil {
+		cur.Close()
+		return fmt.Errorf("audit/sqlite: migrate: scan for backfill: %w", err)
+	}
+	cur.Close()
+
+	prev := audit.GenesisHash
+	var last int64
+	for _, r := range rows {
+		h := audit.ChainHash(prev, r.rec)
+		if _, err := tx.Exec(`UPDATE audit_records SET prev_hash = ?, hash = ? WHERE id = ?`, prev, h, r.id); err != nil {
+			return fmt.Errorf("audit/sqlite: migrate: backfill: %w", err)
+		}
+		prev = h
+		last = r.id
+	}
+	if _, err := tx.Exec(`INSERT INTO audit_chain_meta (id, retroactive_boundary_id) VALUES (1, ?)`, last); err != nil {
+		return fmt.Errorf("audit/sqlite: migrate: record chain boundary: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("audit/sqlite: migrate: commit backfill: %w", err)
 	}
 	return nil
 }
@@ -95,22 +191,134 @@ func New(db *sql.DB) *Recorder {
 }
 
 // Record implements audit.Recorder.
+//
+// Reading the chain head and appending happen inside one BEGIN IMMEDIATE
+// transaction (design/adr/0015-audit-tamper-evidence.md, item 3). Two
+// concurrent writers that each read the same head would produce a fork --
+// two records naming the same predecessor -- and verification would then
+// report a break in a database nobody tampered with. IMMEDIATE rather than
+// a plain BEGIN because the deferred form takes the write lock only at the
+// INSERT, which is a lock upgrade, and SQLite answers a contended upgrade
+// with SQLITE_BUSY instead of waiting.
 func (r *Recorder) Record(ctx context.Context, rec audit.Record) error {
 	if err := rec.Validate(); err != nil {
 		return err
 	}
 
-	const stmt = `
-INSERT INTO audit_records (analyst_identity, tool, target_upstream, timestamp, outcome, reason, source_address)
-VALUES (?, ?, ?, ?, ?, ?, ?)
-`
-	_, err := r.db.ExecContext(ctx, stmt,
-		rec.AnalystIdentity, rec.Tool, rec.TargetUpstream, rec.Timestamp.Format(timeLayout),
-		string(rec.Outcome), rec.Reason, rec.SourceAddress)
+	conn, err := r.db.Conn(ctx)
 	if err != nil {
 		return fmt.Errorf("audit/sqlite: record: %w", err)
 	}
+	defer conn.Close()
+
+	if _, err := conn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
+		return fmt.Errorf("audit/sqlite: record: begin: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			// Best effort: the connection is about to be returned to the
+			// pool, and leaving a transaction open on it would poison the
+			// next caller.
+			_, _ = conn.ExecContext(context.WithoutCancel(ctx), `ROLLBACK`)
+		}
+	}()
+
+	var prev string
+	err = conn.QueryRowContext(ctx, `SELECT hash FROM audit_records ORDER BY id DESC LIMIT 1`).Scan(&prev)
+	if errors.Is(err, sql.ErrNoRows) {
+		prev = audit.GenesisHash
+	} else if err != nil {
+		return fmt.Errorf("audit/sqlite: record: read chain head: %w", err)
+	}
+
+	const stmt = `
+INSERT INTO audit_records (analyst_identity, tool, target_upstream, timestamp, outcome, reason, source_address, prev_hash, hash)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+`
+	if _, err := conn.ExecContext(ctx, stmt,
+		rec.AnalystIdentity, rec.Tool, rec.TargetUpstream, rec.Timestamp.Format(timeLayout),
+		string(rec.Outcome), rec.Reason, rec.SourceAddress,
+		prev, audit.ChainHash(prev, rec)); err != nil {
+		return fmt.Errorf("audit/sqlite: record: %w", err)
+	}
+
+	if _, err := conn.ExecContext(ctx, `COMMIT`); err != nil {
+		return fmt.Errorf("audit/sqlite: record: commit: %w", err)
+	}
+	committed = true
 	return nil
+}
+
+var _ audit.ChainVerifier = (*Recorder)(nil)
+
+// VerifyChain implements audit.ChainVerifier.
+//
+// The walk is in id order, not timestamp order: id is the insertion order
+// the chain was built in, and timestamps both tie and come from the
+// caller (ADR-0015 item 2). List orders by timestamp because that is what
+// an operator reads; this deliberately does not.
+//
+// After a mismatch the walk continues from the hash stored on disk rather
+// than the recomputed one, so a single edited row is reported once instead
+// of making every row after it look broken too.
+func (r *Recorder) VerifyChain(ctx context.Context) (audit.ChainCheck, error) {
+	var boundary int64
+	err := r.db.QueryRowContext(ctx, `SELECT retroactive_boundary_id FROM audit_chain_meta WHERE id = 1`).Scan(&boundary)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return audit.ChainCheck{}, fmt.Errorf("audit/sqlite: verify: read chain meta: %w", err)
+	}
+
+	rows, err := r.db.QueryContext(ctx, `
+SELECT id, analyst_identity, tool, target_upstream, timestamp, outcome, reason, source_address, prev_hash, hash
+FROM audit_records ORDER BY id ASC`)
+	if err != nil {
+		return audit.ChainCheck{}, fmt.Errorf("audit/sqlite: verify: %w", err)
+	}
+	defer rows.Close()
+
+	check := audit.ChainCheck{Head: audit.GenesisHash}
+	prev := audit.GenesisHash
+	for rows.Next() {
+		var id int64
+		var rec audit.Record
+		var ts, outcome, storedPrev, storedHash string
+		if err := rows.Scan(&id, &rec.AnalystIdentity, &rec.Tool, &rec.TargetUpstream,
+			&ts, &outcome, &rec.Reason, &rec.SourceAddress, &storedPrev, &storedHash); err != nil {
+			return audit.ChainCheck{}, fmt.Errorf("audit/sqlite: verify: scan: %w", err)
+		}
+		rec.Timestamp, err = time.Parse(timeLayout, ts)
+		if err != nil {
+			return audit.ChainCheck{}, fmt.Errorf("audit/sqlite: verify: parse timestamp: %w", err)
+		}
+		rec.Outcome = audit.Outcome(outcome)
+
+		check.Count++
+		if id <= boundary {
+			check.RetroactivelyChained++
+		}
+
+		// Two independent ways to be wrong, and they catch different
+		// things: a link that no longer points at the record before it is
+		// a DELETION in the middle, while a hash that does not match the
+		// record's own fields is an EDIT.
+		want := audit.ChainHash(storedPrev, rec)
+		if check.FirstBreak == nil && (storedPrev != prev || storedHash != want) {
+			broken := rec
+			check.FirstBreak = &audit.ChainBreak{
+				Position: check.Count,
+				Record:   broken,
+				Want:     audit.ChainHash(prev, rec),
+				Got:      storedHash,
+			}
+		}
+		prev = storedHash
+	}
+	if err := rows.Err(); err != nil {
+		return audit.ChainCheck{}, fmt.Errorf("audit/sqlite: verify: %w", err)
+	}
+	check.Head = prev
+	return check, nil
 }
 
 // List implements audit.Recorder.

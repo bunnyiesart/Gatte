@@ -127,6 +127,43 @@ migrates all four schemas on the way in), and only then is
 `file /var/db/mcp-gateway.db` a meaningful assertion. That is a deployment,
 which this script deliberately is not.
 
+## Checking the audit trail has not been rewritten
+
+The trail is hash-chained (ADR-0015). Each record's hash covers its own
+fields and its predecessor's, so a record edited or deleted in the middle
+stops verifying:
+
+```bash
+mcp-gateway audit -verify -config /usr/local/etc/mcp-gateway/config.toml
+```
+
+Exit 0 and `chain intact`, or exit 1 and the position of the first break.
+
+**The part that needs you, not the code.** This does not detect records
+being cut off the *end* — that leaves a shorter chain which verifies
+perfectly. The only thing that catches it is having written the head down
+somewhere the gateway cannot reach. `-verify` prints it:
+
+```
+head: 9f2c…  ← copy this somewhere else
+```
+
+Later, hand it back:
+
+```bash
+mcp-gateway audit -verify -expect-head 9f2c… -config …
+```
+
+A mismatch means the trail is not the one that produced that head. Where
+the head lives is deliberately not decided here — an operator's notebook,
+a file on another host, a log shipper. Anywhere the gateway cannot write.
+
+**On first start after upgrading**, rows written before this existed are
+hashed during migration, and `-verify` says how many. Those verify against
+each other, which says nothing about whether they were already altered
+beforehand. The chain is only evidence from the migration forward, and the
+count is printed so nobody reads it as more.
+
 ## Tearing down
 
 ```bash

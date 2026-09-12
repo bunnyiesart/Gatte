@@ -38,11 +38,37 @@ VERSION="${VERSION:-$(git rev-parse --short HEAD 2>/dev/null || echo dev)}"
 # binaries, and only fell over later; a wrong-architecture binary that did
 # get installed would have failed at exec time with a message about the
 # format, a long way from the cause.
-GOARCH="${GOARCH:-$(remote_sh uname -m 2>/dev/null)}"
+#
+# The `|| true` and the kept stderr are both load-bearing, and this line
+# used to have neither. It read:
+#
+#   GOARCH="${GOARCH:-$(remote_sh uname -m 2>/dev/null)}"
+#
+# which fails in a way that teaches you nothing. `set -e` aborts on the
+# assignment the moment ssh exits non-zero, so the `case` below never runs
+# and its "could not determine the jail host's architecture" message -- the
+# one written precisely for this -- cannot print. Meanwhile 2>/dev/null has
+# already discarded ssh's own explanation. The result is a deploy that
+# exits 255 having produced ZERO bytes on either stream.
+#
+# Measured on 12 Sep 2026, with JAILHOST_HOST set to `root@192.168.1.4`
+# instead of `192.168.1.4`: remote_sh builds "$JAILHOST_USER@$JAILHOST_HOST"
+# and so dialled root@root@192.168.1.4. ssh says exactly that, and the
+# operator saw none of it.
+#
+# So: keep stderr, do not let the assignment trip set -e, and let the case
+# below do the reporting it was always written to do.
+GOARCH="${GOARCH:-$(remote_sh uname -m || true)}"
 case "$GOARCH" in
 	x86_64|amd64) GOARCH=amd64 ;;
 	aarch64|arm64) GOARCH=arm64 ;;
-	"") echo "!! could not determine the jail host's architecture" >&2; exit 1 ;;
+	"")
+		echo "!! could not determine the jail host's architecture" >&2
+		echo "   The ssh error above is the reason. A common one is setting" >&2
+		echo "   JAILHOST_HOST to user@host: remote_sh already prepends" >&2
+		echo "   \$JAILHOST_USER, so pass the host alone." >&2
+		echo "   Transport: $JAILHOST_TRANSPORT" >&2
+		exit 1 ;;
 	*) echo "!! unsupported jail host architecture: $GOARCH" >&2; exit 1 ;;
 esac
 echo "==> cross-compiling for freebsd/$GOARCH (version $VERSION)"

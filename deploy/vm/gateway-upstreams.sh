@@ -42,6 +42,21 @@ env_flags_for() {
 	esac
 }
 
+# --print-env-names prints every variable name the upstreams below will be
+# registered with, one per line, and exits.
+#
+# It exists so the provisioner can check the vault covers them BEFORE
+# registering anything, without keeping a second copy of the list. A second
+# copy is how the lists drift apart, and drifting apart is what produced
+# four "vault: secret not found" failures on 12 Sep 2026 after the backends
+# were renamed -- from a script that exited 0 saying "provisioned".
+if [ "${1:-}" = "--print-env-names" ]; then
+	for m in $MOCKS; do
+		env_flags_for "$m" | tr " " "\n" | grep -v "^-env$" | grep -v "^$"
+	done | sort -u
+	exit 0
+fi
+
 # register_and_sign_upstreams registers any missing upstream and re-signs
 # every one of them.
 #

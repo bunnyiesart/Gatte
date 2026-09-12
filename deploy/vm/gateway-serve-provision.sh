@@ -45,6 +45,7 @@ SECRETS="$ETC/secrets.json"
 SIGN_KEY="$ETC/signing.key"
 SIGN_PUB="$ETC/signing.pub"
 DBDIR=/var/db/mcp-gateway
+LOGDIR=/var/log/mcp-gateway
 GW=/usr/local/bin/mcp-gateway
 
 # The unprivileged account the service runs as. rc.subr honours
@@ -113,6 +114,12 @@ say "directories"
 j "install -d -o root -g $SVC_USER -m 0750 $ETC"
 j "install -d -o root -g wheel  -m 0755 $LIBEXEC"
 j "install -d -o $SVC_USER -g $SVC_USER -m 0750 $DBDIR"
+# The JSONL audit sink writes here (ADR-0017). Owned by the service
+# user because the sink enforces 0600 on the file itself: a shipper
+# forwarding these lines must run as $SVC_USER or in its group. That
+# is a real constraint the mode enforcement created, and it is written
+# in deploy/freebsd-jail.md rather than left to be discovered.
+j "install -d -o $SVC_USER -g $SVC_USER -m 0750 $LOGDIR"
 
 # ---------------------------------------------------------------- binaries
 say "binaries"
@@ -178,6 +185,39 @@ j "chown root:$SVC_USER $SECRETS && chmod 640 $SECRETS"
 say "vault: decrypt check (key names only)"
 j "SOPS_AGE_KEY_FILE=$AGE_KEY sops --decrypt --input-type json --output-type json $SECRETS | jq -r 'keys[]'" \
 	| sed 's/^/    /'
+
+# The vault and the registry name the same variables from two places, and
+# nothing checked that they agree.
+#
+# The block above deliberately leaves an existing vault untouched -- in a
+# real deployment it holds credentials this script has no business
+# rewriting. Correct, and it means a vault seeded before the upstreams were
+# renamed keeps the OLD names while the entries registered below ask for the
+# new ones. Every upstream then fails at boot with "vault: secret not
+# found", four times, and the script that caused it exited 0 saying
+# "provisioned".
+#
+# Measured, not hypothetical: that is exactly what the 12 Sep 2026
+# deployment did after the backends were renamed.
+#
+# So the two lists are compared here, before anything is registered. A
+# missing key is fatal: a gateway that starts with no upstream it can reach
+# is not a deployment, and finding out from the log four restarts later is
+# the failure this whole project keeps writing ADRs about.
+say "vault: checking the key names cover what the upstreams ask for"
+vault_keys=$(j "SOPS_AGE_KEY_FILE=$AGE_KEY sops --decrypt --input-type json --output-type json $SECRETS | jq -r 'keys[]'")
+missing=""
+for want in $(sh "$STAGE/gateway-upstreams.sh" --print-env-names 2>/dev/null); do
+	echo "$vault_keys" | grep -qx "$want" || missing="$missing $want"
+done
+if [ -n "$missing" ]; then
+	echo "!! the vault does not hold:$missing" >&2
+	echo "   The registry entries below name those variables; every upstream that" >&2
+	echo "   needs one would fail at boot with 'vault: secret not found', and this" >&2
+	echo "   script would have exited 0. Re-seed the vault (remove $SECRETS and" >&2
+	echo "   re-run, which regenerates it) or fix the names, then run again." >&2
+	exit 1
+fi
 
 # ------------------------------------------------------------- signing key
 # ADR-0010: `sign -generate-key` reads no configuration file, because the

@@ -94,7 +94,9 @@ func TestResolveThenSpawnDoesNotLeak(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect to mock upstream: %v (stderr: %s)", err, stderr.String())
 	}
-	defer sess.Close()
+	// NOT deferred. See the synchronisation step below, before the
+	// assertions: a deferred Close runs after them, which is what let the
+	// SDK's background reader still be writing into the buffers they read.
 
 	res, err := sess.CallTool(context.Background(), &gomcp.CallToolParams{Name: "threatintel_credcheck"})
 	if err != nil {
@@ -111,6 +113,40 @@ func TestResolveThenSpawnDoesNotLeak(t *testing.T) {
 	}
 	if !got.ReceivedExpectedSecret {
 		t.Fatal("mock upstream did not receive the injected secret -- Resolve/spawn wiring is broken, not just leaking")
+	}
+
+	// Synchronisation, not teardown, and the placement is the whole point.
+	//
+	// LoggingTransport's reader runs in the background and writes into
+	// `transcript` for as long as the session is open; the subprocess
+	// writes into `stderr` for as long as it lives. Reading either while
+	// that is still happening is a data race -- confirmed by `go test
+	// -race`, three warnings on every run, citing both buffers.
+	//
+	// The cost is not a flaky test. It is a FALSE NEGATIVE on the most
+	// important assertion in this project: a racy read can observe a buffer
+	// that has not finished filling, so the test passes because the bytes
+	// had not landed yet rather than because the secret is absent. An
+	// assertion that can pass for the wrong reason is worth less than no
+	// assertion, because it is believed.
+	//
+	// Closing first stops the reader and reaps the child, so the buffers are
+	// complete and quiescent before anything reads them. The error is
+	// discarded deliberately: this Close has done its job whether or not
+	// teardown itself erred, and there is no outcome here that should change
+	// what the assertions below see. Same reasoning, same shape, as
+	// lab/probe/main.go, which hit this first.
+	_ = sess.Close()
+
+	// Non-vacuity, and it is the guard that makes the Close above safe to
+	// have added. Moving a read behind a synchronisation point can silence
+	// a race by reading a buffer that is empty rather than one that is
+	// complete -- and "the secret is not in this transcript" is trivially
+	// true of an empty transcript. This fails if that ever happens, so the
+	// three assertions below can only pass by looking at real traffic.
+	if transcript.Len() == 0 {
+		t.Fatal("the JSON-RPC transcript is empty, so the leak assertion below would pass on nothing: " +
+			"either LoggingTransport stopped capturing, or the buffer is being read before it is written")
 	}
 
 	// The decisive assertions: the raw secret must appear nowhere the

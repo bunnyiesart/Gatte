@@ -53,15 +53,39 @@ fail() { printf '   FAIL  %s\n' "$1" >&2; exit 1; }
 
 # ------------------------------------------------------------ the SIEM side
 say "Graylog: fetching the shipped lines for chain $CHAIN"
-curl -sS -u "$GRAYLOG_USER:$GRAYLOG_PASS" \
+# The credential goes in a -K config file, not in -u. `-u user:pass` puts it
+# in argv, where any local `ps` reads it for as long as the query runs --
+# which is the same rule this project already applies to bearer tokens, and
+# "credentials come from the environment" above does not cover it: they stop
+# being in the environment the moment they become a command-line argument.
+# $WORK is a mktemp -d, so 0700 already; the chmod is belt and braces.
+umask 077
+printf 'user = "%s:%s"\n' "$GRAYLOG_USER" "$GRAYLOG_PASS" > "$WORK/curlrc"
+chmod 600 "$WORK/curlrc"
+
+# --fail matters more than it looks. Without it curl exits 0 on 401 or 500 and
+# writes the error body, jq then yields `null` for .total_results, and the
+# comparison below takes its failure branch -- so wrong credentials, an expired
+# session and a dead Graylog all used to report "no lines for this chain",
+# which reads as a shipper fault and sends the operator to fluent-bit.
+if ! curl -sS --fail -K "$WORK/curlrc" \
 	-H 'X-Requested-By: gatte-anchor-verify' -H 'Accept: application/json' \
 	-G "$GRAYLOG/search/universal/relative" \
 	--data-urlencode "query=chain:$CHAIN" \
 	--data-urlencode "range=$RANGE" \
-	--data-urlencode "fields=hash,prev_hash" > "$WORK/siem.json" \
-	|| fail "Graylog query failed"
+	--data-urlencode "fields=hash,prev_hash" > "$WORK/siem.json"
+then
+	fail "the Graylog query itself failed (HTTP error above) -- this is NOT
+         'the SIEM has no lines for this chain'. Check GRAYLOG_USER /
+         GRAYLOG_PASS and that $GRAYLOG is reachable before looking at
+         the shipper."
+fi
 
 SIEM_N=$(jq '.total_results' < "$WORK/siem.json")
+case "$SIEM_N" in
+[0-9]*) ;;
+*) fail "Graylog returned no usable total_results (got: $SIEM_N)" ;;
+esac
 [ "$SIEM_N" -gt 0 ] || fail "Graylog has no lines for chain $CHAIN -- nothing to anchor against"
 ok "$SIEM_N messages"
 
@@ -152,6 +176,32 @@ case "$NHEADS" in
 	exit 1 ;;
 esac
 HEAD=$(cat "$WORK/heads")
+
+# VALIDATE BEFORE USE, and the reason is this script's own threat model.
+#
+# $HEAD comes from Graylog's `hash` field. It is then expanded into a single
+# string that ssh hands to a shell ON THE GATEWAY HOST, which re-parses it --
+# so a hash containing `;`, a backtick or $(...) runs as root there.
+#
+# That is not a hypothetical input. This file's header says the anchor does
+# not defend against an actor who noticed the sink, and ADR-0017 says Graylog
+# is not a vault: whoever compromises it edits what is stored. Without this
+# check, that actor gets more than a forged clean verify from the operator's
+# own verification tool -- they get command execution on the one host holding
+# every backend credential.
+#
+# A SHA-256 digest is 64 lowercase hex characters and nothing else, so the
+# check costs nothing and the pattern is exact rather than a prefix.
+case "$HEAD" in
+*[!0-9a-f]* | "")
+	fail "the head from Graylog is not a hex digest, refusing to pass it to a
+         remote shell. Graylog is not trusted input here; treat this as a
+         possible compromise of the SIEM rather than a formatting problem.
+         value: $HEAD" ;;
+esac
+[ "${#HEAD}" -eq 64 ] || fail "the head from Graylog is ${#HEAD} hex characters, not 64.
+         Refusing to pass it to a remote shell -- same reasoning as above."
+
 ok "head derived from the SIEM: $HEAD"
 
 # ----------------------------------------------------------- the gateway side

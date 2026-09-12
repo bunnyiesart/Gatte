@@ -186,12 +186,21 @@ type UpstreamSpec struct {
 	// Name is the upstream's registered name, used to namespace its tools
 	// and to attribute audit records.
 	Name string
-	// Transport is "stdio" or "http".
+	// Transport is "stdio" or "http" as a TYPE, but only "stdio" is
+	// servable in this build: registry.Validate refuses an http entry with
+	// ErrTransportUnsupported (GAB-19), so no such entry reaches a Dialer.
+	//
+	// The distinction is worth the extra line. "http" is not invalid and
+	// was not a typo -- it is correct configuration nothing here can honour
+	// yet, and the constant stays declared so the day a dialer lands is a
+	// dialer landing and not a schema change.
 	Transport string
 	// Command and Args describe the process to spawn, for stdio.
 	Command string
 	Args    []string
-	// URL is the endpoint to reach, for http.
+	// URL is the endpoint to reach, for http -- and therefore always
+	// empty in this build, since no http entry survives
+	// registry.Validate to become a spec. See Transport above.
 	URL string
 }
 

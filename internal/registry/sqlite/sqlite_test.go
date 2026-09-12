@@ -97,10 +97,14 @@ func TestRepository_RegisterGet_EmptySlicesRoundTripAsEmptyNotNil(t *testing.T) 
 
 	in := registry.UpstreamServer{
 		Name:      "no-secrets-needed",
-		Transport: registry.TransportHTTP,
-		URL:       "https://example.internal",
+		Transport: registry.TransportStdio,
+		Command:   "/usr/local/bin/no-secrets-needed",
 		// Args and EnvVarNames deliberately left nil -- a server can
 		// require zero secrets and take zero extra args.
+		//
+		// This was an http entry until GAB-19 refused that transport at
+		// registration. The subject here is slice round-tripping, not the
+		// transport, so it moved to stdio rather than being dropped.
 	}
 
 	if err := repo.Register(ctx, in); err != nil {
@@ -148,13 +152,18 @@ func TestRepository_Register_DuplicateNameReturnsErrAlreadyExists(t *testing.T) 
 
 	original := registry.UpstreamServer{
 		Name:      "logsearch",
-		Transport: registry.TransportHTTP,
-		URL:       "https://logsearch.internal:9000",
+		Transport: registry.TransportStdio,
+		Command:   "/usr/local/bin/logsearch-mcp",
 	}
 	if err := repo.Register(ctx, original); err != nil {
 		t.Fatalf("Register (original): %v", err)
 	}
 
+	// A DIFFERENT command under the same name: the point of the assertions
+	// below is that a refused duplicate leaves the stored row untouched, so
+	// the duplicate has to differ in a field that would be visibly wrong if
+	// it had been written. (It differed by transport until GAB-19 refused
+	// http at registration; the command carries that contrast now.)
 	duplicate := registry.UpstreamServer{
 		Name:      "logsearch",
 		Transport: registry.TransportStdio,
@@ -171,14 +180,14 @@ func TestRepository_Register_DuplicateNameReturnsErrAlreadyExists(t *testing.T) 
 	if err != nil {
 		t.Fatalf("Get after failed duplicate Register: %v", err)
 	}
-	if got.Transport != registry.TransportHTTP {
-		t.Errorf("Transport = %q, want unchanged %q", got.Transport, registry.TransportHTTP)
+	if got.Transport != registry.TransportStdio {
+		t.Errorf("Transport = %q, want unchanged %q", got.Transport, registry.TransportStdio)
 	}
-	if got.URL != original.URL {
-		t.Errorf("URL = %q, want unchanged %q", got.URL, original.URL)
+	if got.Command != original.Command {
+		t.Errorf("Command = %q, want unchanged %q -- the refused duplicate's command was written over it", got.Command, original.Command)
 	}
-	if got.Command != "" {
-		t.Errorf("Command = %q, want unchanged empty string", got.Command)
+	if got.URL != "" {
+		t.Errorf("URL = %q, want unchanged empty string", got.URL)
 	}
 }
 
@@ -247,8 +256,8 @@ func TestRepository_Deregister(t *testing.T) {
 
 	in := registry.UpstreamServer{
 		Name:      "docsearch",
-		Transport: registry.TransportHTTP,
-		URL:       "https://docsearch.internal:9200",
+		Transport: registry.TransportStdio,
+		Command:   "/usr/local/bin/docsearch-mcp",
 	}
 	if err := repo.Register(ctx, in); err != nil {
 		t.Fatalf("Register: %v", err)

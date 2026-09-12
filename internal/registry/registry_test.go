@@ -10,6 +10,12 @@ func TestUpstreamServer_Validate(t *testing.T) {
 		name    string
 		server  UpstreamServer
 		wantErr bool
+		// wantIs is the sentinel the error must wrap. Empty means
+		// ErrInvalid, which is the answer for every malformed entry. A
+		// recognised transport with no dialer is NOT malformed and says so
+		// with its own sentinel, so the distinction is pinned here rather
+		// than left to whichever sentinel happened to be returned.
+		wantIs error
 	}{
 		{
 			name: "valid stdio entry",
@@ -23,13 +29,21 @@ func TestUpstreamServer_Validate(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "valid http entry",
+			// This case asserted `wantErr: false` until GAB-19: a
+			// well-formed http entry WAS accepted, and then failed at dial
+			// time because no dialer serves http. It is kept and inverted
+			// rather than deleted, because deleting it would leave nothing
+			// pinning the new contract -- a test that never existed and a
+			// test that was removed look identical in a year, and the old
+			// behaviour would come back silently.
+			name: "well-formed http entry is refused: nothing dials http",
 			server: UpstreamServer{
 				Name:      "logsearch",
 				Transport: TransportHTTP,
 				URL:       "https://logsearch.internal:9000",
 			},
-			wantErr: false,
+			wantErr: true,
+			wantIs:  ErrTransportUnsupported,
 		},
 		{
 			name: "empty name",
@@ -68,13 +82,20 @@ func TestUpstreamServer_Validate(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name: "http without url",
+			// Still refused, but for a different reason than it used to be:
+			// the transport is rejected before the URL is looked at, so this
+			// now wraps ErrTransportUnsupported and not ErrInvalid. Stating
+			// the sentinel is the point -- if a future http dialer lands and
+			// this case starts failing on the empty URL again, that is the
+			// correct new answer and the test will say so plainly.
+			name: "http without url is refused on the transport, not the url",
 			server: UpstreamServer{
 				Name:      "threatintel",
 				Transport: TransportHTTP,
 				URL:       "",
 			},
 			wantErr: true,
+			wantIs:  ErrTransportUnsupported,
 		},
 		{
 			name: "env var name containing = is rejected",
@@ -125,8 +146,12 @@ func TestUpstreamServer_Validate(t *testing.T) {
 				if err == nil {
 					t.Fatalf("Validate() = nil, want an error")
 				}
-				if !errors.Is(err, ErrInvalid) {
-					t.Errorf("Validate() error = %v, want it to wrap ErrInvalid", err)
+				want := tt.wantIs
+				if want == nil {
+					want = ErrInvalid
+				}
+				if !errors.Is(err, want) {
+					t.Errorf("Validate() error = %v, want it to wrap %v", err, want)
 				}
 				return
 			}
@@ -134,5 +159,47 @@ func TestUpstreamServer_Validate(t *testing.T) {
 				t.Fatalf("Validate() = %v, want nil", err)
 			}
 		})
+	}
+}
+
+// TestHTTPRefusalIsNotConflatedWithMalformed pins the distinction the two
+// sentinels exist to draw. A malformed entry is the operator's mistake; an
+// http entry is correct configuration this build cannot honour yet. Code
+// that reports them identically would tell an operator to fix a typo that
+// is not there.
+//
+// This is the half of the old contract that the table test cannot express:
+// the table asserts which sentinel IS wrapped, and this asserts which one
+// is NOT.
+func TestHTTPRefusalIsNotConflatedWithMalformed(t *testing.T) {
+	err := UpstreamServer{
+		Name:      "logsearch",
+		Transport: TransportHTTP,
+		URL:       "https://logsearch.internal:9000",
+	}.Validate()
+	if err == nil {
+		t.Fatal("a http entry must be refused while no dialer serves it")
+	}
+	if !errors.Is(err, ErrTransportUnsupported) {
+		t.Errorf("error = %v, want ErrTransportUnsupported", err)
+	}
+	if errors.Is(err, ErrInvalid) {
+		t.Errorf("error = %v, must NOT also wrap ErrInvalid: the entry is well-formed, "+
+			"it is the missing dialer that refuses it", err)
+	}
+
+	// An unrecognised transport is the other side: that one IS malformed,
+	// and must keep saying so.
+	err = UpstreamServer{
+		Name:      "docsearch",
+		Transport: Transport("websocket"),
+		Command:   "/usr/local/bin/docsearch-mcp",
+	}.Validate()
+	if !errors.Is(err, ErrInvalid) {
+		t.Errorf("unrecognised transport error = %v, want ErrInvalid", err)
+	}
+	if errors.Is(err, ErrTransportUnsupported) {
+		t.Errorf("unrecognised transport error = %v, must NOT wrap ErrTransportUnsupported: "+
+			"\"websocket\" is not a transport this project recognises at all", err)
 	}
 }

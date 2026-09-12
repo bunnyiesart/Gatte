@@ -55,6 +55,26 @@ Go (`design/adr/0002-language-runtime.md`).
 ## Repo hardening
 
 This repo follows a repository-hardening standard's
-`solo` profile — see `.hardening.toml`. Commits are signed with SSH
-(`gpg.format=ssh`); the pre-commit hook in `.githooks/` is a local
-guardrail, not a control — the server-side scan is what's authoritative.
+`solo` profile — see `.hardening.toml`. The pre-commit hook in `.githooks/`
+is a local guardrail, not a control — the server-side scan is what's
+authoritative.
+
+> **Commits are NOT signed, and this said they were.** The sentence here
+> read "Commits are signed with SSH (`gpg.format=ssh`)". Measured 12 Sep
+> 2026: `git log --format=%G?` returns `N` for all 41 commits, and
+> `gpg.format`, `commit.gpgsign` and `user.signingkey` are unset both
+> locally and globally. It was never true.
+>
+> That matters more here than a stale line usually would. This repository is
+> public and holds a security tool; "commits are signed" is the claim
+> someone would lean on to trust its history, and it is exactly the kind of
+> unbacked assertion the code in this repo is repeatedly corrected for
+> making. `.hardening.toml` requires signing and says on its first line that
+> every disabled control needs a declared exception — there is none.
+>
+> Two ways to close it, and both belong to the repository's owner rather
+> than to whoever notices: configure SSH signing (it needs a key), or
+> declare the exception in `.hardening.toml` with the reason, approver and
+> review date that file demands. Writing that exception without an approver
+> would be forging the approval, so it is left undone and said out loud
+> instead.

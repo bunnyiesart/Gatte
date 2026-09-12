@@ -670,6 +670,9 @@ type startupSummary struct {
 	// EmptyGrants are [role.grants] entries written with no tools. Legal,
 	// reaching nothing, and reported by nothing until this field existed.
 	EmptyGrants []grantGap
+	// SharedCredentials are environment-variable names that more than one
+	// registered upstream declares. See sharedCredential and GAB-32.
+	SharedCredentials []sharedCredential
 	// SIEMChain is the chain name lines are emitted under, empty when no
 	// sink is configured, and SIEMPath the file they are appended to.
 	//
@@ -719,6 +722,77 @@ type grantGap struct {
 // different complaint with a different fix: that one says "register the
 // backend or drop the grant", this one says "the list is empty and you may
 // have meant to fill it".
+// sharedCredential is one environment-variable name that more than one
+// registered upstream declares.
+type sharedCredential struct {
+	// VarName is the variable. Never a value -- the registry structurally
+	// cannot hold one, which is why this type can exist at all.
+	VarName string
+	// Upstreams are the entries that declare it, sorted.
+	Upstreams []string
+}
+
+// sharedCredentials finds environment-variable names declared by more than
+// one upstream (GAB-32).
+//
+// # What is actually wrong, and what is not
+//
+// The vault is a flat map keyed by variable NAME, with no upstream
+// dimension: a credential is identified by what the variable is called, not
+// by which backend receives it. So two entries that both declare
+// `API_TOKEN` cannot hold different values. One silently receives the
+// other's credential.
+//
+// Per-upstream ISOLATION is not the problem and is not affected: resolveEnv
+// builds each child environment from scratch from exactly one entry's
+// declared names, so no upstream can see another's variables. The gap is
+// naming, and its harm is entirely in what an operator believes.
+//
+// # Why this reports rather than refuses
+//
+// The obvious guard -- refuse at startup when two entries share a name --
+// would be wrong here, and the lab fleet is the proof: all four mocks read
+// MOCK_SECRET and MOCK_EXPECT by design, because a shared fixture value is
+// exactly what they are for. Refusing would break a working deployment to
+// prevent a mistake nobody made.
+//
+// What the ticket actually names as the harm is the SILENCE: "There is no
+// error, no warning, and nothing in `upstream list` that would show it."
+// That is what this closes. A share stays possible and becomes visible, so
+// the fifth backend that happens to want a common variable name announces
+// itself at the boot that introduces it, rather than at an authentication
+// failure against the wrong service -- or, worse, a successful call made
+// with the wrong identity.
+//
+// Keying the vault by (upstream, variable) is the structural fix and is a
+// decision with a deployment cost (the secrets file's shape, and the
+// provisioner that writes it), so it is an ADR and not a change smuggled
+// in behind a diagnostic.
+func sharedCredentials(entries []registry.UpstreamServer) []sharedCredential {
+	byVar := map[string][]string{}
+	for _, e := range entries {
+		for _, name := range e.EnvVarNames {
+			byVar[name] = append(byVar[name], e.Name)
+		}
+	}
+
+	var shared []sharedCredential
+	for _, name := range slices.Sorted(maps.Keys(byVar)) {
+		ups := byVar[name]
+		if len(ups) < 2 {
+			continue
+		}
+		// One entry declaring the same name twice is a different defect and
+		// not this one; dedupe so it cannot masquerade as a share.
+		ups = slices.Compact(slices.Sorted(slices.Values(ups)))
+		if len(ups) < 2 {
+			continue
+		}
+		shared = append(shared, sharedCredential{VarName: name, Upstreams: ups})
+	}
+	return shared
+}
+
 func emptyGrants(roles []config.Role) []grantGap {
 	var gaps []grantGap
 	for _, r := range roles {
@@ -956,6 +1030,7 @@ func newStartupSummary(
 		// fires hardest when its own input is missing teaches people to
 		// ignore it.
 		s.UnregisteredGrants = unregisteredGrants(cfg.Roles, entries)
+		s.SharedCredentials = sharedCredentials(entries)
 	}
 	// OUTSIDE the block above, deliberately: an empty grant list is a fact
 	// about the config file alone. It needs no registry to detect, so a
@@ -1080,6 +1155,16 @@ func (s startupSummary) log(logger *slog.Logger) {
 		}
 	}
 
+	if len(s.SharedCredentials) > 0 {
+		pairs := make([]string, 0, len(s.SharedCredentials))
+		for _, c := range s.SharedCredentials {
+			pairs = append(pairs, c.VarName+" -> "+strings.Join(c.Upstreams, "+"))
+		}
+		logger.Warn("mcp-gateway: more than one upstream declares the same credential variable, and the vault "+
+			"is keyed by variable name alone -- they receive the SAME value, which is correct for a shared "+
+			"fixture and wrong for two backends that each need their own (GAB-32)",
+			slog.String("shared", strings.Join(pairs, ", ")))
+	}
 	if len(s.EmptyGrants) > 0 {
 		pairs := make([]string, 0, len(s.EmptyGrants))
 		for _, g := range s.EmptyGrants {

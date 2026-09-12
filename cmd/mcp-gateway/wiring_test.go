@@ -884,3 +884,77 @@ func TestUnregisteredGrants_ReportsAnEmptyGrantList(t *testing.T) {
 		t.Errorf("a working grant was reported as empty: %+v", ok)
 	}
 }
+
+// TestSharedCredentials_ReportsAVariableTwoUpstreamsDeclare is GAB-32's
+// silence, closed.
+//
+// The vault is keyed by variable NAME with no upstream dimension, so two
+// entries declaring the same name cannot hold different values -- one
+// silently receives the other's credential. The ticket's own account of the
+// harm is that "there is no error, no warning, and nothing in `upstream
+// list` that would show it". This is the warning.
+func TestSharedCredentials_ReportsAVariableTwoUpstreamsDeclare(t *testing.T) {
+	entries := []registry.UpstreamServer{
+		{Name: "casemgmt", EnvVarNames: []string{"MOCK_SECRET", "CASEMGMT_API_TOKEN"}},
+		{Name: "logsearch", EnvVarNames: []string{"MOCK_SECRET", "LOGSEARCH_API_TOKEN"}},
+		{Name: "threatintel", EnvVarNames: []string{"THREATINTEL_VT_KEY"}},
+	}
+
+	shared := sharedCredentials(entries)
+	if len(shared) != 1 {
+		t.Fatalf("shared = %d, want 1 (MOCK_SECRET): %+v", len(shared), shared)
+	}
+	if shared[0].VarName != "MOCK_SECRET" {
+		t.Errorf("VarName = %q, want MOCK_SECRET", shared[0].VarName)
+	}
+	if got := strings.Join(shared[0].Upstreams, ","); got != "casemgmt,logsearch" {
+		t.Errorf("Upstreams = %q, want casemgmt,logsearch (sorted)", got)
+	}
+	// The per-backend names must NOT be reported: each is declared once, and
+	// reporting them would drown the one case that matters.
+	for _, c := range shared {
+		if c.VarName != "MOCK_SECRET" {
+			t.Errorf("%q was reported as shared but only one upstream declares it", c.VarName)
+		}
+	}
+}
+
+// TestSharedCredentials_OneEntryRepeatingANameIsNotAShare: an entry that
+// lists the same variable twice is a different defect, and letting it
+// masquerade as a share would send the operator looking for a second
+// upstream that does not exist.
+func TestSharedCredentials_OneEntryRepeatingANameIsNotAShare(t *testing.T) {
+	entries := []registry.UpstreamServer{
+		{Name: "casemgmt", EnvVarNames: []string{"API_TOKEN", "API_TOKEN"}},
+	}
+	if shared := sharedCredentials(entries); len(shared) != 0 {
+		t.Errorf("a single entry repeating a name was reported as shared: %+v", shared)
+	}
+}
+
+// TestSharedCredentials_TheLabFleetIsReportedNotRefused pins the reason
+// this is a warning rather than a startup error.
+//
+// All four mocks read MOCK_SECRET and MOCK_EXPECT by design -- a shared
+// fixture value is what they are for. A guard that refused on a shared name
+// would break a working deployment to prevent a mistake nobody made. It is
+// reported, once, with both names.
+func TestSharedCredentials_TheLabFleetIsReportedNotRefused(t *testing.T) {
+	var entries []registry.UpstreamServer
+	for _, n := range []string{"casemgmt", "logsearch", "docsearch", "threatintel"} {
+		entries = append(entries, registry.UpstreamServer{
+			Name:        n,
+			EnvVarNames: []string{"MOCK_SECRET", "MOCK_EXPECT", strings.ToUpper(n) + "_TOKEN"},
+		})
+	}
+
+	shared := sharedCredentials(entries)
+	if len(shared) != 2 {
+		t.Fatalf("shared = %d, want 2 (MOCK_SECRET and MOCK_EXPECT): %+v", len(shared), shared)
+	}
+	for _, c := range shared {
+		if len(c.Upstreams) != 4 {
+			t.Errorf("%s is shared by %d upstreams, want 4", c.VarName, len(c.Upstreams))
+		}
+	}
+}

@@ -89,6 +89,32 @@ head2 "0. re-baseline, then restart mcp_gateway through rc.d"
 # acceptance test on a lab jail whose registry is rebuilt deterministically
 # two lines further down -- and it would be indefensible on anything real,
 # where the trail is the record of who called what.
+# The paragraph above is a source comment, and a source comment is not a
+# warning: it is read by whoever edits this file, never by whoever runs it.
+# Somebody ran this on 12 Sep 2026 against a jail whose audit trail they had
+# just finished proving survived a migration, and destroyed it -- having
+# never opened this file. So the destruction announces itself, and counts
+# what it is about to take.
+#
+# GATEWAY_VERIFY_YES=1 skips the pause, for CI. There is deliberately no
+# flag that skips the WARNING.
+existing=$(ju "$GW audit -config $CONFIG -limit 0" 2>/dev/null | grep -c "Z  " || echo 0)
+echo
+echo "  !! THIS DESTROYS THE AUDIT TRAIL AND EVERY TOOL APPROVAL ON $GW_JAIL"
+echo "     $existing audit record(s) are about to be deleted, permanently."
+echo "     That is correct for a lab acceptance test -- step 3 cannot mean"
+echo "     anything against yesterday's approvals -- and wrong for anything"
+echo "     whose trail is evidence. There is no backup."
+echo
+if [ "${GATEWAY_VERIFY_YES:-}" != "1" ]; then
+	printf "     Continue? [y/N] "
+	read -r reply
+	case "$reply" in
+		y|Y|yes|YES) ;;
+		*) echo "     Aborted. Nothing was changed."; exit 1 ;;
+	esac
+fi
+
 j "service mcp_gateway stop >/dev/null 2>&1 || true"
 j "rm -f $LOG $DBDIR/mcp-gateway.db $DBDIR/mcp-gateway.db-wal $DBDIR/mcp-gateway.db-shm"
 echo "  registry rebuilt:"

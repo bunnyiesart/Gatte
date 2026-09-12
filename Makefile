@@ -1,4 +1,4 @@
-.PHONY: build test vet lint fmt-check check lab-build lab-probe devtools
+.PHONY: build test test-race vet lint fmt-check check lab-build lab-probe devtools
 
 build:
 	go build -o bin/mcp-gateway ./cmd/mcp-gateway
@@ -90,6 +90,29 @@ test:
 		echo "############################################################"; \
 	fi
 	go test -count=1 ./...
+
+# test-race is `test` under the race detector, and it is a SEPARATE target
+# on purpose: -race roughly triples the suite's runtime, and a gate people
+# stop running is a gate that protects nothing.
+#
+# It exists because `make check` never ran it, and that is how a data race
+# survived in the most important test in this project. internal/vault/sopsage
+# TestResolveThenSpawnDoesNotLeak read the JSON-RPC transcript and the
+# subprocess's stderr while the SDK's background reader was still writing
+# into them -- three warnings on every run once anyone looked.
+#
+# The cost was never flakiness. A racy read can observe a buffer that has not
+# finished filling, so the failure mode was a FALSE NEGATIVE on the claim
+# this whole project exists to make: the test passing because the bytes had
+# not landed rather than because the secret was absent. It is worth saying
+# that plainly here, because the next person deciding whether this target is
+# worth three minutes should know what the last three minutes bought.
+#
+# Whether this belongs inside `check` is a deployment-speed judgement and is
+# deliberately left to whoever owns the build, not assumed here.
+test-race: export PATH := $(GOPATH_BIN):$(PATH)
+test-race:
+	go test -race -count=1 ./...
 
 # devtools installs the external, non-Go-module tools this project's own
 # code shells out to (design/adr/0005-shell-out-to-sops-cli.md) into

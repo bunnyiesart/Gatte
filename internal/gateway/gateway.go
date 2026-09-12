@@ -89,9 +89,25 @@ type ToolDef struct {
 	// as trusted operational context; it is part of the quarantine hash
 	// for exactly that reason.
 	Description string
-	// InputSchema is the raw JSON schema bytes, passed through unaltered.
-	// Not reformatted or canonicalized anywhere in this system: see
-	// design/adr/0007.
+	// InputSchema is the tool's JSON schema.
+	//
+	// CORRECTED: this said "raw JSON schema bytes, passed through
+	// unaltered ... not reformatted or canonicalized anywhere in this
+	// system", which is what ADR-0007 §2 intended and not what arrives.
+	// The MCP SDK decodes the upstream's schema into map[string]any before
+	// any of this code runs, so what is here is a re-marshal of that map:
+	// there IS a canonicalization and it is Go's, applied before our
+	// boundary. internal/gateway/stdio.rawJSON says the same thing at the
+	// point it happens; this said the opposite at the point a reader meets
+	// the field.
+	//
+	// What that costs is measured, not guessed, in
+	// TestRawJSON_TheSDKRoundTripCollapsesDuplicateKeys: duplicate keys
+	// collapse, so two schemas a different parser could read differently
+	// produce one fingerprint. Numbers normalise and key order vanishes.
+	// Every SEMANTIC change still moves the hash, so the rug-pull defence
+	// stands with one fewer edge than ADR-0007 claimed (GAB-15,
+	// design/adr/0019).
 	InputSchema json.RawMessage
 
 	// OutputSchema is the raw JSON schema an upstream declares for the

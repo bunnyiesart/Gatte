@@ -61,16 +61,31 @@ authoritative.
 
 > **Commits are NOT signed, and this said they were.** The sentence here
 > read "Commits are signed with SSH (`gpg.format=ssh`)". Measured 12 Sep
-> 2026: `git log --format=%G?` returns `N` for all 41 commits, and
-> `gpg.format`, `commit.gpgsign` and `user.signingkey` are unset both
-> locally and globally. It was never true.
+> 2026: `git log --format=%G?` returns `N` for every commit in the
+> repository's history without exception, and `gpg.format`,
+> `commit.gpgsign` and `user.signingkey` are unset both locally and
+> globally. It was never true.
+>
+> (This first said "all 41 commits", which was accurate when measured and
+> wrong in the artifact that stated it — the commit carrying the sentence
+> made it 42, and the count would have drifted again with every commit
+> after. A smaller instance of exactly what this note is about, caught in
+> review.)
 >
 > That matters more here than a stale line usually would. This repository is
 > public and holds a security tool; "commits are signed" is the claim
 > someone would lean on to trust its history, and it is exactly the kind of
 > unbacked assertion the code in this repo is repeatedly corrected for
-> making. `.hardening.toml` requires signing and says on its first line that
-> every disabled control needs a declared exception — there is none.
+> making.
+>
+> What is locally verifiable: `.hardening.toml` declares `perfil = "solo"`,
+> and its own first line says every disabled control needs an exception
+> declared in it — and the file contains none. Whether the `solo` profile
+> requires signing is NOT checkable from this clone: that control list lives
+> in the external hardening standard and `harden.py` is not here.
+> `harden.py --explain solo` would settle it. The distinction is kept
+> because this is a note about unbacked claims, and "the profile requires
+> signing" would be inferred rather than measured.
 >
 > Two ways to close it, and both belong to the repository's owner rather
 > than to whoever notices: configure SSH signing (it needs a key), or

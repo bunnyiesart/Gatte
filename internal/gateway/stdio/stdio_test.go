@@ -1,6 +1,7 @@
 package stdio
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -18,6 +19,7 @@ import (
 	"time"
 
 	"github.com/bunnyiesart/Gatte/internal/gateway"
+	"github.com/bunnyiesart/Gatte/internal/quarantine"
 	"github.com/bunnyiesart/Gatte/lab/mockutil"
 )
 
@@ -833,5 +835,84 @@ func TestLabBackendsSendStructuredContentWithoutDeclaringASchema(t *testing.T) {
 	if !reflect.DeepEqual(fromText, fromStructured) {
 		t.Errorf("the text block and the structured content are not the same payload:\n text %s\n struct %s",
 			firstText(t, res), res.StructuredContent)
+	}
+}
+
+// TestRawJSON_TheSDKRoundTripCollapsesDuplicateKeys is GAB-15's cost,
+// measured instead of asserted.
+//
+// ADR-0007 §2 chose to hash the schema as raw bytes with no JSON
+// canonicalization, reasoning that canonicalizing puts a parser deciding
+// two byte sequences "mean the same thing" in front of a human. The
+// official SDK decodes Tool.InputSchema into map[string]any before any of
+// our code sees it, so the upstream's literal bytes are already gone at
+// this boundary: there IS a canonicalization, it is Go's, and rawJSON can
+// only re-marshal what survived it.
+//
+// This test does not assert that the gap is acceptable. It pins what the
+// gap actually is, so the decision recorded in the ADR rests on a measured
+// consequence rather than on a description of one -- and so that anyone who
+// later closes it can watch this test stop passing.
+func TestRawJSON_TheSDKRoundTripCollapsesDuplicateKeys(t *testing.T) {
+	// Two schemas a client or a model could read differently, and which a
+	// strict JSON parser is entitled to reject outright. RFC 8259 leaves
+	// duplicate names' behaviour unpredictable, which is exactly why
+	// ADR-0007 wanted the bytes.
+	const a = `{"type":"object","properties":{"q":{"type":"string"}},"x":1,"x":2}`
+	const b = `{"type":"object","properties":{"q":{"type":"string"}},"x":2}`
+
+	if a == b {
+		t.Fatal("the two fixtures are byte-identical; this test proves nothing")
+	}
+
+	// What the SDK hands us: the decode has already happened.
+	var decodedA, decodedB map[string]any
+	if err := json.Unmarshal([]byte(a), &decodedA); err != nil {
+		t.Fatalf("decode a: %v", err)
+	}
+	if err := json.Unmarshal([]byte(b), &decodedB); err != nil {
+		t.Fatalf("decode b: %v", err)
+	}
+
+	gotA, err := rawJSON(decodedA)
+	if err != nil {
+		t.Fatalf("rawJSON a: %v", err)
+	}
+	gotB, err := rawJSON(decodedB)
+	if err != nil {
+		t.Fatalf("rawJSON b: %v", err)
+	}
+
+	if !bytes.Equal(gotA, gotB) {
+		t.Fatalf("the round trip preserved a difference this test was written to show it loses:\n  a -> %s\n  b -> %s\n"+
+			"If the adapter now reads raw bytes off the wire, GAB-15 is closed and this test should be "+
+			"replaced by one asserting the bytes survive -- not deleted.", gotA, gotB)
+	}
+
+	// And therefore, at the level that matters: one fingerprint for two
+	// upstream schemas. An operator approving one has approved the other.
+	hashA := quarantine.Hash(quarantine.ToolIdentity{Name: "search", Description: "d", InputSchema: gotA})
+	hashB := quarantine.Hash(quarantine.ToolIdentity{Name: "search", Description: "d", InputSchema: gotB})
+	if hashA != hashB {
+		t.Fatalf("hashes differ (%s vs %s) although the bytes matched -- Hash is reading something "+
+			"other than the schema it was given", hashA[:12], hashB[:12])
+	}
+
+	// The control, and the half that keeps this from reading as "the
+	// fingerprint is broken": a SEMANTIC change still moves it. The rug-pull
+	// defence ADR-0007 exists for is intact; it has one fewer edge than the
+	// ADR claimed.
+	var semantic map[string]any
+	if err := json.Unmarshal([]byte(`{"type":"object","properties":{"q":{"type":"number"}},"x":2}`), &semantic); err != nil {
+		t.Fatalf("decode semantic: %v", err)
+	}
+	gotSemantic, err := rawJSON(semantic)
+	if err != nil {
+		t.Fatalf("rawJSON semantic: %v", err)
+	}
+	hashSemantic := quarantine.Hash(quarantine.ToolIdentity{Name: "search", Description: "d", InputSchema: gotSemantic})
+	if hashSemantic == hashA {
+		t.Error("a changed field TYPE did not move the fingerprint; that would be a broken rug-pull defence, " +
+			"which is a different and much worse finding than GAB-15")
 	}
 }

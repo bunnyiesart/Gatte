@@ -20,3 +20,19 @@ perfil = "solo"
 # aprovado_por = "seu.usuario"
 # data         = 2026-09-01
 # revisar_em   = 2027-03-01
+
+# Assinatura de commit: desligada por decisao do dono do repositorio em 12 set
+# 2026, quando a divergencia foi medida -- o README afirmava assinatura SSH e
+# os 42 commits do historico estavam sem, com gpg.format, commit.gpgsign e
+# user.signingkey nao configurados local nem globalmente. Nunca foi verdade.
+#
+# A excecao existe porque a primeira linha deste arquivo exige uma para todo
+# controle desligado, e porque "desligado e declarado" e uma postura diferente
+# de "desligado e afirmado como ligado", que foi o estado ate hoje. O README
+# foi corrigido para dizer o que o historico mostra.
+[[excecao]]
+controle     = "commit-signing"
+motivo       = "Repositorio de um operador so, sem chave de assinatura configurada; a decisao foi nao introduzir uma."
+aprovado_por = "bunnyiesart"
+data         = 2026-09-12
+revisar_em   = 2027-03-12

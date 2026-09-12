@@ -87,9 +87,10 @@ authoritative.
 > because this is a note about unbacked claims, and "the profile requires
 > signing" would be inferred rather than measured.
 >
-> Two ways to close it, and both belong to the repository's owner rather
-> than to whoever notices: configure SSH signing (it needs a key), or
-> declare the exception in `.hardening.toml` with the reason, approver and
-> review date that file demands. Writing that exception without an approver
-> would be forging the approval, so it is left undone and said out loud
-> instead.
+> **Closed 12 Sep 2026 by declaring it, not by fixing it.** The owner's
+> decision was to keep signing off — a single-operator repository with no
+> signing key, and no intent to introduce one — so `.hardening.toml` now
+> carries a `commit-signing` exception with the reason, approver and review
+> date that file demands. Off and declared is a different posture from off
+> and advertised as on, which is what this was until today. Review falls due
+> 12 Mar 2027.

@@ -110,6 +110,28 @@ test:
 #
 # Whether this belongs inside `check` is a deployment-speed judgement and is
 # deliberately left to whoever owns the build, not assumed here.
+#
+# # Why this uses `export PATH` and `lint` cannot
+#
+# Two targets a few lines apart are written differently on purpose, and the
+# difference is not style. Do not normalise them.
+#
+# GNU make 3.81 execs a recipe line DIRECTLY, without a shell, when the line
+# has no shell metacharacters -- and that direct exec resolves the program
+# against make's own PATH, not the target-specific one. So the rule is about
+# which program the recipe NAMES:
+#
+#   names a program already on the system PATH (go)      -> `target: export
+#     PATH := ...` works. The export still reaches the child process
+#     environment, which is where the tests look up sops and age.
+#   names a tool that lives in GOPATH_BIN (staticcheck,  -> it does NOT. make
+#     errcheck, gosec)                                      cannot find the
+#     program to exec in the first place. That is what LINT_ENV is for.
+#
+# Measured, not reasoned: with GOPATH/bin off the PATH, the `export` form of
+# lint fails with `make: staticcheck: No such file or directory` -- make
+# itself reporting, not a shell -- while `gosec ... || true` on the next line
+# succeeds, because `||` forces a shell into existence.
 test-race: export PATH := $(GOPATH_BIN):$(PATH)
 test-race:
 	go test -race -count=1 ./...

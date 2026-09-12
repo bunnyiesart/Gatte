@@ -823,6 +823,53 @@ func TestRunAuditVerify_NamesTheChainToAnchorAgainst(t *testing.T) {
 	}
 }
 
+// TestRunAuditVerify_DoesNotTellTheOperatorToUseTheNewestMessage pins a
+// correction made on 12 Sep 2026.
+//
+// This hint block used to read "the expected value is the `hash` field of
+// the newest Graylog message matching chain:...". auditUsage, forty lines
+// away in the same file, spends a paragraph explaining why newest is the
+// wrong rule: Graylog orders by arrival, ts is the caller's clock, and
+// neither is the chain's insertion order, so two records written in one
+// tick pick a winner at random.
+//
+// The two texts disagreed and the WRONG one was the one that prints at the
+// moment an operator is looking for the value -- nobody reads -h while the
+// answer is already on screen. Following it produces a TRUNCATED OR
+// REWRITTEN alarm on a trail nobody touched, roughly half the time it
+// matters, which is how a tamper-detection control gets switched off.
+//
+// The assertion is deliberately about the OUTPUT rather than about a
+// constant, because the defect was the output.
+func TestRunAuditVerify_DoesNotTellTheOperatorToUseTheNewestMessage(t *testing.T) {
+	e := newOpTestEnv(t)
+	mustRecord(t, e, wiringRecord("casemgmt.list_cases"))
+	e.cfg.Audit = config.Audit{SIEM: config.SIEM{Path: "/var/log/mcp-gateway/audit.jsonl", Chain: "gatte-jail-01"}}
+
+	if code := runAuditVerify(e.opEnv, ""); code != exitOK {
+		t.Fatalf("exit code = %d, want %d\n%s", code, exitOK, e.bothText())
+	}
+	out := e.stdoutText()
+
+	// The rule itself has to be stated, not merely the wrong one removed:
+	// an operator who is not told how to pick will reach for the newest.
+	if !strings.Contains(out, "no other line's prev_hash") {
+		t.Errorf("`audit -verify` does not say how to pick the head:\n%s", out)
+	}
+
+	// "newest" may still appear -- it does, in the clause warning against
+	// it -- so what is checked is that it is not presented as the rule.
+	for _, forbidden := range []string{
+		"hash` field of the newest",
+		"the newest Graylog message",
+		"newest message matching",
+	} {
+		if strings.Contains(out, forbidden) {
+			t.Errorf("`audit -verify` names the newest message as the expected value (%q):\n%s", forbidden, out)
+		}
+	}
+}
+
 // TestReportCredentialDrift_RefusesAnExpiredContextLoudly is the safety net
 // under a bug that produced no symptom.
 //

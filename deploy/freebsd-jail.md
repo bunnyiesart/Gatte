@@ -202,12 +202,39 @@ protection at all against one who did. Closing it means signing the lines
 with a key the gateway does not hold, which is a decision this deployment
 has not taken.
 
-**Nothing compares the two automatically.**
-While it is manual, the detection depends on somebody running it — and
-there is no Graylog alert yet for "lines stopped arriving for this chain",
-which is what a dead (or deliberately killed) shipper looks like.
+**Comparing the two is now scripted; running it is still on you.**
+`deploy/gatte-anchor-verify.sh` does the whole comparison: it fetches the
+shipped lines for the chain, derives the head the correct way (the hash
+that is no other line's `prev_hash`), and feeds it to `audit -verify
+-expect-head` on the gateway. It needs `GRAYLOG_USER` and `GRAYLOG_PASS`
+in the environment and reaches the gateway over ssh:
 
-Three things this deployment owns, because the gateway cannot:
+```bash
+GRAYLOG_USER=… GRAYLOG_PASS=… sh deploy/gatte-anchor-verify.sh
+```
+
+It distinguishes the three ways this goes wrong, because they have
+different fixes and the wrong diagnosis wastes an incident:
+
+| what it reports | what it means |
+|---|---|
+| fragments **and** a genesis record | the database was emptied or replaced; the append-only sink kept the older lines |
+| fragments and **no** genesis | the shipper dropped lines |
+| head mismatch, sink ahead of SIEM | the shipper is lagging or stopped, not tampering |
+
+A genesis record is one with an empty `prev_hash`. Exactly one is normal —
+the first record ever written. A second one, or one sitting behind lines
+that were shipped earlier, means the chain restarted: a genesis can only
+ever sit at the start of a database. **This fired for real on 12 Sep
+2026**, caused by `gateway-serve-verify.sh`, which wipes the database by
+design on every run and now warns before doing it.
+
+What the script does *not* do is run itself. There is still no Graylog
+alert for "lines stopped arriving for this chain", which is what a dead —
+or deliberately killed — shipper looks like, and a shipper that stops is
+indistinguishable from a gateway that went quiet.
+
+Four things this deployment owns, because the gateway cannot:
 
 **1. A shipper has to read the file.** The Graylog input is Raw/Plaintext
 TCP at `10.17.90.30:5555` and expects exactly one JSON object per line,
@@ -215,6 +242,26 @@ byte-identical to what the gateway wrote — the extractor is in COPY mode
 and `message` is the hash-chain anchor. A shipper must not re-wrap,
 pretty-print, or batch lines. Nothing in the gateway can check that one is
 installed; if none is, the sink is a file that grows and anchors nothing.
+
+The one this deployment runs is fluent-bit, and its config is in the repo
+at `deploy/gatte-audit-fluentbit.conf` with install steps in its header.
+Two FreeBSD specifics are load-bearing and both fail silently:
+
+- **`Inotify_Watcher false` is required.** inotify is a Linux API. On
+  FreeBSD the file registration fails with `errno=22`, `cannot register
+  file`, and `tail` then reads nothing at all — while still writing an
+  offset, so it looks like a shipper that has caught up.
+- **It must not run as the rc.d default `nobody`.** The sink is `0600`
+  owned by the gateway's service user (item 3 below), so `nobody` cannot
+  open it and the service exits having shipped nothing. Run it as root or
+  in the service user's group — widening the sink's mode is the wrong fix,
+  because that mode *is* the control.
+
+Its offset database (`DB /var/db/fluent-bit/gatte-audit.db`) is what makes
+a restart gap-free, and that is not a nicety: a gap makes the SIEM's head
+stop matching the gateway's, which is indistinguishable from tampering.
+Measured on 12 Sep 2026 — a restart re-sent nothing, and a fresh audited
+event arrived exactly once.
 
 **2. Rotation, and the reopen gap.** The file grows without bound. The sink
 opens with `O_APPEND`, so every write lands at the current end of the file

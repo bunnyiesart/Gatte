@@ -223,4 +223,12 @@ fmt-check:
 		echo "gofmt needs to be run on:"; echo "$$out"; exit 1; \
 	fi
 
-check: fmt-check vet lint test build
+# test-race is IN, by the operator's decision on 12 Sep 2026. It triples the
+# suite's runtime and that is the price of the gate being able to see a class
+# of bug it was blind to -- a data race in the credential leak test survived
+# because nothing here ran the detector, and its failure mode was a false
+# negative on this project's central security claim, not a flaky test.
+#
+# `test` still runs too, and deliberately: -race changes scheduling, so a
+# plain run is the one that matches how the binary actually executes.
+check: fmt-check vet lint test test-race build

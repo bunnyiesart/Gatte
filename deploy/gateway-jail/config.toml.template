@@ -70,9 +70,18 @@ trusted_keys = [
 # plain rename leaves the process writing to the rotated inode. Use
 # copytruncate, or restart after rotating. See deploy/freebsd-jail.md.
 #
-# [audit.siem]
-# path  = "/var/log/mcp-gateway/audit.jsonl"
-# chain = "gatte-jail-01"
+# The SIEM sink is ON in this deployment, and that is what makes the chain
+# worth anything at all: ADR-0015's correction says the ONLY detection
+# against an attacker who can write the database is comparing the head with
+# a value kept where this gateway cannot reach. This file is how the head
+# leaves the host. Commented out, the chain detects careless tampering and
+# nothing else.
+#
+# Read the limits in `mcp-gateway audit -verify -h` before trusting it: the
+# lines are unsigned, so whoever controls this host can also forge one.
+[audit.siem]
+path  = "/var/log/mcp-gateway/audit.jsonl"
+chain = "gatte-jail-01"
 
 # Roles. In `tools = [...]` the names are namespaced <upstream>.<tool> and
 # matched exactly, with no wildcard. Note docsearch self-prefixes its own

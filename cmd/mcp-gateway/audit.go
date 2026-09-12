@@ -399,9 +399,22 @@ func runAuditVerify(e *opEnv, expectHead string) int {
 	// would be this project's own defect class in a help string.
 	if e.cfg.Audit.SIEM.Enabled() {
 		chain := e.cfg.Audit.SIEM.Chain
-		fmt.Fprintf(e.stdout, "\nThis gateway appends its trail to %s under chain %q. The expected value\n", e.cfg.Audit.SIEM.Path, chain)
-		fmt.Fprintf(e.stdout, "is the `hash` field of the newest Graylog message matching chain:%q --\n", chain)
-		fmt.Fprintf(e.stdout, "which is an anchor only while a shipper is actually forwarding that file.\n")
+		// CORRECTION, 12 Sep 2026. This block used to say the expected
+		// value was "the hash field of the NEWEST Graylog message",
+		// which contradicted auditUsage forty lines up -- the part that
+		// explains at length why newest is wrong: Graylog orders by
+		// arrival, ts is the caller's clock, and neither is insertion
+		// order, so two records written in one tick pick a winner at
+		// random and the operator gets a false alarm on a trail nobody
+		// touched. The usage text was right and this hint was wrong,
+		// and this is the one an operator actually reads, because it
+		// prints at the moment they are looking for the value.
+		fmt.Fprintf(e.stdout, "\nThis gateway appends its trail to %s under chain %q. Fetch\n", e.cfg.Audit.SIEM.Path, chain)
+		fmt.Fprintf(e.stdout, "those lines from Graylog with chain:%q; the expected value is\n", chain)
+		fmt.Fprintf(e.stdout, "the hash among them that is no other line's prev_hash -- NOT the newest\n")
+		fmt.Fprintf(e.stdout, "message, which is a different record whenever two land in one tick.\n")
+		fmt.Fprintf(e.stdout, "deploy/gatte-anchor-verify.sh derives it that way and runs this check.\n")
+		fmt.Fprintf(e.stdout, "It is an anchor only while a shipper is actually forwarding that file.\n")
 	}
 
 	if expectHead != "" && !strings.EqualFold(expectHead, check.Head) {

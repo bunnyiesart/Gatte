@@ -25,6 +25,7 @@ pattern and the official `github.com/modelcontextprotocol/go-sdk`:
 | `lab/mockutil/` | Shared `AddCredCheck(server, toolName)` — the one place the `<name>_credcheck` logic exists, used by every mock below. Reads `MOCK_SECRET`/`MOCK_EXPECT` from its process environment, returns `{received_expected_secret, fingerprint}` — never the secret. |
 | `lab/servers/casemgmt/`, `lab/servers/logsearch/`, `lab/servers/docsearch/`, `lab/servers/threatintel/` | One fake MCP server per real backend, each with 2 canned domain tools (no network calls, no real data) plus `<name>_credcheck`. |
 | `lab/probe/` | The verification tool: spawns a mock over stdio with a freshly-generated secret in `MOCK_SECRET`/`MOCK_EXPECT`, calls its credcheck tool, and — independent of that result — scans every raw byte of MCP wire traffic (via `mcp.LoggingTransport`) for the secret. Exit codes: `0` pass, `1` a real problem was found (bad credcheck result and/or a leak — a leak always forces `1`, never masked by a usage-error code), `2` the probe itself couldn't run (bad args, spawn/connect/parse failure). |
+| `lab/trafficgen/` | Synthetic load against a **running** gateway over streamable HTTP, to populate the Audit Trail without an analyst driving it by hand. Connects as an ordinary authenticated client, enumerates what the token's role can see, and calls it with arguments synthesised from each tool's input schema. Not an extension of `probe` — `probe` asks whether one credential arrived and leaked over stdio; this asks what a busy afternoon looks like in the trail. Same exit-code convention. |
 
 ### Tool naming: the mocks mirror the real fleet, warts included
 
@@ -58,7 +59,26 @@ Build and run:
 go build -o /tmp/lab-bin/casemgmt ./lab/servers/casemgmt        # and logsearch, docsearch, threatintel
 go build -o /tmp/lab-bin/probe ./lab/probe
 /tmp/lab-bin/probe --tool casemgmt_credcheck -- /tmp/lab-bin/casemgmt
+
+# trafficgen: always read the plan first, then fire.
+go build -o /tmp/lab-bin/trafficgen ./lab/trafficgen
+export GATTE_TOKEN=$(ssh jailhost /usr/local/bin/gateway-token.sh analyst)
+
+/tmp/lab-bin/trafficgen -endpoint https://mcp.soc.internal/ -ca /usr/local/etc/soc-ca/ca.crt -plan
+/tmp/lab-bin/trafficgen -endpoint https://mcp.soc.internal/ -ca /usr/local/etc/soc-ca/ca.crt \
+        -duration 10m -rate 0.5 -seed 42 -confirm
 ```
+
+`-confirm` is required for anything but loopback, because a dispatched call
+runs a **real** query on the upstream behind it — a real Graylog search, a real
+IRIS read, someone's real API quota. The traffic is synthetic in that no human
+meant it, not in that it is inert. Generated values stay inside RFC 5737
+(`192.0.2.0/24`) and `example.com` so a generator left running overnight cannot
+turn into a scanner.
+
+The token is read from `-token-file` or `$GATTE_TOKEN` and never from a flag:
+a bearer token on a command line is in the shell history and in every `ps` on
+the box, which is the thing this project exists to stop.
 
 This is what `WORKFLOW.md` Phase 5 means by "run `probe.py`'s clean-environment
 credential-injection + leak check exactly as done for every external

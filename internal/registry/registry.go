@@ -30,6 +30,14 @@ var (
 	ErrAlreadyExists = errors.New("registry: upstream server already exists")
 	// ErrInvalid is returned when an UpstreamServer fails Validate.
 	ErrInvalid = errors.New("registry: invalid upstream server")
+	// ErrTransportUnsupported means the entry names a transport this build
+	// has no dialer for. Deliberately NOT ErrInvalid: the entry is not
+	// malformed and the operator did not mistype anything -- "http" is a
+	// real transport this project intends to serve. It is refused because
+	// accepting it would store configuration that cannot be honoured, and
+	// the honest moment to say so is now rather than at dial time. A caller
+	// can tell the two apart and say something different about each.
+	ErrTransportUnsupported = errors.New("registry: transport has no dialer in this build")
 )
 
 // nameSeparator is the character the gateway joins an upstream's name to a
@@ -65,10 +73,17 @@ const (
 // (design/adr/0003-security-controls.md), not the registry's; this type
 // deliberately has no field capable of holding a secret value.
 type UpstreamServer struct {
-	Name        string
-	Transport   Transport
-	Command     string // binary/command to spawn, for TransportStdio
-	Args        []string
+	Name      string
+	Transport Transport
+	Command   string // binary/command to spawn, for TransportStdio
+	Args      []string
+	// URL is unreachable through Register in this build and that is not a
+	// bug: TransportHTTP is refused at Validate (GAB-19), so the only
+	// transport that reads this field never gets stored. The field, its
+	// column and its round-trip are kept and still correct, because the
+	// day an http dialer lands they are what makes that a dialer landing
+	// rather than a migration. Deliberately not deleted -- undoing that
+	// cleanup would cost more than carrying it.
 	URL         string   // endpoint to call, for TransportHTTP
 	EnvVarNames []string // names only, never values
 	CreatedAt   time.Time
@@ -78,14 +93,18 @@ type UpstreamServer struct {
 // Validate checks that s satisfies the registry's entry contract:
 //
 //   - Name must be non-empty and must not contain the namespace separator.
-//   - Transport must be exactly TransportStdio or TransportHTTP.
+//   - Transport must be exactly TransportStdio. TransportHTTP is a
+//     recognised value with no dialer behind it, so it is refused here
+//     rather than accepted and failed at dial time -- see
+//     ErrTransportUnsupported.
 //   - If Transport is TransportStdio, Command must be non-empty.
-//   - If Transport is TransportHTTP, URL must be non-empty.
 //   - Every entry in EnvVarNames must look like an environment variable
 //     name: non-empty and free of whitespace.
 //
 // Validate returns ErrInvalid, wrapped with a description of which rule
-// failed, on any violation; it returns nil when s is well-formed.
+// failed, on any violation; it returns nil when s is well-formed. The one
+// exception is a recognised-but-undialable transport, which returns
+// ErrTransportUnsupported.
 func (s UpstreamServer) Validate() error {
 	if strings.TrimSpace(s.Name) == "" {
 		return fmt.Errorf("%w: name must not be empty", ErrInvalid)
@@ -119,11 +138,23 @@ func (s UpstreamServer) Validate() error {
 			return fmt.Errorf("%w: command must not be empty for stdio transport", ErrInvalid)
 		}
 	case TransportHTTP:
-		if strings.TrimSpace(s.URL) == "" {
-			return fmt.Errorf("%w: url must not be empty for http transport", ErrInvalid)
-		}
+		// Refused at the point of acceptance, not at dial time. Nothing in
+		// this build dials http: internal/gateway/stdio serves "stdio" only
+		// and returns ErrUnsupportedTransport for anything else. Storing an
+		// entry the system cannot honour buys nothing and costs the
+		// operator a runtime fault, at connect, for a mistake that was
+		// fully knowable at registration -- the same fail-early reasoning
+		// access.NewPolicy uses when it refuses an undefined role mapping
+		// at construction instead of at request time.
+		//
+		// TransportHTTP stays a declared constant on purpose. The type is
+		// not the error; the absence of a dialer is. When one exists, this
+		// case becomes the URL check it used to be and nothing else here
+		// has to move.
+		return fmt.Errorf("%w: upstream %q declares transport %q; this build dials %q only. The constant is reserved for when an http dialer exists -- until then, register this upstream as stdio or leave it out",
+			ErrTransportUnsupported, s.Name, TransportHTTP, TransportStdio)
 	default:
-		return fmt.Errorf("%w: transport must be \"stdio\" or \"http\"", ErrInvalid)
+		return fmt.Errorf("%w: transport must be %q (%q is recognised but has no dialer in this build)", ErrInvalid, TransportStdio, TransportHTTP)
 	}
 
 	for _, name := range s.EnvVarNames {

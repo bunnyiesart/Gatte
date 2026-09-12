@@ -43,8 +43,8 @@ func cmdUpstream(args []string, stdout, stderr io.Writer) int {
 func upstreamUsage(w io.Writer) {
 	fmt.Fprint(w, `Usage:
   mcp-gateway upstream list [-config FILE] [-json]
-  mcp-gateway upstream register [-config FILE] -name NAME -transport stdio|http
-                                [-command CMD] [-arg ARG ...] [-url URL]
+  mcp-gateway upstream register [-config FILE] -name NAME -transport stdio
+                                -command CMD [-arg ARG ...]
                                 [-env VARNAME ...]
   mcp-gateway upstream deregister [-config FILE] NAME
 
@@ -209,9 +209,9 @@ func envVarNamesOrEmpty(s registry.UpstreamServer) []string {
 func upstreamRegister(args []string, stdout, stderr io.Writer) int {
 	fs, configPath := opFlagSet("upstream register", stderr)
 	name := fs.String("name", "", "name of the entry, e.g. \"casemgmt\" (required)")
-	transport := fs.String("transport", string(registry.TransportStdio), "\"stdio\" (spawn a process) or \"http\" (call a URL)")
+	transport := fs.String("transport", string(registry.TransportStdio), "\"stdio\" (spawn a process). \"http\" is recognised but has no dialer in this build and is refused")
 	command := fs.String("command", "", "command to spawn, for -transport stdio")
-	url := fs.String("url", "", "endpoint URL, for -transport http")
+	url := fs.String("url", "", "endpoint URL, for -transport http. Kept for when an http dialer exists; registering http is refused until then")
 	var argv opStringList
 	fs.Var(&argv, "arg", "argument for the spawned command; repeat, in order")
 	var envs opStringList

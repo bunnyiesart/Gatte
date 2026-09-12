@@ -25,13 +25,18 @@ func TestRunUpstreamRegisterThenList_RoundTrips(t *testing.T) {
 			want:  []string{"casemgmt", "stdio", "docker run --rm casemgmt-mcp", "CASEMGMT_URL, CASEMGMT_API_KEY"},
 		},
 		{
-			name: "http entry",
+			// Was an http entry until GAB-19 refused that transport at
+			// registration -- an entry that cannot be registered cannot be
+			// listed, so a round-trip test cannot use one. Kept as the
+			// minimal stdio entry: no args, no env var names, which is the
+			// render path the http case used to cover.
+			name: "entry with no args and no env var names",
 			entry: registry.UpstreamServer{
 				Name:      "logsearch",
-				Transport: registry.TransportHTTP,
-				URL:       "https://logsearch.internal/mcp",
+				Transport: registry.TransportStdio,
+				Command:   "/usr/local/bin/logsearch-mcp",
 			},
-			want: []string{"logsearch", "http", "https://logsearch.internal/mcp"},
+			want: []string{"logsearch", "stdio", "/usr/local/bin/logsearch-mcp"},
 		},
 		{
 			name: "stdio entry with a whitespace-containing argument is quoted",
@@ -226,7 +231,7 @@ func TestUpstreamRegister_InvalidEntryIsRejected(t *testing.T) {
 		{
 			name: "unknown transport",
 			args: []string{"register", "-name", "casemgmt", "-transport", "carrier-pigeon", "-command", "docker"},
-			want: `transport must be "stdio" or "http"`,
+			want: `transport must be "stdio"`,
 		},
 		{
 			name: "stdio without a command",
@@ -234,9 +239,20 @@ func TestUpstreamRegister_InvalidEntryIsRejected(t *testing.T) {
 			want: "command must not be empty for stdio transport",
 		},
 		{
-			name: "http without a url",
+			// GAB-19: this used to be refused for the missing URL, which
+			// meant `-transport http -url ...` was accepted and then failed
+			// at dial time. It is now refused on the transport, with or
+			// without a URL -- so both spellings are pinned here, and an
+			// http dialer landing later will fail this case loudly rather
+			// than quietly re-accepting the old behaviour.
+			name: "http is refused: no dialer serves it",
 			args: []string{"register", "-name", "casemgmt", "-transport", "http"},
-			want: "url must not be empty for http transport",
+			want: "this build dials \"stdio\" only",
+		},
+		{
+			name: "http with a url is refused just the same",
+			args: []string{"register", "-name", "casemgmt", "-transport", "http", "-url", "https://casemgmt.internal/mcp"},
+			want: "this build dials \"stdio\" only",
 		},
 		{
 			name: "env var name with whitespace",

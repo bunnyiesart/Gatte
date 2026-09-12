@@ -149,10 +149,28 @@ vet:
 # real control is what makes an otherwise-dangerous pattern safe, and a
 # reader running this should see them and go check that the control is
 # still there.
+# `make devtools` installs all six tools into $(GOPATH_BIN), which is not on
+# every shell's PATH -- so lint has to find them the same way `test` does.
+#
+# But NOT the same way `test` writes it. A target-specific
+# `lint: export PATH := ...` looks right and silently does not work here:
+# GNU make 3.81 (what macOS ships) execs a recipe line DIRECTLY, without a
+# shell, when the line contains no shell metacharacters, and that direct
+# exec resolves the program against make's own PATH rather than the
+# target-specific one. So `staticcheck ./...` stays "No such file or
+# directory" while `gosec ... || true` on the next line works, because the
+# `||` forces a shell. `test` gets away with the export because the program
+# it names -- `go` -- is already on PATH, and the export only has to reach
+# the tests as a child environment variable.
+#
+# Prefixing each line puts a `=` in it, which forces the shell, and makes
+# the lookup explicit rather than dependent on how make chose to spawn it.
+LINT_ENV := PATH="$(GOPATH_BIN):$$PATH"
+
 lint:
-	staticcheck ./...
-	errcheck -exclude .errcheck-exclude -ignoretests ./...
-	gosec -quiet -exclude=G104 -exclude-dir=lab ./... || true
+	$(LINT_ENV) staticcheck ./...
+	$(LINT_ENV) errcheck -exclude .errcheck-exclude -ignoretests ./...
+	$(LINT_ENV) gosec -quiet -exclude=G104 -exclude-dir=lab ./... || true
 
 fmt-check:
 	@out="$$(gofmt -l .)"; \

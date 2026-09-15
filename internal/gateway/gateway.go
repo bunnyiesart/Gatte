@@ -39,6 +39,12 @@ var (
 	// read. Per design/adr/0004 the gateway fails closed when this
 	// happens: no tools are served, rather than serving a possibly-stale
 	// last-known-good set.
+	//
+	// It reaches a caller, and not only the operator: while the fleet is
+	// suspended, ListTools and Dispatch return this rather than an empty
+	// list or ErrUnknownTool, so "that tool is gone" and "nothing about
+	// the fleet can be confirmed right now" stay distinguishable at both
+	// ends (design/adr/0020 item 4).
 	ErrRegistryUnavailable = errors.New("gateway: upstream registry unavailable")
 )
 

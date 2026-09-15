@@ -106,7 +106,25 @@ import (
 // pins the schema being updated in the same change -- which is where
 // somebody has to think about whether the new field is one of the things
 // the package doc says can never appear.
-const Version = 1
+//
+// 2 (design/adr/0021, 15 Sep 2026): every line declares its `type`, and a
+// second shape -- [Heartbeat] -- joined the file. A consumer written
+// against 1 may assume every line has a `hash`, which is no longer true.
+const Version = 2
+
+// Line and Heartbeat type discriminators, as they appear in the `type`
+// field. They are a declared interface: a SIEM query filters on them, so
+// rewording one silently breaks a saved search somewhere (the same
+// argument the gateway's audit reason constants carry).
+const (
+	// TypeRecord marks a line carrying one audit.Record.
+	TypeRecord = "record"
+	// TypeHeartbeat marks a line carrying this process's operational
+	// state. It is NOT an audit record: no analyst did anything to cause
+	// it, it is not in the hash chain, and it must never be counted as
+	// activity.
+	TypeHeartbeat = "heartbeat"
+)
 
 // Line is one record as the SIEM receives it.
 //
@@ -124,6 +142,11 @@ type Line struct {
 	// Version is the schema version, so a consumer can fail loudly on a
 	// shape it does not know.
 	Version int `json:"v"`
+	// Type is always TypeRecord here. It exists so a consumer discriminates
+	// on a declared field rather than on the absence of another one: "no
+	// hash, so it must be the other shape" stops being true the moment a
+	// third shape exists (design/adr/0021 item 1).
+	Type string `json:"type"`
 	// Time is the record's timestamp, RFC3339 with nanoseconds, normalized
 	// to UTC. See the package doc: this is NOT necessarily byte-identical
 	// to the encoding the chain hashed.
@@ -162,6 +185,88 @@ type Line struct {
 	Hash string `json:"hash"`
 }
 
+// Heartbeat is the second shape in the file: what this process is, and
+// what it has done since it started (design/adr/0021).
+//
+// # Why it shares the file with the audit lines
+//
+// So that its absence proves something. A heartbeat on its own path --
+// its own file, its own shipper -- would keep arriving while the audit
+// path was dead, which is the one failure the alert exists to catch. This
+// one crosses the same tail, the same shipper and the same output, so
+// "no heartbeat for this chain in N minutes" means the gateway stopped,
+// the shipper stopped, or the jail went away.
+//
+// # What it is not
+//
+// It is not an audit record. It is not in the hash chain, it has no hash
+// of its own, nothing an analyst did causes one, and counting heartbeats
+// as activity would be a category error with an obvious wrong answer.
+//
+// It is also not evidence against anybody who controls this host. The
+// lines are unsigned -- the package doc says that about audit lines and it
+// is no less true here -- so whoever can write the file can write
+// heartbeats. What it detects is the operational failure: a dead process,
+// a dead shipper, a full disk.
+//
+// # The counters
+//
+// Cumulative since Boot, never deltas: a heartbeat that never arrived then
+// costs visibility for one interval rather than losing the events it would
+// have carried, and Boot is what explains a counter that went backwards.
+// Rates are the dashboard's job, where the window is chosen.
+//
+// Every field is always present, like [Line]'s, and for the same reason.
+type Heartbeat struct {
+	// Version is the schema version, shared with Line: the two shapes
+	// version together because they travel together.
+	Version int `json:"v"`
+	// Type is always TypeHeartbeat.
+	Type string `json:"type"`
+	// Time is when this heartbeat was emitted, RFC3339 with nanoseconds,
+	// UTC -- like Line.Time.
+	Time string `json:"ts"`
+	// Chain is the chain this process writes, so a heartbeat and the audit
+	// lines it vouches for are queried by the same key.
+	Chain string `json:"chain"`
+	// Boot is when this process started, UTC. It identifies the run: two
+	// heartbeats with different Boot values are two processes, which is
+	// how a restart becomes visible -- and a restart is what makes a
+	// rotated credential take effect (GAB-20).
+	Boot string `json:"boot"`
+	// Head is the chain hash of the last audit line THIS PROCESS emitted,
+	// or empty when it has emitted none.
+	//
+	// Empty is a real answer, not a missing one: a gateway that booted and
+	// served nobody has no head of its own to report, and inventing one by
+	// reading the database would make the field mean something different
+	// on quiet nights than on busy ones. The anchor derives the true head
+	// from the shipped lines themselves (deploy/gatte-anchor-verify.sh);
+	// this field is a cross-check and a way to watch the head advance.
+	Head string `json:"head"`
+	// Records is how many audit lines this process has emitted since Boot.
+	Records uint64 `json:"records"`
+	// Allowed, Denied and Failed are the audit records the gateway wrote,
+	// by outcome, since Boot. A failed call produces an allowed AND a
+	// failed record, so these are line counts and not call counts -- see
+	// the package doc's counting note, which applies here identically.
+	//
+	// If these ever disagree with the trail, the trail is right. These are
+	// integers in memory that die with the process.
+	Allowed uint64 `json:"allowed"`
+	Denied  uint64 `json:"denied"`
+	Failed  uint64 `json:"failed"`
+	// Upstreams is how many backends are connected right now, and Tools
+	// how many routes the table holds.
+	Upstreams int `json:"upstreams"`
+	Tools     int `json:"tools"`
+	// Suspended reports that the Upstream Registry could not be read and
+	// nothing is being served (design/adr/0020). A gateway can be up,
+	// shipping heartbeats, and serving nobody; this is the field that says
+	// so.
+	Suspended bool `json:"suspended"`
+}
+
 // Sink is where a Line goes.
 //
 // It takes a Line, not bytes and not a map, so the typed shape survives
@@ -173,6 +278,13 @@ type Sink interface {
 	// than a missing one, because a log pipeline will happily index the
 	// half.
 	Emit(ctx context.Context, line Line) error
+	// EmitHeartbeat writes one heartbeat, under the same atomicity rule.
+	//
+	// It is a second method rather than a widened parameter on Emit for
+	// the reason Emit takes a Line and not a map: the typed shape has to
+	// survive to the writer, so no implementation can decide what a line
+	// of either kind contains.
+	EmitHeartbeat(ctx context.Context, hb Heartbeat) error
 }
 
 // FileSink appends lines to a local file.
@@ -249,6 +361,22 @@ func (s *FileSink) Emit(_ context.Context, line Line) error {
 	if err != nil {
 		return fmt.Errorf("audit/jsonl: marshal line: %w", err)
 	}
+	return s.write(buf)
+}
+
+// EmitHeartbeat implements Sink. It is Emit for the other shape, and goes
+// through the same single-write path: a torn heartbeat would corrupt the
+// audit line that follows it in exactly the same way.
+func (s *FileSink) EmitHeartbeat(_ context.Context, hb Heartbeat) error {
+	buf, err := json.Marshal(hb)
+	if err != nil {
+		return fmt.Errorf("audit/jsonl: marshal heartbeat: %w", err)
+	}
+	return s.write(buf)
+}
+
+// write appends one marshalled object plus its newline.
+func (s *FileSink) write(buf []byte) error {
 	buf = append(buf, '\n')
 
 	s.mu.Lock()
@@ -306,6 +434,43 @@ type Recorder struct {
 	sink  Sink
 	chain string
 	log   *slog.Logger
+
+	// mu guards what a heartbeat reports about this sink's own history.
+	// It is not on the durable path: RecordChained takes it only after
+	// inner has committed and the line has been emitted.
+	mu sync.Mutex
+	// head is the hash of the last line this process actually EMITTED --
+	// not the last one stored. A record that was written durably and then
+	// failed to reach the sink has not been anchored anywhere, and saying
+	// it had would be the one lie this file cannot afford.
+	head string
+	// emitted counts lines that reached the sink, by the same rule.
+	emitted uint64
+}
+
+// Stats is the part of a heartbeat that only the caller knows: the
+// process's own identity in time and what the gateway has counted.
+//
+// It exists so that [Recorder.Heartbeat] fills in everything about the
+// sink (chain, head, emitted lines, schema) and nothing about the gateway,
+// which keeps this package's rule intact -- the set of values that can
+// reach the SIEM is the set of fields on a declared struct.
+type Stats struct {
+	// Boot is when the process started and Now when this heartbeat is
+	// being emitted. Both are normalized to UTC on the way out.
+	Boot time.Time
+	Now  time.Time
+	// Allowed, Denied and Failed are audit records written since Boot, by
+	// outcome. See Heartbeat for why they are line counts, not call counts.
+	Allowed uint64
+	Denied  uint64
+	Failed  uint64
+	// Upstreams is connected backends and Tools is routes in the table.
+	Upstreams int
+	Tools     int
+	// Suspended reports a fleet serving nothing because the registry
+	// cannot be read (design/adr/0020).
+	Suspended bool
 }
 
 var (
@@ -365,7 +530,11 @@ func (r *Recorder) RecordChained(ctx context.Context, rec audit.Record) (audit.C
 		return audit.ChainLink{}, err
 	}
 
-	if err := r.sink.Emit(ctx, r.line(rec, link)); err != nil {
+	if err := r.sink.Emit(ctx, r.line(rec, link)); err == nil {
+		r.mu.Lock()
+		r.head, r.emitted = link.Hash, r.emitted+1
+		r.mu.Unlock()
+	} else {
 		// Deliberately loud, and deliberately not fatal. The attributes
 		// here are the same closed set the line carries plus the sink's own
 		// error, which is local operational text about a file -- it never
@@ -379,6 +548,45 @@ func (r *Recorder) RecordChained(ctx context.Context, rec audit.Record) (audit.C
 		)
 	}
 	return link, nil
+}
+
+// Heartbeat emits one heartbeat line and returns what it emitted, so a
+// caller can log the same numbers it shipped rather than assembling them
+// twice (design/adr/0021).
+//
+// The returned Heartbeat is filled in whether or not the sink accepted it:
+// on failure the caller still has the state to log locally, which is the
+// half of the signal that does not depend on the file being writable.
+//
+// A sink failure here is returned rather than swallowed, and that is the
+// opposite of RecordChained's rule on purpose. Nothing is being denied to
+// anybody: no analyst is waiting on a heartbeat, so there is no
+// availability fault to trade against, and the caller -- the maintenance
+// loop -- is exactly the place that can say so at ERROR once per round.
+func (r *Recorder) Heartbeat(ctx context.Context, st Stats) (Heartbeat, error) {
+	r.mu.Lock()
+	head, emitted := r.head, r.emitted
+	r.mu.Unlock()
+
+	hb := Heartbeat{
+		Version:   Version,
+		Type:      TypeHeartbeat,
+		Time:      st.Now.UTC().Format(time.RFC3339Nano),
+		Chain:     r.chain,
+		Boot:      st.Boot.UTC().Format(time.RFC3339Nano),
+		Head:      head,
+		Records:   emitted,
+		Allowed:   st.Allowed,
+		Denied:    st.Denied,
+		Failed:    st.Failed,
+		Upstreams: st.Upstreams,
+		Tools:     st.Tools,
+		Suspended: st.Suspended,
+	}
+	if err := r.sink.EmitHeartbeat(ctx, hb); err != nil {
+		return hb, fmt.Errorf("audit/jsonl: emit heartbeat: %w", err)
+	}
+	return hb, nil
 }
 
 // List implements audit.Recorder by delegating. The JSONL file is a sink,
@@ -397,6 +605,7 @@ func (r *Recorder) List(ctx context.Context) ([]audit.Record, error) {
 func (r *Recorder) line(rec audit.Record, link audit.ChainLink) Line {
 	return Line{
 		Version: Version,
+		Type:    TypeRecord,
 		// UTC for the SIEM's benefit; see the package doc on what this
 		// costs in re-derivability.
 		Time:    rec.Timestamp.UTC().Format(time.RFC3339Nano),

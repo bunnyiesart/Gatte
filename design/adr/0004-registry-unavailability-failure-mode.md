@@ -43,6 +43,15 @@ tenta reler em intervalo curto (a definir na implementação, ordem de
 segundos) em vez de cachear indefinidamente um estado que não consegue
 confirmar como válido.
 
+> **FECHADO em 15 set 2026 por `0020-reconciliacao-periodica-do-registro.md`,
+> que é a forma desta decisão.** `Gateway.Reconcile` relê o registro a cada
+> tick do laço de `serve`, discando o que entrou e fechando o que saiu sem
+> derrubar conexão saudável; registro ilegível suspende o fleet (nada
+> servido, conexões mantidas) e o laço passa a tentar a cada 5 s até
+> conseguir ler. A correção abaixo fica como estava escrita — é o registro
+> de um buraco que durou de 31 ago a 15 set 2026, e apagá-lo tornaria a
+> decisão mais limpa do que ela foi.
+>
 > **CORREÇÃO, 09 set 2026 — o retry não existe. Só metade desta decisão
 > foi implementada.**
 >
@@ -128,11 +137,15 @@ conflito Segurança vs. Simplicidade nomeado acima.
     `cmd/mcp-gateway/serve_test.go`: prova a mesma coisa no nível do
     arranque, que é onde ela de fato acontece. **Pula, não falha**, sem
     `sops` no PATH — ver o aviso do `make test`.
-- **Cobertura parcial, e a parte que falta é a que diverge.** Os dois
-  testes acima cobrem só a metade fail-closed. Não existe teste do retry,
-  porque não existe retry — ver a correção de 09 set 2026 na Decisão. Esta
-  seção dizia que o teste confirmava "o comportamento escolhido"; confirma
-  metade dele.
+- **Cobertura completa desde 15 set 2026.** Os dois testes acima cobrem a
+  metade fail-closed no boot. A releitura periódica, a suspensão sem matar
+  as conexões e a recuperação têm os seus em
+  `internal/gateway/reconcile_test.go`, e o laço que os chama tem
+  `TestServeStack_RefreshLoopReconcilesTheRegistry` em
+  `cmd/mcp-gateway/serve_test.go` — separado de propósito, porque um
+  `Reconcile` correto que ninguém chama é exatamente o estado em que esta
+  decisão passou duas semanas. Até 15 set 2026 esta seção dizia que não
+  existia teste do retry porque não existia retry.
 - Quando roda: a cada build/CI.
 
 ## Notas

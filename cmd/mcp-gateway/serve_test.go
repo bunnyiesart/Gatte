@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -912,4 +913,185 @@ func TestServeStack_RefreshLoopStopsWhenCancelled(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("the refresh loop outlived its context")
 	}
+}
+
+// syncBuf is a log sink a test can read while the loop is still writing to
+// it. serveTestLogger's plain bytes.Buffer is enough for the tests that
+// assert after the loop has returned; this one is for the test below, which
+// has to watch for a line in order to know when to stop.
+type syncBuf struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (s *syncBuf) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuf) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
+}
+
+// TestServeStack_RefreshLoopReconcilesTheRegistry is the process-level
+// half of ADR-0020: gateway.Reconcile can be correct and change nothing if
+// the loop never calls it, which is exactly how ADR-0004's retry came to
+// be decided in August and absent in September.
+//
+// The proof does not need a backend that comes up. The registry is empty
+// when buildServer runs, so a log line naming an upstream can only come
+// from a registry read that happened after boot -- which is the whole
+// claim. A backend that fails to dial produces that line; one that
+// succeeds would need a spawnable MCP server in a cmd-level test.
+func TestServeStack_RefreshLoopReconcilesTheRegistry(t *testing.T) {
+	fx := newServeFixture(t, nil)
+	sink := &syncBuf{}
+	logger := slog.New(slog.NewTextHandler(sink, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	stack, err := buildServer(context.Background(), fx.cfg, logger)
+	if err != nil {
+		t.Fatalf("buildServer: %v", err)
+	}
+	defer stack.close()
+	if got := stack.summary.UpstreamsRegistered; got != 0 {
+		t.Fatalf("precondition: %d upstreams registered at boot, want 0", got)
+	}
+
+	// Registered with the gateway already up -- the case that used to
+	// require a restart.
+	db, err := store.Open(fx.dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	if err := registrysqlite.Migrate(db); err != nil {
+		t.Fatalf("migrate registry: %v", err)
+	}
+	if err := registrysqlite.New(db).Register(context.Background(), registry.UpstreamServer{
+		Name:        "registeredlate",
+		Transport:   registry.TransportStdio,
+		Command:     filepath.Join(t.TempDir(), "no-such-binary"),
+		EnvVarNames: []string{"MOCK_SECRET"},
+	}); err != nil {
+		t.Fatalf("register upstream: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	// Set directly rather than through the config file: config.Validate
+	// refuses anything under a second, deliberately.
+	stack.refreshEvery = 10 * time.Millisecond
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		stack.refreshLoop(ctx, logger)
+	}()
+
+	deadline := time.After(10 * time.Second)
+	poll := time.NewTicker(10 * time.Millisecond)
+	defer poll.Stop()
+	for saw := false; !saw; {
+		select {
+		case <-poll.C:
+			saw = strings.Contains(sink.String(), "registeredlate")
+		case <-deadline:
+			cancel()
+			<-done
+			t.Fatalf("the loop never reconciled the registry, so an upstream registered after boot stays invisible until a restart:\n%s", sink.String())
+		}
+	}
+
+	cancel()
+	<-done
+}
+
+// TestServeStack_HeartbeatIsEmittedOnEveryRound is the process-level half
+// of ADR-0021: the alert that matters is "no heartbeat for this chain in N
+// minutes", and it is only as good as the loop that keeps emitting them.
+//
+// A quiet gateway is the case under test -- nothing is dispatched here on
+// purpose. Every other line this system writes is caused by an analyst, so
+// the heartbeat is the only evidence that a gateway nobody is using is
+// alive rather than dead, suspended, or cut off from its shipper.
+func TestServeStack_HeartbeatIsEmittedOnEveryRound(t *testing.T) {
+	sinkPath := filepath.Join(t.TempDir(), "audit.jsonl")
+	fx := newServeFixture(t, func(body *strings.Builder) {
+		fmt.Fprintf(body, "[audit.siem]\npath = %q\nchain = %q\n", sinkPath, "gatte-test-hb")
+	})
+	sink := &syncBuf{}
+	logger := slog.New(slog.NewTextHandler(sink, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	stack, err := buildServer(context.Background(), fx.cfg, logger)
+	if err != nil {
+		t.Fatalf("buildServer: %v", err)
+	}
+	defer stack.close()
+	stack.refreshEvery = 10 * time.Millisecond
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		stack.refreshLoop(ctx, logger)
+	}()
+
+	deadline := time.After(10 * time.Second)
+	poll := time.NewTicker(10 * time.Millisecond)
+	defer poll.Stop()
+	for beats := 0; beats < 2; {
+		select {
+		case <-poll.C:
+			beats = strings.Count(readFileString(t, sinkPath), `"type":"heartbeat"`)
+		case <-deadline:
+			cancel()
+			<-done
+			t.Fatalf("fewer than two heartbeats in %s after 10s; an alert on missing heartbeats would fire for a running gateway:\n%s",
+				sinkPath, readFileString(t, sinkPath))
+		}
+	}
+	cancel()
+	<-done
+
+	// The line is a heartbeat and not an audit record: nothing was
+	// dispatched, so anything claiming a verdict here would be a fiction.
+	var hb map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(readFileString(t, sinkPath)), "\n") {
+		if err := json.Unmarshal([]byte(line), &hb); err != nil {
+			t.Fatalf("sink line is not valid JSON (%v): %s", err, line)
+		}
+		if hb["type"] != "heartbeat" {
+			t.Fatalf("a quiet gateway emitted a line of type %v; only heartbeats should be here:\n%s", hb["type"], line)
+		}
+	}
+	if hb["chain"] != "gatte-test-hb" {
+		t.Errorf("heartbeat chain = %v, want the configured chain -- an alert keyed on the chain would never match", hb["chain"])
+	}
+	if hb["suspended"] != false {
+		t.Errorf("heartbeat suspended = %v, want false", hb["suspended"])
+	}
+	if _, ok := hb["boot"]; !ok {
+		t.Error("heartbeat carries no boot; a restart would be invisible")
+	}
+
+	// And an operator with no SIEM still sees it.
+	if !strings.Contains(sink.String(), "heartbeat") {
+		t.Errorf("the heartbeat never reached the log:\n%s", sink.String())
+	}
+}
+
+func readFileString(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return ""
+		}
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return string(b)
 }

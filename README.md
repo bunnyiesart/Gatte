@@ -12,10 +12,19 @@ OAuth). Full investigation: `DEVELOPMENT-LOG.md`.
 
 ## Status
 
-Phases 1–6 complete (see `WORKFLOW.md`); Phase 7, the hardening pass, is
-what remains. The end-to-end checkpoint passes: a client holding no backend
-credential reaches four spawned upstreams over HTTP, each receiving its
-injected secret, with that secret appearing nowhere the client can observe.
+All seven phases are complete (see `WORKFLOW.md`, which is authoritative and
+lists what remains as filed work rather than as a phase). The end-to-end
+checkpoint passes: a client holding no backend credential reaches four
+spawned upstreams over HTTP, each receiving its injected secret, with that
+secret appearing nowhere the client can observe.
+
+A running gateway keeps itself in step with the registry: `upstream
+register` and `upstream deregister` take effect within one
+`quarantine.refresh_interval`, as does an entry whose signature stops
+verifying, and an unreadable registry serves nothing until it can be read
+again (`design/adr/0020-reconciliacao-periodica-do-registro.md`). Rotating
+a credential is the exception and still needs a restart, deliberately —
+`deploy/freebsd-jail.md`, "Rotating credentials".
 
 **It runs.** Phase 6 built the composition root and the Operator Console:
 

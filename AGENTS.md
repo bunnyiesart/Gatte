@@ -55,9 +55,14 @@ of production credentials. Full history: `DEVELOPMENT-LOG.md`.
 - **Failure mode when the registry store is briefly unreadable: fail
   closed, with short retry.** No tools served during the outage; retry
   quickly rather than caching indefinitely. Decided, not open —
-  `design/adr/0004-registry-unavailability-failure-mode.md`. **Note the
-  retry half is not implemented** — `Gateway.Connect` runs once, at boot.
-  See that ADR's 09 Sep 2026 correction block before assuming otherwise.
+  `design/adr/0004-registry-unavailability-failure-mode.md`. **Its form is
+  `design/adr/0020-reconciliacao-periodica-do-registro.md`**, 15 Sep 2026:
+  `Gateway.Connect` still runs once, at boot, and a running gateway is kept
+  in step by `Gateway.Reconcile`, on the same tick as `Refresh`. Read that
+  ADR for what one round does and does not do -- in particular that it does
+  not re-dial on a rotated credential, which stays GAB-20's unbuilt half.
+  Between 31 Aug and 15 Sep 2026 the retry half did not exist at all, and
+  ADR-0004's correction block keeps that visible.
 
 ### The eight components to build
 
@@ -98,8 +103,23 @@ Python (see §3) and the point is to match the mechanism, not the code.
 
 From `design/adr/0003-security-controls.md`'s explicit "not covered" list:
 
-- **Telemetry/observability (OWASP MCP08)** — `Audit Trail` covers "who
-  called what," not operational metrics. No design yet.
+- **Telemetry/observability (OWASP MCP08)** — designed and built 15 Sep
+  2026 (`design/adr/0021-batimento-operacional-na-trilha.md`), at the size
+  this system justifies and no larger. The `Audit Trail` still covers only
+  "who called what"; what was added is an operational **heartbeat** on the
+  same JSONL path the trail ships on — emitted at boot and on every
+  maintenance tick, carrying counters by outcome, connected upstreams,
+  routed tools, the suspension flag, this process's boot time and the last
+  chain head it emitted.
+
+  Its point is that the *absence* of it is detectable, which is what makes
+  a dead shipper distinguishable from a quiet night. No Prometheus, no
+  `/metrics`, no pull: a scraped gateway that dies looks the same as one
+  nobody scrapes, and this team has no platform role to run the scraper.
+
+  **Still open, and not claimed:** no latency or saturation metrics, no
+  per-upstream health, no liveness check on a connected backend (a dead
+  subprocess is still "connected" — ADR-0020's consequences).
 - **Response validation** — designed and built 10 Sep 2026
   (`design/adr/0014-response-validation-scope.md`), and the entry that
   stood here was wrong in a way worth keeping visible: it called this

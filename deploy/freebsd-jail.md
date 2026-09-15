@@ -176,6 +176,58 @@ path  = "/var/log/mcp-gateway/audit.jsonl"
 chain = "gatte-jail-01"
 ```
 
+The file carries a second shape of line since ADR-0021, and anything that
+parses it has to know that:
+
+```json
+{"v":2,"type":"heartbeat","ts":"…","chain":"gatte-jail-01","boot":"…",
+ "head":"…","records":128,"allowed":94,"denied":31,"failed":3,
+ "upstreams":4,"tools":57,"suspended":false}
+```
+
+Audit lines carry `"type":"record"`; the heartbeat carries no `hash` and no
+`prev_hash`, because it is not in the chain and nothing an analyst did
+causes one. It exists so that the *absence* of lines becomes detectable —
+see "Alerting on a chain that went quiet" below. `mcp-gateway audit` is
+unaffected: it reads the database, not this file.
+
+### Alerting on a chain that went quiet (ADR-0021)
+
+This is the alert that was listed as missing for as long as the sink has
+existed, and it could not be written before the heartbeat: a gateway that
+nobody is using emits no audit lines at all, so "no lines in 30 minutes"
+matched a quiet night, a dead shipper, a dead gateway and a suspended fleet
+equally.
+
+In Graylog, as an event definition on the stream this chain ships into:
+
+    query:      chain:gatte-jail-01 AND type:heartbeat
+    condition:  message count < 1
+    window:     3 × quarantine.refresh_interval   (15m at the default 5m)
+
+One missed round does not wake anybody; two do. What firing means, in
+rough order of likelihood: fluent-bit stopped or lost its offset DB, the
+gateway is down or in a restart loop under `daemon -r`, the jail is not
+running, or the disk holding the sink is full.
+
+Two fields on the heartbeat are worth a second alert each, and both are
+cheap because the line arrives anyway:
+
+- `suspended:true` — the gateway is up, answering, and serving nothing
+  because it cannot read its registry (ADR-0020). Analysts see failures
+  while the process looks healthy to every check that only asks whether it
+  is running.
+- `boot` changing — the process restarted. Expected after a deploy or a
+  credential rotation, and worth a question at 03:00 when neither
+  happened.
+
+**What this alert does not prove.** The lines are unsigned, so an attacker
+who controls this host can emit heartbeats for a gateway that is doing
+nothing — the same limit the head anchor has, for the same reason, stated
+again here because a green alert is more reassuring than it is entitled to
+be. It detects the operational failure, which is the failure that actually
+happens.
+
 ### Getting `-expect-head` right, and what it is worth
 
 **"The newest Graylog message" is not the chain head, and using it will
@@ -234,7 +286,27 @@ alert for "lines stopped arriving for this chain", which is what a dead —
 or deliberately killed — shipper looks like, and a shipper that stops is
 indistinguishable from a gateway that went quiet.
 
-Four things this deployment owns, because the gateway cannot:
+Five things this deployment owns, because the gateway cannot:
+
+**0. `type` has to be a searchable field, and this has NOT been verified
+here.** Two things added on 15 Sep 2026 rest on it: the anchor script
+filters `NOT type:heartbeat`, and the missing-heartbeat alert matches
+`type:heartbeat`. If the extractor does not surface `type` as a field, the
+filter excludes nothing (the false-genesis diagnosis comes back) and the
+alert matches nothing (it fires forever on a healthy gateway) -- and both
+failures look like something else. Check it before trusting either:
+
+```
+# in Graylog, on the stream this chain ships into
+chain:gatte-jail-01 AND type:heartbeat
+```
+
+A heartbeat is emitted at boot and once per `quarantine.refresh_interval`,
+so a gateway that has been up a few minutes must return at least one. Zero
+results with lines visibly arriving means the field is not extracted, not
+that the gateway is quiet.
+
+The four things below were already owned here:
 
 **1. A shipper has to read the file.** The Graylog input is Raw/Plaintext
 TCP at `10.17.90.30:5555` and expects exactly one JSON object per line,
@@ -294,7 +366,9 @@ looking numeric or date-like becomes `long`/`date` — and from then on a
 malformed value in that field drops the whole line. Pin any new field via
 `PUT /api/system/indices/mappings` on index set `6aa42d7143c0e26417f2d472`
 before it ships, or keep emitting strings. (The schema is versioned: `v`
-is `1` today, and adding a field is a version bump by ADR-0017 item 4.)
+is `2` since ADR-0021, and adding a field is a version bump by ADR-0017
+item 4. It was `1` until 15 Sep 2026; this line said so for as long as the
+heartbeat above had already shipped.)
 
 **On first start after upgrading**, rows written before this existed are
 hashed during migration, and `-verify` says how many. Those verify against
@@ -432,6 +506,18 @@ changes what the *next* connect will use and nothing else.
 
 So until the gateway restarts, "I rotated the credential" means "the old
 credential is still in active use by every connected upstream."
+
+**One exception since ADR-0020, and it is not a rotation command.** A
+reconciliation re-dials an upstream whose registry entry CHANGED, and a
+re-dial resolves credentials afresh -- so `upstream register` over an entry
+with any different field (or a deregister followed by a register) makes the
+rotation real for that backend, within one interval, without touching the
+others. Worth saying plainly because it is a footgun in both directions: it
+is a side effect of replacing an entry, not a supported way to reconnect,
+and `specChanged` compares CONTENT, so re-registering an identical entry
+does nothing at all. Rotating a credential alone still re-dials nothing
+(ADR-0020 item 6), and restart is still the path that works for the whole
+fleet.
 
 **The gateway warns about this now (GAB-20).** Once per
 `quarantine.refresh_interval` it re-reads each connected upstream's

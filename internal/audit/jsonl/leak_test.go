@@ -127,6 +127,7 @@ const (
 type leakHarness struct {
 	t        *testing.T
 	gw       *gateway.Gateway
+	auditor  *jsonl.Recorder
 	upstream *echoUpstream
 	sinkPath string
 }
@@ -222,7 +223,7 @@ func newLeakHarness(t *testing.T, secret string) *leakHarness {
 		t.Fatalf("Approve left the tool %q", got.Status)
 	}
 
-	return &leakHarness{t: t, gw: gw, upstream: up, sinkPath: sinkPath}
+	return &leakHarness{t: t, gw: gw, auditor: auditor, upstream: up, sinkPath: sinkPath}
 }
 
 // dispatch runs one call whose arguments carry the secret, and requires it
@@ -393,6 +394,55 @@ func TestSIEMSinkCarriesNoGroupClaims(t *testing.T) {
 	for _, forbidden := range []string{"soc-n1", "n1-triage", "Ana Lyst"} {
 		if strings.Contains(h.sink(), forbidden) {
 			t.Fatalf("LEAK: the emitted JSONL contains %q:\n%s", forbidden, h.sink())
+		}
+	}
+}
+
+// TestHeartbeatCarriesNothingAboutAnalystsOrCalls is the leak test for the
+// second shape (design/adr/0021).
+//
+// It is not covered by the tests above, and that is the point of writing
+// it separately: those assert what a jsonl.Line carries, and a heartbeat
+// is a different struct built by a different constructor. It is also the
+// shape with the worse failure mode -- a record line exists because
+// somebody made a call, while a heartbeat is emitted on a timer, so a
+// field that carried an identity would ship one every interval forever.
+//
+// The heartbeat here is emitted AFTER a real dispatch, so every value that
+// could leak is present in the process's memory at the moment it is built.
+func TestHeartbeatCarriesNothingAboutAnalystsOrCalls(t *testing.T) {
+	const secret = "vt-fake-l3ak-check-heartbeat-01"
+
+	h := newLeakHarness(t, secret)
+	h.dispatch(secret)
+	before := h.sink()
+
+	if _, err := h.auditor.Heartbeat(context.Background(), jsonl.Stats{
+		Boot: time.Now().Add(-time.Hour), Now: time.Now(),
+		Allowed: 1, Failed: 1, Upstreams: 1, Tools: 1,
+	}); err != nil {
+		t.Fatalf("Heartbeat: %v", err)
+	}
+
+	line := strings.TrimPrefix(h.sink(), before)
+	if strings.TrimSpace(line) == "" {
+		t.Fatal("no heartbeat was appended; nothing below proves anything")
+	}
+
+	// Everything the dispatch above put into this process, checked against
+	// the one line that is emitted whether or not anybody did anything.
+	for _, forbidden := range []struct{ what, value string }{
+		{"the vault-resolved secret", secret},
+		{"the analyst's subject", "sub-analyst-1"},
+		{"the analyst's display name", "Ana Lyst"},
+		{"the analyst's IdP groups", "soc-n1"},
+		{"the tool arguments", `"ioc"`},
+		{"the source address", "198.51.100.77"},
+		{"the tool name", leakTool},
+		{"the backend name", leakUpstream},
+	} {
+		if strings.Contains(line, forbidden.value) {
+			t.Errorf("LEAK: the heartbeat carries %s (%q):\n%s", forbidden.what, forbidden.value, line)
 		}
 	}
 }

@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/bunnyiesart/Gatte/internal/access"
@@ -49,6 +50,22 @@ var (
 	// admission decision made without the state that governs it is exactly
 	// the decision an attacker wants us to make.
 	ErrQuarantineUnavailable = errors.New("gateway: quarantine unavailable")
+
+	// errSignatureUnmeasured marks the one verifyEntry failure that is the
+	// ABSENCE of a measurement rather than a measurement: the signature
+	// store could not be read at all.
+	//
+	// It is unexported because only Reconcile needs the distinction, and it
+	// needs it badly. The two failures look alike and must not act alike --
+	// the rule ADR-0013 states for the quarantine and Refresh repeats in
+	// its own failure section: "failing to measure is not evidence that
+	// something changed." An invalid signature is positive evidence that an
+	// entry was altered by something other than the signer. An unreadable
+	// store says nothing about the entry, and the store is the SAME SQLite
+	// file as the registry -- so treating the two alike means the disk
+	// hiccup ADR-0020 promises to survive by keeping connections would
+	// close every one of them instead.
+	errSignatureUnmeasured = errors.New("gateway: signature store unreadable")
 )
 
 // unknownUpstream is the TargetUpstream recorded in the audit trail for a
@@ -168,6 +185,14 @@ const (
 	// read, so the gateway refused rather than guessing. An empty tool
 	// list and a broken approval store must not look alike.
 	reasonQuarantineUnavailable = "quarantine unavailable"
+	// reasonRegistryUnavailable means the fleet is suspended: the Upstream
+	// Registry could not be read, so ADR-0004's fail-closed rule applies
+	// and nothing is served until it can be (ADR-0020 item 4). Separate
+	// from reasonUnknownTool because the two are opposite facts -- "that
+	// tool does not exist" versus "we cannot currently confirm anything
+	// exists" -- and the trail is where an operator tells one incident
+	// from the other.
+	reasonRegistryUnavailable = "registry unavailable"
 )
 
 // redacted replaces a resolved credential value wherever one is found in
@@ -303,9 +328,52 @@ type Gateway struct {
 	// upstream still using what the vault holds now?" cannot be answered
 	// by comparing values -- only by comparing something derived from them
 	// that is safe to keep. See CredentialDrift.
-	creds  map[string]map[string]string
+	creds map[string]map[string]string
+	// dialed records the registry entry each live connection was dialed
+	// from, so Reconcile can tell "this entry is unchanged" from "this
+	// entry now names a different command" without re-dialing to find out
+	// (ADR-0020 item 1). It is written wherever conns is, under the same
+	// lock, and holds exactly the same key set.
+	//
+	// It keeps the whole entry rather than a digest because the comparison
+	// is small and a digest would hide which field moved from the log.
+	// Nothing secret is in it: EnvVarNames are names, which the registry
+	// stores in plaintext for that reason.
+	dialed map[string]registry.UpstreamServer
 	routes map[string]routedTool
-	closed bool
+	// allowed, denied and failed count the audit records this process has
+	// written, by outcome, since it started. Atomics rather than a mutex:
+	// they are incremented on the dispatch path, by every concurrent
+	// caller, and they guard nothing else.
+	//
+	// What they mean is exact and narrow -- see Status. They are a gauge
+	// an operator reads in a heartbeat (design/adr/0021), never a source
+	// of truth: the trail is durable and chained, and these die with the
+	// process.
+	allowed atomic.Uint64
+	denied  atomic.Uint64
+	failed  atomic.Uint64
+
+	// confirmed reports that the Upstream Registry was read successfully by
+	// the most recent attempt. It is NOT the same as serving: a round can
+	// confirm the fleet and still leave the routing table empty, because
+	// Reconcile does not build one (ADR-0020 item 2).
+	//
+	// The pair exists because lifting the suspension at the moment of the
+	// successful read opened a window nobody decided to open: routes were
+	// still empty, so every call in it was answered -- and audited -- as
+	// `unknown tool`, which is the exact confusion ADR-0020 item 4 exists
+	// to prevent. Suspension now ends where serving begins, in swapRoutes.
+	confirmed bool
+
+	// suspended reports that the Upstream Registry could not be read and
+	// the fleet is therefore serving nothing (ADR-0004 fail-closed, as
+	// implemented by ADR-0020 item 3). It is not the same as an empty
+	// routing table: an empty table is a fleet with nothing approved in
+	// it, and this is a fleet whose contents cannot currently be
+	// confirmed. ListTools and Dispatch say which one it is.
+	suspended bool
+	closed    bool
 }
 
 // upstreamRoutes is what one upstream's advertised tool list earned it: the
@@ -457,6 +525,7 @@ func New(cfg Config) (*Gateway, error) {
 		now:            now,
 		log:            logger,
 		conns:          map[string]Upstream{},
+		dialed:         map[string]registry.UpstreamServer{},
 		routes:         map[string]routedTool{},
 	}, nil
 }
@@ -464,10 +533,14 @@ func New(cfg Config) (*Gateway, error) {
 // Connect reads the Upstream Registry, brings up every registered backend
 // and rebuilds the routing table from what they advertise. Calling it again
 // re-reads the registry, re-dials, and replaces the previous table and
-// connections wholesale -- which is how a registry change is picked up, and
-// is also why it is not what runs on a ticker: it tears down every live
-// connection, cutting in-flight calls and respawning every subprocess.
-// Periodic re-observation of the backends already connected is Refresh.
+// connections wholesale -- which is why it is not what runs on a ticker: it
+// tears down every live connection, cutting in-flight calls and respawning
+// every subprocess.
+//
+// It is the boot path. On a running gateway, a registry change is picked up
+// by Reconcile and periodic re-observation of the backends already
+// connected is Refresh, and neither of those tears anything down that the
+// registry still describes the same way.
 //
 // For each upstream, in order: the credentials named by the registry entry
 // are resolved through the Credential Vault, the backend is dialed with
@@ -507,12 +580,14 @@ func (g *Gateway) Connect(ctx context.Context) error {
 	if err != nil {
 		// Fail closed, and do it before anything else: whatever the old
 		// table said, we can no longer confirm it is current.
-		g.swap(nil, nil)
+		g.swap(nil, nil, nil)
+		g.suspend()
 		g.log.ErrorContext(ctx, "gateway: registry unreadable, serving nothing", slog.String("detail", err.Error()))
 		return fmt.Errorf("%w: %w", ErrRegistryUnavailable, err)
 	}
 
 	conns := make(map[string]Upstream, len(entries))
+	dialed := make(map[string]registry.UpstreamServer, len(entries))
 	candidates := map[string]map[string]routedTool{}
 	var failures []error
 
@@ -581,6 +656,7 @@ func (g *Gateway) Connect(ctx context.Context) error {
 			continue
 		}
 		conns[entry.Name] = up
+		dialed[entry.Name] = entry
 
 		// unmeasured is deliberately ignored here. At boot there is no
 		// earlier observation to fall back on, so a tool the quarantine
@@ -596,10 +672,240 @@ func (g *Gateway) Connect(ctx context.Context) error {
 	routes, conflicts := mergeRoutes(candidates)
 	failures = append(failures, conflicts...)
 
-	if closedDuringConnect := g.swap(conns, routes); closedDuringConnect {
+	// The registry was read AND this call builds the table itself, so both
+	// halves are true at once -- which is what makes Connect the one place
+	// that can end a suspension on its own. Set before the swap installs
+	// the table it authorises, never after: the reverse order would publish
+	// routes that ListTools still refuses to serve.
+	g.serving()
+	if closedDuringConnect := g.swap(conns, dialed, routes); closedDuringConnect {
 		return ErrClosed
 	}
 	return errors.Join(failures...)
+}
+
+// Reconcile makes the set of live connections match the Upstream Registry,
+// without touching a connection the registry still describes the same way.
+//
+// It is the half of ADR-0004 that did not exist until ADR-0020: Connect
+// runs once at boot, so before this, an upstream registered with the
+// gateway up was invisible, a deregistered one kept being served, an entry
+// whose signature stopped verifying kept being served, and a backend that
+// failed to dial at boot stayed down -- all until somebody restarted the
+// process.
+//
+// # What one round does
+//
+// Every entry is put through the same two gates Connect applies --
+// entry.Validate and verifyEntry -- and then, against the live set:
+//
+//   - registered but not connected: dialed. This covers both an upstream
+//     registered since boot and one that failed to dial at boot; one rule,
+//     not two.
+//   - connected but no longer registered, no longer valid, or no longer
+//     verifying: closed, with its routes pruned in the same swap so the
+//     table never points at a closed connection.
+//   - connected, registered, and the entry's SPEC changed: closed and
+//     re-dialed, in that order -- fail closed, and no two processes of one
+//     backend alive at once holding the same credential.
+//   - connected, registered, unchanged: left alone. This is the common
+//     case and it is the whole difference between this and calling Connect
+//     on a ticker, which would tear down every live connection and respawn
+//     every subprocess at every interval.
+//
+// A dial that fails leaves that upstream out and is retried next round, as
+// at boot. One backend refusing to come up is not a reason to suspend the
+// others.
+//
+// # What it deliberately does not do
+//
+// It does not build the routing table. Discovering what a newly connected
+// upstream advertises is Refresh's job, and cmd/mcp-gateway's loop calls
+// the two in that order on the same tick. One place builds the table from
+// live connections; a second one would have to agree with mergeRoutes
+// about name collisions forever, and would stop agreeing (ADR-0020 item 2).
+// Calling Reconcile alone therefore leaves a new upstream connected and
+// serving nothing until the next Refresh.
+//
+// It also does not re-dial on a rotated credential. That is GAB-20's
+// deliberately unbuilt half; the comparison here is over the entry's spec,
+// by content, so re-registering an identical entry is not a reconnect
+// command either (ADR-0020 item 6).
+//
+// And it is not a liveness check. "Connected" here means this Gateway holds
+// an Upstream for that name, not that the process on the other end is
+// alive: a backend whose subprocess died is still in the live set, so an
+// unchanged entry does not get re-dialed for it. What that looks like is a
+// Refresh that cannot list the upstream, logged every round, which is the
+// same signal as a backend that is merely unresponsive. Detecting the
+// difference means health-checking the connection, which nothing here does.
+//
+// Nor does it close a freshly dialed upstream that will not list its tools,
+// which Connect does. The asymmetry is deliberate: Connect has no later
+// round to fall back on, while here closing it would mean re-dialing --
+// respawning a subprocess -- once per interval for as long as the backend
+// stays broken. It stays connected, routes nothing, and is retried by the
+// next Refresh.
+//
+// # Registry unreadable
+//
+// Fail closed, per ADR-0004: the routing table is dropped, the gateway
+// serves nothing, and it stays that way until a later round reads the
+// registry successfully. The connections are NOT closed -- the decision is
+// "nothing is served while the registry cannot be confirmed", not "kill
+// every subprocess over a disk hiccup", and keeping them is what makes the
+// retry cheaper than a restart.
+//
+// While suspended, ListTools and Dispatch return ErrRegistryUnavailable
+// rather than an empty list or an unknown tool: this state is the one
+// serve.go calls worse than refusing to start, so it is legible at both
+// ends rather than deduced (ADR-0020 items 3 and 4).
+func (g *Gateway) Reconcile(ctx context.Context) error {
+	g.refreshMu.Lock()
+	defer g.refreshMu.Unlock()
+
+	if g.isClosed() {
+		return ErrClosed
+	}
+
+	entries, err := g.registry.List(ctx)
+	if err != nil {
+		g.suspend()
+		g.log.ErrorContext(ctx, "gateway: registry unreadable, serving nothing until it can be read; connections kept",
+			slog.String("detail", err.Error()))
+		return fmt.Errorf("%w: %w", ErrRegistryUnavailable, err)
+	}
+
+	live, dialed := g.fleetSnapshot()
+
+	want := make(map[string]registry.UpstreamServer, len(entries))
+	// unmeasured holds the entries whose signature could not be CHECKED
+	// this round, as opposed to refused. See errSignatureUnmeasured.
+	unmeasured := map[string]bool{}
+	var failures []error
+	for _, entry := range entries {
+		// Same two gates as Connect, and re-run every round on purpose:
+		// this is what makes an entry tampered with IN THE DATABASE -- or
+		// one whose signature row was removed under require_signed -- take
+		// a backend out of service within one interval instead of at the
+		// next restart.
+		//
+		// Not a revoked trust anchor: g.verifier is built once at startup
+		// from the config file and nothing reloads it, so removing a key
+		// from signer.trusted_keys still needs a restart. This comment
+		// claimed otherwise until 15 Sep 2026.
+		if err := entry.Validate(); err != nil {
+			failures = append(failures, fmt.Errorf("%w: %q: registry entry is not servable: %w", ErrUpstreamUnavailable, entry.Name, err))
+			g.log.ErrorContext(ctx, "gateway: upstream refused by the registry's own entry contract",
+				slog.String("upstream", entry.Name), slog.String("detail", err.Error()))
+			continue
+		}
+		if err := g.verifyEntry(ctx, entry); err != nil {
+			failures = append(failures, err)
+			if errors.Is(err, errSignatureUnmeasured) {
+				// Not refused: unreadable. The entry stays out of `want`,
+				// so nothing new is brought up on an unchecked signature,
+				// and it is remembered here so the removal loop below does
+				// not mistake "could not check" for "must not serve".
+				unmeasured[entry.Name] = true
+				g.log.ErrorContext(ctx, "gateway: signature store could not be read; this upstream is neither newly served nor torn down this round",
+					slog.String("upstream", entry.Name), slog.String("detail", err.Error()))
+				continue
+			}
+			g.log.ErrorContext(ctx, "gateway: upstream refused by signature check",
+				slog.String("upstream", entry.Name), slog.String("detail", err.Error()))
+			continue
+		}
+		want[entry.Name] = entry
+	}
+
+	// Sorted so a round's log reads in the same order every time, and so
+	// the dials below are deterministic under test.
+	liveNames := make([]string, 0, len(live))
+	for name := range live {
+		liveNames = append(liveNames, name)
+	}
+	slices.Sort(liveNames)
+	wantNames := make([]string, 0, len(want))
+	for name := range want {
+		wantNames = append(wantNames, name)
+	}
+	slices.Sort(wantNames)
+
+	var remove []string
+	for _, name := range liveNames {
+		entry, ok := want[name]
+		switch {
+		case !ok && unmeasured[name]:
+			// Left alone on purpose. The registry still names it and the
+			// only thing that failed is reading the signature store, which
+			// is the same database file the registry lives in -- so the
+			// I/O fault that would close this connection is exactly the
+			// one ADR-0020 item 3 promises to survive without killing
+			// subprocesses. Already logged above.
+		case !ok:
+			remove = append(remove, name)
+			g.log.InfoContext(ctx, "gateway: upstream is no longer servable per the registry; closing it",
+				slog.String("upstream", name))
+		case specChanged(dialed[name], entry):
+			remove = append(remove, name)
+			g.log.InfoContext(ctx, "gateway: upstream entry changed; closing the connection so it can be re-dialed from the new entry",
+				slog.String("upstream", name))
+		}
+	}
+
+	// Closed before anything is dialed. A changed entry means the running
+	// process is executing a specification the operator has replaced, and
+	// serving it for the length of a dial is exactly the stale-decision
+	// window ADR-0004 rejected.
+	if closedDuringReconcile := g.retire(remove); closedDuringReconcile {
+		return ErrClosed
+	}
+
+	add := map[string]Upstream{}
+	addEntries := map[string]registry.UpstreamServer{}
+	for _, name := range wantNames {
+		entry := want[name]
+		if _, stillLive := live[name]; stillLive && !slices.Contains(remove, name) {
+			continue
+		}
+		up, err := g.bringUp(ctx, entry)
+		if err != nil {
+			failures = append(failures, err)
+			g.log.ErrorContext(ctx, "gateway: upstream not brought up; it will be retried next round",
+				slog.String("upstream", entry.Name), slog.String("detail", err.Error()))
+			continue
+		}
+		add[name] = up
+		addEntries[name] = entry
+	}
+
+	// After the work, and before the new connections are published: this
+	// round read the registry, so the fleet is confirmed. It is NOT yet
+	// being served -- the table is whatever the last Refresh left, which
+	// after a suspension is empty -- so the suspension stands until the
+	// Refresh that follows installs a confirmed table.
+	g.confirm()
+	if closedDuringReconcile := g.adopt(add, addEntries); closedDuringReconcile {
+		return ErrClosed
+	}
+	return errors.Join(failures...)
+}
+
+// specChanged reports whether an entry now describes a different backend
+// than the one a live connection was dialed from.
+//
+// It compares what reaching the backend depends on -- what specFor hands a
+// Dialer, plus the names of the credentials resolved into its environment
+// -- and nothing else. CreatedAt and UpdatedAt are deliberately excluded:
+// a re-registration that changes no field is not a reconnect command, and
+// reading UpdatedAt here would quietly make it one (ADR-0020 item 6).
+func specChanged(was, now registry.UpstreamServer) bool {
+	return was.Transport != now.Transport ||
+		was.Command != now.Command ||
+		was.URL != now.URL ||
+		!slices.Equal(was.Args, now.Args) ||
+		!slices.Equal(was.EnvVarNames, now.EnvVarNames)
 }
 
 // Refresh re-asks every *already-connected* upstream what tools it
@@ -648,11 +954,16 @@ func (g *Gateway) Connect(ctx context.Context) error {
 // # What it deliberately does not do
 //
 // Refresh does not read the registry, does not dial, and does not close
-// anything. An upstream registered since the last Connect is invisible to
-// it, one deregistered since then keeps being served, and a backend whose
-// process died is not respawned -- all of that is Connect's job, and doing
-// it on a ticker would tear down every live connection (killing in-flight
-// analyst calls and respawning every subprocess) at every interval.
+// anything. An upstream registered since the last round is invisible to it,
+// one deregistered since then keeps being served, and a backend whose
+// process died is not respawned. That is Reconcile's job (ADR-0020), and
+// cmd/mcp-gateway's loop runs the two in that order on one tick: Reconcile
+// settles which backends are connected, Refresh asks the connected ones
+// what they now advertise.
+//
+// Until ADR-0020 the sentence above ended at "that is Connect's job", and
+// Connect ran once, at boot -- so the honest reading was that nothing did
+// it at all while the gateway was up.
 //
 // # Failure
 //
@@ -686,9 +997,22 @@ func (g *Gateway) Refresh(ctx context.Context) error {
 		defs, err := conns[name].ListTools(ctx)
 		if err != nil {
 			failures = append(failures, fmt.Errorf("%w: %q: list tools: %w", ErrUpstreamUnavailable, name, err))
-			g.log.ErrorContext(ctx, "gateway: upstream could not be re-observed; keeping its previous tool list and quarantine state",
-				slog.String("upstream", name), slog.String("detail", err.Error()))
-			candidates[name] = routesOf(previous, name)
+			kept := routesOf(previous, name)
+			// Two different situations, and the log used to describe both
+			// as the first: normally there IS a previous tool list and
+			// keeping it is the whole point, but coming out of a suspension
+			// the table was emptied, so there is nothing to keep and this
+			// upstream routes nothing until a listing succeeds. Saying
+			// "keeping its previous tool list" there is a false statement
+			// at the moment an operator reads it.
+			if len(kept) == 0 {
+				g.log.ErrorContext(ctx, "gateway: upstream could not be re-observed and has NO previous tool list to fall back on; it routes nothing until a listing succeeds",
+					slog.String("upstream", name), slog.String("detail", err.Error()))
+			} else {
+				g.log.ErrorContext(ctx, "gateway: upstream could not be re-observed; keeping its previous tool list and quarantine state",
+					slog.String("upstream", name), slog.String("detail", err.Error()))
+			}
+			candidates[name] = kept
 			continue
 		}
 
@@ -699,9 +1023,15 @@ func (g *Gateway) Refresh(ctx context.Context) error {
 			// about this upstream can be judged right now, so nothing about
 			// it changes: a store that is briefly unreadable must not be able
 			// to unroute the fleet. The next tick tries again.
-			g.log.ErrorContext(ctx, "gateway: tool quarantine could not be consulted during refresh; keeping this upstream's previous tool list",
-				slog.String("upstream", name))
-			candidates[name] = routesOf(previous, name)
+			kept := routesOf(previous, name)
+			if len(kept) == 0 {
+				g.log.ErrorContext(ctx, "gateway: tool quarantine could not be consulted during refresh and this upstream has NO previous tool list to fall back on; it routes nothing until the store answers",
+					slog.String("upstream", name))
+			} else {
+				g.log.ErrorContext(ctx, "gateway: tool quarantine could not be consulted during refresh; keeping this upstream's previous tool list",
+					slog.String("upstream", name))
+			}
+			candidates[name] = kept
 			continue
 		}
 		candidates[name] = got.routes
@@ -878,18 +1208,6 @@ func (g *Gateway) bringUp(ctx context.Context, entry registry.UpstreamServer) (U
 	}
 	defer func() { clear(env) }()
 
-	// Taken here, while the plaintext is briefly in hand, and nowhere
-	// else -- this is the only moment the gateway knows what the upstream
-	// is actually being given. Digests, not values: see the creds field.
-	//
-	// The `defer clear(env)` above is what makes "briefly" true in code
-	// rather than in prose, and it is load-bearing: an attempt to redact
-	// call-time errors by holding this map on the connection produced a
-	// wrapper that redacted nothing, because by then the map was empty.
-	// Keeping a COPY would have bought that redaction by defeating this
-	// control; auditFailure drops the upstream's text instead.
-	g.rememberCredentials(entry.Name, env)
-
 	up, err := g.dialer.Dial(ctx, specFor(entry), env)
 	if err != nil {
 		// redact, even though Dialer's contract already forbids a value in
@@ -898,6 +1216,27 @@ func (g *Gateway) bringUp(ctx context.Context, entry registry.UpstreamServer) (U
 		// a short string.
 		return nil, fmt.Errorf("%w: %q: dial: %w", ErrUpstreamUnavailable, entry.Name, redact(err, env))
 	}
+
+	// Taken here, after the dial succeeded and while the plaintext is still
+	// briefly in hand -- this is the only moment the gateway knows what a
+	// running upstream was actually given. Digests, not values: see the
+	// creds field.
+	//
+	// AFTER, not before, since ADR-0020 put this on a timer: recording the
+	// digest first meant an upstream that never dials rewrote its entry
+	// every round, so "there is a digest for this name" stopped implying
+	// "a process is running on it". Nothing reported a false rotation --
+	// CredentialDrift filters on the live set -- but the invariant held by
+	// that filter rather than by construction, and one is a guarantee while
+	// the other is a habit.
+	//
+	// The `defer clear(env)` above is what makes "briefly" true in code
+	// rather than in prose, and it is load-bearing: an attempt to redact
+	// call-time errors by holding this map on the connection produced a
+	// wrapper that redacted nothing, because by then the map was empty.
+	// Keeping a COPY would have bought that redaction by defeating this
+	// control; auditFailure drops the upstream's text instead.
+	g.rememberCredentials(entry.Name, env)
 	return up, nil
 }
 
@@ -942,6 +1281,14 @@ func (g *Gateway) resolveEnv(ctx context.Context, entry registry.UpstreamServer)
 // empty tool list and a broken approval store must not look the same to an
 // operator.
 func (g *Gateway) ListTools(ctx context.Context, id access.Identity) ([]ToolDef, error) {
+	// Suspended is not the same answer as "you may use nothing", for the
+	// reason the quarantine-unavailable case above gives: an empty list
+	// and a fleet that cannot be confirmed must not look alike to whoever
+	// is reading (ADR-0020 item 4).
+	if g.isSuspended() {
+		return nil, fmt.Errorf("%w: the fleet cannot be confirmed, so nothing is being served", ErrRegistryUnavailable)
+	}
+
 	routes := g.snapshot()
 
 	names := make([]string, 0, len(routes))
@@ -1083,6 +1430,16 @@ func (g *Gateway) ListTools(ctx context.Context, id access.Identity) ([]ToolDef,
 // currently under suspicion is -- and that is the fact the opaque error
 // protects.
 func (g *Gateway) Dispatch(ctx context.Context, c Caller, namespacedTool string, args json.RawMessage) (Result, error) {
+	// Before the routing table is consulted at all: while the fleet is
+	// suspended the table is empty by construction, and answering "unknown
+	// tool" would tell a caller -- and the audit trail -- that a tool they
+	// used this morning has been removed, when what happened is that the
+	// registry cannot be read (ADR-0020 item 4).
+	if g.isSuspended() {
+		g.auditRefusal(ctx, c, namespacedTool, targetOf(namespacedTool), reasonRegistryUnavailable)
+		return Result{}, fmt.Errorf("%w: the fleet cannot be confirmed, so nothing is being served", ErrRegistryUnavailable)
+	}
+
 	rt, up, found := g.lookup(namespacedTool)
 	if !found {
 		g.auditRefusal(ctx, c, namespacedTool, targetOf(namespacedTool), reasonUnknownTool)
@@ -1255,6 +1612,8 @@ func (g *Gateway) Close() error {
 	g.closed = true
 	conns := g.conns
 	g.conns = map[string]Upstream{}
+	g.dialed = map[string]registry.UpstreamServer{}
+	g.creds = map[string]map[string]string{}
 	g.routes = map[string]routedTool{}
 	g.mu.Unlock()
 
@@ -1326,7 +1685,12 @@ func (g *Gateway) verifyEntry(ctx context.Context, entry registry.UpstreamServer
 		// as ADR-0004 gives for the registry: an integrity decision made
 		// without the state that governs it is the decision an attacker
 		// wants.
-		return fmt.Errorf("%w: %q: signature store unreadable: %w", ErrUpstreamUnavailable, entry.Name, err)
+		//
+		// Fail closed means "do not START serving this entry on the
+		// strength of a check that did not run". It does not mean "tear
+		// down what is already running", and errSignatureUnmeasured is how
+		// Reconcile tells the two apart -- see its doc comment.
+		return fmt.Errorf("%w: %w: %q: %w", ErrUpstreamUnavailable, errSignatureUnmeasured, entry.Name, err)
 	}
 
 	if err := g.verifier.Verify(entry, sig); err != nil {
@@ -1361,6 +1725,20 @@ func (g *Gateway) record(ctx context.Context, c Caller, tool, upstream string, o
 	}
 	if err := g.audit.Record(ctx, rec); err != nil {
 		return fmt.Errorf("gateway: audit record for %q: %w", tool, err)
+	}
+	// Counted here, after the durable write, because here is the only
+	// place this system writes an audit record at all -- Dispatch,
+	// auditRefusal, auditFailure, RecordAuthFailure and RecordRefusedProbe
+	// all pass through. That is what lets Status say exactly what the
+	// numbers are: rows written, by outcome, and not an approximation of
+	// "calls" maintained in parallel with the thing it approximates.
+	switch outcome {
+	case audit.OutcomeAllowed:
+		g.allowed.Add(1)
+	case audit.OutcomeDenied:
+		g.denied.Add(1)
+	case audit.OutcomeFailed:
+		g.failed.Add(1)
 	}
 	return nil
 }
@@ -1554,6 +1932,184 @@ func (g *Gateway) tableSnapshot() (map[string]Upstream, map[string]routedTool) {
 	return conns, routes
 }
 
+// Status is what this gateway can say about itself right now, for the
+// operational heartbeat (design/adr/0021).
+//
+// Every field is a number or a flag. Nothing here names an analyst, a
+// tool, a backend or an address: this is the shape that gets emitted on a
+// timer to a SIEM whether or not anything happened, and a field that
+// carried an identity would put an analyst's subject into a stream on a
+// schedule rather than on a decision.
+type Status struct {
+	// Allowed, Denied and Failed are the audit records written since this
+	// process started, by outcome.
+	//
+	// They are RECORD counts, not call counts, and the difference is not
+	// pedantic: a call that fails writes an allowed record and then a
+	// failed one (ADR-0012). Count Allowed for attempts and read Failed as
+	// an annotation on some of them.
+	Allowed uint64
+	Denied  uint64
+	Failed  uint64
+	// Upstreams is how many backends are connected and Tools how many
+	// routes the table holds. Both are "now", not "at boot": after
+	// ADR-0020 they move without a restart.
+	Upstreams int
+	Tools     int
+	// Suspended reports a fleet serving nothing because the registry could
+	// not be read. A gateway can be up, answering, and suspended -- see
+	// ADR-0020 item 3.
+	Suspended bool
+}
+
+// Status returns the current counters and fleet state.
+//
+// It takes no lock beyond the one the routing table already uses for a
+// read, and it is safe to call from a maintenance loop while requests are
+// being served. The numbers are a snapshot: two fields may come from
+// either side of a concurrent dispatch, which is exactly as precise as a
+// heartbeat needs to be.
+func (g *Gateway) Status() Status {
+	g.mu.RLock()
+	upstreams, tools, suspended := len(g.conns), len(g.routes), g.suspended
+	g.mu.RUnlock()
+
+	return Status{
+		Allowed:   g.allowed.Load(),
+		Denied:    g.denied.Load(),
+		Failed:    g.failed.Load(),
+		Upstreams: upstreams,
+		Tools:     tools,
+		Suspended: suspended,
+	}
+}
+
+// fleetSnapshot copies the live connections and the registry entry each
+// one was dialed from, under one lock, so a reconciliation compares two
+// halves of the same generation.
+func (g *Gateway) fleetSnapshot() (map[string]Upstream, map[string]registry.UpstreamServer) {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+
+	conns := make(map[string]Upstream, len(g.conns))
+	for name, up := range g.conns {
+		conns[name] = up
+	}
+	dialed := make(map[string]registry.UpstreamServer, len(g.dialed))
+	for name, entry := range g.dialed {
+		dialed[name] = entry
+	}
+	return conns, dialed
+}
+
+// confirm records that the registry was read. It deliberately does NOT
+// lift the suspension: the table is still empty at this point, and a
+// gateway that reports itself serving while routing nothing answers
+// "unknown tool" to tools that exist. swapRoutes lifts it, when there is
+// something to serve.
+func (g *Gateway) confirm() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.confirmed = true
+}
+
+// serving records a fleet that was both confirmed and routed, which is
+// what Connect does in one step. Reconcile and Refresh reach the same
+// state in two.
+func (g *Gateway) serving() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.confirmed, g.suspended = true, false
+}
+
+// suspended reports the same thing to the request path.
+func (g *Gateway) isSuspended() bool {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return g.suspended
+}
+
+// suspend is the fail-closed step of ADR-0004 as ADR-0020 implements it:
+// serve nothing, keep the connections. Both halves happen under one lock,
+// so there is no instant in which the table is empty and the gateway still
+// reports itself confirmable -- a caller landing there would be told
+// "unknown tool" about a fleet that is merely unreadable.
+func (g *Gateway) suspend() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.suspended, g.confirmed = true, false
+	g.routes = map[string]routedTool{}
+}
+
+// retire closes the named upstreams and removes every trace of them from
+// the serving state: the connection, the entry it was dialed from, its
+// credential digests, and its routes.
+//
+// The routes go in the same swap rather than being left for the next
+// Refresh. A route whose upstream is closed resolves to "unknown tool" in
+// lookup, which is harmless, but ListTools reads the table alone and would
+// advertise a deregistered backend's tools until the next round.
+//
+// It reports whether the Gateway was closed meanwhile, in which case Close
+// has already reaped everything and there is nothing left to do.
+func (g *Gateway) retire(names []string) (closedDuringReconcile bool) {
+	if len(names) == 0 {
+		return false
+	}
+
+	g.mu.Lock()
+	if g.closed {
+		g.mu.Unlock()
+		return true
+	}
+	going := make(map[string]Upstream, len(names))
+	for _, name := range names {
+		if up, ok := g.conns[name]; ok {
+			going[name] = up
+		}
+		delete(g.conns, name)
+		delete(g.dialed, name)
+		delete(g.creds, name)
+	}
+	for tool, rt := range g.routes {
+		if slices.Contains(names, rt.route.upstream) {
+			delete(g.routes, tool)
+		}
+	}
+	g.mu.Unlock()
+
+	if err := closeAll(going); err != nil {
+		g.log.Warn("gateway: closing retired upstreams", slog.String("detail", err.Error()))
+	}
+	return false
+}
+
+// adopt adds freshly dialed connections to the live set, leaving the ones
+// already there alone. It is Reconcile's counterpart to swap, which
+// replaces the whole generation.
+//
+// Like swap, it closes what it was given rather than installing it if the
+// Gateway was closed while the dials were in flight -- otherwise a Close
+// racing a reconciliation leaks one subprocess per upstream dialed.
+func (g *Gateway) adopt(add map[string]Upstream, entries map[string]registry.UpstreamServer) (closedDuringReconcile bool) {
+	if len(add) == 0 {
+		return g.isClosed()
+	}
+
+	g.mu.Lock()
+	if g.closed {
+		g.mu.Unlock()
+		_ = closeAll(add)
+		return true
+	}
+	for name, up := range add {
+		g.conns[name] = up
+		g.dialed[name] = entries[name]
+	}
+	g.mu.Unlock()
+	return false
+}
+
 // swapRoutes installs a rebuilt routing table over the same connections,
 // which is what a refresh produces. It reports whether the Gateway was
 // closed while the table was being built, in which case nothing is
@@ -1572,7 +2128,22 @@ func (g *Gateway) swapRoutes(routes map[string]routedTool) (closedDuringRefresh 
 	if g.closed {
 		return true
 	}
+	if !g.confirmed {
+		// A refresh that ran while the registry is unreadable has built a
+		// table from connections nothing currently vouches for. Installing
+		// it would undo the suspension without anybody deciding to, which
+		// is the stale-decision window ADR-0004 rejected -- reached, once
+		// again, by omission rather than by choice. The next successful
+		// Reconcile confirms the fleet and the Refresh after it installs a
+		// table that has been confirmed.
+		return false
+	}
 	g.routes = routes
+	// Installing a confirmed table IS the end of a suspension, and doing it
+	// here rather than at the moment of the successful read is what closes
+	// the window in which the gateway called itself available while routing
+	// nothing.
+	g.suspended = false
 	return false
 }
 
@@ -1581,9 +2152,12 @@ func (g *Gateway) swapRoutes(routes map[string]routedTool) (closedDuringRefresh 
 // being built, in which case the new connections are closed instead of
 // installed -- otherwise a Close racing a Connect would leak every
 // subprocess Connect had just spawned.
-func (g *Gateway) swap(conns map[string]Upstream, routes map[string]routedTool) (closedDuringConnect bool) {
+func (g *Gateway) swap(conns map[string]Upstream, dialed map[string]registry.UpstreamServer, routes map[string]routedTool) (closedDuringConnect bool) {
 	if conns == nil {
 		conns = map[string]Upstream{}
+	}
+	if dialed == nil {
+		dialed = map[string]registry.UpstreamServer{}
 	}
 	if routes == nil {
 		routes = map[string]routedTool{}
@@ -1597,6 +2171,7 @@ func (g *Gateway) swap(conns map[string]Upstream, routes map[string]routedTool) 
 	}
 	old := g.conns
 	g.conns = conns
+	g.dialed = dialed
 	g.routes = routes
 	g.mu.Unlock()
 

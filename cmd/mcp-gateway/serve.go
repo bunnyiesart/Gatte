@@ -64,6 +64,36 @@ const shutdownTimeout = 15 * time.Second
 // overlapping rounds onto the backends.
 const refreshTimeout = 30 * time.Second
 
+// reconcileTimeout bounds one round of registry reconciliation
+// (gateway.Reconcile): one registry read, plus a dial for every upstream
+// that is registered and not connected.
+//
+// Longer than refreshTimeout because the work is different: a refresh
+// talks to processes that are already running, while this one may have to
+// spawn them, and a backend that takes fifteen seconds to come up is a
+// slow backend rather than a broken one. It is still bounded, for the
+// reason refreshTimeout is: a dial that never returns must not stop the
+// next round from happening.
+const reconcileTimeout = 60 * time.Second
+
+// registryRetryEvery is how often the loop retries while the fleet is
+// suspended -- that is, while the Upstream Registry cannot be read and
+// ADR-0004's fail-closed rule means nothing is being served.
+//
+// This is the "retry curto, da ordem de segundos" that ADR-0004 decided in
+// August 2026 and that nothing implemented until ADR-0020. It is a
+// constant rather than a configuration key on purpose: it is not a policy
+// an operator tunes, it is how fast a gateway that is currently serving
+// nobody notices that it can start again. Nothing is being served while it
+// applies, so the cost of the shorter interval is one registry read every
+// five seconds during an outage.
+//
+// While suspended the loop does NOT refresh: re-observing tool
+// definitions for a fleet that is serving nothing buys nothing, and
+// hammering every backend with a tools/list every five seconds during a
+// disk incident is the opposite of what the operator needs.
+const registryRetryEvery = 5 * time.Second
+
 // readHeaderTimeout bounds how long a client may take to send its request
 // headers. Set, unlike ReadTimeout and WriteTimeout, because MCP over
 // streamable HTTP legitimately holds a response open for the length of a
@@ -157,6 +187,30 @@ type serveStack struct {
 	// rule as refreshEvery (design/adr/0014).
 	maxResultBytes int64
 
+	// siem is the SIEM-facing audit recorder, or nil when no sink is
+	// configured. The maintenance loop emits the operational heartbeat
+	// through it (design/adr/0021); with no sink the heartbeat still
+	// happens, in the log only.
+	siem *auditjsonl.Recorder
+
+	// boot is when this process started. It goes into every heartbeat, so
+	// a restart is one field's difference in the SIEM rather than
+	// something inferred from counters resetting.
+	boot time.Time
+
+	// lastBeat and beatSuspended are what keep a suspension from turning
+	// the heartbeat into a flood. While the fleet is suspended the loop
+	// ticks every registryRetryEvery (5s), and a beat per tick would be
+	// 720 lines an hour into the same file, the same disk and the same
+	// SIEM stream -- during the disk incident that caused the suspension.
+	// ADR-0021 budgets twelve an hour and the alert window is sized in
+	// refresh intervals, so the flood would also falsify both.
+	//
+	// Touched only from the maintenance loop and from run() before that
+	// loop starts, in that order, so they need no lock.
+	lastBeat      time.Time
+	beatSuspended bool
+
 	// closers release what buildServer acquired, and are run in reverse.
 	closers []func()
 }
@@ -184,7 +238,7 @@ func (s *serveStack) close() {
 // On any error it releases whatever it had already acquired and returns
 // nil, so a caller that gets an error has nothing to clean up.
 func buildServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*serveStack, error) {
-	stack := &serveStack{}
+	stack := &serveStack{boot: time.Now()}
 	fail := func(err error) (*serveStack, error) {
 		stack.close()
 		return nil, err
@@ -230,10 +284,11 @@ func buildServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) (
 	// sink that cannot be opened is something only they can fix. See
 	// auditRecorder for why this one failure is fatal while every failure
 	// of the same sink at request time is not.
-	aud, closeAudit, err := auditRecorder(cfg, db, logger)
+	aud, siem, closeAudit, err := auditRecorder(cfg, db, logger)
 	if err != nil {
 		return fail(fmt.Errorf("audit trail: %w", err))
 	}
+	stack.siem = siem
 	stack.closers = append(stack.closers, closeAudit)
 
 	// Credential Vault. sopsage deliberately discards sops's stderr and
@@ -408,19 +463,25 @@ func buildServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) (
 // would convert an availability fault into a denial. jsonl.Recorder
 // guarantees that second half itself (it logs at ERROR and returns nil);
 // this function is only responsible for the first.
-func auditRecorder(cfg *config.Config, db *sql.DB, logger *slog.Logger) (audit.Recorder, func(), error) {
+// The second return value is the SIEM-facing recorder itself, or nil when
+// no sink is configured. It is returned as its concrete type rather than
+// recovered later with a type assertion because the maintenance loop needs
+// something the audit.Recorder port deliberately does not carry -- the
+// heartbeat (design/adr/0021) -- and an assertion in the loop would make
+// "is the sink on?" a question answered in two places.
+func auditRecorder(cfg *config.Config, db *sql.DB, logger *slog.Logger) (audit.Recorder, *auditjsonl.Recorder, func(), error) {
 	// *auditsqlite.Recorder, which satisfies audit.ChainedRecorder -- the
 	// narrow second port ADR-0017 item 3 added so the decorator can read
 	// the hash the write actually produced without re-reading the head
 	// outside the transaction that computed it.
 	inner := auditsqlite.New(db)
 	if !cfg.Audit.SIEM.Enabled() {
-		return inner, func() {}, nil
+		return inner, nil, func() {}, nil
 	}
 
 	sink, err := auditjsonl.OpenFile(cfg.Audit.SIEM.Path)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	rec, err := auditjsonl.New(inner, sink, cfg.Audit.SIEM.Chain, logger)
 	if err != nil {
@@ -428,9 +489,9 @@ func auditRecorder(cfg *config.Config, db *sql.DB, logger *slog.Logger) (audit.R
 		// to clean up, which is buildServer's contract for every other
 		// resource too.
 		_ = sink.Close()
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	return rec, func() { _ = sink.Close() }, nil
+	return rec, rec, func() { _ = sink.Close() }, nil
 }
 
 // run serves until ctx is cancelled by a signal, then shuts down.
@@ -443,6 +504,14 @@ func auditRecorder(cfg *config.Config, db *sql.DB, logger *slog.Logger) (audit.R
 // invisible until the host runs out of processes.
 func (s *serveStack) run(ctx context.Context, logger *slog.Logger) int {
 	s.summary.log(logger)
+
+	// One before the loop's first tick. Two reasons, and neither is
+	// tidiness: an alert on "no heartbeat in N minutes" needs a baseline
+	// the moment the process exists rather than one refresh interval
+	// later, and a restart -- the event that makes a rotated credential
+	// take effect -- should show up in the SIEM when it happens and not
+	// five minutes afterwards.
+	s.heartbeat(ctx, logger)
 
 	// Started before the listener accepts anything: the first analyst call
 	// and the first re-observation are independent, and there is no reason
@@ -507,8 +576,20 @@ func (s *serveStack) run(ctx context.Context, logger *slog.Logger) int {
 	return code
 }
 
-// refreshLoop re-observes the connected upstreams every refreshEvery until
-// ctx is cancelled.
+// refreshLoop runs one maintenance round every refreshEvery until ctx is
+// cancelled: reconcile the fleet against the Upstream Registry, re-observe
+// what the connected upstreams advertise, then report credential drift.
+//
+// The three answer three different questions -- "are these the right
+// backends?", "are they still offering what we approved?", and "are they
+// still running on the credentials the vault holds?" -- and they ride one
+// tick because all three bound a window rather than closing one.
+//
+// The registry step is ADR-0020 and came last, years of ADR-time after the
+// decision it implements: ADR-0004 decided in August 2026 that an
+// unreadable registry fails closed with a short retry, and until this loop
+// gained a Reconcile call there was no retry, no re-read, and therefore no
+// behaviour at all for the scenario that ADR exists for.
 //
 // This loop is the whole of GAB-23's fix at the process level, and what it
 // exists to prevent is worth stating where somebody will read it while
@@ -531,19 +612,66 @@ func (s *serveStack) run(ctx context.Context, logger *slog.Logger) int {
 // waits for the next tick, because the alternative (a loop that gives up
 // after a bad night) is a security control that silently stopped.
 func (s *serveStack) refreshLoop(ctx context.Context, logger *slog.Logger) {
-	logger.Info("mcp-gateway: re-observing upstream tool definitions periodically",
+	logger.Info("mcp-gateway: reconciling the registry and re-observing upstream tool definitions periodically",
 		slog.Duration("every", s.refreshEvery),
 		slog.Duration("timeout", refreshTimeout),
+		slog.Duration("registry_retry_when_unreadable", registryRetryEvery),
 	)
 
-	ticker := time.NewTicker(s.refreshEvery)
-	defer ticker.Stop()
+	// A timer rather than a ticker, because the interval is not constant:
+	// while the fleet is suspended the loop retries at registryRetryEvery
+	// instead. Resetting after the work also means the interval is a rest
+	// between rounds rather than a schedule a slow round can fall behind
+	// and then chase with back-to-back rounds.
+	timer := time.NewTimer(s.refreshEvery)
+	defer timer.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case <-timer.C:
+		}
+
+		// The registry first: settling which backends should be connected
+		// before asking the connected ones what they advertise is the
+		// order ADR-0020 item 2 requires -- an upstream registered since
+		// the last round is dialed here and discovered by the Refresh
+		// below, on the same tick.
+		reconcileCtx, cancelReconcile := context.WithTimeout(ctx, reconcileTimeout)
+		reconcileErr := s.gateway.Reconcile(reconcileCtx)
+		cancelReconcile()
+
+		switch {
+		case reconcileErr == nil:
+		case errors.Is(reconcileErr, gateway.ErrClosed):
+			return
+		case errors.Is(reconcileErr, gateway.ErrRegistryUnavailable):
+			// Fail closed (ADR-0004): nothing is being served until a
+			// later round reads the registry. Said at Error every round,
+			// not once, because this is the state serve.go's boot path
+			// calls worse than refusing to start -- a process holding the
+			// port and serving nobody -- and a single line at the moment
+			// it began would be off the top of the operator's screen by
+			// the time anyone looked.
+			logger.Error("mcp-gateway: the upstream registry cannot be read, so NOTHING is being served; upstream connections are kept and this will be retried",
+				slog.Duration("retry_in", registryRetryEvery),
+				slog.String("detail", reconcileErr.Error()))
+			// Emitted on this path too, and it is the path that needs it
+			// most: a suspended gateway is up, answering, and serving
+			// nobody, and the heartbeat carrying suspended=true is the
+			// difference between that being visible in the SIEM and being
+			// visible only to whoever is reading the log right then.
+			s.heartbeat(ctx, logger)
+			timer.Reset(registryRetryEvery)
+			continue
+		default:
+			// Partial by construction, like Refresh's: one upstream that
+			// would not dial, or an entry refused by its own contract or
+			// its signature. gateway.Reconcile has logged each with its
+			// detail.
+			logger.Error("mcp-gateway: some upstreams could not be reconciled against the registry; they will be retried next round",
+				slog.String("detail", reconcileErr.Error()))
 		}
 
 		// Bounded, and derived from ctx so a shutdown cuts a round in
@@ -586,7 +714,88 @@ func (s *serveStack) refreshLoop(ctx context.Context, logger *slog.Logger) {
 		driftCtx, driftCancel := context.WithTimeout(ctx, refreshTimeout)
 		s.reportCredentialDrift(driftCtx, logger)
 		driftCancel()
+
+		s.heartbeat(ctx, logger)
+
+		timer.Reset(s.refreshEvery)
 	}
+}
+
+// heartbeat says, once per round, that this process is alive and what it
+// has been doing -- to the log always, and to the SIEM sink when one is
+// configured (design/adr/0021).
+//
+// # Why a gateway that is doing nothing has to say so
+//
+// Every other line this system emits is caused by an analyst. A quiet
+// gateway is therefore indistinguishable, from the SIEM's side, from a
+// dead one, a suspended one, and one whose shipper stopped -- and all
+// four look exactly like a quiet night. There was no alert that could be
+// written against that, which is what WORKFLOW.md listed as still manual.
+// This is the positive signal whose ABSENCE is the alert.
+//
+// It rides the same tick as reconciliation and re-observation because the
+// numbers it carries are the ones those two rounds just settled.
+//
+// A sink failure is loud and nothing else: no analyst is waiting on a
+// heartbeat, so unlike an audit record there is no availability trade to
+// make here -- but the log line below still happens, because the half of
+// the signal that does not depend on a writable file is worth keeping.
+func (s *serveStack) heartbeat(ctx context.Context, logger *slog.Logger) {
+	st := s.gateway.Status()
+
+	// A suspension is announced the moment it starts and then at the normal
+	// cadence, not at the retry cadence. The first beat of a suspension is
+	// the signal; the next four hundred are the incident writing to the
+	// disk that is already the problem.
+	if st.Suspended && s.beatSuspended && time.Since(s.lastBeat) < s.refreshEvery {
+		return
+	}
+	s.lastBeat, s.beatSuspended = time.Now(), st.Suspended
+
+	attrs := []any{
+		slog.Uint64("allowed", st.Allowed),
+		slog.Uint64("denied", st.Denied),
+		slog.Uint64("failed", st.Failed),
+		slog.Int("upstreams", st.Upstreams),
+		slog.Int("tools", st.Tools),
+		slog.Bool("suspended", st.Suspended),
+		slog.Duration("uptime", time.Since(s.boot).Truncate(time.Second)),
+	}
+
+	if s.siem == nil {
+		// No sink: the numbers still reach an operator, and `head` and
+		// `records` are deliberately absent rather than reported as empty
+		// and zero -- there is no sink for them to describe.
+		logger.Info("mcp-gateway: heartbeat", attrs...)
+		return
+	}
+
+	hb, err := s.siem.Heartbeat(ctx, auditjsonl.Stats{
+		Boot:      s.boot,
+		Now:       time.Now(),
+		Allowed:   st.Allowed,
+		Denied:    st.Denied,
+		Failed:    st.Failed,
+		Upstreams: st.Upstreams,
+		Tools:     st.Tools,
+		Suspended: st.Suspended,
+	})
+	attrs = append(attrs,
+		slog.String("chain", hb.Chain),
+		slog.String("head", hb.Head),
+		slog.Uint64("records", hb.Records),
+	)
+	if err != nil {
+		// The same class of failure as a record that could not be emitted,
+		// and said in the same terms: what is behind is the SIEM's copy,
+		// and with the heartbeat missing so is the only signal that would
+		// have shown it.
+		logger.Error("mcp-gateway: heartbeat NOT emitted to the SIEM sink -- an alert on missing heartbeats will fire for a gateway that is actually running",
+			append(attrs, slog.String("detail", err.Error()))...)
+		return
+	}
+	logger.Info("mcp-gateway: heartbeat", attrs...)
 }
 
 // reportCredentialDrift says, once per tick, which connected upstreams are

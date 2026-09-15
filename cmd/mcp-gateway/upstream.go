@@ -285,7 +285,8 @@ func runUpstreamRegister(e *opEnv, entry registry.UpstreamServer) int {
 	// key, and an operator should know exactly when that key is used. But
 	// an entry the gateway will refuse (or warn about) is a confusing
 	// thing to have created silently, so say it here rather than let it be
-	// discovered at the next restart.
+	// discovered from a log line one reconciliation interval later
+	// (ADR-0020; before it, the answer was "at the next restart").
 	//
 	// What this used to do was print "NOT SIGNED" categorically, without
 	// ever opening the signature store -- an assertion about a table it
@@ -324,13 +325,17 @@ func runUpstreamRegister(e *opEnv, entry registry.UpstreamServer) int {
 		// It is not automatically an attack -- re-registering an entry you
 		// just removed by mistake lands here too -- but it means the
 		// gateway will serve this entry, immediately, on the strength of a
-		// review nobody performed today.
+		// review nobody performed today. "Immediately" got shorter with
+		// ADR-0020: a running gateway picks this up at its next
+		// reconciliation instead of at the next restart, so the window in
+		// which somebody might notice and deregister is now minutes.
 		fmt.Fprintf(e.stdout, `
 WARNING: this entry is ALREADY SIGNED, and nobody signed it just now.
 
 A signature is stored under the name %q and it VERIFIES the entry that was
-just created -- so the gateway will serve it from the next restart, with no
-further action. Registering did not do that: the signature was already
+just created -- so a running gateway will bring it up within one reconciliation
+interval, with no further action. Its tools still face the quarantine before
+an analyst sees them; what nobody reviewed here is the ENTRY. Registering did not do that: the signature was already
 there, left by a previous entry of the same name, and it matches because
 this entry runs the same command with the same arguments and env var names.
 

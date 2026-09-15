@@ -115,7 +115,8 @@ pipeline de log):
 
 | campo | tipo | origem |
 |---|---|---|
-| `v` | int | versão do esquema, hoje `1` |
+| `v` | int | versão do esquema — `1` quando esta ADR foi escrita, **`2` desde a ADR-0021**, que acrescentou o campo `type` e uma segunda forma de linha (o batimento) neste mesmo arquivo |
+| `type` | string | `"record"` aqui; `"heartbeat"` na outra forma. Acrescentado pela ADR-0021 |
 | `ts` | string | `Timestamp`, RFC3339Nano, normalizado para UTC |
 | `chain` | string | qual cadeia/gateway esta linha pertence |
 | `caller` | string | `AnalystIdentity` (o `sub` do IdP) |

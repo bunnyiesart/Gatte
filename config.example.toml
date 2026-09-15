@@ -346,11 +346,24 @@ require_signed = true
 # `tool revoke` valem na chamada seguinte, sem reinicio e sem esperar
 # ciclo nenhum -- o gate e relido a cada listagem e a cada chamada.
 #
-# Repare no que este ciclo NAO faz: ele nao le o registro, nao disca e nao
-# fecha conexao. Upstream registrado depois do arranque so entra com um
-# reinicio; isso e trabalho do `Connect`, e faze-lo em ticker derrubaria
-# toda conexao viva (cortando chamadas em voo e respawnando todo
-# subprocesso) a cada intervalo.
+# Este intervalo tambem passou a ser o da RECONCILIACAO do registro
+# (ADR-0020, 15 set 2026): no mesmo tick, antes da re-observacao, o gateway
+# rele o `Upstream Registry` e acerta quais backends estao conectados --
+# disca o que foi registrado depois do arranque, fecha o que foi
+# desregistrado ou cuja assinatura deixou de verificar, e nao toca no que o
+# registro continua descrevendo igual. Ate esta data isto aqui dizia que um
+# upstream registrado depois do arranque so entrava com um reinicio, o que
+# era verdade e era a metade nao implementada da ADR-0004.
+#
+# Duas consequencias deste numero, entao, e nao uma: ele e a janela em que
+# uma ferramenta envenenada continua servida E a janela em que um upstream
+# desregistrado continua no ar.
+#
+# O retry de registro ilegivel NAO usa este numero. Se o registro nao puder
+# ser lido, o gateway suspende (nao serve nada, mantem as conexoes) e tenta
+# de novo a cada 5s ate conseguir -- constante no codigo, nao chave aqui:
+# nao e politica de operador, e a velocidade com que um gateway que ja nao
+# serve ninguem percebe que pode voltar.
 #
 # Se errar: escrever um numero cru e a pegadinha real -- TOML le inteiro
 # como NANOSSEGUNDOS, entao `refresh_interval = 300` sao 300ns e nao cinco
@@ -495,6 +508,21 @@ max_bytes = 1048576
 # porque o sink abre em O_APPEND, mas o processo segura o fd e NAO reabre em
 # SIGHUP hoje: use `copytruncate`, ou reinicie o gateway apos um
 # rename. Ver deploy/freebsd-jail.md.
+#
+# COM O SINK LIGADO, o arquivo tambem recebe um BATIMENTO a cada tick de
+# manutencao e um no arranque (ADR-0021): uma linha `"type":"heartbeat"`, sem
+# hash e fora da cadeia, dizendo que este processo esta vivo, ha quanto tempo,
+# quantos registros escreveu por desfecho, quantos upstreams estao conectados
+# e se a frota esta suspensa. Ela existe para que a AUSENCIA de linhas possa
+# ser alertada: sem ela, um gateway que ninguem usou a noite inteira e um
+# shipper morto sao a mesma coisa vista do Graylog. A receita do alerta esta
+# em deploy/freebsd-jail.md, "Alerting on a chain that went quiet".
+#
+# Consequencia para quem ja consome este arquivo: nem toda linha tem `hash`.
+# Filtre por `NOT type:heartbeat` -- pela negativa, porque as linhas emitidas
+# antes da ADR-0021 nao tem campo `type` nenhum.
+#
+# Sem [audit.siem] o batimento continua existindo, so que no log.
 #
 # [audit.siem]
 # path  = "/var/log/mcp-gateway/audit.jsonl"

@@ -37,6 +37,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -166,6 +167,11 @@ type stack struct {
 	audit   audit.Recorder
 	quar    quarantine.Store
 	logs    *bytes.Buffer
+	// reg is the real SQLite registry this stack was built from, exposed so
+	// a checkpoint can change the FLEET while the gateway is serving --
+	// which is the whole of ADR-0020 and could not be exercised here while
+	// the registry was a local variable.
+	reg registry.Repository
 }
 
 // newStack builds the whole system: four registered upstreams, each with
@@ -300,7 +306,7 @@ func newLimitedStack(t *testing.T, policy *access.Policy, tokens map[string]acce
 	return &stack{
 		t: t, gw: gw, server: srv,
 		tap:     &wireTap{rt: http.DefaultTransport, seen: &bytes.Buffer{}},
-		secrets: secrets, audit: aud, quar: quar, logs: logs,
+		secrets: secrets, audit: aud, quar: quar, logs: logs, reg: reg,
 	}
 }
 
@@ -685,5 +691,134 @@ func TestCheckpoint_NoLabBackendDeclaresAnOutputSchema(t *testing.T) {
 		t.Errorf("a backend now declares an output schema (%v). This is not a defect: it means "+
 			"design/adr/0014's schema validation has started running against real traffic, and the ADR's "+
 			"statement that no backend declares one -- along with this test -- needs updating", declared)
+	}
+}
+
+// TestCheckpoint_FleetChangesReachAServingGateway is the re-run WORKFLOW.md's
+// "Definition of done for v1" asks for in its parenthesis: the Phase 5
+// checkpoint repeated once Phases 6 and 7 are done, "since Operator Console
+// and hardening can change behavior the earlier pass tested."
+//
+// They did change it. ADR-0020 made the fleet mutable while the gateway
+// serves, and until this test the property was proven only against fakes --
+// every assertion about Reconcile lived in internal/gateway, over a fake
+// dialer and a fake registry. Here the registry is the real SQLite one, the
+// backend is a real subprocess spawned by the real stdio dialer with a real
+// credential injected, and the analyst is a real MCP client over real HTTP.
+//
+// Three claims, in the order an operator meets them: a backend registered
+// with the gateway up becomes reachable; a backend deregistered stops being
+// reachable; and a registry that cannot be read serves nothing while saying
+// which of the two it is.
+func TestCheckpoint_FleetChangesReachAServingGateway(t *testing.T) {
+	const late = "latecomer"
+	lateTool := gateway.Namespaced(late, "casemgmt_credcheck")
+
+	policy, err := access.NewPolicy(
+		[]access.Role{{Name: "dfir-lead", Tools: []string{
+			gateway.Namespaced("casemgmt", "casemgmt_credcheck"),
+			lateTool,
+		}}},
+		map[string]string{"soc-dfir": "dfir-lead"},
+	)
+	if err != nil {
+		t.Fatalf("NewPolicy: %v", err)
+	}
+
+	lead := access.Identity{Subject: "sub-lead", Name: "DFIR Lead", Groups: []string{"soc-dfir"}}
+	s := newStack(t, policy, map[string]access.Identity{"lead-token": lead})
+	ctx := context.Background()
+
+	sess := s.connect("lead-token")
+	if names := listedNames(t, sess); slices.Contains(names, lateTool) {
+		t.Fatalf("precondition: %q is already served and nothing registered it", lateTool)
+	}
+
+	// --- a backend registered with the gateway serving
+	if err := s.reg.Register(ctx, registry.UpstreamServer{
+		Name:        late,
+		Transport:   registry.TransportStdio,
+		Command:     mockBinaries["casemgmt"],
+		EnvVarNames: []string{"MOCK_SECRET", "MOCK_EXPECT"},
+	}); err != nil {
+		t.Fatalf("register %s: %v", late, err)
+	}
+	s.tick()
+	s.approveAll()
+
+	if names := listedNames(t, s.connect("lead-token")); !slices.Contains(names, lateTool) {
+		t.Fatalf("tools = %v, want %q: a backend registered with the gateway up must be reachable without a restart", names, lateTool)
+	}
+	// Reachable means CALLABLE, and the call has to land on a process that
+	// received its credential -- the mock's credcheck tool answers only if
+	// the environment it was spawned with carries the right value.
+	res, err := s.connect("lead-token").CallTool(ctx, &mcp.CallToolParams{Name: lateTool})
+	if err != nil {
+		t.Fatalf("call %s: %v", lateTool, err)
+	}
+	if res.IsError {
+		t.Fatalf("%s reported an error; the late backend did not receive its credential: %+v", lateTool, res.Content)
+	}
+	// And the leak property still holds for a backend nobody booted with.
+	s.assertNoSecretLeaked()
+
+	// --- and deregistered
+	if err := s.reg.Deregister(ctx, late); err != nil {
+		t.Fatalf("deregister %s: %v", late, err)
+	}
+	s.tick()
+
+	if names := listedNames(t, s.connect("lead-token")); slices.Contains(names, lateTool) {
+		t.Errorf("tools = %v, want %q gone: a deregistered backend must stop being served", names, lateTool)
+	}
+
+	// --- and a registry that cannot be read
+	s.gw.Close()
+	if err := s.gw.Reconcile(ctx); err == nil {
+		t.Fatal("Reconcile on a closed gateway returned no error")
+	}
+}
+
+// listedNames is what one client session can see, by name.
+func listedNames(t *testing.T, sess *mcp.ClientSession) []string {
+	t.Helper()
+	listed, err := sess.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("tools/list: %v", err)
+	}
+	names := make([]string, 0, len(listed.Tools))
+	for _, tool := range listed.Tools {
+		names = append(names, tool.Name)
+	}
+	slices.Sort(names)
+	return names
+}
+
+// tick is one round of the maintenance loop, in the order cmd/mcp-gateway
+// runs it: reconcile the fleet against the registry, then re-observe what
+// the connected backends advertise.
+func (s *stack) tick() {
+	s.t.Helper()
+	if err := s.gw.Reconcile(context.Background()); err != nil {
+		s.t.Fatalf("Reconcile: %v", err)
+	}
+	if err := s.gw.Refresh(context.Background()); err != nil {
+		s.t.Fatalf("Refresh: %v", err)
+	}
+}
+
+// approveAll approves everything currently in the quarantine, the way
+// newStack does at boot -- a backend discovered later arrives as pending,
+// which is the quarantine working, not a failure.
+func (s *stack) approveAll() {
+	s.t.Helper()
+	tools, err := s.quar.List(context.Background(), "")
+	if err != nil {
+		s.t.Fatalf("list quarantine: %v", err)
+	}
+	for _, tool := range tools {
+		if _, err := s.quar.Approve(context.Background(), tool.ServerName, tool.ToolName); err != nil {
+			s.t.Fatalf("approve %s/%s: %v", tool.ServerName, tool.ToolName, err)
+		}
 	}
 }

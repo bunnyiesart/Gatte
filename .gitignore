@@ -139,6 +139,7 @@ temp/
 *.out
 coverage.out
 /bin/mcp-gateway
+/trafficgen
 /bin/lab/
 /mcp-gateway
 vendor/

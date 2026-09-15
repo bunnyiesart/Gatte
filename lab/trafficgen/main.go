@@ -106,10 +106,13 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 
 	client := mcp.NewClient(&mcp.Implementation{Name: "trafficgen", Version: "v0"}, nil)
-	sess, err := client.Connect(ctx, &mcp.StreamableClientTransport{
-		Endpoint:   cfg.endpoint,
-		HTTPClient: httpClient,
-	}, nil)
+	connect := func(ctx context.Context) (*mcp.ClientSession, error) {
+		return client.Connect(ctx, &mcp.StreamableClientTransport{
+			Endpoint:   cfg.endpoint,
+			HTTPClient: httpClient,
+		}, nil)
+	}
+	sess, err := connect(ctx)
 	if err != nil {
 		fmt.Fprintf(stderr, "trafficgen: connect %s: %v\n", cfg.endpoint, err)
 		fmt.Fprintf(stderr, "  a 401 here means the token is absent, expired or has the wrong audience;\n")
@@ -161,7 +164,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stdout, "\nseed %d (pass -seed %d to repeat this exact run)\n\n", seed, seed)
 
-	tally := drive(ctx, sess, callable, cfg, rand.New(rand.NewSource(seed)), stdout)
+	tally := drive(ctx, sess, connect, callable, cfg, rand.New(rand.NewSource(seed)), stdout)
 	printSummary(stdout, tally)
 
 	if tally.transportErrors > 0 {
@@ -331,16 +334,42 @@ type tally struct {
 	byOutcome       map[outcome]int
 	byTool          map[string]map[outcome]int
 	transportErrors int
-	started         time.Time
-	elapsed         time.Duration
+	reconnects      int
+	// reasons holds one example error per distinct (tool, message) pair.
+	// Without it a run that refuses everything reports a wall of numbers
+	// and no way to tell "this role grants nothing" from "my arguments are
+	// malformed" -- which is the diagnosis a 60-for-60 refusal needs, and
+	// exactly what this tool could not give on its first real run against
+	// the deployed gateway.
+	reasons map[string]string
+	order   []string
+	started time.Time
+	elapsed time.Duration
 }
 
 func newTally() *tally {
 	return &tally{
 		byOutcome: map[outcome]int{},
 		byTool:    map[string]map[outcome]int{},
+		reasons:   map[string]string{},
 		started:   time.Now(),
 	}
+}
+
+// maxReasons caps the sample so a long run against a misconfigured gateway
+// cannot fill the terminal with the same sentence.
+const maxReasons = 12
+
+func (t *tally) note(tool string, err error) {
+	key := tool + "\x00" + err.Error()
+	if _, seen := t.reasons[key]; seen {
+		return
+	}
+	if len(t.order) >= maxReasons {
+		return
+	}
+	t.reasons[key] = err.Error()
+	t.order = append(t.order, key)
 }
 
 func (t *tally) record(tool string, o outcome) {
@@ -354,7 +383,7 @@ func (t *tally) record(tool string, o outcome) {
 // drive is the loop. It ticks at the requested rate and stops at the first of
 // -duration elapsing or the context being cancelled, so a Ctrl-C still prints
 // a summary rather than losing the run.
-func drive(ctx context.Context, sess *mcp.ClientSession, tools []*mcp.Tool, cfg *config, rng *rand.Rand, stdout io.Writer) *tally {
+func drive(ctx context.Context, sess *mcp.ClientSession, connect func(context.Context) (*mcp.ClientSession, error), tools []*mcp.Tool, cfg *config, rng *rand.Rand, stdout io.Writer) *tally {
 	t := newTally()
 	interval := time.Duration(float64(time.Second) / cfg.rate)
 	ticker := time.NewTicker(interval)
@@ -372,8 +401,22 @@ func drive(ctx context.Context, sess *mcp.ClientSession, tools []*mcp.Tool, cfg 
 			return t
 		case <-ticker.C:
 			name, args := nextCall(tools, cfg.unknown, rng)
-			o := callOnce(ctx, sess, name, args, t)
+			o, dead := callOnce(ctx, sess, name, args, t)
 			t.record(name, o)
+			if !dead {
+				continue
+			}
+			// The session is gone. Reconnect, rather than spend the rest
+			// of the run reporting refusals the gateway never issued.
+			_ = sess.Close()
+			next, err := connect(ctx)
+			if err != nil {
+				t.elapsed = time.Since(t.started)
+				fmt.Fprintf(stdout, "\nreconnect failed: %v\n", err)
+				return t
+			}
+			sess = next
+			t.reconnects++
 		}
 	}
 }
@@ -395,7 +438,8 @@ func nextCall(tools []*mcp.Tool, unknownPct int, rng *rand.Rand) (string, map[st
 	return tool.Name, synthArgs(schemaOf(tool), rng)
 }
 
-func callOnce(ctx context.Context, sess *mcp.ClientSession, name string, args map[string]any, t *tally) outcome {
+// callOnce returns the outcome and whether the session died making the call.
+func callOnce(ctx context.Context, sess *mcp.ClientSession, name string, args map[string]any, t *tally) (outcome, bool) {
 	callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
@@ -409,12 +453,36 @@ func callOnce(ctx context.Context, sess *mcp.ClientSession, name string, args ma
 		if isTransportFailure(err) {
 			t.transportErrors++
 		}
-		return outcomeRefused
+		t.note(name, err)
+		return outcomeRefused, sessionIsDead(err)
 	}
 	if res.IsError {
-		return outcomeToolError
+		return outcomeToolError, false
 	}
-	return outcomeOK
+	return outcomeOK, false
+}
+
+// sessionIsDead reports that the CLIENT tore the session down, so every later
+// call on it fails without reaching the gateway.
+//
+// Not hypothetical tidiness. The gateway answers an unknown tool with HTTP 400
+// and the SDK client treats that as fatal: it closes the session, and every
+// subsequent CallTool returns "connection closed: ... client is closing"
+// carrying the ORIGINAL error text. On the first real run against the deployed
+// gateway that turned one genuine refusal into 60 reported "refusals", 59 of
+// which never happened -- a tool reporting decisions the gateway never made,
+// which is worse than reporting nothing.
+func sessionIsDead(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	for _, s := range []string{"connection closed", "client is closing", "session closed"} {
+		if strings.Contains(msg, s) {
+			return true
+		}
+	}
+	return false
 }
 
 // isTransportFailure distinguishes "the gateway answered, and the answer was
@@ -427,6 +495,9 @@ func isTransportFailure(err error) bool {
 	var jsonrpc interface{ Code() int64 }
 	if errors.As(err, &jsonrpc) {
 		return false
+	}
+	if sessionIsDead(err) {
+		return true
 	}
 	msg := err.Error()
 	for _, s := range []string{"connection refused", "EOF", "no such host", "tls:", "x509:", "401", "403"} {
@@ -628,6 +699,20 @@ func printSummary(w io.Writer, t *tally) {
 		fmt.Fprintf(w, "  %-12s %d\n", o, t.byOutcome[o])
 	}
 	fmt.Fprintf(w, "  %-12s %d\n", "total", total)
+
+	if t.reconnects > 0 {
+		fmt.Fprintf(w, "\n  reconnected %d time(s). The client tears the session down on some\n", t.reconnects)
+		fmt.Fprintf(w, "  errors -- an unknown tool is one -- and calls made after that never\n")
+		fmt.Fprintf(w, "  reach the gateway, so they are transport failures and not refusals.\n")
+	}
+
+	if len(t.order) > 0 {
+		fmt.Fprintf(w, "\nwhy calls were refused (one example per distinct error):\n")
+		for _, key := range t.order {
+			tool, _, _ := strings.Cut(key, "\x00")
+			fmt.Fprintf(w, "  %s\n      %s\n", tool, t.reasons[key])
+		}
+	}
 
 	if t.transportErrors > 0 {
 		fmt.Fprintf(w, "\n  %d call(s) failed at the transport, not at the gateway's decision.\n", t.transportErrors)

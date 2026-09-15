@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"math/rand"
 	"net"
 	"net/http"
@@ -395,5 +396,84 @@ func TestRunRefusesRemoteEndpointWithoutConfirm(t *testing.T) {
 	code := run([]string{"-endpoint", "https://mcp.soc.internal/", "-duration", "10ms"}, &stdout, &stderr)
 	if code != exitUsageErr {
 		t.Fatalf("exit = %d, want %d", code, exitUsageErr)
+	}
+}
+
+func TestSessionIsDeadRecognisesAClosedClient(t *testing.T) {
+	dead := []string{
+		`connection closed: calling "tools/call": client is closing: sending "tools/call": unknown tool "x": Bad Request`,
+		"session closed",
+	}
+	for _, m := range dead {
+		if !sessionIsDead(errString(m)) {
+			t.Errorf("sessionIsDead(%q) = false, want true", m)
+		}
+		if !isTransportFailure(errString(m)) {
+			t.Errorf("a dead session must count as a transport failure, not a refusal: %q", m)
+		}
+	}
+	if sessionIsDead(errNotGranted{}) {
+		t.Error("a plain JSON-RPC refusal is not a dead session")
+	}
+	if sessionIsDead(nil) {
+		t.Error("nil is not a dead session")
+	}
+}
+
+// The regression the deployed run exposed: the gateway answers an unknown tool
+// with HTTP 400, the SDK client treats that as fatal and closes the session,
+// and every later call fails without reaching the gateway. Before the fix that
+// turned one real refusal into a whole run of reported refusals that never
+// happened. After it, the run reconnects and keeps testing.
+func TestRunReconnectsAfterTheClientClosesTheSession(t *testing.T) {
+	server := mcp.NewServer(&mcp.Implementation{Name: "fake-gateway", Version: "v0"}, nil)
+	var realCalls int
+	mcp.AddTool(server, &mcp.Tool{Name: "casemgmt.list_cases", Description: "list"},
+		func(ctx context.Context, req *mcp.CallToolRequest, args struct{}) (*mcp.CallToolResult, any, error) {
+			realCalls++
+			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "{}"}}}, nil, nil
+		})
+
+	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, nil)
+	var rejected int
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if strings.Contains(string(body), "tool_that_does_not_exist") {
+			// What the real gateway does, and what kills the session.
+			rejected++
+			http.Error(w, `unknown tool: Bad Request`, http.StatusBadRequest)
+			return
+		}
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		handler.ServeHTTP(w, r)
+	}))
+	defer ts.Close()
+
+	t.Setenv("GATTE_TOKEN", "tok")
+	var stdout, stderr bytes.Buffer
+	code := run([]string{
+		"-endpoint", ts.URL,
+		"-duration", "900ms",
+		"-rate", "20",
+		"-seed", "42",
+		"-unknown-pct", "30",
+	}, &stdout, &stderr)
+
+	out := stdout.String()
+	if rejected == 0 {
+		t.Fatalf("the fixture never rejected a call, so this proves nothing:\n%s", out)
+	}
+	if realCalls < 2 {
+		t.Fatalf("only %d real call(s) landed: the run did not continue past the first "+
+			"session death, which is the bug this test exists for\n%s", realCalls, out)
+	}
+	if !strings.Contains(out, "reconnected") {
+		t.Errorf("summary does not report the reconnect:\n%s", out)
+	}
+	// A dead session is a transport failure, so the exit code must say so
+	// rather than pretending the gateway refused those calls.
+	if code != exitFail {
+		t.Errorf("exit = %d, want %d: calls that never reached the gateway are "+
+			"transport failures", code, exitFail)
 	}
 }

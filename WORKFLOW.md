@@ -40,9 +40,42 @@ that only exists inside a closed section is an item nobody re-reads:
   names. What the chain catches alone is tampering that did not re-chain.
   Everything else, tail truncation included, shows up only as the **head**
   changing, so the ADR-0017 anchor is not the tail's footnote, it is the
-  detection. **What is still manual:** nobody compares the two heads
-  automatically, and there is no Graylog alert for "lines stopped arriving
-  for this chain", which is what a dead shipper looks like.
+  detection.
+
+  **Both halves of what was still manual are closed.** The two heads are
+  compared by `deploy/gatte-anchor-verify.sh` (12 Sep 2026), and the alert
+  for "lines stopped arriving for this chain" became writable on 15 Sep
+  2026 with ADR-0021: the sink now carries a heartbeat, so a chain that
+  went quiet is distinguishable from a SOC that had a quiet night. The
+  Graylog recipe is in `deploy/freebsd-jail.md`, "Alerting on a chain that
+  went quiet". Running the anchor comparison is still a human's job; the
+  alert is not.
+- ✅ **ADR-0004's retry existed only on paper — closed 15 Sep 2026 by
+  ADR-0020.** `Gateway.Reconcile` re-reads the Upstream Registry on the
+  same tick as the quarantine refresh and makes the live fleet match it:
+  it dials what was registered since the last round, closes what was
+  deregistered or whose signature stopped verifying, re-dials an entry
+  whose spec changed, and leaves alone anything the registry still
+  describes the same way. An unreadable registry now suspends the fleet
+  (nothing served, connections kept) and is retried every 5 s until it can
+  be read, with `ListTools` and `Dispatch` answering
+  `ErrRegistryUnavailable` rather than an empty list.
+
+  **The gain worth naming is not "register without a restart".** It is
+  that signature verification stopped being a once-per-process event: an
+  entry tampered with in the database, or one whose signature was removed
+  under `require_signed`, now takes the upstream out of service within one
+  interval. Before this, the control ADR-0010 exists to anchor looked once,
+  at boot.
+
+  **Not included, and this line said otherwise until it was checked:**
+  pulling a key from `signer.trusted_keys` still needs a restart. The
+  verifier is built once in `buildServer` from the TOML and there is no
+  config reload — see ADR-0020's correction block of 15 Sep 2026.
+
+  **The window did not close, it started existing:** between two ticks a
+  deregistered upstream is still served, for up to
+  `quarantine.refresh_interval`. Same trade as ADR-0013, same reasoning.
 - **Per-backend role grants are wired (ADR-0016, 11 Sep 2026).**
   `[role.grants]` composes a role per backend and `["*"]` grants a whole
   backend. A grant naming an unregistered backend cannot be a load-time
@@ -451,8 +484,18 @@ Address what `AGENTS.md` §2 names as explicitly undesigned:
   `X-Forwarded-For` entry — the one the proxy wrote, not the one a client
   can forge. All three are running in the deployment on `bun`.
 
-  **What is genuinely left, and the original list never named it: the trail
-  is not tamper-evident.** `audit_records` is an ordinary SQLite table with
+  **Closed on 15 Sep 2026 by ADR-0021**, which is the part this item never
+  reached: an operational heartbeat on the same JSONL path the trail ships
+  on, emitted at boot and on every maintenance tick, carrying counters by
+  outcome, connected upstreams, routed tools, the suspension flag, the
+  process's boot time and the last chain head it emitted. Its point is that
+  the ABSENCE of it is detectable — which is what makes a dead shipper
+  distinguishable from a quiet night, and what the Graylog alert in
+  `deploy/freebsd-jail.md` keys on. What stays out of scope is named in
+  `AGENTS.md` §2: no latency, no saturation, no per-upstream health.
+
+  **What was genuinely left when this item was written, and the original
+  list never named it: the trail is not tamper-evident.** `audit_records` is an ordinary SQLite table with
   no append-only constraint and no hash chaining, so the same database
   write access that ADR-0010 exists to defend against also permits editing
   or deleting history. Filed rather than done here, because a hash-chained
@@ -516,3 +559,45 @@ finished build end-to-end (Phase 5's checkpoint, repeated once Phases 6–7
 are done, since Operator Console and hardening can change behavior the
 earlier pass tested), and every ADR in `design/adr/` at `Accepted`, not
 `Proposed`.
+
+### Where those three stand, 15 Sep 2026
+
+Written down rather than declared, because an adversarial review of that
+day found this section being read as satisfied when one third of it was
+not:
+
+1. **Seven phases: checked.**
+2. **Every ADR `Accepted`: yes** — 21 files, confirmed one by one.
+3. **The end-to-end re-run: satisfied differently from how it is worded,
+   and the wording was never satisfiable.** Phase 5 defines it as pointing
+   the gateway at the mocks and says "`make lab-probe` does both" —
+   `lab-probe` runs the probe straight at each mock with **no gateway in
+   the path**, which `deploy/gateway-serve.md` states in as many words
+   ("run `lab/probe` against a mock directly — that is what it is for, and
+   it does not need the gateway"). Two files in this repository said
+   opposite things about one command, and the one in this file was wrong.
+
+   What exists instead, and is the honest reading of the intent:
+   `internal/e2e` — real SQLite registry, real quarantine, real audit
+   trail, real stdio dialer spawning real subprocesses, real HTTP, real MCP
+   client, with the vault deliberately in memory for the reason its package
+   doc gives. As of 15 Sep 2026 it also covers what Phases 6–7 changed:
+   `TestCheckpoint_FleetChangesReachAServingGateway` registers a backend
+   with the gateway serving, calls it over HTTP, checks the injected
+   credential arrived and did not leak, then deregisters it — which is
+   ADR-0020 proven against real processes rather than against the fakes in
+   `internal/gateway`.
+
+   **What it still does not cross is the composition root.** `buildServer`
+   and the maintenance loop are covered only by `cmd/mcp-gateway`'s
+   `TestServeStack_RefreshLoopReconcilesTheRegistry` and
+   `TestServeStack_HeartbeatIsEmittedOnEveryRound`, and **both skip
+   silently without `sops` and `age` on PATH** — see `make test`'s banner,
+   which was itself undercounting until that day. A v1 declared on a
+   machine without those two binaries is a v1 whose only process-level
+   proof did not run.
+
+**So: 1 and 2 are met; 3 is met in substance and not in the letter this
+file wrote.** Fixing the letter means either rewriting Phase 5's sentence
+or building the gateway-in-the-path harness it describes, and that is a
+call for bunnyiesart, not a line to quietly edit into agreement.

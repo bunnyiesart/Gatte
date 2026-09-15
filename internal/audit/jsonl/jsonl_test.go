@@ -41,8 +41,17 @@ import (
 // upstream error string -- which is the exact failure this test exists to
 // catch. The list is duplicated on purpose; the duplication is the check.
 var schemaKeys = []string{
-	"v", "ts", "chain", "caller", "backend", "tool",
+	"v", "type", "ts", "chain", "caller", "backend", "tool",
 	"verdict", "rule", "src", "prev_hash", "hash",
+}
+
+// heartbeatKeys is the same duplication for the other shape. A heartbeat
+// is emitted on a TIMER rather than on a decision, so a field carrying an
+// identity here would put an analyst's subject into the SIEM on a
+// schedule, whether or not they did anything.
+var heartbeatKeys = []string{
+	"v", "type", "ts", "chain", "boot", "head", "records",
+	"allowed", "denied", "failed", "upstreams", "tools", "suspended",
 }
 
 const testChain = "gatte-jail-01"
@@ -58,6 +67,13 @@ type failingSink struct {
 }
 
 func (s *failingSink) Emit(context.Context, jsonl.Line) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.seen++
+	return s.err
+}
+
+func (s *failingSink) EmitHeartbeat(context.Context, jsonl.Heartbeat) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.seen++
@@ -638,5 +654,149 @@ func TestOpenFile_NarrowsAnExistingWideFile(t *testing.T) {
 	}
 	if got := info.Mode().Perm(); got != jsonl.DefaultFileMode {
 		t.Errorf("sink mode = %#o, want %#o -- an existing file keeps its own mode unless this is enforced", got, jsonl.DefaultFileMode)
+	}
+}
+
+// ------------------------------------------------------- the heartbeat
+
+// TestHeartbeatCarriesExactlyTheDeclaredSchema is the structural guard for
+// the second shape (design/adr/0021). It matters more than the equivalent
+// for a record, not less: a heartbeat is emitted on a TIMER, so a field
+// that carried an analyst subject would ship one to the SIEM every five
+// minutes whether or not anybody called anything.
+func TestHeartbeatCarriesExactlyTheDeclaredSchema(t *testing.T) {
+	h := newHarness(t)
+
+	if _, err := h.rec.Heartbeat(context.Background(), jsonl.Stats{
+		Boot: time.Date(2026, 9, 15, 8, 0, 0, 0, time.UTC),
+		Now:  time.Date(2026, 9, 15, 8, 5, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("Heartbeat: %v", err)
+	}
+
+	got := h.decoded()
+	if len(got) != 1 {
+		t.Fatalf("emitted %d lines, want 1", len(got))
+	}
+	keys := make([]string, 0, len(got[0]))
+	for k := range got[0] {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	want := slices.Sorted(slices.Values(heartbeatKeys))
+	if !slices.Equal(keys, want) {
+		t.Fatalf("heartbeat key set = %v, want exactly %v", keys, want)
+	}
+	if got[0]["type"] != jsonl.TypeHeartbeat {
+		t.Errorf("type = %v, want %q -- a consumer must discriminate on a declared field", got[0]["type"], jsonl.TypeHeartbeat)
+	}
+	if got[0]["v"] != float64(jsonl.Version) {
+		t.Errorf("v = %v, want %d: the two shapes version together", got[0]["v"], jsonl.Version)
+	}
+}
+
+// TestHeartbeatCarriesTheHeadItEmitted: the head on a heartbeat is the
+// hash of the last audit line THIS PROCESS shipped, which is what makes a
+// head that stops advancing -- or goes backwards -- visible in the SIEM
+// without walking the chain.
+func TestHeartbeatCarriesTheHeadItEmitted(t *testing.T) {
+	h := newHarness(t)
+
+	for _, tool := range []string{"casemgmt.list_cases", "casemgmt.get_case"} {
+		if err := h.rec.Record(context.Background(), rec(tool, audit.OutcomeAllowed, "")); err != nil {
+			t.Fatalf("Record: %v", err)
+		}
+	}
+	hb, err := h.rec.Heartbeat(context.Background(), jsonl.Stats{Boot: time.Now(), Now: time.Now()})
+	if err != nil {
+		t.Fatalf("Heartbeat: %v", err)
+	}
+
+	if want := h.head(); hb.Head != want {
+		t.Errorf("heartbeat head = %q, want the chain head on disk %q", hb.Head, want)
+	}
+	if hb.Records != 2 {
+		t.Errorf("records = %d, want 2 -- the lines this process emitted", hb.Records)
+	}
+
+	lines := h.decoded()
+	if n := len(lines); n != 3 {
+		t.Fatalf("file holds %d lines, want 2 records and 1 heartbeat", n)
+	}
+	// The heartbeat must not look like a link in the chain to anything
+	// walking the file: no hash of its own, no prev_hash at all.
+	last := lines[2]
+	if _, ok := last["hash"]; ok {
+		t.Error("the heartbeat carries a `hash` field; it is not a record and must not read as one")
+	}
+	if _, ok := last["prev_hash"]; ok {
+		t.Error("the heartbeat carries a `prev_hash` field; it is not in the chain")
+	}
+}
+
+// TestHeartbeatOnAQuietGatewayReportsNoHead: a process that booted and
+// served nobody has no head of its own. Empty is the honest answer, and
+// inventing one by reading the database would make the field mean
+// something different on a quiet night than on a busy one.
+func TestHeartbeatOnAQuietGatewayReportsNoHead(t *testing.T) {
+	h := newHarness(t)
+
+	hb, err := h.rec.Heartbeat(context.Background(), jsonl.Stats{Boot: time.Now(), Now: time.Now()})
+	if err != nil {
+		t.Fatalf("Heartbeat: %v", err)
+	}
+	if hb.Head != "" || hb.Records != 0 {
+		t.Errorf("head = %q, records = %d; want empty and 0 for a process that has emitted nothing", hb.Head, hb.Records)
+	}
+	// And it is still emitted: the whole point is a line arriving when
+	// nothing happened.
+	if n := len(h.decoded()); n != 1 {
+		t.Fatalf("emitted %d lines, want 1 -- a quiet gateway is exactly when the heartbeat has to arrive", n)
+	}
+}
+
+// TestHeartbeatSinkFailureIsReturnedNotSwallowed pins the deliberate
+// difference from RecordChained, which logs and swallows. Nobody is
+// waiting on a heartbeat, so there is no availability fault to trade
+// against -- and the caller is the one place that can report it once per
+// round instead of once per call.
+func TestHeartbeatSinkFailureIsReturnedNotSwallowed(t *testing.T) {
+	sink := &failingSink{err: errors.New("disk full")}
+	h := newHarnessWithSink(t, sink)
+
+	hb, err := h.rec.Heartbeat(context.Background(), jsonl.Stats{
+		Boot: time.Now(), Now: time.Now(), Allowed: 7, Upstreams: 4,
+	})
+	if err == nil {
+		t.Fatal("a sink failure was swallowed; an alert on missing heartbeats would fire with nothing in the log to explain it")
+	}
+	// The state still comes back, so the caller can log what it could not
+	// ship.
+	if hb.Allowed != 7 || hb.Upstreams != 4 {
+		t.Errorf("heartbeat = %+v, want the state filled in even when the emit failed", hb)
+	}
+}
+
+// TestHeartbeatDoesNotDisturbTheChain: a heartbeat writes nothing durable,
+// so the trail and its head are exactly what they were.
+func TestHeartbeatDoesNotDisturbTheChain(t *testing.T) {
+	h := newHarness(t)
+
+	if err := h.rec.Record(context.Background(), rec("casemgmt.list_cases", audit.OutcomeAllowed, "")); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	before, rows := h.head(), h.rowCount()
+
+	for range 3 {
+		if _, err := h.rec.Heartbeat(context.Background(), jsonl.Stats{Boot: time.Now(), Now: time.Now()}); err != nil {
+			t.Fatalf("Heartbeat: %v", err)
+		}
+	}
+
+	if after := h.head(); after != before {
+		t.Errorf("chain head moved from %q to %q; a heartbeat is not a record", before, after)
+	}
+	if after := h.rowCount(); after != rows {
+		t.Errorf("audit_records went from %d to %d rows; a heartbeat must write nothing durable", rows, after)
 	}
 }

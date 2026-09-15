@@ -63,6 +63,26 @@ umask 077
 printf 'user = "%s:%s"\n' "$GRAYLOG_USER" "$GRAYLOG_PASS" > "$WORK/curlrc"
 chmod 600 "$WORK/curlrc"
 
+# WHY THE QUERY EXCLUDES HEARTBEATS, AND WHY BY NEGATION. Since ADR-0021 the
+# sink carries a second shape of line: an operational heartbeat, emitted on a
+# timer so that "no lines for this chain" can be alerted on at all. It has no
+# hash and no prev_hash.
+#
+# What that does to the pipeline below was measured, not reasoned, because the
+# first version of this comment got it wrong. A heartbeat does NOT become an
+# extra head: jq yields the string "null" for both fields, so it lands in
+# hashes AND in prevs.real, and `comm -23` cancels it out. What it becomes is a
+# false GENESIS -- `select((.prev_hash // "") == "")` matches it, every time --
+# so NGENESIS is >= 1 on every run. Combined with a real shipper gap (NHEADS >
+# 1, no true genesis shipped) that flips the diagnosis from "lines are MISSING,
+# check fluent-bit" to "the chain RESTARTED, the database was emptied or
+# replaced", which is the more alarming of the two and would be wrong.
+#
+# The filter is `NOT type:heartbeat` rather than `type:record` on purpose: the
+# lines already indexed in Graylog before ADR-0021 carry no `type` field at
+# all, and a positive filter would silently drop the entire history -- which
+# is precisely the evidence this anchor exists to compare against.
+#
 # --fail matters more than it looks. Without it curl exits 0 on 401 or 500 and
 # writes the error body, jq then yields `null` for .total_results, and the
 # comparison below takes its failure branch -- so wrong credentials, an expired
@@ -71,7 +91,7 @@ chmod 600 "$WORK/curlrc"
 if ! curl -sS --fail -K "$WORK/curlrc" \
 	-H 'X-Requested-By: gatte-anchor-verify' -H 'Accept: application/json' \
 	-G "$GRAYLOG/search/universal/relative" \
-	--data-urlencode "query=chain:$CHAIN" \
+	--data-urlencode "query=chain:$CHAIN AND NOT type:heartbeat" \
 	--data-urlencode "range=$RANGE" \
 	--data-urlencode "fields=hash,prev_hash" > "$WORK/siem.json"
 then
@@ -223,9 +243,19 @@ fi
 # ------------------------------------------------------ telling lag from tamper
 say "MISMATCH -- and the next number decides what it means"
 SINK="/usr/local/bastille/jails/$GW_JAIL/root/var/log/mcp-gateway/audit.jsonl"
-SINK_N=$(ssh -o BatchMode=yes "$GW_HOST" "wc -l < $SINK" 2>/dev/null | tr -d ' ') || SINK_N="?"
-printf '   lines in the sink on the gateway: %s  (the whole file)\n' "$SINK_N"
-printf '   distinct records in the SIEM:     %s  (last %ss only)\n' "$DISTINCT" "$RANGE"
+# COUNT THE SAME POPULATION THE SIEM QUERY COUNTS. `wc -l` counts heartbeats
+# too, and the query above no longer does, so the two numbers stopped being
+# comparable the moment ADR-0021 landed -- with ~288 heartbeats a day in the
+# file, SINK_N > DISTINCT became permanently true and the `else` branch below
+# (the one that says "treat the local trail as truncated") became unreachable.
+# A truncated database would have been reported as a lagging shipper, which is
+# the one diagnosis this script exists to rule out.
+#
+# grep -c exits 1 when it matches nothing, which for -v means "the file is all
+# heartbeats"; the || below turns that into "?" and the branches handle it.
+SINK_N=$(ssh -o BatchMode=yes "$GW_HOST" "grep -vc '\"type\":\"heartbeat\"' $SINK" 2>/dev/null | tr -d ' ') || SINK_N="?"
+printf '   audit lines in the sink on the gateway: %s  (whole file, heartbeats excluded)\n' "$SINK_N"
+printf '   distinct records in the SIEM:           %s  (last %ss only)\n' "$DISTINCT" "$RANGE"
 printf '\n'
 # Only comparable when RANGE spans the whole trail. A short window makes the
 # SIEM look behind when it is merely narrower, so refuse to call it.

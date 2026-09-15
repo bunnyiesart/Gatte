@@ -115,7 +115,7 @@ func TestAuditRecorder_SinkIsWiredWhenConfigured(t *testing.T) {
 	cfg := &config.Config{Audit: config.Audit{SIEM: config.SIEM{Path: path, Chain: "gatte-test-01"}}}
 	logger, _ := serveTestLogger()
 
-	rec, closeSink, err := auditRecorder(cfg, db, logger)
+	rec, _, closeSink, err := auditRecorder(cfg, db, logger)
 	if err != nil {
 		t.Fatalf("auditRecorder: %v", err)
 	}
@@ -168,7 +168,7 @@ func TestAuditRecorder_WithoutTheBlockNothingIsShipped(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "audit.jsonl")
 	logger, _ := serveTestLogger()
 
-	rec, closeSink, err := auditRecorder(&config.Config{}, db, logger)
+	rec, _, closeSink, err := auditRecorder(&config.Config{}, db, logger)
 	if err != nil {
 		t.Fatalf("auditRecorder: %v", err)
 	}
@@ -200,7 +200,7 @@ func TestAuditRecorder_UnopenableSinkIsAStartupFailure(t *testing.T) {
 	cfg := &config.Config{Audit: config.Audit{SIEM: config.SIEM{Path: missing, Chain: "gatte-test-01"}}}
 	logger, _ := serveTestLogger()
 
-	rec, closeSink, err := auditRecorder(cfg, db, logger)
+	rec, _, closeSink, err := auditRecorder(cfg, db, logger)
 	if err == nil {
 		closeSink()
 		t.Fatal("auditRecorder accepted a sink path it cannot open; the gateway would serve with the SIEM silently absent")

@@ -133,15 +133,25 @@ type fakeDialer struct {
 	// gateway cleared it after the dial returned.
 	envRetained map[string]map[string]string
 	specs       map[string]UpstreamSpec
+	// dials counts calls per upstream, including the ones that fail.
+	// wasDialed answers "ever", which cannot tell a reconciliation that
+	// left a healthy connection alone from one that tore it down and
+	// rebuilt it -- the difference ADR-0020 exists to make (reconcile_test).
+	dials map[string]int
+	// closedAtDial[name][i] is how many times that upstream had been closed
+	// at the moment of its i-th dial. See Dial.
+	closedAtDial map[string][]int
 }
 
 func newFakeDialer() *fakeDialer {
 	return &fakeDialer{
-		upstreams:   map[string]*fakeUpstream{},
-		dialErr:     map[string]error{},
-		envSeen:     map[string]map[string]string{},
-		envRetained: map[string]map[string]string{},
-		specs:       map[string]UpstreamSpec{},
+		upstreams:    map[string]*fakeUpstream{},
+		dialErr:      map[string]error{},
+		envSeen:      map[string]map[string]string{},
+		envRetained:  map[string]map[string]string{},
+		specs:        map[string]UpstreamSpec{},
+		dials:        map[string]int{},
+		closedAtDial: map[string][]int{},
 	}
 }
 
@@ -150,6 +160,18 @@ func (d *fakeDialer) Dial(_ context.Context, spec UpstreamSpec, env map[string]s
 	defer d.mu.Unlock()
 
 	d.specs[spec.Name] = spec
+	d.dials[spec.Name]++
+	// Snapshot of how many times the upstream of this NAME had been closed
+	// when this dial happened. It is the only way to observe ORDER here:
+	// the fake returns the same *fakeUpstream per name, so close-then-dial
+	// and dial-then-close produce identical dial and close counts, and a
+	// test that asserts only counts passes under either -- which is what a
+	// mutation of Reconcile proved (reconcile_test).
+	if up, ok := d.upstreams[spec.Name]; ok {
+		d.closedAtDial[spec.Name] = append(d.closedAtDial[spec.Name], up.closeCount())
+	} else {
+		d.closedAtDial[spec.Name] = append(d.closedAtDial[spec.Name], 0)
+	}
 	if err := d.dialErr[spec.Name]; err != nil {
 		return nil, err
 	}
@@ -927,12 +949,25 @@ func TestConnect_RegistryFailureFailsClosed(t *testing.T) {
 	}
 
 	// Nothing is served -- explicitly not the previously-built table
-	// (ADR-0004).
-	if names := h.listNames(analyst); len(names) != 0 {
-		t.Errorf("ListTools = %v, want empty: a stale table must not be served", names)
+	// (ADR-0004). And what a caller is told is that the fleet cannot be
+	// confirmed, not that the tool is gone: ADR-0020 item 4 separates the
+	// two, because "your tool was removed" and "the registry is unreadable"
+	// send an analyst down different paths during an incident.
+	defs, err := h.gw.ListTools(context.Background(), analyst)
+	if !errors.Is(err, ErrRegistryUnavailable) {
+		t.Errorf("ListTools error = %v (%d tools), want one wrapping ErrRegistryUnavailable", err, len(defs))
 	}
-	if _, err := h.gw.Dispatch(context.Background(), fromAnalyst, "casemgmt.list_cases", nil); !errors.Is(err, ErrUnknownTool) {
-		t.Errorf("Dispatch = %v, want ErrUnknownTool while the registry is unreadable", err)
+	if _, err := h.gw.Dispatch(context.Background(), fromAnalyst, "casemgmt.list_cases", nil); !errors.Is(err, ErrRegistryUnavailable) {
+		t.Errorf("Dispatch = %v, want ErrRegistryUnavailable while the registry is unreadable", err)
+	}
+	// The TABLE, not only the two answers above. Both of those come from
+	// the suspension gate, which a Connect that kept the old table would
+	// still satisfy -- measured, by making the failure path swap the
+	// previous routes back in and watching this test stay green without
+	// this line. ADR-0004's rule is that the stale table is dropped, not
+	// merely that it is hidden.
+	if n := len(h.gw.snapshot()); n != 0 {
+		t.Errorf("the routing table holds %d routes after a failed Connect, want 0: a stale table must be dropped, not hidden behind the gate", n)
 	}
 	if n := h.dialer.upstream("casemgmt").closeCount(); n != 1 {
 		t.Errorf("upstream closed %d times, want 1: failing closed must not leak the connection", n)

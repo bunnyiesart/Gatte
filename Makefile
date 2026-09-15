@@ -76,7 +76,7 @@ test:
 		echo "#     client. WORKFLOW.md Phase 2: the single most important"; \
 		echo "#     test in this project."; \
 		echo "#"; \
-		echo "#   cmd/mcp-gateway (serve_test.go, 5 tests)"; \
+		echo "#   cmd/mcp-gateway (serve_test.go, 7 tests)"; \
 		echo "#     buildServer drops from 90.1% to 0.0% coverage. Lost:"; \
 		echo "#     TestBuildServer_AuthSeamIsWired (the only test that"; \
 		echo "#     authentication is wired at all), and"; \
@@ -84,6 +84,12 @@ test:
 		echo "#     boot-level test of ADR-0004 fail-closed). Also"; \
 		echo "#     MetadataIsServedUnauthenticated,"; \
 		echo "#     OneUnavailableUpstreamIsNotFatal, RunShutsDownCleanly."; \
+		echo "#     Plus, since ADR-0020/0021, the only two process-level"; \
+		echo "#     proofs that the maintenance loop does what those ADRs"; \
+		echo "#     claim: RefreshLoopReconcilesTheRegistry (a registry"; \
+		echo "#     change reaches a running gateway) and"; \
+		echo "#     HeartbeatIsEmittedOnEveryRound (the alert on missing"; \
+		echo "#     heartbeats would fire for a live gateway without it)."; \
 		echo "#"; \
 		echo "# A green 'make test' below does NOT mean any of that was"; \
 		echo "# verified. Fix with:  make devtools"; \

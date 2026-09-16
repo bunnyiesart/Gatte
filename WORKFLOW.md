@@ -50,6 +50,38 @@ that only exists inside a closed section is an item nobody re-reads:
   Graylog recipe is in `deploy/freebsd-jail.md`, "Alerting on a chain that
   went quiet". Running the anchor comparison is still a human's job; the
   alert is not.
+- ✅ **A connected backend whose process died stayed connected forever —
+  closed 16 Sep 2026 by ADR-0024.** Death now crosses the port as
+  `gateway.ErrUpstreamGone`, the adapter raises it only for the two errors
+  a dead child's stream actually produces (both measured against a fixture
+  that really exits), `Refresh` and `Dispatch` record it, and the next
+  `Reconcile` closes the dead connection so the existing "registered and
+  not connected → dial" rule brings the backend back.
+
+  **The harder half is what it refuses to do.** A backend that merely
+  failed to answer — timeout, cancellation, an error nobody recognises —
+  is not death and is not respawned, which is ADR-0013's rule applied
+  again. And a call crossing the gateway's OWN `Close` is not death either:
+  194 of 300 in-flight calls reported the SDK's connection-closed error in
+  that race, so the closed flag is re-read after the error.
+
+  **Cost, in the open:** a backend in a crash loop becomes roughly twelve
+  respawns an hour. Better than failing silently forever, and not free.
+- ✅ **GAB-20's drift detection was inert for five days — closed 15 Sep
+  2026 by ADR-0023.** The sops adapter decrypted once at construction, so
+  the check compared the running value against itself. It now re-reads the
+  encrypted file when its stamp moves, which also makes a re-dial pick up a
+  rotated value — something `deploy/freebsd-jail.md` claimed before it was
+  true.
+- ✅ **The methodology corpus was cited by fifteen files under a `docs/`
+  prefix and never existed there — closed 15 Sep 2026 by ADR-0022.** The methodology is external and lives
+  beside this repository; the citations now say so. The manifest in
+  `internal/fitness` is narrower than "never again": it fails when one of
+  the paths **listed in it** disappears, and when the old spelling comes
+  back anywhere in the tree. A citation added to a gate document without a
+  line added to the manifest is still invisible — by design, because the
+  alternative was a scanner that could not tell a claim from an
+  identifier (ADR-0022 item 4).
 - ✅ **ADR-0004's retry existed only on paper — closed 15 Sep 2026 by
   ADR-0020.** `Gateway.Reconcile` re-reads the Upstream Registry on the
   same tick as the quarantine refresh and makes the live fleet match it:
@@ -583,7 +615,10 @@ day found this section being read as satisfied when one third of it was
 not:
 
 1. **Seven phases: checked.**
-2. **Every ADR `Accepted`: yes** — 21 files, confirmed one by one.
+2. **Every ADR `Accepted`: yes** — 24 files as of 16 Sep 2026, confirmed
+   one by one, including 0022, 0023 and 0024. (This said 21 for a day after
+   those three landed, which is the kind of number that reads as verified
+   and was not.)
 3. **The end-to-end re-run: satisfied differently from how it is worded,
    and the wording was never satisfiable.** Phase 5 defines it as pointing
    the gateway at the mocks and says "`make lab-probe` does both" —
@@ -604,14 +639,25 @@ not:
    ADR-0020 proven against real processes rather than against the fakes in
    `internal/gateway`.
 
-   **What it still does not cross is the composition root.** `buildServer`
-   and the maintenance loop are covered only by `cmd/mcp-gateway`'s
-   `TestServeStack_RefreshLoopReconcilesTheRegistry` and
-   `TestServeStack_HeartbeatIsEmittedOnEveryRound`, and **both skip
-   silently without `sops` and `age` on PATH** — see `make test`'s banner,
-   which was itself undercounting until that day. A v1 declared on a
-   machine without those two binaries is a v1 whose only process-level
-   proof did not run.
+   **The composition root is crossed as of 16 Sep 2026**, by
+   `TestBuildServer_DeliversAVaultSecretToARealBackend` in
+   `cmd/mcp-gateway`: a real sops+age vault on disk, an OIDC provider whose
+   token the real verifier accepts, an entry registered through the
+   operator console, a real backend subprocess, one call over HTTP, and the
+   digest the backend reports compared against the secret the test
+   encrypted. Until it, every piece was proven and the assembly was not.
+
+   **What remains true, and is the reason not to call this closed:** the
+   process-level proofs disappear on a host without `sops` and `age`.
+   Measured on 16 Sep with `go test` and a PATH without them: **11
+   top-level tests skip in `cmd/mcp-gateway`** and 9 in
+   `internal/vault/sopsage`, and the package still reports `ok`. `make
+   test` prepends `$(go env GOPATH)/bin` and so finds them there, which is
+   why the suite is green on the machine this was built on — but a v1
+   declared where those binaries are genuinely absent is a v1 whose
+   composition-root proof did not run. The Makefile banner names what is
+   lost; it said 7 until 16 Sep and did not name the composition-root test
+   at all.
 
 **So: 1 and 2 are met; 3 is met in substance and not in the letter this
 file wrote.** Fixing the letter means either rewriting Phase 5's sentence

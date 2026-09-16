@@ -21,7 +21,54 @@
 # An upstream's registered name is what namespaces its tools
 # (casemgmt.list_cases), so these strings are load-bearing: they must match the
 # `<upstream>.` prefix every role in the configuration grants.
-MOCKS="casemgmt logsearch docsearch threatintel"
+#
+# # THE NAMES IN THIS REPOSITORY ARE SANITISED, AND THE DEPLOYMENT'S ARE NOT
+#
+# This repository is public. The four backends it names -- casemgmt,
+# logsearch, docsearch, threatintel -- are generic stand-ins; the jail this
+# was written for runs four upstreams under the SOC's real service names,
+# with real credential variables to match.
+#
+# So running this script unchanged against that deployment does not work,
+# and it must not: it would register four MORE upstreams under the
+# sanitised names, needing four vault entries nobody seeded, on top of the
+# four that already serve. That is not drift to be fixed by renaming
+# something -- it is the cost of publishing the deployment recipe for a
+# system whose backend names are not public, and the only honest handling
+# is to make the names an input with the sanitised set as the default.
+#
+# Measured, because it happened: a provisioning run on 16 Sep 2026 against
+# the real jail stopped at the vault check with
+#
+#   !! the vault does not hold: CASEMGMT_API_TOKEN DOCSEARCH_PASSWORD ...
+#
+# which is the check working. The binaries had already been installed by
+# then -- that part is idempotent and harmless -- and the registry was left
+# untouched, which is what the check exists to guarantee.
+#
+# To provision a deployment whose upstreams are named differently, pass
+# both variables; neither is in a tracked file:
+#
+#   UPSTREAM_NAMES="graylog iris opensearch swiss" #   UPSTREAM_CREDS="graylog:GRAYLOG_API_TOKEN iris:IRIS_API_TOKEN #                   opensearch:OPENSEARCH_PASSWORD swiss:SWISS_VT_KEY" #     ./deploy/gateway-serve.sh
+#
+# The pairs are separate from the names because the credential variable a
+# backend reads is the backend's own convention -- API_TOKEN, PASSWORD and
+# VT_KEY all appear in one real fleet -- and deriving it from the name
+# would be inventing a rule that no vendor follows.
+#
+# WHAT THE OVERRIDE DOES NOT COVER, measured on 16 Sep 2026 by running it:
+# the binary install step stages `mock-<name>` built from `lab/servers/<name>`,
+# and those packages exist only under the sanitised names. With
+# UPSTREAM_NAMES set to a deployment's real names the run gets as far as
+#
+#   install: /tmp/mcp-gateway-deploy/mock-graylog: No such file or directory
+#
+# and stops -- before touching the registry, which is the behaviour to want.
+# So these variables make the REGISTRATION and the VAULT CHECK correct for a
+# renamed deployment; they do not make this repository able to build that
+# deployment's backends, and it should not: past the lab, an upstream points
+# at a real MCP server, not at a mock this repository ships.
+MOCKS="${UPSTREAM_NAMES:-casemgmt logsearch docsearch threatintel}"
 
 # env_flags_for prints the -env flags for one upstream.
 #
@@ -38,6 +85,20 @@ env_flags_for() {
 	# backend's real counterpart would name it. The mocks ignore these; they
 	# are here so the per-upstream resolution path is genuinely exercised
 	# and so the leak grep has a per-backend value to hunt for.
+	#
+	# UPSTREAM_CREDS overrides the pairs for a deployment whose names are
+	# not the sanitised ones (see MOCKS above). Format: `name:VAR name:VAR`.
+	# An upstream with no pair gets only the two shared names, which is a
+	# legitimate shape and not an error -- it just does not exercise the
+	# per-upstream resolution path.
+	for pair in ${UPSTREAM_CREDS:-}; do
+		case "$pair" in
+			"$1":*) printf '%s' " -env ${pair#*:}"; return ;;
+		esac
+	done
+	if [ -n "${UPSTREAM_CREDS:-}" ]; then
+		return
+	fi
 	case "$1" in
 		casemgmt)       printf '%s' " -env CASEMGMT_API_TOKEN" ;;
 		logsearch)    printf '%s' " -env LOGSEARCH_API_TOKEN" ;;

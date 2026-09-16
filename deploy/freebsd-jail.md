@@ -382,6 +382,28 @@ each other, which says nothing about whether they were already altered
 beforehand. The chain is only evidence from the migration forward, and the
 count is printed so nobody reads it as more.
 
+## The signing key's owner was corrected in place, 16 Sep 2026
+
+The audit of 16 Sep found the private signing key owned by the service
+account -- the same account that writes the SQLite database -- which gives
+back the degree ADR-0010 exists to create: whoever can write the database
+could also mint signatures for it. The provisioning script now creates it
+`root:wheel 0600` and runs `mcp-gateway sign` as root.
+
+On the jail that was already running, the ownership was corrected directly:
+
+    jexec <jail> chown root:wheel /usr/local/etc/mcp-gateway/signing.key
+    jexec <jail> chmod 600       /usr/local/etc/mcp-gateway/signing.key
+
+and the service was restarted to prove the obvious-but-worth-checking thing:
+**`serve` never reads the private key.** It verifies against the public keys
+in the configuration file (ADR-0010), so moving the private key out of the
+service account's reach costs the running gateway nothing. Only `sign` needs
+it, and `sign` is an operator command.
+
+If you are reading this on a deployment provisioned before that date, check
+the owner. `ls -l` is the whole check.
+
 ## A backend that dies now comes back by itself
 
 Since ADR-0024, a backend whose process is gone is closed and re-dialled

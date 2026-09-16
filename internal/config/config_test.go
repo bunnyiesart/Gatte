@@ -1380,3 +1380,62 @@ func TestRequireLoopbackBind(t *testing.T) {
 		})
 	}
 }
+
+// -----------------------------------------------------------------------
+// response.call_timeout (ADR-0025)
+// -----------------------------------------------------------------------
+
+func TestCallTimeoutDefaultsWhenUnset(t *testing.T) {
+	c := mustLoad(t, minimalConfig)
+
+	if c.Response.CallTimeout != nil {
+		t.Errorf("Response.CallTimeout = %v, want nil when the file is silent", c.Response.CallTimeout)
+	}
+	if got := c.Response.CallTimeoutOrDefault(); got != DefaultCallTimeout {
+		t.Errorf("CallTimeoutOrDefault() = %s, want the default %s", got, DefaultCallTimeout)
+	}
+}
+
+func TestCallTimeoutIsRead(t *testing.T) {
+	c := mustLoad(t, minimalConfig+"\n[response]\ncall_timeout = \"45s\"\n")
+
+	if got, want := c.Response.CallTimeoutOrDefault(), 45*time.Second; got != want {
+		t.Errorf("CallTimeoutOrDefault() = %s, want %s", got, want)
+	}
+}
+
+// TestCallTimeoutCannotDisableTheCeiling is the third key with this rule and
+// it is here for the same reason as the other two: a ceiling that can be
+// switched off during an incident is a ceiling that stays off. Without it a
+// backend that accepts a call and never answers holds a goroutine and its
+// upstream's connection until the process restarts, which is the state
+// ADR-0025 exists to end.
+func TestCallTimeoutCannotDisableTheCeiling(t *testing.T) {
+	for _, value := range []string{"0", "\"-1s\"", "\"-5m\""} {
+		t.Run(value, func(t *testing.T) {
+			err := loadErr(t, minimalConfig+"\n[response]\ncall_timeout = "+value+"\n")
+			if !errors.Is(err, ErrInvalid) {
+				t.Fatalf("Load = %v, want ErrInvalid", err)
+			}
+			if !strings.Contains(err.Error(), "must be positive") {
+				t.Errorf("error does not say the value must be positive: %v", err)
+			}
+		})
+	}
+}
+
+// TestCallTimeoutRejectsABareIntegerMeantAsSeconds covers the mistake the
+// minimum exists for, and it is the same one quarantine.refresh_interval
+// documents: TOML reads a bare integer as NANOSECONDS, so `call_timeout =
+// 30` is thirty nanoseconds and refuses every call this fleet can make.
+func TestCallTimeoutRejectsABareIntegerMeantAsSeconds(t *testing.T) {
+	err := loadErr(t, minimalConfig+"\n[response]\ncall_timeout = 30\n")
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("Load = %v, want ErrInvalid", err)
+	}
+	for _, want := range []string{"NANOSECONDS", "call_timeout = \"30s\""} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error does not mention %q: %v", want, err)
+		}
+	}
+}

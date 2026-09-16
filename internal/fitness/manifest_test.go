@@ -3,6 +3,7 @@ package fitness
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -89,6 +90,8 @@ var gatePaths = []string{
 	"design/adr/0023-recarga-do-cofre-quando-o-arquivo-muda.md",
 	"design/adr/0024-morte-de-um-upstream-conectado.md",
 	"design/adr/0025-prazo-por-chamada.md",
+	"design/adr/0026-fechamento-do-criterio-de-v1.md",
+	"design/adr/0027-limite-de-taxa-na-auditoria-de-falha-de-autenticacao.md",
 
 	// Deployment paths this repository's own documents send an operator to.
 	"config.example.toml",
@@ -198,5 +201,81 @@ func TestExternalCorpusIsNotAsserted(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("walking the repository: %v", err)
+	}
+}
+
+// citedTestExceptions are the test names a document quotes ON PURPOSE
+// without them existing: a correction block recording what a line used to
+// say. Each one is here because removing the quote would erase the record
+// of the mistake, which is the opposite of what this repository does.
+var citedTestExceptions = map[string]string{
+	"TestCredentialDrift_FiresWhenTheVaultValueChanges": "design/adr/0023, quoting the name its Compliance section wrongly carried for a day",
+	"TestDispatch_TheDeadlineDoesNotOutliveTheCaller":   "design/adr/0025, same shape, quoted in its own correction",
+}
+
+// TestCitedTestsExist is the sixth instance of one defect class, turned
+// into a gate.
+//
+// Five review rounds each found a document naming something that was not
+// there, and twice it was a test name in an ADR's Compliance section --
+// which is the first place the next reviewer looks for the proof a decision
+// was kept. A name that resolves to nothing there is worse than no name: it
+// reads as verified.
+//
+// The check is narrow on purpose, like the manifest above: it matches
+// `TestSomething` tokens inside markdown and asks whether any _test.go file
+// declares that function. No allowlist by prefix, no heuristics about which
+// names "look like" tests -- a Go test function is a declared thing and
+// either exists or does not.
+func TestCitedTestsExist(t *testing.T) {
+	root := repoRoot(t)
+
+	declared := map[string]bool{}
+	cited := map[string][]string{} // test name -> files that cite it
+
+	name := regexp.MustCompile(`\bTest[A-Z][A-Za-z0-9_]{5,}`)
+	decl := regexp.MustCompile(`(?m)^func (Test[A-Za-z0-9_]+)\(`)
+
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			switch d.Name() {
+			case ".git", "bin", "node_modules":
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		b, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return nil
+		}
+		rel, _ := filepath.Rel(root, path)
+		switch {
+		case strings.HasSuffix(path, "_test.go"):
+			for _, m := range decl.FindAllStringSubmatch(string(b), -1) {
+				declared[m[1]] = true
+			}
+		case filepath.Ext(path) == ".md":
+			for _, m := range name.FindAllString(string(b), -1) {
+				cited[m] = append(cited[m], rel)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walking the repository: %v", err)
+	}
+
+	for n, files := range cited {
+		if declared[n] || citedTestExceptions[n] != "" {
+			continue
+		}
+		t.Errorf("%s is named in %s and no _test.go declares it.\n"+
+			"An ADR's Compliance section is where the next reviewer looks for the proof that a\n"+
+			"decision was kept; a name that resolves to nothing reads as verified and is not.\n"+
+			"Either the test was renamed (fix the document) or it was never written (write it).",
+			n, strings.Join(files, ", "))
 	}
 }

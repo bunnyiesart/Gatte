@@ -92,9 +92,11 @@ a VPN for everything network-facing (`design/adr/0011`).
 **It is a single point of failure, knowingly** (`design/adr/0001`): one
 binary, one process, one SQLite file. A per-call ceiling bounds how long any
 one call may hold a backend (`design/adr/0025`), but nothing bounds how many
-calls an authorised analyst may hold at once, and a flood of unauthenticated
-requests competes with real traffic for the one audit writer — both declared
-in `AGENTS.md` §2 rather than fixed.
+calls an authorised analyst may hold at once. And a flood of unauthenticated
+requests does more than compete for the one audit writer: measured, it can
+exhaust SQLite's busy timeout, and since a call that cannot be audited is
+refused, a stranger with no credential can get an analyst's call refused.
+Both are declared in `AGENTS.md` §2; the second is filed as ADR-0027.
 
 **Everything above was checked, not asserted.** The gaps named here came out
 of four adversarial review rounds, the last of which audited the whole system

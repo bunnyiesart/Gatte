@@ -450,3 +450,74 @@ func TestReloadFailureReachesTheHandler(t *testing.T) {
 		t.Errorf("the handler was called %d times in total, want 2 (one failure, one recovery): %v", len(got), got)
 	}
 }
+
+// TestReloadFailureSignalDoesNotLatch is the other half of the edge, and
+// the half that was missing.
+//
+// The failure report fires on a change of state, so a state that never
+// changes back means every later incident is silent. Reporting recovery
+// only after a successful RE-READ made exactly that: a file that goes away
+// and comes back UNCHANGED never triggers one, because there is nothing new
+// to decrypt -- and the flag stayed true, so the next real outage said
+// nothing at all.
+//
+// The round trip here is os.Rename out and back, which preserves both
+// halves of the stamp. That is not an exotic case: it is what a mount that
+// flaps, a permission fixed, or an operator moving a file aside looks like.
+func TestReloadFailureSignalDoesNotLatch(t *testing.T) {
+	const value = "vt-key-that-stays-the-same"
+
+	secretsFile, ageKeyFile := newFixture(t, map[string]string{"VT_API_KEY": value})
+
+	var mu sync.Mutex
+	var reports []string
+	p, err := sopsage.New(context.Background(), secretsFile, ageKeyFile,
+		sopsage.WithReloadErrorHandler(func(err error) {
+			mu.Lock()
+			defer mu.Unlock()
+			reports = append(reports, err.Error())
+		}))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	count := func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(reports)
+	}
+	resolve := func(when string) {
+		t.Helper()
+		if _, err := p.Resolve(context.Background(), "VT_API_KEY"); err != nil {
+			t.Fatalf("Resolve %s: %v", when, err)
+		}
+	}
+
+	aside := secretsFile + ".aside"
+	resolve("while healthy")
+
+	// First outage: moved aside, then back, byte for byte.
+	if err := os.Rename(secretsFile, aside); err != nil {
+		t.Fatalf("move the secrets file aside: %v", err)
+	}
+	resolve("during the first outage")
+	if n := count(); n != 1 {
+		t.Fatalf("reports = %d after the first outage, want 1", n)
+	}
+	if err := os.Rename(aside, secretsFile); err != nil {
+		t.Fatalf("move the secrets file back: %v", err)
+	}
+
+	resolve("after the first recovery")
+	if n := count(); n != 2 {
+		t.Fatalf("reports = %d after recovery, want 2 -- the recovery line never came, so the state is latched and nothing later can be reported", n)
+	}
+
+	// Second outage: the one that used to be silent.
+	if err := os.Rename(secretsFile, aside); err != nil {
+		t.Fatalf("move the secrets file aside again: %v", err)
+	}
+	resolve("during the second outage")
+	if n := count(); n != 3 {
+		t.Errorf("reports = %d after a SECOND outage, want 3: an incident that repeats must be reported every time it happens", n)
+	}
+}

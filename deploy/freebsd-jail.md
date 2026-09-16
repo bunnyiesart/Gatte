@@ -547,6 +547,17 @@ does nothing at all. Rotating a credential alone still re-dials nothing
 (ADR-0020 item 6), and restart is still the path that works for the whole
 fleet.
 
+**And since ADR-0024 there is a third way a rotation takes effect, which
+nobody asks for: the backend dying.** A dead upstream is re-dialled, a
+re-dial re-reads the vault, so a backend that crashes and comes back is
+running the current credential -- and its drift warning disappears with it,
+because the digest kept for comparison is rewritten at the new dial. You
+cannot trigger this deliberately short of killing the process, but you can
+be surprised by it: a backend in a crash loop quietly applies every rotation
+you make, and the audit trail records `upstream gone`, not "the credential
+in use changed". If a drift warning vanishes without anybody restarting
+anything, look for a death first.
+
 **The gateway warns about this now (GAB-20) — really, since 15 Sep 2026.**
 This paragraph was written on 10 Sep and described a warning that could not
 fire: the vault adapter decrypted once at startup, so the check compared the

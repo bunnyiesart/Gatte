@@ -240,6 +240,15 @@ func (p *Provider) reloadIfChanged(ctx context.Context) {
 	unchanged := stamp == p.stamp
 	p.mu.RUnlock()
 	if unchanged {
+		// Readable and identical: whatever went wrong before is over, and
+		// saying so here is what keeps the edge from latching. Reporting
+		// recovery only after a successful RE-READ -- which is what this
+		// did until 16 Sep 2026 -- means a file that goes away and comes
+		// back unchanged (a rename out and in, a mount that flaps, a
+		// permission fixed) leaves `failing` true forever: the recovery
+		// line never comes, and the NEXT real outage is silent, because
+		// reportReload only fires on a change of state.
+		p.reportReload(nil)
 		return
 	}
 

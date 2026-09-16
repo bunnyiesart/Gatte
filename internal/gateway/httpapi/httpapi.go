@@ -488,7 +488,7 @@ const forwardedForHeader = "X-Forwarded-For"
 // the conclusion is wrong here, because of how the header is produced.
 //
 // The gateway is reachable only through the co-located nginx
-// (design/adr/0011-network-isolation.md), which forwards with
+// (design/adr/0011-network-exposure-and-tls-termination.md), which forwards with
 // `$proxy_add_x_forwarded_for`. That variable expands to
 // `"$http_x_forwarded_for, $remote_addr"` -- it APPENDS to whatever the
 // client sent and preserves it. So a client that sends
@@ -784,11 +784,27 @@ func (h *Handler) dispatchTool(c gateway.Caller, namespaced string) mcp.ToolHand
 // sanitized JSON-RPC error the client receives.
 func (h *Handler) rejectCall(ctx context.Context, id access.Identity, tool string, err error) error {
 	class := classify(err)
+	// The error's TEXT is deliberately not logged, and this line carried it
+	// until 16 Sep 2026.
+	//
+	// gateway.auditFailure refuses to log an upstream's own words, with a
+	// paragraph explaining why and a test pinning it: a backend that echoes
+	// the credential it was handed ("401: token=... rejected" is an
+	// ordinary thing for an API client to say) puts that value into a log
+	// that is shipped off the box. That error travels here wrapped by
+	// Dispatch, so logging err.Error() here undid the control one layer up
+	// -- in the process that holds every backend credential, into a line
+	// nobody had reviewed for it.
+	//
+	// Nothing is lost that an operator had: every refusal that reaches this
+	// function was already logged by the Gateway with a classified reason,
+	// the subject, the source address and the error's type. This line says
+	// the same thing at the HTTP boundary.
 	h.log.LogAttrs(ctx, slog.LevelWarn, "httpapi: tool call refused",
 		slog.String("subject", id.Subject),
 		slog.String("tool", tool),
 		slog.String("class", class.String()),
-		slog.String("detail", err.Error()),
+		slog.String("error_class", fmt.Sprintf("%T", err)),
 	)
 	return jsonRPCError(class, tool)
 }

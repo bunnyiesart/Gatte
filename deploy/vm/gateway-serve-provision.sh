@@ -250,10 +250,19 @@ else
 	rm -f "$STAGE/genkey.out"
 	j "chmod 644 $SIGN_PUB"
 fi
-# Owned by the service account and 0600: `mcp-gateway sign` runs as that
-# account (see ju above) and LoadKey refuses a group- or world-readable
-# key file outright.
-j "chown $SVC_USER:$SVC_USER $SIGN_KEY && chmod 600 $SIGN_KEY"
+# Owned by ROOT and 0600. `mcp-gateway sign` runs as root (see
+# register_and_sign_upstreams) and LoadKey refuses a group- or
+# world-readable key file outright.
+#
+# It used to be owned by the service account, because `sign` ran as that
+# account to keep the SQLite WAL files owned correctly -- and that handed
+# the signing key to the same account that writes the database, which is
+# the pair ADR-0010 exists to keep apart. The anchor lives in the config
+# file so that database write access is not signature-minting power; if the
+# private key sits beside it in the same account, that degree is gone. An
+# audit of 16 Sep 2026 found it; the WAL problem is now solved by a chown
+# after signing instead.
+j "chown root:wheel $SIGN_KEY && chmod 600 $SIGN_KEY"
 TRUSTED_KEY=$(j "cat $SIGN_PUB")
 case "$TRUSTED_KEY" in
 	"" | *" "*) echo "could not read exactly one trusted key from $SIGN_PUB" >&2; exit 1 ;;

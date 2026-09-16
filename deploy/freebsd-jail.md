@@ -382,6 +382,28 @@ each other, which says nothing about whether they were already altered
 beforehand. The chain is only evidence from the migration forward, and the
 count is printed so nobody reads it as more.
 
+## A backend that dies now comes back by itself
+
+Since ADR-0024, a backend whose process is gone is closed and re-dialled
+within one `quarantine.refresh_interval`, without touching the other three
+and without a restart. What that looks like in the log:
+
+    gateway: upstream process is gone; it will be closed and re-dialled
+    on the next reconciliation   upstream=threatintel
+    gateway: upstream process died; closing the dead connection and
+    re-dialling it              upstream=threatintel
+
+and in the audit trail, for whichever analyst call met it first, a `failed`
+record whose reason is `upstream gone` rather than the generic `upstream
+call failed`.
+
+**Two things to know before trusting it.** A backend in a crash loop
+produces this pair every interval — about twelve spawns an hour — and the
+way to stop that is `mcp-gateway upstream deregister`, not waiting. And a
+backend that is merely slow is never treated as dead, deliberately: if a
+container is wedged rather than gone, nothing here repairs it, and the
+symptom stays what it was — a `tools/list` that fails once per tick.
+
 ## Tearing down
 
 ```bash
@@ -525,7 +547,12 @@ does nothing at all. Rotating a credential alone still re-dials nothing
 (ADR-0020 item 6), and restart is still the path that works for the whole
 fleet.
 
-**The gateway warns about this now (GAB-20).** Once per
+**The gateway warns about this now (GAB-20) — really, since 15 Sep 2026.**
+This paragraph was written on 10 Sep and described a warning that could not
+fire: the vault adapter decrypted once at startup, so the check compared the
+running value against itself. ADR-0023 made the adapter re-read the
+encrypted file when its modification time or size changes, which is what
+makes everything below true. Once per
 `quarantine.refresh_interval` it re-reads each connected upstream's
 credentials and compares them against what that upstream was actually
 handed at dial time, and logs a warning naming the upstream and the

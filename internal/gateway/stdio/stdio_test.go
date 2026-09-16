@@ -15,6 +15,7 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -46,6 +47,7 @@ var fixtureBinaries struct {
 	casemgmt      string
 	envfixture    string
 	outputfixture string
+	dyingfixture  string
 }
 
 func TestMain(m *testing.M) {
@@ -67,6 +69,7 @@ func TestMain(m *testing.M) {
 		fixtureBinaries.casemgmt = build("casemgmt", "../../../lab/servers/casemgmt")
 		fixtureBinaries.envfixture = build("envfixture", "./testdata/envfixture")
 		fixtureBinaries.outputfixture = build("outputfixture", "./testdata/outputfixture")
+		fixtureBinaries.dyingfixture = build("dyingfixture", "./testdata/dyingfixture")
 
 		return m.Run()
 	}())
@@ -914,5 +917,104 @@ func TestRawJSON_TheSDKRoundTripCollapsesDuplicateKeys(t *testing.T) {
 	if hashSemantic == hashA {
 		t.Error("a changed field TYPE did not move the fingerprint; that would be a broken rug-pull defence, " +
 			"which is a different and much worse finding than GAB-15")
+	}
+}
+
+// TestADeadChildIsReportedGone is the positive half of ADR-0024: when the
+// backend process really is gone, the adapter says so in a way the gateway
+// can act on.
+//
+// The child is a real process that really exits (testdata/dyingfixture),
+// not an injected error value: what is under test is what the SDK returns
+// when a child's stdout reaches EOF, and only a real EOF produces that.
+func TestADeadChildIsReportedGone(t *testing.T) {
+	d := New()
+	secret := newSecret(t)
+	spec := gateway.UpstreamSpec{Name: "dying", Transport: "stdio", Command: fixtureBinaries.dyingfixture}
+
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+	up, err := d.Dial(ctx, spec, map[string]string{"MOCK_SECRET": secret})
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	// Not dial()'s cleanup Close: this child is killed, so the clean-exit
+	// assertion that helper makes would not hold.
+	defer up.Close()
+
+	// It worked first, so nothing below can be "it never worked".
+	if _, err := up.ListTools(ctx); err != nil {
+		t.Fatalf("ListTools before the death: %v", err)
+	}
+	if _, err := up.CallTool(ctx, "alive", nil); err != nil {
+		t.Fatalf("CallTool before the death: %v", err)
+	}
+
+	// And now the process exits mid-call.
+	_, err = up.CallTool(ctx, "die", nil)
+	if err == nil {
+		t.Fatal("the call that kills the child returned no error")
+	}
+	if !errors.Is(err, gateway.ErrUpstreamGone) {
+		t.Errorf("CallTool error = %v, want one wrapping gateway.ErrUpstreamGone -- the gateway repairs only what it can recognise as death", err)
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Error("LEAK: the death error carries the injected credential")
+	}
+
+	// Every later call agrees, which is what the tick will meet.
+	if _, err := up.ListTools(ctx); !errors.Is(err, gateway.ErrUpstreamGone) {
+		t.Errorf("ListTools after the death = %v, want one wrapping gateway.ErrUpstreamGone", err)
+	}
+}
+
+// TestCallToolDuringCloseIsNotReportedGone is the amendment that made
+// ADR-0024 safe to implement, and it is not hypothetical: measured while
+// designing it, 194 of 300 in-flight calls crossing a concurrent Close came
+// back with the SDK's connection-closed error.
+//
+// If those were reported as death, a reconciliation that closed an upstream
+// on purpose -- because the operator deregistered it, or changed its entry
+// -- would record the connection it was retiring as dead, and the next
+// round would dial the backend it had just been told to stop serving. The
+// entry guard at the top of CallTool does not prevent this: the call is
+// already past it when Close runs.
+func TestCallToolDuringCloseIsNotReportedGone(t *testing.T) {
+	secret := newSecret(t)
+
+	for i := range 40 {
+		d := New()
+		ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+
+		up, err := d.Dial(ctx, irisSpec(), map[string]string{"MOCK_SECRET": secret, "MOCK_EXPECT": secret})
+		if err != nil {
+			cancel()
+			t.Fatalf("Dial: %v", err)
+		}
+
+		var wg sync.WaitGroup
+		errs := make(chan error, 1)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, callErr := up.CallTool(ctx, "casemgmt_credcheck", nil)
+			errs <- callErr
+		}()
+
+		// Stagger the close across the window: some iterations land before
+		// the call reaches the session, some while it is in flight, some
+		// after it has answered.
+		for range i % 7 {
+			runtime.Gosched()
+		}
+		_ = up.Close()
+		wg.Wait()
+		cancel()
+
+		if callErr := <-errs; errors.Is(callErr, gateway.ErrUpstreamGone) {
+			t.Fatalf("iteration %d: a call crossing our own Close was reported as the backend dying: %v\n"+
+				"That makes a deliberate retirement look like a crash, and the next reconciliation "+
+				"re-dials a backend that was just taken out of service.", i, callErr)
+		}
 	}
 }

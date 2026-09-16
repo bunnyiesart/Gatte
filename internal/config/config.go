@@ -218,6 +218,52 @@ type Response struct {
 	// default; written as zero or negative is refused by Validate, which
 	// tells them there is no off switch and what to do instead.
 	MaxBytes *int64 `toml:"max_bytes"`
+
+	// CallTimeout is how long one tool call may take before the gateway
+	// cuts it (design/adr/0025-prazo-por-chamada.md).
+	//
+	// The ceiling is the GATEWAY's, derived from the caller's context, so a
+	// client that disconnects still cuts its own call immediately -- this
+	// only bounds the case where that cancellation never comes, which is
+	// every client that vanishes without closing: a laptop that sleeps, a
+	// network that drops, a proxy that holds the connection open.
+	//
+	// Until ADR-0025 there was no ceiling at all, and a backend that
+	// accepted a call and never answered held a goroutine and that
+	// upstream's connection until the process restarted. The audit reason
+	// `upstream timed out` existed and was tested; nothing in the system
+	// produced it.
+	//
+	// A pointer, and with no off switch, for the same reasons MaxBytes
+	// gives: zero cannot be told from unset, and a timeout that can be
+	// switched off during an incident is one that stays off.
+	CallTimeout *time.Duration `toml:"call_timeout"`
+}
+
+// MinCallTimeout is the shortest ceiling the file may ask for.
+//
+// Same job as MinResultBytes, same class of mistake: TOML reads a bare
+// integer as NANOSECONDS, so `call_timeout = 30` is 30ns and refuses every
+// call the fleet can make. One second is below any real backend's slowest
+// answer and far above anything somebody wrote while meaning seconds.
+const MinCallTimeout = time.Second
+
+// DefaultCallTimeout is the ceiling an unconfigured gateway applies.
+//
+// Two minutes: above anything the four backends of this fleet produce
+// today, and below the point where the analyst has already given up and
+// asked somebody. It is an informed guess about one fleet, not a law --
+// raising it is a one-line change that stays visible in the file, and
+// needing to raise it is itself information about a backend.
+const DefaultCallTimeout = 2 * time.Minute
+
+// CallTimeoutOrDefault reports the per-call ceiling, resolving the unset
+// case. Validate has already refused zero and negative.
+func (r Response) CallTimeoutOrDefault() time.Duration {
+	if r.CallTimeout == nil {
+		return DefaultCallTimeout
+	}
+	return *r.CallTimeout
 }
 
 // MinResultBytes is the smallest ceiling the file may ask for.
@@ -775,6 +821,25 @@ func (c *Config) Validate() error {
 					"`max_bytes = 8` is eight bytes and not eight megabytes, and would refuse every result this "+
 					"fleet can produce. Write the whole number: max_bytes = 8388608",
 				n, MinResultBytes,
+			))
+		}
+	}
+
+	if c.Response.CallTimeout != nil {
+		switch d := *c.Response.CallTimeout; {
+		case d <= 0:
+			errs = append(errs, errors.New(
+				"response.call_timeout: must be positive -- there is deliberately no value that disables the "+
+					"per-call ceiling (design/adr/0025). A call with no ceiling holds a goroutine and its "+
+					"upstream's connection until the process restarts, which is the state this key exists to "+
+					`end. If a real query needs more time, raise it (response.call_timeout = "5m")`,
+			))
+		case d < MinCallTimeout:
+			errs = append(errs, fmt.Errorf(
+				"response.call_timeout: %s is below the %s minimum (MinCallTimeout) -- TOML reads a bare "+
+					"integer as NANOSECONDS, so `call_timeout = 30` is 30ns and refuses every call this fleet "+
+					`can make. Write the unit: call_timeout = "30s"`,
+				d, MinCallTimeout,
 			))
 		}
 	}

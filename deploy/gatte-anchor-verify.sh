@@ -36,7 +36,13 @@ set -eu
 
 CHAIN="${CHAIN:-gatte-jail-01}"
 GW_HOST="${GW_HOST:-root@192.168.1.4}"
-GW_JAIL="${GW_JAIL:-gatte}"
+# Defaults match deploy/gateway-serve.sh and deploy/vm/gateway-serve-provision.sh
+# (`mcp-gateway-test`, `mcpgw`). They disagreed until 16 Sep 2026 -- this file
+# said `gatte` -- so the default run of this script pointed at a jail that may
+# not exist, and the failure reads as "the gateway is gone" rather than "the
+# name is wrong". Override both for a differently-named deployment.
+GW_JAIL="${GW_JAIL:-mcp-gateway-test}"
+GW_USER="${GW_USER:-mcpgw}"
 GRAYLOG="${GRAYLOG:-http://localhost:9100/api}"
 GW_CONFIG="${GW_CONFIG:-/usr/local/etc/mcp-gateway/config.toml}"
 RANGE="${RANGE:-86400}"
@@ -227,8 +233,16 @@ ok "head derived from the SIEM: $HEAD"
 # ----------------------------------------------------------- the gateway side
 say "gateway: verifying the local chain against that head"
 set +e
+# -U "$GW_USER": the console runs as the SERVICE ACCOUNT, not as root.
+#
+# deploy/gateway-serve.md says why, in prose, and this script violated it in
+# the file next door: SQLite in WAL mode creates -wal and -shm owned by
+# whoever opened the database, so a console run as root leaves two files the
+# service account cannot write -- and the gateway then fails to append to
+# its own trail. A verification tool that breaks the thing it verifies is
+# the worst shape of all, because it breaks it while reporting success.
 ssh -o BatchMode=yes "$GW_HOST" \
-	"jexec $GW_JAIL /usr/local/bin/mcp-gateway audit -verify -config $GW_CONFIG -expect-head $HEAD" \
+	"jexec -U $GW_USER $GW_JAIL /usr/local/bin/mcp-gateway audit -verify -config $GW_CONFIG -expect-head $HEAD" \
 	> "$WORK/verify.out" 2>&1
 RC=$?
 set -e

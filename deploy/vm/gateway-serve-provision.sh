@@ -94,6 +94,24 @@ j "pkg install -y sops age curl jq" 2>&1 | tail -2 | sed 's/^/    /'
 # gateway under `daemon -r`, which would restart the half-written file.
 j "service mcp_gateway stop >/dev/null 2>&1 || true"
 
+# From here on, any exit leaves the service stopped unless we start it back.
+#
+# Several checks below exit 1 on purpose (an undecryptable vault, a missing
+# signing key, a placeholder left in the config) and every one of them used
+# to leave the gateway DOWN and silent: the operator reads an error about a
+# vault and does not learn that the service they were upgrading is no longer
+# running. Failing loudly is right; failing loudly AND stopping the service
+# without saying so is not.
+trap 'rc=$?; if [ "$rc" -ne 0 ]; then
+	echo "" >&2
+	echo "PROVISIONING FAILED (exit $rc) AND THE GATEWAY IS STOPPED." >&2
+	echo "  The service was stopped before this script began its checks, and" >&2
+	echo "  it has NOT been started again. Nothing is serving the SOC right now." >&2
+	echo "  Fix the error above, then re-run this script -- or, to get the" >&2
+	echo "  previous build serving again immediately:" >&2
+	echo "      jexec '"$GW_JAIL"' service mcp_gateway start" >&2
+fi' EXIT
+
 # ------------------------------------------------------------ service user
 if j "id -u $SVC_USER >/dev/null 2>&1"; then
 	say "service user: $SVC_USER already exists"

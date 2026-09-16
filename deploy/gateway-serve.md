@@ -46,7 +46,7 @@ assumes both.
   config.toml                                    0644 root:wheel
   secrets.json     sops+age encrypted            0640 root:mcpgw
   age.key          the age identity              0600 mcpgw:mcpgw
-  signing.key      Ed25519, PKCS#8 PEM           0600 mcpgw:mcpgw
+  signing.key      Ed25519, PKCS#8 PEM           0600 root:wheel
   signing.pub      the trusted_keys base64       0644 root:wheel
 /var/db/mcp-gateway/mcp-gateway.db               0750 dir, mcpgw:mcpgw
 /var/log/mcp-gateway/mcp-gateway.log             0750 dir, mcpgw:mcpgw

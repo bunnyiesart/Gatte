@@ -295,7 +295,23 @@ func buildServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) (
 	// never wraps the decrypted bytes into an error, because both can echo
 	// fragments of the plaintext; the error is passed through here
 	// unchanged rather than being "improved" with anything from the file.
-	credentials, err := sopsage.New(ctx, cfg.Vault.SecretsFile, cfg.Vault.AgeKeyFile)
+	credentials, err := sopsage.New(ctx, cfg.Vault.SecretsFile, cfg.Vault.AgeKeyFile,
+		// The vault re-reads its file when that file changes (ADR-0023),
+		// and a re-read that FAILS is otherwise invisible: Resolve keeps
+		// answering from the last good copy, so nothing downstream sees an
+		// error. This is the only place that failure is ever said out loud.
+		//
+		// At Error, not Warn: the gateway is serving credentials it can no
+		// longer confirm, a rotation performed in this window will not be
+		// noticed, and the drift warning -- the whole point of ADR-0023 --
+		// is inert until the file is readable again. Edge-triggered inside
+		// the adapter, so this is one line per incident, not one per dial.
+		sopsage.WithReloadErrorHandler(func(err error) {
+			logger.Error("mcp-gateway: the credential vault could not be re-read",
+				slog.String("secrets_file", cfg.Vault.SecretsFile),
+				slog.String("detail", err.Error()))
+		}),
+	)
 	if err != nil {
 		return fail(fmt.Errorf("credential vault: %w", err))
 	}

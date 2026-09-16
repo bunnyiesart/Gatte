@@ -86,6 +86,7 @@ var gatePaths = []string{
 	"design/adr/0020-reconciliacao-periodica-do-registro.md",
 	"design/adr/0021-batimento-operacional-na-trilha.md",
 	"design/adr/0022-metodologia-de-arquitetura-externa.md",
+	"design/adr/0023-recarga-do-cofre-quando-o-arquivo-muda.md",
 
 	// Deployment paths this repository's own documents send an operator to.
 	"config.example.toml",

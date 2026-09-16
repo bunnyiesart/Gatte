@@ -3,6 +3,10 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,6 +23,9 @@ import (
 	"testing"
 	"time"
 
+	jose "github.com/go-jose/go-jose/v4"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+
 	"github.com/bunnyiesart/Gatte/internal/config"
 	"github.com/bunnyiesart/Gatte/internal/gateway"
 	"github.com/bunnyiesart/Gatte/internal/gateway/httpapi"
@@ -27,6 +34,7 @@ import (
 	"github.com/bunnyiesart/Gatte/internal/signer"
 	signersqlite "github.com/bunnyiesart/Gatte/internal/signer/sqlite"
 	"github.com/bunnyiesart/Gatte/internal/store"
+	"github.com/bunnyiesart/Gatte/lab/mockutil"
 )
 
 // ---------------------------------------------------------------------------
@@ -1094,4 +1102,248 @@ func readFileString(t *testing.T, path string) string {
 		t.Fatalf("read %s: %v", path, err)
 	}
 	return string(b)
+}
+
+// ---------------------------------------------------------------------------
+// The composition root, end to end
+// ---------------------------------------------------------------------------
+
+// serveIssuer is a fake OIDC provider that actually mints tokens.
+//
+// newServeIssuer publishes an EMPTY JWKS, which is enough for every test
+// that only needs discovery to succeed and nothing to verify. The test
+// below needs the other half: a token the REAL verifier accepts, because
+// the point is to cross the real composition root rather than a stub of it.
+type serveIssuer struct {
+	t   *testing.T
+	url string
+	key *rsa.PrivateKey
+}
+
+const serveIssuerKeyID = "serve-test-key"
+
+func newServeIssuerWithKeys(t *testing.T) *serveIssuer {
+	t.Helper()
+
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate RSA key: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"issuer":                                srv.URL,
+			"authorization_endpoint":                srv.URL + "/auth",
+			"token_endpoint":                        srv.URL + "/token",
+			"jwks_uri":                              srv.URL + "/jwks",
+			"id_token_signing_alg_values_supported": []string{"RS256"},
+		})
+	})
+	mux.HandleFunc("/jwks", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(jose.JSONWebKeySet{
+			Keys: []jose.JSONWebKey{{
+				Key:       key.Public(),
+				KeyID:     serveIssuerKeyID,
+				Algorithm: string(jose.RS256),
+				Use:       "sig",
+			}},
+		})
+	})
+
+	return &serveIssuer{t: t, url: srv.URL, key: key}
+}
+
+// mint signs a token for one analyst in one group.
+func (i *serveIssuer) mint(audience, subject, group string) string {
+	i.t.Helper()
+
+	claims := map[string]any{
+		"iss":    i.url,
+		"aud":    audience,
+		"sub":    subject,
+		"iat":    time.Now().Add(-time.Minute).Unix(),
+		"exp":    time.Now().Add(time.Hour).Unix(),
+		"groups": []any{group},
+	}
+	payload, err := json.Marshal(claims)
+	if err != nil {
+		i.t.Fatalf("marshal claims: %v", err)
+	}
+	opts := (&jose.SignerOptions{}).WithType("JWT").WithHeader("kid", serveIssuerKeyID)
+	signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.RS256, Key: i.key}, opts)
+	if err != nil {
+		i.t.Fatalf("new signer: %v", err)
+	}
+	object, err := signer.Sign(payload)
+	if err != nil {
+		i.t.Fatalf("sign: %v", err)
+	}
+	compact, err := object.CompactSerialize()
+	if err != nil {
+		i.t.Fatalf("serialize: %v", err)
+	}
+	return compact
+}
+
+// TestBuildServer_DeliversAVaultSecretToARealBackend is the seam nothing
+// covered until 15 Sep 2026.
+//
+// What each existing test proves, and where the gap between them was:
+// internal/vault/sopsage's leak test proves the sops adapter resolves a
+// real encrypted value and that spawning with it leaks nothing.
+// internal/e2e proves the gateway injects a credential into a real
+// subprocess and that an analyst reaches it over HTTP -- with the vault in
+// memory and the verifier a stub, both deliberately (see that package's
+// doc). Neither proves that THIS BINARY'S composition root -- buildServer,
+// wiring the real sops vault to the real OIDC verifier to the real stdio
+// dialer -- carries the value from the encrypted file to the child process.
+// Every piece was proven; the assembly was not.
+//
+// So: a real sops+age vault on disk, a real OIDC provider whose token the
+// real verifier accepts, a real registry row, a real backend subprocess,
+// one call over HTTP, and the fingerprint the backend reports compared
+// against the secret this test encrypted.
+func TestBuildServer_DeliversAVaultSecretToARealBackend(t *testing.T) {
+	dir := t.TempDir()
+
+	// The backend is the lab mock, built here rather than linked: the
+	// gateway spawns a process, so the test has to hand it one.
+	mock := filepath.Join(dir, "casemgmt")
+	if out, err := exec.Command("go", "build", "-o", mock, "../../lab/servers/casemgmt").CombinedOutput(); err != nil {
+		t.Fatalf("build the mock backend: %v\n%s", err, out)
+	}
+
+	// A value only this test knows, so a match cannot be a coincidence.
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		t.Fatalf("generate secret: %v", err)
+	}
+	secret := "serve-e2e-" + hex.EncodeToString(buf)
+	secretsFile, ageKeyFile := newServeVaultFixture(t, map[string]string{
+		"MOCK_SECRET": secret,
+		"MOCK_EXPECT": secret,
+	})
+
+	issuer := newServeIssuerWithKeys(t)
+	const audience = "https://gw.test.internal/mcp"
+	const tool = "casemgmt.casemgmt_credcheck"
+
+	dbPath := filepath.Join(dir, "gateway.db")
+	var body strings.Builder
+	fmt.Fprintf(&body, "listen = %q\n", "127.0.0.1:0")
+	fmt.Fprintf(&body, "database = %q\n", dbPath)
+	fmt.Fprintf(&body, "[oidc]\nissuer = %q\naudience = %q\n", issuer.url, audience)
+	fmt.Fprintf(&body, "[vault]\nsecrets_file = %q\nage_key_file = %q\n", secretsFile, ageKeyFile)
+	fmt.Fprintf(&body, "[signer]\nrequire_signed = false\n")
+	fmt.Fprintf(&body, "[[role]]\nname = %q\ntools = [%q]\n", "lab", tool)
+	fmt.Fprintf(&body, "[group_to_role]\n%q = %q\n", "soc-lab", "lab")
+	configPath := filepath.Join(dir, "mcp-gateway.toml")
+	if err := os.WriteFile(configPath, []byte(body.String()), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	// Registered through the operator console, which is how an operator
+	// puts a backend here -- not by writing the row directly.
+	var out, errOut bytes.Buffer
+	if code := cmdUpstream([]string{
+		"register", "-config", configPath, "-name", "casemgmt",
+		"-transport", "stdio", "-command", mock,
+		"-env", "MOCK_SECRET", "-env", "MOCK_EXPECT",
+	}, &out, &errOut); code != exitOK {
+		t.Fatalf("upstream register exited %d\nstdout: %s\nstderr: %s", code, out.String(), errOut.String())
+	}
+
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	// syncBuf, not serveTestLogger's plain buffer: this test reads the log
+	// while the SDK's own server goroutines are still writing to it, which
+	// the race detector catches immediately.
+	logs := &syncBuf{}
+	logger := slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	stack, err := buildServer(context.Background(), cfg, logger)
+	if err != nil {
+		t.Fatalf("buildServer: %v\n%s", err, logs.String())
+	}
+	defer stack.close()
+
+	// Discovered at boot, and pending: the quarantine has never seen this
+	// tool. Approving it is the operator's call, through the console, with
+	// the gateway already built.
+	out.Reset()
+	errOut.Reset()
+	if code := cmdTool([]string{"approve", "-config", configPath, "casemgmt", "casemgmt_credcheck"}, &out, &errOut); code != exitOK {
+		t.Fatalf("tool approve exited %d\nstdout: %s\nstderr: %s", code, out.String(), errOut.String())
+	}
+
+	srv := httptest.NewServer(stack.server.Handler)
+	defer srv.Close()
+
+	token := issuer.mint(audience, "sub-lab-analyst", "soc-lab")
+	client := mcp.NewClient(&mcp.Implementation{Name: "serve-e2e", Version: "v0"}, nil)
+	sess, err := client.Connect(context.Background(), &mcp.StreamableClientTransport{
+		Endpoint:   srv.URL,
+		HTTPClient: &http.Client{Transport: &bearerTransport{token: token}},
+	}, nil)
+	if err != nil {
+		t.Fatalf("connect with a token the real verifier must accept: %v\n%s", err, logs.String())
+	}
+	defer sess.Close()
+
+	res, err := sess.CallTool(context.Background(), &mcp.CallToolParams{Name: tool})
+	if err != nil {
+		t.Fatalf("call %s: %v", tool, err)
+	}
+	if res.IsError {
+		t.Fatalf("%s reported an error: %+v", tool, res.Content)
+	}
+	text, ok := res.Content[0].(*mcp.TextContent)
+	if !ok {
+		t.Fatalf("%s returned %T, want TextContent", tool, res.Content[0])
+	}
+	var got mockutil.CredCheckResult
+	if err := json.Unmarshal([]byte(text.Text), &got); err != nil {
+		t.Fatalf("%s result did not parse: %v", tool, err)
+	}
+
+	sum := sha256.Sum256([]byte(secret))
+	if want := hex.EncodeToString(sum[:])[:8]; got.Fingerprint != want {
+		t.Errorf("the backend was spawned with a value whose digest is %q, want %q -- what the sops file holds did not reach the child through this binary's own wiring",
+			got.Fingerprint, want)
+	}
+	if !got.ReceivedExpectedSecret {
+		t.Error("the backend did not receive its expected secret")
+	}
+
+	// And neither the answer this client got nor the gateway's own log
+	// carries it.
+	//
+	// Narrower than "nothing over the wire", which is what this comment
+	// used to claim: no tap is installed here, so the HTTP traffic itself
+	// is not inspected. The whole-transcript version of this check lives in
+	// internal/e2e (wireTap) and in internal/audit/jsonl's leak tests; what
+	// is being proven HERE is the composition root's wiring, and this pair
+	// is the leak assertion that costs nothing extra to make.
+	if strings.Contains(text.Text, secret) {
+		t.Error("LEAK: the tool result carries the raw secret")
+	}
+	if strings.Contains(logs.String(), secret) {
+		t.Error("LEAK: the gateway's own log carries the raw secret")
+	}
+}
+
+// bearerTransport adds the credential the gateway will look for.
+type bearerTransport struct{ token string }
+
+func (b *bearerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	clone := req.Clone(req.Context())
+	clone.Header.Set("Authorization", "Bearer "+b.token)
+	return http.DefaultTransport.RoundTrip(clone)
 }

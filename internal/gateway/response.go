@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/google/jsonschema-go/jsonschema"
 )
@@ -87,6 +88,21 @@ const (
 // the control that works with no cooperation from any backend, so it has
 // to apply to a gateway whose operator never heard of it.
 const DefaultMaxResultBytes int64 = 1 << 20
+
+// DefaultCallTimeout is the ceiling on one tool call when the configuration
+// does not set one (design/adr/0025-prazo-por-chamada.md).
+//
+// Two minutes, and the number is an informed guess about ONE fleet: above
+// anything the four backends here produce today, below the point where the
+// analyst has already given up and asked somebody in chat. A gateway with
+// slower backends raises it in the file; needing to raise it is itself
+// information about a backend.
+//
+// It bounds the case a client cancellation does not cover -- a laptop that
+// sleeps, a network that drops, a proxy holding the connection -- because
+// Dispatch derives this deadline FROM the caller's context rather than
+// replacing it, so whichever ends first ends the call.
+const DefaultCallTimeout = 2 * time.Minute
 
 // maxSchemaErrorDetail bounds how much of a validation failure's text is
 // carried into the log line.

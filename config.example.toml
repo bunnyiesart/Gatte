@@ -529,6 +529,30 @@ max_bytes = 1048576
 # chain = "gatte-jail-01"
 
 
+# Teto de TEMPO de uma chamada, o irmao do max_bytes acima (ADR-0025).
+#
+# Antes dele nao havia teto nenhum: um backend que aceitava a chamada e nunca
+# respondia segurava a goroutine e a conexao daquele upstream ate o processo
+# reiniciar -- e a razao de auditoria `upstream timed out`, que existe e tem
+# teste, descrevia um evento que nada no sistema produzia.
+#
+# O teto e do GATEWAY e e derivado do contexto de quem chamou, entao um cliente
+# que desiste continua cortando a propria chamada na hora; isto so limita o caso
+# em que esse cancelamento nunca chega -- laptop que dorme, rede que cai, proxy
+# que segura a conexao aberta.
+#
+# Padrao "2m": acima de qualquer coisa que os quatro backends desta frota
+# produzem, abaixo do ponto em que o analista ja desistiu e foi perguntar no
+# chat. Quem tem backend mais lento aumenta, e precisar aumentar ja e
+# informacao sobre aquele backend.
+#
+# Se errar: numero cru e a mesma pegadinha do refresh_interval -- TOML le
+# inteiro como NANOSSEGUNDOS, entao `call_timeout = 30` sao 30ns e recusam toda
+# chamada da frota. Escreva a unidade. Zero ou negativo e recusado na
+# inicializacao: nao ha valor que desligue, pelo mesmo motivo do max_bytes.
+call_timeout = "2m"
+
+
 # ===========================================================================
 # Papeis
 # ===========================================================================

@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/bunnyiesart/Gatte/internal/audit"
 	"github.com/bunnyiesart/Gatte/internal/registry"
@@ -968,5 +969,81 @@ func TestTakeGone_IgnoresAMarkerForAReplacedConnection(t *testing.T) {
 	h.gw.mu.RUnlock()
 	if still {
 		t.Error("the marker survived the read; a stale marker is the thing this design must not keep")
+	}
+}
+
+// ------------------------------------------------------- prazo por chamada
+
+// TestDispatch_ACallThatOutlivesItsDeadlineIsCutAndAudited is ADR-0025.
+//
+// Before it, `Dispatch` handed the caller's context straight to the
+// backend, so a backend that accepted a call and never answered held this
+// goroutine and that upstream's connection until the process restarted --
+// and `upstream timed out`, an audit reason that exists and is tested,
+// described an event nothing in the system produced.
+func TestDispatch_ACallThatOutlivesItsDeadlineIsCutAndAudited(t *testing.T) {
+	h := newLimitedHarness(t, 0, "casemgmt.list_cases")
+	h.gw.callTimeout = 40 * time.Millisecond
+	h.register("casemgmt")
+	h.serve("casemgmt", def("list_cases", "list cases"))
+	h.mustConnect()
+	h.approve("casemgmt", "list_cases")
+
+	// A backend that accepts the call and answers only when its context
+	// ends -- which is what a wedged container looks like from here.
+	up := h.dialer.upstream("casemgmt")
+	up.mu.Lock()
+	up.callBlocks = true
+	up.mu.Unlock()
+
+	start := time.Now()
+	_, err := h.gw.Dispatch(context.Background(), fromAnalyst, "casemgmt.list_cases", json.RawMessage(`{}`))
+	elapsed := time.Since(start)
+
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Dispatch = %v, want one wrapping context.DeadlineExceeded", err)
+	}
+	if elapsed > time.Second {
+		t.Errorf("the call took %s to be cut; the ceiling is the gateway's and must not wait for the client", elapsed)
+	}
+
+	rows := h.auditRows()
+	last := rows[len(rows)-1]
+	if last.Outcome != audit.OutcomeFailed || last.Reason != reasonUpstreamTimeout {
+		t.Errorf("audit row = {%s, %q}, want {%s, %q}", last.Outcome, last.Reason, audit.OutcomeFailed, reasonUpstreamTimeout)
+	}
+}
+
+// TestDispatch_TheCallerStillCutsItsOwnCall: the ceiling is derived from
+// the caller's context, not substituted for it, so a client that gives up
+// is served first. If this ever fails, the deadline was built with
+// context.Background() somewhere and an abandoned request now runs to the
+// ceiling instead of ending with its caller.
+func TestDispatch_TheCallerStillCutsItsOwnCall(t *testing.T) {
+	h := newLimitedHarness(t, 0, "casemgmt.list_cases")
+	h.gw.callTimeout = time.Hour // far beyond the test's patience
+	h.register("casemgmt")
+	h.serve("casemgmt", def("list_cases", "list cases"))
+	h.mustConnect()
+	h.approve("casemgmt", "list_cases")
+
+	up := h.dialer.upstream("casemgmt")
+	up.mu.Lock()
+	up.callBlocks = true
+	up.mu.Unlock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(30 * time.Millisecond)
+		cancel()
+	}()
+
+	start := time.Now()
+	_, err := h.gw.Dispatch(ctx, fromAnalyst, "casemgmt.list_cases", json.RawMessage(`{}`))
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Dispatch = %v, want one wrapping context.Canceled", err)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Errorf("the call took %s to end after its caller gave up", elapsed)
 	}
 }

@@ -368,7 +368,12 @@ func buildServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) (
 		// passing it explicitly is what makes the configured number the one
 		// in effect rather than the one in the file.
 		MaxResultBytes: stack.maxResultBytes,
-		Logger:         logger,
+		// The per-call ceiling (ADR-0025), passed explicitly for the reason
+		// the line above is: the Gateway resolves an unset value to its own
+		// default, and passing it here is what makes the configured number
+		// the one in effect rather than the one in the file.
+		CallTimeout: cfg.Response.CallTimeoutOrDefault(),
+		Logger:      logger,
 	})
 	if err != nil {
 		return fail(err)

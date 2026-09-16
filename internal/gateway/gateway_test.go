@@ -54,14 +54,16 @@ import (
 // ---------------------------------------------------------------- fakes
 
 type fakeUpstream struct {
-	mu       sync.Mutex
-	defs     []ToolDef
-	listErr  error
-	callErr  error
-	result   Result
-	calls    []upstreamCall
-	closes   int
-	closeErr error
+	mu sync.Mutex
+	// callBlocks makes CallTool wait for its context instead of answering.
+	callBlocks bool
+	defs       []ToolDef
+	listErr    error
+	callErr    error
+	result     Result
+	calls      []upstreamCall
+	closes     int
+	closeErr   error
 	// waitForCtx makes CallTool block until the caller's context ends and
 	// then return its error -- what a real backend does when the deadline
 	// fires. Without it the fake answers instantly, so the context is
@@ -85,6 +87,16 @@ func (u *fakeUpstream) ListTools(context.Context) ([]ToolDef, error) {
 }
 
 func (u *fakeUpstream) CallTool(ctx context.Context, tool string, args json.RawMessage) (Result, error) {
+	u.mu.Lock()
+	blocks := u.callBlocks
+	u.mu.Unlock()
+	if blocks {
+		// A backend that accepted the call and answers only when its
+		// context ends -- a wedged container, seen from here. Used by the
+		// per-call ceiling tests (ADR-0025).
+		<-ctx.Done()
+		return Result{}, ctx.Err()
+	}
 	// The lock is released before any blocking below: holding it across a
 	// wait would serialise every other caller behind one slow call, which
 	// no real upstream does and which would deadlock a concurrent test.

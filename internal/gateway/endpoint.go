@@ -263,6 +263,13 @@ type Config struct {
 	// Optional; zero or negative selects DefaultMaxResultBytes.
 	MaxResultBytes int64
 
+	// CallTimeout is the ceiling on how long one tool call may take
+	// (design/adr/0025-prazo-por-chamada.md). Optional; zero or negative
+	// selects DefaultCallTimeout. Like MaxResultBytes it cannot be switched
+	// off from here -- an operator who needs more time raises the number in
+	// the configuration file, where a reviewer sees it.
+	CallTimeout time.Duration
+
 	// Now supplies the timestamp for audit records and quarantine
 	// observations. Optional; defaults to time.Now. Injected rather than
 	// called directly so tests need no clock dependency, matching how
@@ -301,8 +308,11 @@ type Gateway struct {
 	// nonsensical value to DefaultMaxResultBytes, so there is no way to
 	// hold a Gateway that enforces no ceiling at all.
 	maxResultBytes int64
-	now            func() time.Time
-	log            *slog.Logger
+	// callTimeout is the per-call ceiling, always positive by the same rule
+	// and for the same reason (ADR-0025).
+	callTimeout time.Duration
+	now         func() time.Time
+	log         *slog.Logger
 
 	// refreshMu serializes Connect against Refresh. It is not the same lock
 	// as mu, and it guards a different thing: mu protects the table for the
@@ -516,6 +526,10 @@ func New(cfg Config) (*Gateway, error) {
 	if maxResultBytes <= 0 {
 		maxResultBytes = DefaultMaxResultBytes
 	}
+	callTimeout := cfg.CallTimeout
+	if callTimeout <= 0 {
+		callTimeout = DefaultCallTimeout
+	}
 
 	// The key for the credential digests (see the credKey field). Read
 	// from crypto/rand and never stored: a failure here is fatal to
@@ -540,6 +554,7 @@ func New(cfg Config) (*Gateway, error) {
 		verifier:       cfg.Verifier,
 		requireSig:     cfg.RequireSigned,
 		maxResultBytes: maxResultBytes,
+		callTimeout:    callTimeout,
 		now:            now,
 		log:            logger,
 		conns:          map[string]Upstream{},
@@ -1508,7 +1523,16 @@ func (g *Gateway) Dispatch(ctx context.Context, c Caller, namespacedTool string,
 		return Result{}, err
 	}
 
-	res, err := up.CallTool(ctx, rt.route.originalName, args)
+	// The gateway's own ceiling on one call (ADR-0025), derived from the
+	// caller's context so a client that disconnects still cuts its call
+	// immediately -- whichever comes first wins. Without it, a backend that
+	// accepted the call and never answered held this goroutine and that
+	// upstream's connection until the process restarted, and the audit
+	// reason `upstream timed out` described an event nothing produced.
+	callCtx, cancelCall := context.WithTimeout(ctx, g.callTimeout)
+	defer cancelCall()
+
+	res, err := up.CallTool(callCtx, rt.route.originalName, args)
 	if err != nil {
 		// An analyst's call is usually where a dead backend is noticed
 		// first: Refresh runs on a tick, and this runs whenever somebody

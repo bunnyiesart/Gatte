@@ -46,6 +46,18 @@ var (
 	// the fleet can be confirmed right now" stay distinguishable at both
 	// ends (design/adr/0020 item 4).
 	ErrRegistryUnavailable = errors.New("gateway: upstream registry unavailable")
+	// ErrUpstreamGone means the far end of a live connection is gone: the
+	// backend process exited, or the transport carrying it closed. It is
+	// positive evidence, not a guess -- see the Upstream interface for what
+	// an implementation may and may not wrap it around.
+	//
+	// The distinction it exists to make is the one this project keeps
+	// having to re-make: a backend that did not ANSWER is not a backend
+	// that DIED. A timeout, a cancelled context, a slow container under
+	// load -- none of those are this error, and treating them as this error
+	// would turn a busy afternoon into a fleet-wide respawn
+	// (design/adr/0024).
+	ErrUpstreamGone = errors.New("gateway: upstream is gone")
 )
 
 // NameSeparator joins an upstream's name to a tool's own name to form the
@@ -156,6 +168,21 @@ type Result struct {
 //
 // Implementations are adapters. An Upstream is obtained from a Dialer and
 // must be closed by whoever obtained it.
+// # Reporting that the far end died
+//
+// An implementation that can tell its connection is GONE -- the child
+// process exited, the transport closed under it -- must return an error
+// wrapping [ErrUpstreamGone] from ListTools and CallTool, and must NOT wrap
+// it around anything weaker. "I asked and got no answer in time" is a
+// timeout; "the stream ended" is this. The gateway acts on the second by
+// closing and re-dialing (design/adr/0024), so an implementation that
+// reported the first as the second would respawn healthy backends under
+// load.
+//
+// An implementation that cannot tell simply never returns it, and the
+// gateway's behaviour is what it was before: the upstream stays connected
+// and every call to it fails until a human intervenes. That is the
+// permitted degradation, not a violation.
 type Upstream interface {
 	// ListTools returns everything this upstream advertises.
 	ListTools(ctx context.Context) ([]ToolDef, error)

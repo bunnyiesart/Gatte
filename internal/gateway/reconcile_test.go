@@ -15,6 +15,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"testing"
 
@@ -688,5 +689,284 @@ func TestStatus_ReportsSuspension(t *testing.T) {
 	}
 	if got.Tools != 0 {
 		t.Errorf("Status.Tools = %d, want 0: a suspended fleet routes nothing", got.Tools)
+	}
+}
+
+// -------------------------------------------------------- liveness
+
+// TestReconcile_DeadUpstreamIsClosedAndRedialled is ADR-0024's central
+// claim. Until it, "connected" meant "this Gateway holds an Upstream", and
+// a backend whose process had exited stayed in the live set forever: the
+// registry entry had not changed, so Reconcile left it alone, and every
+// analyst call to it failed until somebody restarted the whole gateway --
+// taking the other three backends down with it.
+func TestReconcile_DeadUpstreamIsClosedAndRedialled(t *testing.T) {
+	h := newHarness(t, "casemgmt.list_cases")
+	h.register("casemgmt")
+	h.serve("casemgmt", def("list_cases", "list cases"))
+	h.mustConnect()
+	h.approve("casemgmt", "list_cases")
+
+	if got := h.listNames(analyst); len(got) != 1 {
+		t.Fatalf("precondition: ListTools = %v, want the tool served", got)
+	}
+
+	// The subprocess exits. What the adapter reports from then on is
+	// ErrUpstreamGone, and the next Refresh is where the gateway meets it.
+	up := h.dialer.upstream("casemgmt")
+	up.mu.Lock()
+	up.listErr = fmt.Errorf("stdio: upstream %q: list tools: %w", "casemgmt", ErrUpstreamGone)
+	up.mu.Unlock()
+
+	if err := h.refresh(); !errors.Is(err, ErrUpstreamUnavailable) {
+		t.Fatalf("Refresh error = %v, want one wrapping ErrUpstreamUnavailable", err)
+	}
+	if n := up.closeCount(); n != 0 {
+		t.Errorf("Refresh closed the connection %d times; closing is Reconcile's job (ADR-0020 item 2)", n)
+	}
+
+	// The backend comes back healthy on the next dial.
+	up.mu.Lock()
+	up.listErr = nil
+	up.mu.Unlock()
+
+	h.mustReconcile()
+
+	if n := up.closeCount(); n != 1 {
+		t.Errorf("the dead connection was closed %d times, want 1", n)
+	}
+	if n := h.dialCount("casemgmt"); n != 2 {
+		t.Errorf("casemgmt dialed %d times, want 2: a dead backend the registry still names must be re-dialled", n)
+	}
+
+	if err := h.refresh(); err != nil {
+		t.Fatalf("Refresh after the re-dial: %v", err)
+	}
+	if got, want := h.listNames(analyst), []string{"casemgmt.list_cases"}; !slices.Equal(got, want) {
+		t.Errorf("ListTools = %v, want %v -- the replacement must serve without an operator restarting anything", got, want)
+	}
+}
+
+// TestReconcile_AnUpstreamThatMerelyFailedToListIsNotRespawned is the other
+// half, and the one that keeps this from being a respawn machine. ADR-0013
+// says it in one line: failing to measure is not evidence that something
+// changed. A backend under load that misses a tools/list is not a dead one,
+// and treating it as dead would turn a busy afternoon into a fleet-wide
+// respawn.
+func TestReconcile_AnUpstreamThatMerelyFailedToListIsNotRespawned(t *testing.T) {
+	h := newHarness(t, "casemgmt.list_cases")
+	h.register("casemgmt")
+	h.serve("casemgmt", def("list_cases", "list cases"))
+	h.mustConnect()
+	h.approve("casemgmt", "list_cases")
+
+	up := h.dialer.upstream("casemgmt")
+	for _, err := range []error{
+		context.DeadlineExceeded,
+		errors.New("connection reset by peer"),
+		fmt.Errorf("stdio: upstream %q: list tools: %w", "casemgmt", context.Canceled),
+	} {
+		up.mu.Lock()
+		up.listErr = err
+		up.mu.Unlock()
+
+		if refreshErr := h.refresh(); refreshErr == nil {
+			t.Fatalf("Refresh with listErr=%v returned no error", err)
+		}
+		h.mustReconcile()
+
+		if n := up.closeCount(); n != 0 {
+			t.Fatalf("a listing failure of %v closed the connection; only ErrUpstreamGone may", err)
+		}
+		if n := h.dialCount("casemgmt"); n != 1 {
+			t.Fatalf("a listing failure of %v caused a re-dial; only ErrUpstreamGone may", err)
+		}
+	}
+}
+
+// TestReconcile_DeathIsAnchoredToTheConnectionNotTheName: a marker written
+// about one connection must never close its replacement.
+//
+// # What this test actually proves, which is not what it first claimed
+//
+// Two mechanisms protect this property, and only the first fires here:
+// retire deletes the marker when it closes the connection, so by the time
+// a replacement exists there is nothing left to consume. The identity
+// comparison inside takeGone is the SECOND, and it is unreachable through
+// the public API for exactly that reason -- measured, by keying the marker
+// by name alone and watching this test stay green.
+//
+// So this is the end-to-end assertion (the replacement survives), and
+// TestTakeGone_IgnoresAMarkerForAReplacedConnection below is the unit-level
+// one that holds the backstop up. Keeping both is deliberate: the day
+// somebody drops the delete from retire -- a one-line edit, in a function
+// whose job is cleanup -- the backstop is what stops a healthy process
+// being killed, and nothing else would catch it.
+func TestReconcile_DeathIsAnchoredToTheConnectionNotTheName(t *testing.T) {
+	h := newHarness(t, "casemgmt.list_cases")
+	h.dialer.mu.Lock()
+	h.dialer.freshPerDial = true
+	h.dialer.mu.Unlock()
+
+	h.register("casemgmt")
+	h.serve("casemgmt", def("list_cases", "list cases"))
+	h.mustConnect()
+
+	first := h.dialer.generation("casemgmt", 0)
+	if first == nil {
+		t.Fatal("no first generation was dialled")
+	}
+
+	// Generation 0 dies.
+	first.mu.Lock()
+	first.listErr = fmt.Errorf("list tools: %w", ErrUpstreamGone)
+	first.mu.Unlock()
+	if err := h.refresh(); err == nil {
+		t.Fatal("Refresh returned no error for a dead upstream")
+	}
+
+	// Before the next round, the operator also changes the entry -- so this
+	// round closes and re-dials for the SPEC change, and generation 1 is a
+	// different object that nobody has said anything about.
+	h.reregister("casemgmt", func(e *registry.UpstreamServer) { e.Command = "/usr/local/bin/casemgmt-v2" })
+	h.serve("casemgmt", def("list_cases", "list cases"))
+	h.mustReconcile()
+
+	second := h.dialer.generation("casemgmt", 1)
+	if second == nil {
+		t.Fatal("the replacement was never dialled")
+	}
+	if second == first {
+		t.Fatal("the fake handed back the same object; freshPerDial is not in effect and this test proves nothing")
+	}
+	if n := h.dialCount("casemgmt"); n != 2 {
+		t.Fatalf("casemgmt dialed %d times, want 2", n)
+	}
+
+	// The round that must do nothing at all. A marker keyed by name alone
+	// would close `second` here -- a healthy process, on the strength of an
+	// observation about its predecessor.
+	h.mustReconcile()
+
+	if n := second.closeCount(); n != 0 {
+		t.Errorf("the replacement was closed %d times: a death marker about the PREVIOUS connection killed it", n)
+	}
+	if n := h.dialCount("casemgmt"); n != 2 {
+		t.Errorf("casemgmt dialed %d times, want 2: nothing should have been re-dialled", n)
+	}
+	if n := first.closeCount(); n != 1 {
+		t.Errorf("the dead generation was closed %d times, want 1", n)
+	}
+}
+
+// TestDispatch_ADeadUpstreamIsAuditedAsGone: the trail has to separate "the
+// backend answered badly" from "the backend is not running", because they
+// send an operator to different places.
+func TestDispatch_ADeadUpstreamIsAuditedAsGone(t *testing.T) {
+	h := newHarness(t, "casemgmt.list_cases")
+	h.register("casemgmt")
+	h.serve("casemgmt", def("list_cases", "list cases"))
+	h.mustConnect()
+	h.approve("casemgmt", "list_cases")
+
+	up := h.dialer.upstream("casemgmt")
+	up.mu.Lock()
+	up.callErr = fmt.Errorf("stdio: upstream %q: call tool: %w", "casemgmt", ErrUpstreamGone)
+	up.mu.Unlock()
+
+	if _, err := h.gw.Dispatch(context.Background(), fromAnalyst, "casemgmt.list_cases", json.RawMessage(`{}`)); err == nil {
+		t.Fatal("Dispatch to a dead upstream returned no error")
+	}
+
+	rows := h.auditRows()
+	last := rows[len(rows)-1]
+	if last.Outcome != audit.OutcomeFailed || last.Reason != reasonUpstreamGone {
+		t.Errorf("audit row = {%s, %q}, want {%s, %q}", last.Outcome, last.Reason, audit.OutcomeFailed, reasonUpstreamGone)
+	}
+
+	// And the call taught the gateway something the tick had not seen yet.
+	up.mu.Lock()
+	up.callErr = nil
+	up.mu.Unlock()
+	h.mustReconcile()
+	if n := h.dialCount("casemgmt"); n != 2 {
+		t.Errorf("casemgmt dialed %d times, want 2: a death noticed by a CALL must be repaired too", n)
+	}
+}
+
+// TestDispatch_AFailedCallThatIsNotDeathRepairsNothing is the negative of
+// the test above, and it is the one that keeps the repair path from
+// becoming a respawn path. Dispatch marks an upstream dead only for
+// ErrUpstreamGone; every other call failure -- a timeout, a cancellation,
+// a backend that simply errored -- must leave the connection alone.
+func TestDispatch_AFailedCallThatIsNotDeathRepairsNothing(t *testing.T) {
+	h := newHarness(t, "casemgmt.list_cases")
+	h.register("casemgmt")
+	h.serve("casemgmt", def("list_cases", "list cases"))
+	h.mustConnect()
+	h.approve("casemgmt", "list_cases")
+
+	up := h.dialer.upstream("casemgmt")
+	for _, callErr := range []error{
+		context.DeadlineExceeded,
+		context.Canceled,
+		errors.New("backend refused the call"),
+		fmt.Errorf("stdio: upstream %q: call tool: %w", "casemgmt", errors.New("broken pipe")),
+	} {
+		up.mu.Lock()
+		up.callErr = callErr
+		up.mu.Unlock()
+
+		if _, err := h.gw.Dispatch(context.Background(), fromAnalyst, "casemgmt.list_cases", json.RawMessage(`{}`)); err == nil {
+			t.Fatalf("Dispatch with callErr=%v returned no error", callErr)
+		}
+		h.mustReconcile()
+
+		if n := up.closeCount(); n != 0 {
+			t.Fatalf("a call failing with %v closed the connection; only ErrUpstreamGone may", callErr)
+		}
+		if n := h.dialCount("casemgmt"); n != 1 {
+			t.Fatalf("a call failing with %v caused a re-dial; only ErrUpstreamGone may", callErr)
+		}
+	}
+}
+
+// TestTakeGone_IgnoresAMarkerForAReplacedConnection holds up the backstop
+// the test above cannot reach.
+//
+// It builds the situation by hand because no sequence of Reconcile calls
+// produces it today: retire clears the marker whenever it closes something,
+// so a marker never meets a different live connection. That is an
+// invariant of one line inside retire, not of the design -- this asserts
+// what happens when that line is gone.
+func TestTakeGone_IgnoresAMarkerForAReplacedConnection(t *testing.T) {
+	h := newHarness(t, "casemgmt.list_cases")
+	h.dialer.mu.Lock()
+	h.dialer.freshPerDial = true
+	h.dialer.mu.Unlock()
+	h.register("casemgmt")
+	h.serve("casemgmt", def("list_cases", "list cases"))
+	h.mustConnect()
+
+	first := h.dialer.generation("casemgmt", 0)
+	h.gw.markGone("casemgmt", first)
+
+	// The connection is replaced WITHOUT going through retire, which is the
+	// only way to reach this state.
+	second := &fakeUpstream{}
+	h.gw.mu.Lock()
+	h.gw.conns["casemgmt"] = second
+	h.gw.mu.Unlock()
+
+	if h.gw.takeGone("casemgmt", second) {
+		t.Error("a marker written about the previous connection was accepted for its replacement; a healthy process would be closed on the strength of an observation about a different one")
+	}
+
+	// And the marker is consumed either way, so it cannot resurface later.
+	h.gw.mu.RLock()
+	_, still := h.gw.gone["casemgmt"]
+	h.gw.mu.RUnlock()
+	if still {
+		t.Error("the marker survived the read; a stale marker is the thing this design must not keep")
 	}
 }

@@ -40,6 +40,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -362,7 +363,7 @@ func (u *upstream) ListTools(ctx context.Context) ([]gateway.ToolDef, error) {
 	var defs []gateway.ToolDef
 	for tool, err := range u.session.Tools(ctx, nil) {
 		if err != nil {
-			return nil, fmt.Errorf("stdio: upstream %q: list tools: %w", u.name, err)
+			return nil, fmt.Errorf("stdio: upstream %q: list tools: %w", u.name, u.classify(err))
 		}
 		schema, err := rawJSON(tool.InputSchema)
 		if err != nil {
@@ -409,7 +410,7 @@ func (u *upstream) CallTool(ctx context.Context, tool string, args json.RawMessa
 
 	res, err := u.session.CallTool(ctx, params)
 	if err != nil {
-		return gateway.Result{}, fmt.Errorf("stdio: upstream %q: call tool %q: %w", u.name, tool, err)
+		return gateway.Result{}, fmt.Errorf("stdio: upstream %q: call tool %q: %w", u.name, tool, u.classify(err))
 	}
 
 	// A result with no content is rendered as an empty JSON array rather
@@ -449,6 +450,65 @@ func (u *upstream) CallTool(ctx context.Context, tool string, args json.RawMessa
 	return gateway.Result{Content: content, StructuredContent: structured, IsError: res.IsError}, nil
 }
 
+// isGone reports the two errors that mean the child's stream ended, and
+// nothing else.
+//
+// Both were measured against a fixture that really exits
+// (testdata/dyingfixture), which is why there are two: the SDK does NOT
+// report them interchangeably.
+//
+//   - The call that is IN FLIGHT when the process dies comes back as a bare
+//     io.EOF, wrapped as `calling "tools/call": EOF`. The design for
+//     ADR-0024 predicted mcp.ErrConnectionClosed here and was wrong; the
+//     test caught it.
+//   - Every call AFTER that gets mcp.ErrConnectionClosed, because by then
+//     the session knows.
+//
+// Matching only the second would have made the gateway blind to exactly
+// the event an analyst experiences -- the call that was in flight when the
+// backend died -- and would have deferred repair to the next tick.
+//
+// Nothing else is added here without a fixture that produces it. A
+// timeout, a cancelled context, a tool that errors and a result that will
+// not marshal are all failures that leave the process alive, and treating
+// any of them as death is how a health check becomes a respawn loop
+// (ADR-0024).
+func isGone(err error) bool {
+	return errors.Is(err, mcp.ErrConnectionClosed) || errors.Is(err, io.EOF)
+}
+
+// classify turns the SDK errors that mean "the far end is gone" into
+// gateway.ErrUpstreamGone, and leaves every other error exactly as it was.
+//
+// # Why the closed check happens HERE, after the error, and not only on the
+// way in
+//
+// ListTools and CallTool both check u.closed on entry, and that check does
+// NOT cover this: a call can pass the entry check, reach the session, and
+// be in flight when another goroutine runs Close -- which sets the flag and
+// then closes the session, so the in-flight call comes back with
+// ErrConnectionClosed for a connection WE shut down. Measured while
+// designing ADR-0024: 194 of 300 in-flight calls crossing a concurrent
+// Close reported the SDK's closed error.
+//
+// Reporting that as death would make the gateway respawn a backend it was
+// deliberately retiring -- during a reconciliation that closed it because
+// the operator deregistered it. So the flag is re-read after the error, and
+// a closed upstream never reports gone. The race is covered by
+// TestCallToolDuringCloseIsNotReportedGone; if that test is deleted, this
+// comment becomes the only thing holding the property up.
+func (u *upstream) classify(err error) error {
+	if err == nil || !isGone(err) {
+		return err
+	}
+	if u.closed.Load() {
+		// Our own teardown, observed from inside a call that was already
+		// on its way. Not death: ErrClosed is what this is.
+		return fmt.Errorf("%w: %w", ErrClosed, err)
+	}
+	return fmt.Errorf("%w: %w", gateway.ErrUpstreamGone, err)
+}
+
 // Close implements [gateway.Upstream]: it shuts the session down, which
 // closes the child's stdin, waits for it to exit, and escalates to SIGTERM
 // and then SIGKILL if it does not. When Close returns, the child has been
@@ -459,6 +519,11 @@ func (u *upstream) CallTool(ctx context.Context, tool string, args json.RawMessa
 // again. The closed flag is set *before* the session is torn down so that a
 // concurrent ListTools or CallTool fails fast instead of racing a
 // half-closed connection.
+//
+// Fast-failing is NOT the same as reporting the far end gone: a call that
+// passed the entry check before this flag was set is still in flight, and
+// classify re-reads the flag after the error precisely so that our own
+// teardown is never mistaken for the backend dying (ADR-0024 item 2).
 func (u *upstream) Close() error {
 	u.closeOnce.Do(func() {
 		u.closed.Store(true)

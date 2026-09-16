@@ -240,9 +240,31 @@ type Heartbeat struct {
 	// Empty is a real answer, not a missing one: a gateway that booted and
 	// served nobody has no head of its own to report, and inventing one by
 	// reading the database would make the field mean something different
-	// on quiet nights than on busy ones. The anchor derives the true head
-	// from the shipped lines themselves (deploy/gatte-anchor-verify.sh);
-	// this field is a cross-check and a way to watch the head advance.
+	// on quiet nights than on busy ones.
+	//
+	// # It is the LAST LINE EMITTED, which under concurrency is not always
+	// the chain's head
+	//
+	// RecordChained updates this after its own Emit returns, and two
+	// concurrent calls can commit in one order and emit in the other. When
+	// that happens the field carries the hash of the record that was
+	// emitted last rather than the one that is last in the chain, so it can
+	// appear to go backwards between two heartbeats on a busy gateway.
+	//
+	// That is a property and not a bug to fix here, and the alternative was
+	// weighed: making it a true head means a total order the sink can
+	// compare, which means widening audit.ChainLink with a sequence number
+	// -- a port kept deliberately narrow (see audit.ChainLink's own doc).
+	// Not worth it, because nothing depends on this field being the head:
+	// the anchor derives the true head from the shipped lines themselves
+	// (deploy/gatte-anchor-verify.sh), which is set arithmetic over
+	// prev/hash links and is unaffected by emission order.
+	//
+	// So read it as "the last line this process shipped", which is a
+	// liveness signal -- a value that stops changing while `records` keeps
+	// climbing is a sink that stopped anchoring -- and not as an integrity
+	// one. This comment said "a way to watch the head advance" until
+	// 15 Sep 2026, which invited exactly the reading it cannot support.
 	Head string `json:"head"`
 	// Records is how many audit lines this process has emitted since Boot.
 	Records uint64 `json:"records"`

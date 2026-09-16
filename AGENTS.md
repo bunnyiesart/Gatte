@@ -6,10 +6,13 @@ is still undecided; it does not re-explain *why* — that lives in
 `DEVELOPMENT-LOG.md` and `design/adr/*.md`, linked inline below where the
 reasoning actually matters for a decision you'd otherwise second-guess.
 
-**Status as of 09 Sep 2026: Phases 1–6 are done — the binary runs.**
+**Status as of 15 Sep 2026: all seven phases are closed — the binary runs.**
 Language is Go (§3). `cmd/mcp-gateway` is the composition root; `serve`,
-`upstream`, `tool`, `sign` and `audit` all exist. Phase 7 (the hardening
-pass, §2 "Security controls not yet designed") is what remains. See
+`upstream`, `tool`, `sign` and `audit` all exist. What remains is filed
+work, not a phase, and `WORKFLOW.md`'s Progress list is where it is filed.
+This header said "Phases 1–6 … Phase 7 is what remains" for six days after
+Phase 7 closed, which is exactly the drift the next sentence exists to
+prevent. See
 `WORKFLOW.md`'s Progress checklist for the authoritative per-phase state —
 keep it updated as work lands, so the next agent doesn't have to
 reconstruct where things stand from git history alone.
@@ -166,8 +169,12 @@ below is actually satisfied, not before.
    history; don't assume a later "sounds good" on an unrelated question
    counts as that confirmation.
 2. Resolve §3 (language).
-3. Read `docs/context/05-testabilidade-e-contratos.md` before
-   the first class is written — ports & adapters (domain never touches
+3. Read `context/05-testabilidade-e-contratos.md` before
+   the first class is written — it is in the EXTERNAL corpus (§6), not in
+   this repository, and until ADR-0022 this instruction named it under a
+   `docs/` prefix — a path no clone has ever had. If you cannot reach the
+   corpus, the rule it teaches is the one the whole codebase demonstrates:
+   ports & adapters (domain never touches
    Docker/SQLite/HTTP directly), dependency injection by constructor,
    pre/post-conditions per public method. This project has been designed
    against that methodology throughout; implementation should be too.
@@ -179,7 +186,7 @@ below is actually satisfied, not before.
    `probe.py` and Docker mock servers this file used to name were never
    committed; see `lab/README.md`, which is authoritative here.
 5. Write fitness functions early, not after the fact —
-   `docs/context/07-fitness-functions.md`. The concrete one
+   `context/07-fitness-functions.md`. The concrete one
    already named: nothing outside `Credential Vault`'s public interface
    may read a secret value directly (`design/adr/0001` Compliance section).
 
@@ -193,12 +200,18 @@ below is actually satisfied, not before.
 - `design/02-components.md`, `design/03-style.md` — full derivation of §2.
 - `design/adr/0001-0010` — one file per significant decision, with
   Contexto/Decisão/Consequências in the format
-  `docs/context/04-adrs.md` specifies. **Any new significant
+  `context/04-adrs.md` specifies. **Any new significant
   decision made during implementation gets its own `000N-*.md` file here,
   not a comment buried in code or a chat message.**
 - `lab/` — the reusable test harness (mock servers + probe + leak check).
 - `WORKFLOW.md` — the phased implementation order and progress tracker;
   see §4.
-- `docs/context/` — the software-architecture methodology this
-  entire project has followed. Not project-specific; applies to any build
-  decision here, present or future.
+- `context/` — the software-architecture methodology this entire project
+  has followed. **It is NOT in this repository and never was**
+  (`design/adr/0022-metodologia-de-arquitetura-externa.md`): the seven
+  files, `01-descoberta-e-pensamento-arquitetural.md` through
+  `07-fitness-functions.md`, live beside this repository at
+  `soc-n1-v2/context-new/`. Distilled from four copyrighted books, which is
+  why a public repository with no LICENSE does not carry them. Every `context/…`
+  citation in this repository means that corpus. Not project-specific;
+  applies to any build decision here, present or future.

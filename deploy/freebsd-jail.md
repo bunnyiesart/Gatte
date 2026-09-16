@@ -281,10 +281,16 @@ ever sit at the start of a database. **This fired for real on 12 Sep
 2026**, caused by `gateway-serve-verify.sh`, which wipes the database by
 design on every run and now warns before doing it.
 
-What the script does *not* do is run itself. There is still no Graylog
-alert for "lines stopped arriving for this chain", which is what a dead —
-or deliberately killed — shipper looks like, and a shipper that stops is
-indistinguishable from a gateway that went quiet.
+What the script does *not* do is run itself: nothing schedules it, and
+that half is still a human's job.
+
+The other half of this paragraph was closed on 15 Sep 2026 and the text
+outlived it by a day. It used to say there was still no Graylog alert for
+"lines stopped arriving for this chain" — there is one now, and the recipe
+is ninety lines above under "Alerting on a chain that went quiet". A
+shipper that stopped and a gateway that went quiet stopped being
+indistinguishable when the heartbeat started arriving whether or not
+anybody called anything (ADR-0021).
 
 Five things this deployment owns, because the gateway cannot:
 

@@ -20,7 +20,7 @@
 // tool through with its siblings) would be the wrong answer either way.
 //
 // Per the ports & adapters split this project follows
-// (docs/context/05-testabilidade-e-contratos.md), this package
+// (context/05-testabilidade-e-contratos.md), this package
 // contains no reference to database/sql, SQL, or any other infrastructure
 // detail. The sqlite subpackage is the adapter. The state-transition rules
 // live here, as pure functions on Tool -- deliberately not in SQL, so they

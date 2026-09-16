@@ -8,7 +8,7 @@ truth instead of three documents that each know only part of the story.
 - Round 2 (29 Aug 2026, morning): formal decision document → `doc/mcp-gateway-decision.html`
 - Round 3 (29 Aug 2026, evening): hands-on lab against 5 candidates → `doc/test-report.html`, `lab/`
 - Round 4 (31 Aug 2026): decision — **build our own**. This file, plus resuming
-  research with `docs/context/` (the software-architecture dev
+  research with `context/` (the software-architecture dev
   context) as the method for how to do it.
 
 ---
@@ -21,8 +21,10 @@ truth instead of three documents that each know only part of the story.
 > one call will call others, i don't understand a lot of this concept."
 
 `dev-context` did not exist in this project directory at the time (Round 1)
-and was researched without it. It has since been located at
-`docs/context/` — see §6.
+and was researched without it. It has since been located OUTSIDE this
+repository, at `soc-n1-v2/context-new/`, and was never committed here — see
+§8 (this pointed at §6, which is a different section). ADR-0022 records why
+it stays external.
 
 ## 2. What a "gateway" actually bundles — four unrelated jobs
 
@@ -200,13 +202,17 @@ the dev context, §8):
   accepting it as a default.
 - **Threat model is already scoped:** LGPD/data-egress (§3) rules out any
   cloud-touching component; the four real backends and their credential
-  shapes are already known (§3 table) and the lab's mock servers
-  (`lab/servers/mock_mcp.py`) can be reused directly for testing the new
-  build without touching production credentials.
+  shapes are already known (§3 table) and the lab's mock servers can be
+  reused directly for testing the new build without touching production
+  credentials. (This named `lab/servers/mock_mcp.py`, a Python file that
+  was never committed — the mocks that exist are Go, one package per
+  backend under `lab/servers/`. `lab/README.md` is authoritative and
+  `AGENTS.md` §5 carries the same correction.)
 
-## 8. The dev context (found)
+## 8. The dev context (external)
 
-`docs/context/` — software-architecture reference distilled from
+`context/`, which lives at `soc-n1-v2/context-new/` and not in this
+repository — software-architecture reference distilled from
 four books (*Fundamentals of Software Architecture*, *Head First Software
 Architecture*, *The Hard Parts*, *Effective Software Testing*). Not project-
 specific; it's the method to use for *any* build decision in this repo.

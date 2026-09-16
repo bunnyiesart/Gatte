@@ -177,7 +177,7 @@ component graph in `design/02-components.md`:
 - SQLite schema for both (`design/02-components.md`: registry holds
   server config; audit holds one row per call — analyst identity, tool,
   target upstream, timestamp).
-- Port/adapter split from the start (`docs/context/
+- Port/adapter split from the start (`context/
   05-testabilidade-e-contratos.md`) — domain logic (what a valid registry
   entry looks like, what an audit record requires) behind an interface;
   SQLite access is the adapter, gets integration tests, not unit tests.
@@ -541,16 +541,22 @@ Address what `AGENTS.md` §2 names as explicitly undesigned:
 Applies throughout every phase above, not as a separate step:
 
 - **ADR discipline** — any new significant decision (per the criteria in
-  `docs/context/04-adrs.md` §2) gets its own
+  `context/04-adrs.md` §2) gets its own
   `design/adr/000N-*.md` file, numbered sequentially, same day it's made.
   Don't accumulate undocumented decisions "to write up later."
 - **Fitness functions** — write the check when you write the rule it
   enforces, not after a violation is found. The concrete one already named
   (`design/adr/0001` Compliance): nothing outside `Credential Vault`'s
   public interface reads a secret value directly.
-- **Testing pyramid** (`docs/context/06-testes-sistematicos.md`
-  — not yet read in this project; read it before Phase 1's tests are
-  written, not after).
+- **Testing pyramid** (`context/06-testes-sistematicos.md`, external —
+  ADR-0022). This line said "not yet read in this project; read it before
+  Phase 1's tests are written, not after" from Phase 1 until 15 Sep 2026,
+  in the present tense, with all seven phases closed behind it. Recording
+  what happened instead of what should have: the gate stayed open, the
+  tests were written without it, and what they are worth has to be judged
+  from the tests themselves — which is what the mutation checks in the
+  15 Sep review did, finding three that passed with the behaviour
+  inverted.
 
 ## Definition of done for v1
 

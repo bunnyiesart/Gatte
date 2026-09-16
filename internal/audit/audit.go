@@ -5,7 +5,7 @@
 // implement.
 //
 // Per the ports & adapters split this project follows
-// (docs/context/05-testabilidade-e-contratos.md), this package
+// (context/05-testabilidade-e-contratos.md), this package
 // contains no reference to database/sql, SQL, or any other infrastructure
 // detail. The sqlite subpackage is the adapter.
 //

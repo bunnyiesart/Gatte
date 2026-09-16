@@ -19,7 +19,7 @@
 // the remedy. See deploy/freebsd-jail.md ("Rotating credentials").
 //
 // Per the ports & adapters split this project follows
-// (docs/context/05-testabilidade-e-contratos.md), this package
+// (context/05-testabilidade-e-contratos.md), this package
 // contains no reference to sops, age, os/exec, or any other
 // infrastructure detail. The sopsage subpackage is the adapter.
 package vault

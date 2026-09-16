@@ -1,7 +1,7 @@
 // Package sqlite is the SQLite adapter for the Audit Trail component's
 // domain package, internal/audit. It is the only place SQL for the audit
 // trail lives -- per the ports & adapters split
-// (docs/context/05-testabilidade-e-contratos.md), the audit
+// (context/05-testabilidade-e-contratos.md), the audit
 // package itself contains no infrastructure detail.
 package sqlite
 

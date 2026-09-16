@@ -3,7 +3,7 @@
 // they may reach, and it is where the client's own credential stops.
 //
 // Per the ports & adapters split this project follows
-// (docs/context/05-testabilidade-e-contratos.md), this package
+// (context/05-testabilidade-e-contratos.md), this package
 // contains no reference to HTTP, JWT libraries, or any identity provider.
 // The oidc subpackage is the adapter. [ResourceIdentifier] parses a URI and
 // reads a scheme, which is the closest this package comes to the wire and

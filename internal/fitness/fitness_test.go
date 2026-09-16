@@ -1,5 +1,5 @@
 // Package fitness holds architectural fitness functions
-// (docs/context/07-fitness-functions.md): automated,
+// (context/07-fitness-functions.md): automated,
 // continuously-run checks for structural rules that a code review would
 // otherwise have to catch by hand, and easily miss.
 //

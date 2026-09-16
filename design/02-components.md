@@ -1,6 +1,6 @@
 # Phase 2 — Logical components
 
-Follows `docs/context/02-componentes-logicos.md`. Written as an
+Follows `context/02-componentes-logicos.md` (corpus externo, ver `AGENTS.md` §6 e ADR-0022). Written as an
 informed first draft per the method's own rule, and **kept as the record of
 the derivation, not as a description of the built system.** Phases 1-6 have
 since shipped; where this document and the code disagree, the code and the

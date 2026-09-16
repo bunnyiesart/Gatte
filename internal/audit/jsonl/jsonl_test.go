@@ -696,9 +696,15 @@ func TestHeartbeatCarriesExactlyTheDeclaredSchema(t *testing.T) {
 }
 
 // TestHeartbeatCarriesTheHeadItEmitted: the head on a heartbeat is the
-// hash of the last audit line THIS PROCESS shipped, which is what makes a
-// head that stops advancing -- or goes backwards -- visible in the SIEM
-// without walking the chain.
+// hash of the last audit line THIS PROCESS shipped -- a liveness signal,
+// so that a sink which stopped anchoring shows up as a value that stops
+// changing while `records` keeps climbing.
+//
+// Not an integrity signal, and the serial case below is the only one where
+// it coincides with the chain's head: under concurrent writers the emit
+// order can differ from the commit order, so this field can go backwards
+// with nothing wrong. See the Head field's own doc comment for why that is
+// accepted rather than fixed.
 func TestHeartbeatCarriesTheHeadItEmitted(t *testing.T) {
 	h := newHarness(t)
 

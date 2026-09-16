@@ -127,6 +127,26 @@ From `design/adr/0003-security-controls.md`'s explicit "not covered" list:
 
   **Still open, and not claimed:** no latency or saturation metrics, and no
   per-upstream health beyond alive-or-gone.
+- **No concurrency limit per identity.** ADR-0025 put a ceiling on how long
+  one call may take, which guarantees every slot frees in finite time. It
+  does not bound how many an authorised analyst may hold at once, and
+  nothing else does either. For seven analysts against four backends that
+  has not been worth a mechanism; it is written here so the next person
+  measuring a slow afternoon does not have to rediscover that the limit
+  they are looking for was never built.
+- **The four stdio backends run as the gateway's own user.** They are the
+  least trusted code in the system -- third-party MCP servers -- and
+  nothing isolates them from the process that holds every credential: no
+  separate uid, no nested jail, no Capsicum. ADR-0003 accepted "one host,
+  one service account" and never named this consequence. Isolating them is
+  platform work this team has no role to operate; the gap is real and is
+  declared rather than closed.
+- **A flood of unauthenticated requests competes with real traffic for the
+  audit database.** Every rejected request writes a row (ADR-0012, and the
+  row is the detection), through the same single SQLite writer that
+  `Dispatch` must use before it forwards anything. Nothing rate-limits it.
+  ADR-0012 declared the growth; it did not name the contention, which is
+  the half that reaches an analyst.
 - **Response validation** — designed and built 10 Sep 2026
   (`design/adr/0014-response-validation-scope.md`), and the entry that
   stood here was wrong in a way worth keeping visible: it called this

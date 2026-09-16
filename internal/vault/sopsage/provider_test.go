@@ -1,12 +1,17 @@
 package sopsage_test
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/bunnyiesart/Gatte/internal/vault"
@@ -192,5 +197,256 @@ func TestDecryptErrorDoesNotCarrySopsStderr(t *testing.T) {
 		if containsFold(msg, forbidden) {
 			t.Errorf("LEAK: the decrypt error carries %q: %q", forbidden, msg)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Rotation (ADR-0023)
+// ---------------------------------------------------------------------------
+
+// reEncrypt replaces the encrypted file in place with a new document, the
+// way `sops secrets.json` does for an operator rotating a credential.
+func reEncrypt(t *testing.T, secretsFile, ageKeyFile string, secrets map[string]string) {
+	t.Helper()
+
+	// The recipient is recoverable from the identity file: age-keygen wrote
+	// the public key into it as a comment, and sops needs the recipient,
+	// not the identity, to encrypt.
+	identity, err := os.ReadFile(ageKeyFile)
+	if err != nil {
+		t.Fatalf("read age identity: %v", err)
+	}
+	var recipient string
+	for _, line := range strings.Split(string(identity), "\n") {
+		if _, after, ok := strings.Cut(line, "# public key: "); ok {
+			recipient = strings.TrimSpace(after)
+		}
+	}
+	if recipient == "" {
+		t.Fatalf("no recipient in %s; the fixture's shape changed", ageKeyFile)
+	}
+
+	plainJSON, err := json.Marshal(secrets)
+	if err != nil {
+		t.Fatalf("marshal rotated secrets: %v", err)
+	}
+	dir := t.TempDir()
+	plainFile := filepath.Join(dir, "plain.json")
+	if err := os.WriteFile(plainFile, plainJSON, 0o600); err != nil {
+		t.Fatalf("write rotated plaintext: %v", err)
+	}
+
+	var encrypted, stderr bytes.Buffer
+	cmd := exec.Command("sops", "--encrypt", "--age", recipient,
+		"--input-type", "json", "--output-type", "json", plainFile)
+	cmd.Stdout = &encrypted
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("sops --encrypt: %v: %s", err, stderr.String())
+	}
+	if err := os.WriteFile(secretsFile, encrypted.Bytes(), 0o600); err != nil {
+		t.Fatalf("rewrite encrypted fixture: %v", err)
+	}
+}
+
+// TestResolveSeesARotationAfterTheFileChanges is the one that makes
+// GAB-20's drift detection able to fire at all.
+//
+// Until ADR-0023 the Provider decrypted once and answered from a frozen
+// map, so gateway.CredentialDrift -- which compares a digest taken at dial
+// time against what Resolve returns now -- compared a value against itself.
+// The control ran every tick, was documented in three places as working,
+// and could not report a rotation. This test is the shape of that whole
+// defect in six lines.
+func TestResolveSeesARotationAfterTheFileChanges(t *testing.T) {
+	const before, after = "vt-key-before-rotation", "vt-key-AFTER-rotation"
+
+	secretsFile, ageKeyFile := newFixture(t, map[string]string{"VT_API_KEY": before})
+	p, err := sopsage.New(context.Background(), secretsFile, ageKeyFile)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	got, err := p.Resolve(context.Background(), "VT_API_KEY")
+	if err != nil {
+		t.Fatalf("Resolve before rotation: %v", err)
+	}
+	if got.Value() != before {
+		t.Fatalf("Resolve = %q, want %q", got.Value(), before)
+	}
+
+	reEncrypt(t, secretsFile, ageKeyFile, map[string]string{"VT_API_KEY": after})
+
+	got, err = p.Resolve(context.Background(), "VT_API_KEY")
+	if err != nil {
+		t.Fatalf("Resolve after rotation: %v", err)
+	}
+	if got.Value() != after {
+		t.Errorf("Resolve = %q, want %q -- a rotation the operator performed is invisible, which is what made the drift warning inert", got.Value(), after)
+	}
+}
+
+// TestResolveKeepsTheOldValueWhenTheFileGoesUnreadable is ADR-0023 item 2,
+// and it is the same rule ADR-0013 sets for the quarantine: failing to
+// measure is not evidence that something changed. A vault file that cannot
+// be read for a moment must not stop the fleet from dialing.
+func TestResolveKeepsTheOldValueWhenTheFileGoesUnreadable(t *testing.T) {
+	const value = "vt-key-that-must-survive"
+
+	secretsFile, ageKeyFile := newFixture(t, map[string]string{"VT_API_KEY": value})
+	p, err := sopsage.New(context.Background(), secretsFile, ageKeyFile)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, err := p.Resolve(context.Background(), "VT_API_KEY"); err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	// Gone, mid-incident.
+	if err := os.Remove(secretsFile); err != nil {
+		t.Fatalf("remove secrets file: %v", err)
+	}
+
+	got, err := p.Resolve(context.Background(), "VT_API_KEY")
+	if err != nil {
+		t.Fatalf("Resolve with the file gone = %v, want the previous value: an unreadable vault must not fail every dial", err)
+	}
+	if got.Value() != value {
+		t.Errorf("Resolve = %q, want %q", got.Value(), value)
+	}
+
+	// And a file that is present but no longer decryptable is the same
+	// case: a rotation caught half-written decrypts to garbage.
+	if err := os.WriteFile(secretsFile, []byte("not sops output at all"), 0o600); err != nil {
+		t.Fatalf("write garbage: %v", err)
+	}
+	got, err = p.Resolve(context.Background(), "VT_API_KEY")
+	if err != nil {
+		t.Fatalf("Resolve with an undecryptable file = %v, want the previous value", err)
+	}
+	if got.Value() != value {
+		t.Errorf("Resolve = %q, want %q", got.Value(), value)
+	}
+}
+
+// TestResolveDoesNotReDecryptWhenNothingChanged pins the cost side of
+// ADR-0023 -- and, in the same assertion, the blind spot item 3 declares.
+//
+// The file is rewritten with a DIFFERENT value and then its modification
+// time and size are restored, which is exactly the shape the stamp cannot
+// see. The Provider must answer with the old value: proof that it did not
+// re-run sops, because if it had it would have the new one.
+//
+// Read the failure of this test carefully if it ever comes: "it returned
+// the new value" does not mean the vault got better, it means the cheap
+// change-detection was replaced by something that reads the file every
+// time, which is the option ADR-0023 rejected.
+func TestResolveDoesNotReDecryptWhenNothingChanged(t *testing.T) {
+	const before, after = "aaaaaaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbbbbbb" // same length
+
+	secretsFile, ageKeyFile := newFixture(t, map[string]string{"VT_API_KEY": before})
+	p, err := sopsage.New(context.Background(), secretsFile, ageKeyFile)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, err := p.Resolve(context.Background(), "VT_API_KEY"); err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	info, err := os.Stat(secretsFile)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	reEncrypt(t, secretsFile, ageKeyFile, map[string]string{"VT_API_KEY": after})
+	rotated, err := os.Stat(secretsFile)
+	if err != nil {
+		t.Fatalf("stat after rotation: %v", err)
+	}
+	if rotated.Size() != info.Size() {
+		t.Skipf("the re-encrypted file changed size (%d -> %d), so the stamp legitimately sees it; this test needs a same-size rewrite",
+			info.Size(), rotated.Size())
+	}
+	if err := os.Chtimes(secretsFile, info.ModTime(), info.ModTime()); err != nil {
+		t.Fatalf("restore mtime: %v", err)
+	}
+
+	got, err := p.Resolve(context.Background(), "VT_API_KEY")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if got.Value() != before {
+		t.Errorf("Resolve = %q, want %q -- the file's stamp did not move, so nothing should have been re-decrypted", got.Value(), before)
+	}
+}
+
+// TestReloadFailureReachesTheHandler is the signal that did not exist
+// between 15 and 16 Sep 2026 while three comments and an ADR said it did.
+//
+// The property is not "an error is returned" -- Resolve deliberately keeps
+// answering from the last good copy, because a briefly unreadable file must
+// not stop the fleet from dialing. The property is that somebody is TOLD:
+// a gateway serving credentials it can no longer confirm, with a drift
+// warning that is inert until the file comes back, is exactly the silent
+// state ADR-0023 exists to end.
+func TestReloadFailureReachesTheHandler(t *testing.T) {
+	const value = "vt-key-under-test"
+
+	secretsFile, ageKeyFile := newFixture(t, map[string]string{"VT_API_KEY": value})
+
+	var mu sync.Mutex
+	var reports []string
+	p, err := sopsage.New(context.Background(), secretsFile, ageKeyFile,
+		sopsage.WithReloadErrorHandler(func(err error) {
+			mu.Lock()
+			defer mu.Unlock()
+			reports = append(reports, err.Error())
+		}))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	said := func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Clone(reports)
+	}
+
+	// Healthy: nothing to say.
+	if _, err := p.Resolve(context.Background(), "VT_API_KEY"); err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if got := said(); len(got) != 0 {
+		t.Fatalf("the handler was called %d times on a healthy vault: %v", len(got), got)
+	}
+
+	// The file goes away mid-incident.
+	if err := os.Remove(secretsFile); err != nil {
+		t.Fatalf("remove secrets file: %v", err)
+	}
+	for range 5 {
+		if _, err := p.Resolve(context.Background(), "VT_API_KEY"); err != nil {
+			t.Fatalf("Resolve while unreadable: %v", err)
+		}
+	}
+
+	got := said()
+	if len(got) != 1 {
+		t.Fatalf("the handler was called %d times across five Resolves, want exactly 1: it is edge-triggered so one incident is one line, and a silent failure is the defect this test exists for.\n%v", len(got), got)
+	}
+	if !strings.Contains(got[0], secretsFile) {
+		t.Errorf("the report does not name the file: %q", got[0])
+	}
+	if strings.Contains(got[0], value) {
+		t.Errorf("LEAK: the report carries the secret: %q", got[0])
+	}
+
+	// And the recovery is said too, once.
+	reEncrypt(t, secretsFile, ageKeyFile, map[string]string{"VT_API_KEY": value})
+	for range 3 {
+		if _, err := p.Resolve(context.Background(), "VT_API_KEY"); err != nil {
+			t.Fatalf("Resolve after recovery: %v", err)
+		}
+	}
+	if got := said(); len(got) != 2 {
+		t.Errorf("the handler was called %d times in total, want 2 (one failure, one recovery): %v", len(got), got)
 	}
 }

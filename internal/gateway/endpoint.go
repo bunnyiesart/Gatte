@@ -137,6 +137,12 @@ const (
 	// The value of the record is not the cause. It is that the attempt
 	// existed, when it was, and where it came from.
 	reasonAuthFailed = "authentication failed"
+	// reasonAuthFlood means this source went over the ceiling on how many
+	// authentication failures are written durably, and this is the one line
+	// that says so for the window (design/adr/0027). It is what keeps the
+	// suppression from being silent: the trail stops answering "how many"
+	// and still answers "this source tried, and the ceiling fired".
+	reasonAuthFlood = "auth failures rate-limited"
 )
 
 // Reasons for a call that was dispatched and then did not come back.
@@ -358,6 +364,11 @@ type Gateway struct {
 	// stores in plaintext for that reason.
 	dialed map[string]registry.UpstreamServer
 	routes map[string]routedTool
+	// authLimit decides which authentication failures reach the durable
+	// trail (design/adr/0027). Guarded by mu, like everything else here that
+	// is not atomic.
+	authLimit *authLimiter
+
 	// gone records, per upstream name, the CONNECTION that was found dead.
 	//
 	// Keyed by name but holding the Upstream itself, and the value is what
@@ -560,6 +571,7 @@ func New(cfg Config) (*Gateway, error) {
 		conns:          map[string]Upstream{},
 		dialed:         map[string]registry.UpstreamServer{},
 		gone:           map[string]Upstream{},
+		authLimit:      newAuthLimiter(),
 		routes:         map[string]routedTool{},
 	}, nil
 }
@@ -806,6 +818,26 @@ func (g *Gateway) Reconcile(ctx context.Context) error {
 
 	entries, err := g.registry.List(ctx)
 	if err != nil {
+		// Our own context ending is not the registry being unreadable, and
+		// suspending on it would be a self-inflicted outage announced to
+		// the SIEM.
+		//
+		// Two ways it happens, both routine: the process is shutting down
+		// (run cancels the loop's context), or this round hit
+		// reconcileTimeout. Neither says anything about the file. Treating
+		// them as "serving nothing" made every shutdown emit a heartbeat
+		// with suspended=true -- the field an operator is told to alert on
+		// -- and it was caught by a test that only flaked under load,
+		// which is the kind of thing that reaches production as a 3 a.m.
+		// page about a gateway that stopped on purpose.
+		//
+		// Same rule as everywhere else here: failing to measure is not
+		// evidence that something changed (ADR-0013, ADR-0020 item 1).
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			g.log.WarnContext(ctx, "gateway: reconciliation ended before it could read the registry; the fleet is unchanged",
+				slog.String("detail", err.Error()))
+			return fmt.Errorf("%w: %w", ErrUpstreamUnavailable, err)
+		}
 		g.suspend()
 		g.log.ErrorContext(ctx, "gateway: registry unreadable, serving nothing until it can be read; connections kept",
 			slog.String("detail", err.Error()))
@@ -1610,7 +1642,44 @@ func (g *Gateway) RecordAuthFailure(ctx context.Context, source string) {
 		Identity:      access.Identity{Subject: unauthenticatedIdentity},
 		SourceAddress: source,
 	}
-	if err := g.record(ctx, c, authenticationTool, gatewayItself, audit.OutcomeDenied, reasonAuthFailed); err != nil {
+	// Detached, like auditRefusal's and auditFailure's writes and for the
+	// same reason -- and this was the one path that was not.
+	//
+	// The record of a rejected request is the ONLY trace that request ever
+	// existed: there is no route, no tool, no analyst, nothing else to
+	// correlate later. Writing it under the request's own context means a
+	// client that disconnects cancels the evidence of its own attempt, and
+	// a client that is grinding tokens disconnects constantly.
+	//
+	// Measured under a flood that made the write slow: with the client
+	// closing 10 ms after sending, 9 of 50 auth-failure records were lost
+	// (0 of 50 with no flood). The load that makes this path worth
+	// auditing is the load that made it silently fail to audit.
+	// The ceiling on how many of these reach the durable trail (ADR-0027).
+	// Consulted AFTER the log line above, which is never limited: slog to a
+	// file sustains twenty times what the database does, so the exact count
+	// survives there for free.
+	//
+	// The two halves of this function have to ship together. Detaching the
+	// write (above) stops an attacker cancelling the evidence of their own
+	// attempt, and on its own it would make each rejected request hold a
+	// goroutine for up to five seconds under exactly the load that makes
+	// the write slow. The ceiling is what bounds that.
+	g.mu.Lock()
+	verdict := g.authLimit.classify(source, g.now())
+	g.mu.Unlock()
+
+	reason := reasonAuthFailed
+	switch verdict {
+	case authDrop:
+		return
+	case authMark:
+		reason = reasonAuthFlood
+	}
+
+	writeCtx, cancel := auditWriteCtx(ctx)
+	defer cancel()
+	if err := g.record(writeCtx, c, authenticationTool, gatewayItself, audit.OutcomeDenied, reason); err != nil {
 		g.log.ErrorContext(ctx, "gateway: unauthenticated request was not audited",
 			slog.String("detail", err.Error()))
 	}

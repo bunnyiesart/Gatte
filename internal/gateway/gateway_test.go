@@ -256,7 +256,16 @@ type fakeRegistry struct {
 	err     error
 }
 
-func (r *fakeRegistry) List(context.Context) ([]registry.UpstreamServer, error) {
+func (r *fakeRegistry) List(ctx context.Context) ([]registry.UpstreamServer, error) {
+	// The context is honoured, unlike in most fakes here, because the real
+	// sqlite adapter honours it and one caller's behaviour depends on the
+	// difference: Reconcile must tell "the registry is unreadable" from
+	// "this round's context ended" (ADR-0020, and the shutdown test in
+	// reconcile_test). A fake that ignored ctx would make that distinction
+	// untestable and the bug invisible.
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.err != nil {
@@ -2635,6 +2644,7 @@ func TestAuditReasons_AreAStableWireContract(t *testing.T) {
 		{reasonResultTooLarge, "result too large"},
 		{reasonResultSchemaViolation, "result violates output schema"},
 		{reasonUpstreamGone, "upstream gone"},
+		{reasonAuthFlood, "auth failures rate-limited"},
 	} {
 		if tc.got != tc.want {
 			t.Errorf("audit reason changed: %q, was %q -- update the SIEM queries and "+
@@ -2649,7 +2659,7 @@ func TestAuditReasons_AreAStableWireContract(t *testing.T) {
 		reasonUnknownTool, reasonForbidden, reasonQuarantined, reasonQuarantineUnavailable,
 		reasonNotVisible, reasonAuthFailed, reasonUpstreamTimeout, reasonCallCancelled,
 		reasonUpstreamFailed, reasonResultTooLarge, reasonResultSchemaViolation,
-		reasonUpstreamGone,
+		reasonUpstreamGone, reasonAuthFlood,
 	} {
 		if r == "" {
 			t.Error("an audit reason is empty: a refusal that says nothing is a refusal nobody can act on")

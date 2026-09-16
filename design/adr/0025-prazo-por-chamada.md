@@ -111,14 +111,24 @@ um analista recebe erro em vez de espera indefinida.
 ## Compliance
 
 - [x] Automatizável? Sim.
-- Onde vivem os testes, em `internal/gateway/gateway_test.go`:
+- Onde vivem os testes, em `internal/gateway/reconcile_test.go`:
   - `TestDispatch_ACallThatOutlivesItsDeadlineIsCutAndAudited` — o upstream
     dorme além do prazo, a chamada volta com `context.DeadlineExceeded`, e a
     trilha registra `upstream timed out`.
-  - `TestDispatch_TheDeadlineDoesNotOutliveTheCaller` — o cancelamento do
-    cliente continua valendo antes do prazo.
-- E em `internal/config/config_test.go`, a recusa de zero e de negativo, com
-  a mesma forma das outras duas chaves.
+  - `TestDispatch_TheCallerStillCutsItsOwnCall` — o cancelamento do cliente
+    continua valendo antes do prazo. (Esta linha nomeava
+    `TestDispatch_TheDeadlineDoesNotOutliveTheCaller`, que nunca existiu: o
+    teste foi escrito com outro nome e a ADR ficou apontando para o vazio
+    por um dia. É a sexta ocorrência do mesmo formato de defeito neste
+    repositório, e a que motivou o portão automatizado em
+    `internal/fitness/manifest_test.go`.)
+- E em `internal/config/config_test.go`: `TestCallTimeoutDefaultsWhenUnset`,
+  `TestCallTimeoutIsRead`, `TestCallTimeoutCannotDisableTheCeiling` e
+  `TestCallTimeoutRejectsABareIntegerMeantAsSeconds` — a mesma forma das
+  outras duas chaves. (Esta linha prometia esses testes antes de eles
+  existirem, e o arquivo citado acima estava errado: duas afirmações falsas
+  numa seção de Compliance escrita no mesmo dia em que a ADR-0023 ganhou um
+  bloco de correção pelo mesmo motivo.)
 - Quando roda: a cada build/CI.
 
 ## Notas

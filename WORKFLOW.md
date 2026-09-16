@@ -83,11 +83,21 @@ that only exists inside a closed section is an item nobody re-reads:
   opens), so it is a named warning in the `serve` startup summary; and
   `mcp-gateway tool approve` now says which roles an approval authorizes,
   which was ADR-0016's declared debt.
-- ✅ **GAB-20 — closed as detection-only, 10 Sep 2026.** Divergence
-  detection is built (`gateway.CredentialDrift`, reported once per refresh
-  tick): a credential rotated in the vault while an upstream is connected
-  is now visible instead of silent, which was the actual defect — the
-  operator believed they had rotated while the old value stayed in use.
+- ✅ **GAB-20 — closed as detection-only, 10 Sep 2026; the detection
+  actually started working on 15 Sep 2026.** `gateway.CredentialDrift` runs
+  once per refresh tick and reports a credential rotated in the vault while
+  an upstream is connected — the defect being that the operator believed
+  they had rotated while the old value stayed in use.
+
+  **It could not fire for five days and three documents said it did.**
+  `sopsage.Provider` decrypted once at construction and answered from a
+  frozen map, and `serve.go` builds it once, so the check compared a digest
+  taken at dial time against a value resolved from the same frozen map:
+  equal by construction. ADR-0023 makes the adapter re-read the encrypted
+  file when its stamp moves, which is what the warning always needed.
+  Recorded rather than quietly fixed, because "built, documented, inert" is
+  a worse state than "not built" and the difference between them was
+  invisible from the outside.
 
   **The reconnect half was deliberately not built**, and the reason is in
   the deployment rather than in taste. It cannot be a console subcommand:

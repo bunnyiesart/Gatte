@@ -2383,6 +2383,18 @@ func (g *Gateway) rememberCredentials(upstream string, env map[string]string) {
 // upstream -- a digest compares bytes, and an API key deactivated at the
 // provider is byte-identical to the one that still works.
 //
+// # It depends on the vault adapter noticing the rotation
+//
+// This compares what an upstream was handed against what vault.Provider
+// returns NOW, so it is only as good as "now". Until ADR-0023 the sops
+// adapter decrypted once at construction and answered from a frozen map,
+// which made both sides of the comparison the same value and this whole
+// function inert -- running every tick, documented in three places, unable
+// to report anything. The adapter now re-reads when the encrypted file's
+// stamp moves. An adapter that caches without invalidating would put this
+// back to sleep, silently, so the property lives in that package's tests
+// (TestResolveSeesARotationAfterTheFileChanges) rather than here.
+//
 // A vault that cannot be read is NOT drift and is not reported. An
 // unreadable vault says nothing about whether the value changed, and
 // crying drift during the incident that makes the vault unreachable is

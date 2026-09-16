@@ -157,6 +157,13 @@ const (
 	// reasonUpstreamFailed is everything else: the backend answered with
 	// an error, the transport broke, the subprocess died.
 	reasonUpstreamFailed = "upstream call failed"
+	// reasonUpstreamGone means the backend process behind this call is not
+	// there any more -- the stream ended, which the adapter reports as
+	// gateway.ErrUpstreamGone. Separate from reasonUpstreamFailed because
+	// the two send an operator to different places: one is a backend that
+	// answered badly, the other is a backend that is not running
+	// (design/adr/0024).
+	reasonUpstreamGone = "upstream gone"
 )
 
 // Reasons for a call the gateway refused before it left the process.
@@ -341,6 +348,17 @@ type Gateway struct {
 	// stores in plaintext for that reason.
 	dialed map[string]registry.UpstreamServer
 	routes map[string]routedTool
+	// gone records, per upstream name, the CONNECTION that was found dead.
+	//
+	// Keyed by name but holding the Upstream itself, and the value is what
+	// makes it correct: Reconcile acts only when the connection it is about
+	// to close is still the same object that was found dead. A marker by
+	// name alone would, on a round where that upstream had meanwhile been
+	// retired and re-dialled for an unrelated reason, close a brand-new
+	// healthy process on the strength of an observation about its
+	// predecessor (design/adr/0024).
+	gone map[string]Upstream
+
 	// allowed, denied and failed count the audit records this process has
 	// written, by outcome, since it started. Atomics rather than a mutex:
 	// they are incremented on the dispatch path, by every concurrent
@@ -526,6 +544,7 @@ func New(cfg Config) (*Gateway, error) {
 		log:            logger,
 		conns:          map[string]Upstream{},
 		dialed:         map[string]registry.UpstreamServer{},
+		gone:           map[string]Upstream{},
 		routes:         map[string]routedTool{},
 	}, nil
 }
@@ -732,13 +751,15 @@ func (g *Gateway) Connect(ctx context.Context) error {
 // by content, so re-registering an identical entry is not a reconnect
 // command either (ADR-0020 item 6).
 //
-// And it is not a liveness check. "Connected" here means this Gateway holds
-// an Upstream for that name, not that the process on the other end is
-// alive: a backend whose subprocess died is still in the live set, so an
-// unchanged entry does not get re-dialed for it. What that looks like is a
-// Refresh that cannot list the upstream, logged every round, which is the
-// same signal as a backend that is merely unresponsive. Detecting the
-// difference means health-checking the connection, which nothing here does.
+// It IS a liveness check since ADR-0024, and only for the one fact an
+// adapter can prove: a connection whose far end is gone (ErrUpstreamGone)
+// is closed here and re-dialled by the rule above, because the registry
+// still names it. Nothing else counts -- an upstream that merely failed to
+// list is kept, by the rule this paragraph used to state absolutely.
+//
+// Until 16 Sep 2026 this said "it is not a liveness check", and it was
+// true: a backend whose subprocess had died stayed in the live set forever
+// and every call to it failed until somebody restarted the whole gateway.
 //
 // Nor does it close a freshly dialed upstream that will not list its tools,
 // which Connect does. The asymmetry is deliberate: Connect has no later
@@ -851,6 +872,14 @@ func (g *Gateway) Reconcile(ctx context.Context) error {
 			remove = append(remove, name)
 			g.log.InfoContext(ctx, "gateway: upstream entry changed; closing the connection so it can be re-dialed from the new entry",
 				slog.String("upstream", name))
+		case g.takeGone(name, live[name]):
+			// The process behind this connection is gone (ADR-0024). The
+			// registry still describes it, so closing it here hands it
+			// straight to the dial loop below -- the same rule that brings
+			// up an upstream registered since the last round.
+			remove = append(remove, name)
+			g.log.WarnContext(ctx, "gateway: upstream process died; closing the dead connection and re-dialling it",
+				slog.String("upstream", name))
 		}
 	}
 
@@ -954,9 +983,11 @@ func specChanged(was, now registry.UpstreamServer) bool {
 // # What it deliberately does not do
 //
 // Refresh does not read the registry, does not dial, and does not close
-// anything. An upstream registered since the last round is invisible to it,
-// one deregistered since then keeps being served, and a backend whose
-// process died is not respawned. That is Reconcile's job (ADR-0020), and
+// anything -- including a backend it just found dead, which it records for
+// Reconcile to act on (ADR-0024). An upstream registered since the last
+// round is invisible to it, one deregistered since then keeps being served,
+// and a backend whose process died is not respawned HERE. That is
+// Reconcile's job (ADR-0020), and
 // cmd/mcp-gateway's loop runs the two in that order on one tick: Reconcile
 // settles which backends are connected, Refresh asks the connected ones
 // what they now advertise.
@@ -997,6 +1028,15 @@ func (g *Gateway) Refresh(ctx context.Context) error {
 		defs, err := conns[name].ListTools(ctx)
 		if err != nil {
 			failures = append(failures, fmt.Errorf("%w: %q: list tools: %w", ErrUpstreamUnavailable, name, err))
+			// Death is the one listing failure that is evidence rather
+			// than the absence of it (ADR-0024). Recorded here, acted on
+			// by the next Reconcile -- this function closes nothing, by
+			// the rule stated in its own doc comment.
+			if errors.Is(err, ErrUpstreamGone) {
+				g.markGone(name, conns[name])
+				g.log.ErrorContext(ctx, "gateway: upstream process is gone; it will be closed and re-dialled on the next reconciliation",
+					slog.String("upstream", name), slog.String("detail", err.Error()))
+			}
 			kept := routesOf(previous, name)
 			// Two different situations, and the log used to describe both
 			// as the first: normally there IS a previous tool list and
@@ -1470,6 +1510,13 @@ func (g *Gateway) Dispatch(ctx context.Context, c Caller, namespacedTool string,
 
 	res, err := up.CallTool(ctx, rt.route.originalName, args)
 	if err != nil {
+		// An analyst's call is usually where a dead backend is noticed
+		// first: Refresh runs on a tick, and this runs whenever somebody
+		// works. Recording it here means the repair starts from the next
+		// reconciliation rather than from the next listing.
+		if errors.Is(err, ErrUpstreamGone) {
+			g.markGone(rt.route.upstream, up)
+		}
 		g.auditFailure(ctx, c, namespacedTool, rt.route.upstream, err)
 		return Result{}, fmt.Errorf("gateway: call %q: %w", namespacedTool, err)
 	}
@@ -1614,6 +1661,7 @@ func (g *Gateway) Close() error {
 	g.conns = map[string]Upstream{}
 	g.dialed = map[string]registry.UpstreamServer{}
 	g.creds = map[string]map[string]string{}
+	g.gone = map[string]Upstream{}
 	g.routes = map[string]routedTool{}
 	g.mu.Unlock()
 
@@ -1878,6 +1926,8 @@ func classifyFailure(err error) string {
 		return reasonResultTooLarge
 	case errors.Is(err, ErrResultSchemaViolation):
 		return reasonResultSchemaViolation
+	case errors.Is(err, ErrUpstreamGone):
+		return reasonUpstreamGone
 	default:
 		return reasonUpstreamFailed
 	}
@@ -1984,6 +2034,37 @@ func (g *Gateway) Status() Status {
 	}
 }
 
+// markGone records that a specific connection was observed dead.
+//
+// The connection is stored, not just the name -- see the gone field. A
+// marker for an upstream that is no longer live is dropped rather than
+// kept: it describes a process nobody is talking to any more.
+func (g *Gateway) markGone(name string, up Upstream) {
+	if up == nil {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if live, ok := g.conns[name]; !ok || live != up {
+		return
+	}
+	g.gone[name] = up
+}
+
+// takeGone reports whether the live connection for name is the one that was
+// found dead, and clears the marker either way: it has served its purpose
+// once read, and a stale marker is the thing this design must not keep.
+func (g *Gateway) takeGone(name string, live Upstream) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	marked, ok := g.gone[name]
+	if !ok {
+		return false
+	}
+	delete(g.gone, name)
+	return marked == live
+}
+
 // fleetSnapshot copies the live connections and the registry entry each
 // one was dialed from, under one lock, so a reconciliation compares two
 // halves of the same generation.
@@ -2070,6 +2151,7 @@ func (g *Gateway) retire(names []string) (closedDuringReconcile bool) {
 		delete(g.conns, name)
 		delete(g.dialed, name)
 		delete(g.creds, name)
+		delete(g.gone, name)
 	}
 	for tool, rt := range g.routes {
 		if slices.Contains(names, rt.route.upstream) {

@@ -133,6 +133,19 @@ type fakeDialer struct {
 	// gateway cleared it after the dial returned.
 	envRetained map[string]map[string]string
 	specs       map[string]UpstreamSpec
+	// freshPerDial makes Dial return a NEW *fakeUpstream every time instead
+	// of the same one per name.
+	//
+	// Off by default because most tests want to inspect "the upstream
+	// called casemgmt" without tracking generations. It exists because
+	// without it, connection IDENTITY is unobservable here -- and identity
+	// is what ADR-0024's death marker is keyed on, so a test of that
+	// property passed without exercising it (reconcile_test).
+	freshPerDial bool
+	// generations[name] holds every upstream ever dialled for that name, in
+	// order, so a test can assert about a specific one.
+	generations map[string][]*fakeUpstream
+
 	// dials counts calls per upstream, including the ones that fail.
 	// wasDialed answers "ever", which cannot tell a reconciliation that
 	// left a healthy connection alone from one that tore it down and
@@ -152,6 +165,7 @@ func newFakeDialer() *fakeDialer {
 		specs:        map[string]UpstreamSpec{},
 		dials:        map[string]int{},
 		closedAtDial: map[string][]int{},
+		generations:  map[string][]*fakeUpstream{},
 	}
 }
 
@@ -183,11 +197,23 @@ func (d *fakeDialer) Dial(_ context.Context, spec UpstreamSpec, env map[string]s
 	d.envRetained[spec.Name] = env
 
 	up, ok := d.upstreams[spec.Name]
-	if !ok {
+	if !ok || d.freshPerDial {
 		up = &fakeUpstream{}
 		d.upstreams[spec.Name] = up
 	}
+	d.generations[spec.Name] = append(d.generations[spec.Name], up)
 	return up, nil
+}
+
+// generation returns the n-th upstream dialled for this name, zero-based.
+// Only meaningful with freshPerDial set.
+func (d *fakeDialer) generation(name string, n int) *fakeUpstream {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if n >= len(d.generations[name]) {
+		return nil
+	}
+	return d.generations[name][n]
 }
 
 // wasDialed reports whether Dial was ever called for this upstream. Used
@@ -2596,6 +2622,7 @@ func TestAuditReasons_AreAStableWireContract(t *testing.T) {
 		{reasonUpstreamFailed, "upstream call failed"},
 		{reasonResultTooLarge, "result too large"},
 		{reasonResultSchemaViolation, "result violates output schema"},
+		{reasonUpstreamGone, "upstream gone"},
 	} {
 		if tc.got != tc.want {
 			t.Errorf("audit reason changed: %q, was %q -- update the SIEM queries and "+
@@ -2610,6 +2637,7 @@ func TestAuditReasons_AreAStableWireContract(t *testing.T) {
 		reasonUnknownTool, reasonForbidden, reasonQuarantined, reasonQuarantineUnavailable,
 		reasonNotVisible, reasonAuthFailed, reasonUpstreamTimeout, reasonCallCancelled,
 		reasonUpstreamFailed, reasonResultTooLarge, reasonResultSchemaViolation,
+		reasonUpstreamGone,
 	} {
 		if r == "" {
 			t.Error("an audit reason is empty: a refusal that says nothing is a refusal nobody can act on")

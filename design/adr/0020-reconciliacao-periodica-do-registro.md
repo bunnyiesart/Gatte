@@ -230,6 +230,18 @@ backend que falhou de subir no boot volta sozinho quando voltar a discar.
   por tick, que é o mesmo sinal de um backend só lento. Separar os dois
   exige health check de conexão, que este ADR não constrói e nenhum outro
   construiu ainda.
+
+  > **FECHADO em 16 set 2026 pela ADR-0024.** Morte passou a atravessar o
+  > port como `ErrUpstreamGone`, o `Reconcile` fecha a conexão morta e a
+  > regra "registrado e não conectado → disca" a traz de volta. A distinção
+  > que este parágrafo pede — morto versus lento — é a decisão central
+  > daquele ADR, e continua valendo aqui: *não listar* não é *ter morrido*.
+  >
+  > Isso tensiona o item logo abaixo, sobre não fechar um upstream
+  > recém-discado que não lista. Os dois continuam de pé e não se
+  > contradizem: aquele fala de quem **não respondeu**, este de quem
+  > **acabou**. O custo de confundir os dois está escrito nas Consequências
+  > da ADR-0024 como doze respawns por hora.
 - **Um upstream recém-discado que não lista as ferramentas fica conectado
   servindo nada**, em vez de ser fechado como o `Connect` faz. Fechá-lo aqui
   significaria respawnar um subprocesso por intervalo enquanto o backend

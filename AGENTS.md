@@ -120,9 +120,13 @@ From `design/adr/0003-security-controls.md`'s explicit "not covered" list:
   `/metrics`, no pull: a scraped gateway that dies looks the same as one
   nobody scrapes, and this team has no platform role to run the scraper.
 
-  **Still open, and not claimed:** no latency or saturation metrics, no
-  per-upstream health, no liveness check on a connected backend (a dead
-  subprocess is still "connected" — ADR-0020's consequences).
+  **Liveness closed 16 Sep 2026** (`design/adr/0024-morte-de-um-upstream-conectado.md`):
+  a backend whose process is gone is recognised from the error its own
+  stream produces, closed, and re-dialled within one interval — and a
+  backend that merely failed to answer is not, which is the harder half.
+
+  **Still open, and not claimed:** no latency or saturation metrics, and no
+  per-upstream health beyond alive-or-gone.
 - **Response validation** — designed and built 10 Sep 2026
   (`design/adr/0014-response-validation-scope.md`), and the entry that
   stood here was wrong in a way worth keeping visible: it called this

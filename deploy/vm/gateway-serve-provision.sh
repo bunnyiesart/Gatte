@@ -33,6 +33,8 @@ set -eu
 # which makes it look like an intermittent jail bug rather than an exported
 # variable. Cost an hour once. GW_JAIL is invisible to service(8).
 GW_JAIL="${GW_JAIL:-mcp-gateway-test}"
+UPSTREAM_NAMES="${UPSTREAM_NAMES:-}"
+UPSTREAM_CREDS="${UPSTREAM_CREDS:-}"
 STAGE="${STAGE:-/tmp/mcp-gateway-deploy}"
 GW_JAIL_ROOT="/usr/local/bastille/jails/$GW_JAIL/root"
 
@@ -225,6 +227,11 @@ j "SOPS_AGE_KEY_FILE=$AGE_KEY sops --decrypt --input-type json --output-type jso
 say "vault: checking the key names cover what the upstreams ask for"
 vault_keys=$(j "SOPS_AGE_KEY_FILE=$AGE_KEY sops --decrypt --input-type json --output-type json $SECRETS | jq -r 'keys[]'")
 missing=""
+# Exported so the subshell below and register_and_sign_upstreams agree on
+# which upstreams are being provisioned. They arrive from gateway-serve.sh
+# when the deployment's names are not the sanitised ones this repository
+# publishes; empty means "use the defaults", which is the lab.
+export UPSTREAM_NAMES UPSTREAM_CREDS
 for want in $(sh "$STAGE/gateway-upstreams.sh" --print-env-names 2>/dev/null); do
 	echo "$vault_keys" | grep -qx "$want" || missing="$missing $want"
 done

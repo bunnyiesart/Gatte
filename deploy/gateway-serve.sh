@@ -99,7 +99,15 @@ remote_cp "$BUILD/mcp-gateway" "$BUILD/mock-casemgmt" "$BUILD/mock-logsearch" \
 	"$STAGE/"
 
 echo "==> provisioning jail $GW_JAIL"
-remote_sh "GW_JAIL=$GW_JAIL STAGE=$STAGE sh $STAGE/gateway-serve-provision.sh"
+# UPSTREAM_NAMES and UPSTREAM_CREDS are forwarded because the names in this
+# repository are sanitised and a real deployment's are not -- see the block
+# at the top of deploy/vm/gateway-upstreams.sh. They travel as part of the
+# command string, like GW_JAIL already does: remote_sh hands one string to a
+# remote shell and adds no quoting of its own, so the quotes here are what
+# keeps a multi-word value one value.
+remote_sh "GW_JAIL=$GW_JAIL STAGE=$STAGE" \
+	"UPSTREAM_NAMES='${UPSTREAM_NAMES:-}' UPSTREAM_CREDS='${UPSTREAM_CREDS:-}'" \
+	"sh $STAGE/gateway-serve-provision.sh"
 
 echo
 echo "==> done. Jail $GW_JAIL is at 10.17.90.10; nginx terminates TLS there and"

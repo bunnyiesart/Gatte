@@ -1678,3 +1678,40 @@ func (h *harness) allowedRowFor(tool string) audit.Record {
 	}
 	return out[0]
 }
+
+// TestRejectCallDoesNotLogTheErrorText is the HTTP layer's half of the rule
+// gateway.auditFailure states and tests: an upstream's own words never
+// reach a log line.
+//
+// The gateway drops that text deliberately -- a backend echoing the
+// credential it was handed is an ordinary thing for an API client to do --
+// and this layer used to put it back, because Dispatch's error wraps the
+// upstream's and this function logged err.Error(). The control was undone
+// one frame above the place that implements it.
+func TestRejectCallDoesNotLogTheErrorText(t *testing.T) {
+	const secret = "vt-fake-echoed-by-the-backend-4b7a"
+
+	var logged bytes.Buffer
+	h := &Handler{log: slog.New(slog.NewTextHandler(&logged, &slog.HandlerOptions{Level: slog.LevelDebug}))}
+
+	// Exactly the shape gateway.Dispatch returns for a failed call: its own
+	// wrapper around whatever the backend said.
+	err := fmt.Errorf("gateway: call %q: %w", "threatintel.lookup_ip",
+		fmt.Errorf("stdio: upstream %q: call tool: 401 from vendor: token=%s rejected", "threatintel", secret))
+
+	_ = h.rejectCall(context.Background(), access.Identity{Subject: "sub-analyst-1"}, "threatintel.lookup_ip", err)
+
+	line := logged.String()
+	if strings.Contains(line, secret) {
+		t.Errorf("LEAK: the refusal line carries the credential the backend echoed:\n%s", line)
+	}
+	if strings.Contains(line, "401 from vendor") {
+		t.Errorf("the refusal line carries the upstream's own text, which is backend-controlled:\n%s", line)
+	}
+	// What an operator does get: who, what, and which family of failure.
+	for _, want := range []string{"sub-analyst-1", "threatintel.lookup_ip", "error_class"} {
+		if !strings.Contains(line, want) {
+			t.Errorf("the refusal line does not carry %q, so it says less than it must:\n%s", want, line)
+		}
+	}
+}

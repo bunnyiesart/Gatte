@@ -142,8 +142,6 @@ def main():
                 # Senao um "# example" no fim da linha liberaria segredo real.
                 if ISCA_FALSA.search(m.group(0)):
                     continue
-                if "BEGIN" in linha and "PRIVATE KEY" in linha:
-                    continue
                 segredos.append((rotulo, arq, n, mascarar(linha, m)))
                 break
             for termo, slug, rx in termos:

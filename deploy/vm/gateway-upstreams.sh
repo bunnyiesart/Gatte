@@ -12,7 +12,11 @@
 # different -env list still registers, still signs, still starts, and
 # simply hands its backend nothing.
 #
-# The caller must already define: j(), ju(), GW, CONFIG, LIBEXEC.
+# The caller must already define: j(), ju(), GW, CONFIG, LIBEXEC, SVC_USER
+# and DBDIR. The last two became required on 16 Sep 2026, when signing moved
+# to root and the database directory has to be handed back afterwards --
+# both callers (gateway-serve-provision.sh, vm/gateway-serve-verify.sh)
+# already defined them.
 
 # An upstream's registered name is what namespaces its tools
 # (casemgmt.list_cases), so these strings are load-bearing: they must match the
@@ -73,6 +77,26 @@ register_and_sign_upstreams() {
 			ju "$GW upstream register -config $CONFIG -name $m -transport stdio \
 				-command $LIBEXEC/lab-$m $(env_flags_for "$m")" | sed 's/^/    /'
 		fi
-		ju "$GW sign -config $CONFIG $m" | sed 's/^/    /'
+		# Signing runs as ROOT, not as the service account, and that is the
+		# point rather than an accident.
+		#
+		# ADR-0010 puts the trust anchor (the public keys) in the config
+		# file precisely so that whoever can write the SQLite database
+		# cannot also mint signatures for it. Handing the PRIVATE key to
+		# the account that runs `serve` -- the account that writes that
+		# database -- gives that step back: an attacker with code execution
+		# as the service user could sign whatever registry entry they
+		# wanted. Root holds the key; the service account never reads it.
+		#
+		# The cost is the chown below. `sign` opens the database, and
+		# SQLite in WAL mode creates -wal and -shm files owned by whoever
+		# opened it, so running as root leaves those two owned by root in a
+		# directory the service account must write. That is why this
+		# function ends by giving the directory back -- and why a
+		# provisioning run that dies between the two leaves a gateway that
+		# cannot start, loudly, rather than one that starts and cannot
+		# audit.
+		j "$GW sign -config $CONFIG $m" | sed 's/^/    /'
 	done
+	j "chown -R $SVC_USER:$SVC_USER $DBDIR"
 }

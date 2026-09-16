@@ -396,11 +396,20 @@ prove it.
 - **First point to run the `lab/` harness against the real build**: spin
   up the mock servers (`lab/servers/{casemgmt,logsearch,docsearch,threatintel}`),
   point the new gateway at them instead of at a candidate under
-  evaluation, run `lab/probe`'s clean-environment credential-injection +
-  leak check exactly as done for every external candidate — `make
-  lab-probe` does both. If the custom build can't pass the same test the
-  five external candidates failed, that's a stop-the-line finding, not a
-  minor bug. (This bullet named `mock_mcp.py` and `probe.py` until 09 Sep
+  evaluation, and run the clean-environment credential-injection + leak
+  check exactly as done for every external candidate. If the custom build
+  can't pass the same test the five external candidates failed, that's a
+  stop-the-line finding, not a minor bug.
+
+  **This said "`make lab-probe` does both", and that was false from the day
+  it was written until 16 Sep 2026** (ADR-0026). That target runs
+  `./bin/lab/probe --tool X -- ./bin/lab/<mock>`: the probe talking to each
+  mock over stdio, with no gateway in the path — which is what
+  `deploy/gateway-serve.md` says the probe is for. The check the bullet
+  describes IS run, by `internal/e2e` and by
+  `TestBuildServer_DeliversAVaultSecretToARealBackend`; what is not run is
+  `lab/probe` itself against the gateway, and that is filed below rather
+  than pretended. (This bullet named `mock_mcp.py` and `probe.py` until 09 Sep
   2026; those were the Python/Docker harness from the candidate
   evaluation and were never committed — `lab/README.md` says so and gives
   the Go paths above.)
@@ -602,64 +611,71 @@ Applies throughout every phase above, not as a separate step:
 
 ## Definition of done for v1
 
-All 7 phases checked above, plus: the `lab/` harness run against the
-finished build end-to-end (Phase 5's checkpoint, repeated once Phases 6–7
-are done, since Operator Console and hardening can change behavior the
-earlier pass tested), and every ADR in `design/adr/` at `Accepted`, not
-`Proposed`.
+All 7 phases checked above, plus every ADR in `design/adr/` at `Accepted`,
+not `Proposed`, plus the end-to-end property the Phase 5 checkpoint exists
+to prove — a credential injected into a backend, reached by a real client,
+and invisible to that client — demonstrated against the finished build by:
 
-### Where those three stand, 15 Sep 2026
+- `internal/e2e` — four mocks spawned as real subprocesses behind the real
+  registry, quarantine, trail, stdio dialer and HTTP surface, with a real
+  MCP client on the other side;
+- `TestBuildServer_DeliversAVaultSecretToARealBackend` — the same property
+  through THIS BINARY's composition root: real sops+age vault, a token the
+  real OIDC verifier accepts, entry registered through the operator console,
+  and the backend's reported digest compared against the secret the test
+  encrypted;
+- `internal/vault/sopsage`'s leak check — real sops, real age, real spawn.
 
-Written down rather than declared, because an adversarial review of that
-day found this section being read as satisfied when one third of it was
-not:
+**This condition used to be worded as "run `make lab-probe`", which does not
+put the gateway in the path at all.** ADR-0026 records why it was reworded
+rather than built, and what the rewording gives up: `lab/probe` is a
+different implementation of the client protocol, and two implementations
+find what one does not.
+
+**Filed, not refused:** an alvo that puts the gateway between `lab/probe`
+and the four mocks. Whoever builds it is not redoing a proof — it is adding
+a second client.
+
+### Where those three stand, 16 Sep 2026
 
 1. **Seven phases: checked.**
-2. **Every ADR `Accepted`: yes** — 24 files as of 16 Sep 2026, confirmed
-   one by one, including 0022, 0023 and 0024. (This said 21 for a day after
-   those three landed, which is the kind of number that reads as verified
-   and was not.)
-3. **The end-to-end re-run: satisfied differently from how it is worded,
-   and the wording was never satisfiable.** Phase 5 defines it as pointing
-   the gateway at the mocks and says "`make lab-probe` does both" —
-   `lab-probe` runs the probe straight at each mock with **no gateway in
-   the path**, which `deploy/gateway-serve.md` states in as many words
-   ("run `lab/probe` against a mock directly — that is what it is for, and
-   it does not need the gateway"). Two files in this repository said
-   opposite things about one command, and the one in this file was wrong.
+2. **Every ADR `Accepted`: yes** — 27 files as of 16 Sep 2026, confirmed one
+   by one. (This said 21 for a day after three landed, and 24 for a few
+   hours after two more; a number that reads as verified and is not is the
+   defect this repository keeps finding in itself.)
+3. **The end-to-end property: proved, and the condition now names the
+   proofs** (ADR-0026). It was worded as "run `make lab-probe`" until
+   16 Sep 2026, and that target never put the gateway in the path.
 
-   What exists instead, and is the honest reading of the intent:
-   `internal/e2e` — real SQLite registry, real quarantine, real audit
-   trail, real stdio dialer spawning real subprocesses, real HTTP, real MCP
-   client, with the vault deliberately in memory for the reason its package
-   doc gives. As of 15 Sep 2026 it also covers what Phases 6–7 changed:
-   `TestCheckpoint_FleetChangesReachAServingGateway` registers a backend
-   with the gateway serving, calls it over HTTP, checks the injected
-   credential arrived and did not leak, then deregisters it — which is
-   ADR-0020 proven against real processes rather than against the fakes in
-   `internal/gateway`.
+**All three are met.** What that does and does not mean:
 
-   **The composition root is crossed as of 16 Sep 2026**, by
-   `TestBuildServer_DeliversAVaultSecretToARealBackend` in
-   `cmd/mcp-gateway`: a real sops+age vault on disk, an OIDC provider whose
-   token the real verifier accepts, an entry registered through the
-   operator console, a real backend subprocess, one call over HTTP, and the
-   digest the backend reports compared against the secret the test
-   encrypted. Until it, every piece was proven and the assembly was not.
+- It means the property the checkpoint exists to prove is demonstrated
+  against the finished build, through this binary's own composition root,
+  by tests that run in `make check`.
+- It does NOT mean the deployment was exercised. Everything above runs on a
+  development machine. The jail was last provisioned on 12 Sep 2026, before
+  five ADRs — including one that changes who owns the signing key. Running
+  it is the first thing after this.
+- It does NOT mean the proofs run everywhere: 11 top-level tests in
+  `cmd/mcp-gateway` and 9 in `internal/vault/sopsage` skip silently on a
+  host without `sops` and `age`.
 
-   **What remains true, and is the reason not to call this closed:** the
-   process-level proofs disappear on a host without `sops` and `age`.
-   Measured on 16 Sep with `go test` and a PATH without them: **11
-   top-level tests skip in `cmd/mcp-gateway`** and 9 in
-   `internal/vault/sopsage`, and the package still reports `ok`. `make
-   test` prepends `$(go env GOPATH)/bin` and so finds them there, which is
-   why the suite is green on the machine this was built on — but a v1
-   declared where those binaries are genuinely absent is a v1 whose
-   composition-root proof did not run. The Makefile banner names what is
-   lost; it said 7 until 16 Sep and did not name the composition-root test
-   at all.
+### Two things that are not code, and that a declaration of "done" needs
 
-**So: 1 and 2 are met; 3 is met in substance and not in the letter this
-file wrote.** Fixing the letter means either rewriting Phase 5's sentence
-or building the gateway-in-the-path harness it describes, and that is a
-call for bunnyiesart, not a line to quietly edit into agreement.
+Written here because the criterion this project chose is **no hidden
+debt**, not "no gaps" — and both of these are debt wearing a gap's clothes:
+
+- **The anchor comparison has no owner.** `deploy/gatte-anchor-verify.sh`
+  exists and works, this file says running it "is still a human's job", and
+  no human is named. Nothing detects that it did not run. A task declared
+  without an owner and without absence-detection is indistinguishable from
+  a task that does not exist — so either somebody's name goes here, or this
+  file says plainly that nobody runs it and the anchor is therefore
+  evidence only when someone happens to look.
+- **ADRs 0001–0019, `CONCEPTS.md` and `DEVELOPMENT-LOG.md` were never
+  swept.** The five review rounds covered the code, the deployment, and the
+  documents written from ADR-0020 onward. The older half of the design
+  record has never been checked against the system as it now is. This
+  sentence is the declaration that it has not been — which is what turns it
+  from debt into a gap, and it is the honest state rather than a promise to
+  do it.

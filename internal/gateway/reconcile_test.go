@@ -1047,3 +1047,92 @@ func TestDispatch_TheCallerStillCutsItsOwnCall(t *testing.T) {
 		t.Errorf("the call took %s to end after its caller gave up", elapsed)
 	}
 }
+
+// TestReconcile_AShutdownIsNotASuspension: the fleet is suspended when the
+// REGISTRY cannot be read, not when this round's context ended.
+//
+// Cancelling the maintenance loop -- which is what a clean shutdown does --
+// makes the registry query fail with context.Canceled, and treating that as
+// "the registry is unreadable" had two visible effects: the routing table
+// was dropped on the way out, and the heartbeat emitted on that path
+// carried suspended=true, which is the field deploy/freebsd-jail.md tells
+// an operator to alert on. Every clean stop looked like an incident.
+//
+// Found by a loop test that only failed under load, which is why the
+// assertion here is on the state and not on a log line.
+func TestReconcile_AShutdownIsNotASuspension(t *testing.T) {
+	h := newHarness(t, "casemgmt.list_cases")
+	h.register("casemgmt")
+	h.serve("casemgmt", def("list_cases", "list cases"))
+	h.mustConnect()
+	h.approve("casemgmt", "list_cases")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := h.gw.Reconcile(ctx)
+	if err == nil {
+		t.Fatal("Reconcile with a cancelled context returned no error")
+	}
+	if errors.Is(err, ErrRegistryUnavailable) {
+		t.Errorf("Reconcile = %v, want an error that does NOT claim the registry is unavailable: our own context ending says nothing about the file", err)
+	}
+
+	if h.gw.Status().Suspended {
+		t.Error("a cancelled round suspended the fleet; a clean shutdown would announce itself to the SIEM as a gateway serving nothing")
+	}
+	if got, want := h.listNames(analyst), []string{"casemgmt.list_cases"}; !slices.Equal(got, want) {
+		t.Errorf("ListTools = %v, want %v -- a cancelled round must not drop the routing table", got, want)
+	}
+}
+
+// TestRecordAuthFailure_UnderFloodStillAuditsAndStillMarks is ADR-0027 seen
+// from where it matters: the trail.
+//
+// The property is not "fewer rows". It is that a flood cannot make the
+// detection disappear -- the first attempts are recorded exactly as before,
+// and once the ceiling engages the trail carries a line SAYING the ceiling
+// engaged, with the same source, so a SOC reading the trail still sees an
+// attack rather than a gap.
+func TestRecordAuthFailure_UnderFloodStillAuditsAndStillMarks(t *testing.T) {
+	h := newHarness(t)
+	const source = "198.51.100.66"
+
+	for range 300 {
+		h.gw.RecordAuthFailure(context.Background(), source)
+	}
+
+	var failed, flood int
+	for _, row := range h.auditRows() {
+		switch row.Reason {
+		case reasonAuthFailed:
+			failed++
+		case reasonAuthFlood:
+			flood++
+		}
+	}
+
+	if failed == 0 {
+		t.Error("no authentication failure was recorded at all: the detection ADR-0012 bought is gone")
+	}
+	if failed >= 300 {
+		t.Errorf("%d rows written for 300 attempts: the ceiling never engaged, and a flood can still deny the writer to an analyst", failed)
+	}
+	if flood != 1 {
+		t.Errorf("%d rate-limit markers, want exactly 1 -- without it the suppression is silent, with more than one it is the flood again", flood)
+	}
+
+	// The marker names the same source as the records it stands for,
+	// because a marker nobody can attribute is a marker nobody can act on.
+	rows := h.auditRows()
+	last := rows[len(rows)-1]
+	if last.Reason != reasonAuthFlood {
+		t.Fatalf("the last row is %q, want the marker", last.Reason)
+	}
+	if last.SourceAddress != source {
+		t.Errorf("marker source = %q, want %q", last.SourceAddress, source)
+	}
+	if last.AnalystIdentity == "" {
+		t.Error("the marker has no analyst identity; it must carry the same unauthenticated marker every other 401 row carries")
+	}
+}

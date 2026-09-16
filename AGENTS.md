@@ -141,12 +141,21 @@ From `design/adr/0003-security-controls.md`'s explicit "not covered" list:
   one service account" and never named this consequence. Isolating them is
   platform work this team has no role to operate; the gap is real and is
   declared rather than closed.
-- **A flood of unauthenticated requests competes with real traffic for the
-  audit database.** Every rejected request writes a row (ADR-0012, and the
-  row is the detection), through the same single SQLite writer that
-  `Dispatch` must use before it forwards anything. Nothing rate-limits it.
-  ADR-0012 declared the growth; it did not name the contention, which is
-  the half that reaches an analyst.
+- **A flood of unauthenticated requests DENIES SERVICE to authenticated
+  analysts.** Every rejected request writes a row (ADR-0012, and the row is
+  the detection), through the same single SQLite writer that `Dispatch` must
+  use before it forwards anything. Nothing rate-limits it.
+
+  This was filed as "contention" until it was measured on 16 Sep 2026, and
+  the measurement changed its class. Against the real adapter on this
+  hardware: a flood at 16 goroutines takes the analyst's audit write from
+  p95 1.3 ms to p95 1.34 s; at 64 goroutines it exhausts the 5 s
+  `busy_timeout` and the write fails with SQLITE_BUSY. `Dispatch` refuses
+  any call it cannot audit first — deliberately, and the log line says
+  "refusing unauditable call" — so the end state is an analyst's call
+  REFUSED because of a stranger holding no credential at all. Degradation
+  would be a performance note; this is a denial, and the fix is filed as
+  ADR-0027 rather than left as a footnote.
 - **Response validation** — designed and built 10 Sep 2026
   (`design/adr/0014-response-validation-scope.md`), and the entry that
   stood here was wrong in a way worth keeping visible: it called this

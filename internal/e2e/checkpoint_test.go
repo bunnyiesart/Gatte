@@ -28,6 +28,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"io"
@@ -426,8 +427,22 @@ func TestCheckpoint_CredentialInjectionAndNoLeak(t *testing.T) {
 		if !got.ReceivedExpectedSecret {
 			t.Errorf("%s did not receive its expected secret -- injection is broken", name)
 		}
-		if got.Fingerprint == "" {
-			t.Errorf("%s reported no fingerprint", name)
+		// Against the value THIS TEST put in the vault, not merely
+		// non-empty.
+		//
+		// The two checks above are weaker than they look and were the only
+		// ones here until 15 Sep 2026: ReceivedExpectedSecret compares
+		// MOCK_SECRET with MOCK_EXPECT, and both come out of the same
+		// vault, so a Provider that returned one constant for every name
+		// would satisfy it -- and a non-empty fingerprint would satisfy the
+		// other. Neither says the backend got the value that was stored.
+		// This does: the mock hashes what it was actually spawned with
+		// (lab/mockutil/credcheck.go), and the digest has to match the one
+		// computed here from the secret the harness generated.
+		sum := sha256.Sum256([]byte(s.secrets[name]))
+		if want := hex.EncodeToString(sum[:])[:8]; got.Fingerprint != want {
+			t.Errorf("%s reported fingerprint %q, want %q -- the value the backend was spawned with is not the value the vault holds",
+				name, got.Fingerprint, want)
 		}
 	}
 

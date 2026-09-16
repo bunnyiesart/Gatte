@@ -42,6 +42,66 @@ Registry entries must be signed to be served (`require_signed` defaults
 to true as of Phase 6); an unsigned entry is reported as such the moment
 you register it, with the command to fix it.
 
+## Security posture
+
+Written for someone reading a public repository, and written the way this
+project writes everything else: the limits are part of the claim.
+
+**What it guarantees.** The production credential of four backends stops
+living on N analyst laptops and lives in one sops+age file on one host,
+resolved in memory at the moment each subprocess is spawned, never written
+back, never logged, never returned to a client. The child's environment is
+*built*, not inherited. Nothing downstream of authentication even holds the
+analyst's token, so there is no variable to forward — a reflection test
+fails the build if one is ever added.
+
+**Against the analyst, who is the actor the design centres on**, it enforces
+OIDC with a validated audience (RFC 8707, so a token minted for another
+service of the same IdP is refused), role to tool-subset, and a per-tool
+quarantine that makes every new or silently-rewritten tool invisible and
+uncallable until a human approves it. Every call, refusal and failure lands
+in a hash-chained audit trail, with a JSONL copy shipped to a SIEM the
+gateway cannot rewrite.
+
+**Against someone who gains write access to the SQLite database**, it
+intends one more step: registry entries signed with Ed25519 and verified
+against public keys that live in the configuration file, outside the blast
+radius of the database. That step is only real while the private key is
+outside the reach of whoever writes the database — the provisioning recipe
+here got that wrong until 16 Sep 2026 and now keeps the key as root.
+
+**It is not a control against someone executing code as the service user.**
+That actor reads the decrypted vault, reads the signing key, and writes the
+trail. The four stdio backends — the least trusted code in the system — run
+as that same user, with no separate uid, nested jail or Capsicum between
+them and the process holding every credential. That is declared in
+`AGENTS.md` §2, not solved.
+
+**It does not guarantee the trail's integrity against whoever controls the
+host.** Records are not individually signed; an attacker who re-chains
+leaves no trace in the chain itself, and the only real evidence of
+truncation is comparing the chain head against the SIEM's copy — which is
+worth exactly as much as a shipper actually forwarding the file, a condition
+no check inside the process can establish. The heartbeat exists so that the
+*absence* of lines is detectable; it too is unsigned.
+
+**It terminates no TLS**, refuses at startup any bind that is not loopback,
+has no escape hatch for that, and depends entirely on a co-located proxy and
+a VPN for everything network-facing (`design/adr/0011`).
+
+**It is a single point of failure, knowingly** (`design/adr/0001`): one
+binary, one process, one SQLite file. A per-call ceiling bounds how long any
+one call may hold a backend (`design/adr/0025`), but nothing bounds how many
+calls an authorised analyst may hold at once, and a flood of unauthenticated
+requests competes with real traffic for the one audit writer — both declared
+in `AGENTS.md` §2 rather than fixed.
+
+**Everything above was checked, not asserted.** The gaps named here came out
+of four adversarial review rounds, the last of which audited the whole system
+rather than a diff; each one found controls that were documented as working
+and could not fire. If you find a fifth, that is the expected outcome, and
+the repository is written so you can prove it rather than argue it.
+
 ## Start here
 
 - **`AGENTS.md`** — what to build, confirmed architecture, what's still

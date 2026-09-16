@@ -509,8 +509,8 @@ max_bytes = 1048576
 # SIGHUP hoje: use `copytruncate`, ou reinicie o gateway apos um
 # rename. Ver deploy/freebsd-jail.md.
 #
-# COM O SINK LIGADO, o arquivo tambem recebe um BATIMENTO a cada tick de
-# manutencao e um no arranque (ADR-0021): uma linha `"type":"heartbeat"`, sem
+# COM O SINK LIGADO, o arquivo tambem recebe um BATIMENTO no arranque e um a
+# cada `refresh_interval` (ADR-0021): uma linha `"type":"heartbeat"`, sem
 # hash e fora da cadeia, dizendo que este processo esta vivo, ha quanto tempo,
 # quantos registros escreveu por desfecho, quantos upstreams estao conectados
 # e se a frota esta suspensa. Ela existe para que a AUSENCIA de linhas possa

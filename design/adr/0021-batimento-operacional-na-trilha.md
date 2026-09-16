@@ -156,8 +156,16 @@ hora.
 
 ### 7. Sem SIEM configurado, o batimento continua existindo
 
-Ele vai para o `slog` em toda rodada, com os mesmos campos, tenha ou não
-sink. Um operador sem Graylog perde o alerta, não a informação.
+Ele vai para o `slog` em toda rodada, tenha ou não sink — mas **não com os
+mesmos campos**, e a diferença é deliberada: sem sink não há `chain`, `head`
+nem `records`, porque os três descrevem um sink que não existe, e sai
+`uptime` no lugar de `boot`, que é a forma legível num log local. Reportar
+`records: 0` para um processo que atendeu o dia inteiro seria pior que
+omitir.
+
+O operador sem Graylog perde o alerta e perde a cabeça da cadeia; mantém os
+contadores, o estado da frota e a suspensão. Esta seção dizia "com os mesmos
+campos" até 15 set 2026.
 
 ## Consequências
 

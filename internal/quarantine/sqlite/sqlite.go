@@ -1,7 +1,7 @@
 // Package sqlite is the SQLite adapter for the Tool Quarantine
 // component's domain package, internal/quarantine. It is the only place
 // SQL for the quarantine lives -- per the ports & adapters split
-// (docs/context/05-testabilidade-e-contratos.md), the
+// (context/05-testabilidade-e-contratos.md), the
 // quarantine package itself contains no infrastructure detail.
 //
 // This adapter deliberately holds no policy. Every state transition is

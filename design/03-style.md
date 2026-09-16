@@ -1,6 +1,6 @@
 # Phase 3 — Architectural style
 
-Follows `docs/context/03-estilos-arquiteturais.md`. Decided by
+Follows `context/03-estilos-arquiteturais.md` (corpus externo, ver `AGENTS.md` §6 e ADR-0022). Decided by
 quantum analysis, not preference, per the method's own rule.
 
 ## Question 1: monolith or distributed?

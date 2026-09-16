@@ -1,6 +1,6 @@
 # Phase 1 — Discovery: characteristics driving the custom gateway design
 
-Follows `docs/context/01-descoberta-e-pensamento-arquitetural.md`.
+Follows `context/01-descoberta-e-pensamento-arquitetural.md` (corpus externo, ver `AGENTS.md` §6 e ADR-0022).
 Output of this phase feeds `02-components.md` and `03-style.md` directly —
 it is not read-only background, it constrains what gets built next.
 

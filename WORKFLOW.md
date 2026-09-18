@@ -653,12 +653,27 @@ a second client.
   against the finished build, through this binary's own composition root,
   by tests that run in `make check`.
 - It does NOT mean the deployment was exercised. Everything above runs on a
-  development machine. The jail was last provisioned on 12 Sep 2026, before
-  five ADRs — including one that changes who owns the signing key. Running
-  it is the first thing after this.
+  development machine. The jail was last successfully provisioned on 12 Sep
+  2026, before **eight** ADRs — `0020`–`0023` (15 Sep) and `0024`–`0027`
+  (16 Sep) — including one that changes who owns the signing key. Running
+  it is the first thing after this, and it is Track 1 of `CLOSEOUT.md`.
+
+  **This said "five ADRs" until 18 Sep 2026.** It was written on 16 Sep and
+  the count was already short then; three more were accepted the same day
+  and after. Same defect as the ADR count two items above, in the same
+  block that names it.
 - It does NOT mean the proofs run everywhere: 11 top-level tests in
-  `cmd/mcp-gateway` and 9 in `internal/vault/sopsage` skip silently on a
-  host without `sops` and `age`.
+  `cmd/mcp-gateway` and **11** in `internal/vault/sopsage` skip silently on
+  a host without `sops` and `age`.
+
+  **This said 9 for `sopsage` until 18 Sep 2026.** Accurate when written;
+  `0023` then added four tests to that package and nothing re-measured.
+  Counted 18 Sep 2026 by running each package with the binaries off `PATH`
+  — all 11 skip with `age-keygen not found on PATH`, and the set includes
+  `TestResolveThenSpawnDoesNotLeak`. `design/adr/0026` carries the same
+  stale 9 and, being `Accepted`, takes a correction block rather than an
+  edit. Track 4 of `CLOSEOUT.md` is about making these counts come from the
+  tool instead of from a sentence.
 
 ### Two things that are not code, and that a declaration of "done" needs
 
@@ -679,3 +694,13 @@ debt**, not "no gaps" — and both of these are debt wearing a gap's clothes:
   sentence is the declaration that it has not been — which is what turns it
   from debt into a gap, and it is the honest state rather than a promise to
   do it.
+
+## After this file: `CLOSEOUT.md`
+
+Everything above ends when the seven phases close and the v1 criterion is
+met, which happened on 16 Sep 2026. What separates *that* from a gateway
+anyone should rely on is a different list with different gates, and it lives
+in `CLOSEOUT.md` — the deployment that has never run this build, the anchor
+comparison with no owner, the half of the design record that was never
+swept, and the proofs that skip in silence. The two items in the block above
+are Tracks 2 and 3 there, restated with gates instead of declarations.

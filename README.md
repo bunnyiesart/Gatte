@@ -109,7 +109,11 @@ the repository is written so you can prove it rather than argue it.
 - **`AGENTS.md`** — what to build, confirmed architecture, what's still
   open. Read this first.
 - **`WORKFLOW.md`** — the phased build order, gates, and Progress
-  checklist.
+  checklist. All seven phases are closed.
+- **`CLOSEOUT.md`** — what separates "v1 declared" from "v1 running": the
+  deployment that has never run this build, the anchor comparison with no
+  owner, the half of the design record never swept, and the proofs that
+  skip in silence. Read it before trusting this in production.
 - **`CONCEPTS.md`** — MCP/gateway/API-security primer, if any term in the
   two files above is unfamiliar.
 - **`DEVELOPMENT-LOG.md`** / **`RESEARCH-recovered.md`** — full

@@ -49,7 +49,12 @@
 # To provision a deployment whose upstreams are named differently, pass
 # both variables; neither is in a tracked file:
 #
-#   UPSTREAM_NAMES="graylog iris opensearch swiss" #   UPSTREAM_CREDS="graylog:GRAYLOG_API_TOKEN iris:IRIS_API_TOKEN #                   opensearch:OPENSEARCH_PASSWORD swiss:SWISS_VT_KEY" #     ./deploy/gateway-serve.sh
+#   UPSTREAM_NAMES="alpha bravo charlie delta"
+#   UPSTREAM_CREDS="alpha:ALPHA_API_TOKEN \
+#                   bravo:BRAVO_PASSWORD \
+#                   charlie:CHARLIE_API_TOKEN \
+#                   delta:DELTA_VT_KEY"
+#     ./deploy/gateway-serve.sh
 #
 # The pairs are separate from the names because the credential variable a
 # backend reads is the backend's own convention -- API_TOKEN, PASSWORD and

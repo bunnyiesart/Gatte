@@ -49,6 +49,61 @@ clone and can run in any order, before or after it.
 
 ## Track 1 — the deployment has never run this build
 
+> **CORRECTION — 18 Sep 2026. The headline still holds; the host it names
+> has been abandoned.**
+>
+> Everything in this track routes through a FreeBSD jail: the work steps run
+> `./deploy/gateway-serve.sh` with `UPSTREAM_NAMES`/`UPSTREAM_CREDS` into a
+> bastille jail, and the gate is `deploy/gateway-serve-verify.sh` against
+> that host. **The owner has decided against that substrate.** So this track
+> as written asks the next person to invest in a machine that is not the
+> target any more.
+>
+> What is NOT wrong, and is why nothing below is deleted:
+>
+> - **"The deployment has never run this build" is still true.** The claim
+>   this track exists to close is untouched by the change of host.
+> - **":54 is still true after the change."** The last successful
+>   provisioning of the jail really was 12 Sep 2026. The replacement host is
+>   not a jail, so nothing that has happened since moves that date.
+> - **The reasoning survives; the addresses do not.** Re-signing every entry,
+>   watching a full refresh interval before declaring anything because
+>   `0020`/`0023`/`0024`/`0027` are tick- or load-scoped, and refusing to
+>   read a verifier's exit code as service — none of that is about FreeBSD.
+>   A rewritten Track 1 would keep all three.
+>
+> **Why this is a correction block and not an edit.** Three reasons, in
+> order of weight:
+>
+> 1. **Retargeting would trade a stale claim for a false one.** This
+>    repository's build cannot perform the replacement deployment. There is
+>    no `oci` transport in it: `internal/gateway/` has no `oci/` directory,
+>    and the only `podman` string in its Go is a test fixture
+>    (`internal/signer/signer_test.go:539`). Pointing these steps at a
+>    container host would document a deployment this code does not implement,
+>    which is worse than pointing them at a retired one.
+> 2. **The decision lives in ADRs that are not published here.** It is in the
+>    private repository's `0015`–`0019`, which have no counterpart in this
+>    one — this repository's `0015`–`0027` are entirely different documents.
+>    A correction block can name where a decision lives; an edit would assert
+>    an unpublished ADR as if it were in the record, and a public document
+>    asserting a document nobody can read is worse than a dated one.
+> 3. **It is the posture this file already chose for itself.** Track 4
+>    records that `0026` is `Accepted` and "takes a correction block rather
+>    than an edit". Track 1 gets the same treatment.
+>
+> **Which tracks this changes: one.** Tracks 2, 3 and 5 are
+> substrate-independent — an anchor comparison with no owner, a sweep of the
+> older ADRs, and a second protocol client are the same work on any host.
+> Track 4 is unaffected and its facts still check out. Track 1 is the only
+> one aimed at the retired machine, which is also why the block is only here.
+>
+> **What is NOT decided, and is not decided by this block:** whether this
+> repository follows the container refactor at all. That is a question about
+> what the public line is *for*, it is above a documentation edit, and it is
+> Gabriel's. Until it is made, this track should be read as recording a
+> change of direction — not as an instruction to provision anything.
+
 ### What is true now, measured
 
 The last **successful** provisioning of the jail was 12 Sep 2026. Since

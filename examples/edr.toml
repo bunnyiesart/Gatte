@@ -1,0 +1,52 @@
+# EDR
+#
+# For example, an MCP server for your EDR that can read hosts and
+# detections and can also take response actions such as isolating a host.
+# All names below are placeholders; use the tool names `mcp-gateway tool
+# list` shows for your server.
+#
+# Append this file to base.toml. CFG is the path of that combined file.
+#
+# 1. Vault keys (the EDR's API client, two values):
+#
+#      EDR_CLIENT_ID
+#      EDR_CLIENT_SECRET
+#
+# 2. Register and sign:
+#
+#      mcp-gateway upstream register -config "$CFG" -name edr -transport stdio \
+#        -command /usr/local/bin/your-edr-mcp \
+#        -arg --api-url -arg https://edr.example.org \
+#        -env EDR_CLIENT_ID -env EDR_CLIENT_SECRET
+#      mcp-gateway sign -config "$CFG" edr
+#
+# 3. Approve after reviewing each definition:
+#
+#      mcp-gateway tool list    -config "$CFG" -server edr
+#      mcp-gateway tool approve -config "$CFG" edr get_host
+#      mcp-gateway tool approve -config "$CFG" edr list_detections
+#      mcp-gateway tool approve -config "$CFG" edr isolate_host
+#      mcp-gateway tool approve -config "$CFG" edr release_host
+#
+#    `tool approve` prints which roles the approval serves. For a tool that
+#    changes state on an endpoint, read that list before confirming.
+#
+# Response actions are granted by name to one role only. A wildcard
+# (edr = ["*"]) is deliberately not used here: it would hand every future
+# EDR tool to the role the moment someone approves it in the quarantine.
+
+[[role]]
+name  = "tier1-analyst"
+tools = []
+  [role.grants]
+  edr = ["get_host", "list_detections"]
+
+[[role]]
+name  = "ir-lead"
+tools = []
+  [role.grants]
+  edr = ["get_host", "list_detections", "isolate_host", "release_host"]
+
+[group_to_role]
+"blue-tier1" = "tier1-analyst"
+"blue-ir"    = "ir-lead"

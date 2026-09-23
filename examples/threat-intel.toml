@@ -1,0 +1,42 @@
+# Threat intel enrichment
+#
+# For example, an MCP server that looks up IPs, domains and file hashes
+# against the intel sources you subscribe to. Names are placeholders.
+#
+# Append this file to base.toml. CFG is the path of that combined file.
+#
+# 1. Vault keys, one per intel source the server calls:
+#
+#      INTEL_SOURCE_A_KEY
+#      INTEL_SOURCE_B_KEY
+#
+# 2. Register and sign:
+#
+#      mcp-gateway upstream register -config "$CFG" -name intel -transport stdio \
+#        -command /usr/local/bin/your-intel-mcp \
+#        -env INTEL_SOURCE_A_KEY -env INTEL_SOURCE_B_KEY
+#      mcp-gateway sign -config "$CFG" intel
+#
+# 3. Approve after reviewing each definition:
+#
+#      mcp-gateway tool list    -config "$CFG" -server intel
+#      mcp-gateway tool approve -config "$CFG" intel lookup_ip
+#      mcp-gateway tool approve -config "$CFG" intel lookup_domain
+#      mcp-gateway tool approve -config "$CFG" intel lookup_hash
+#
+# This is the one example that uses the per-backend wildcard. "*" grants
+# every tool this upstream advertises, now and later, but it does NOT bypass
+# the quarantine: a new tool is still invisible and uncallable until an
+# operator approves its definition. What it does is make that approval the
+# only human decision -- so use it only for a backend where every tool is
+# read-only and fit for everyone who holds the role. See
+# ../design/adr/0016-per-backend-role-grants.md.
+
+[[role]]
+name  = "tier1-analyst"
+tools = []
+  [role.grants]
+  intel = ["*"]
+
+[group_to_role]
+"blue-tier1" = "tier1-analyst"

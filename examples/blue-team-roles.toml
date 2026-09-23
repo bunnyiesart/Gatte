@@ -1,0 +1,96 @@
+# Blue team role separation across all seven example upstreams
+#
+# Append this file to base.toml instead of the per-tool files: it is the
+# combined policy those files show one tool at a time. Upstream and tool
+# names are the placeholders used in the other examples.
+#
+# How the policy reads:
+#   - A role grants only what it names. An upstream missing from a role is
+#     not granted at all; there is no "deny" form because absence is the
+#     deny.
+#   - `tools` takes namespaced names (UPSTREAM.TOOL), matched exactly.
+#   - [role.grants] takes an upstream's registered name as the key and that
+#     upstream's own tool ids as values; "*" means every tool it advertises.
+#   - An analyst in several groups gets the union of their roles.
+#   - Neither form bypasses the quarantine: a tool is served only when a
+#     role grants it AND an operator approved its current definition.
+#   - Roles live in this file, not the database, so changing who may call
+#     what is a reviewed diff and needs a restart.
+
+# ---------------------------------------------------------------------------
+# tier1-analyst -- alert triage. Reads and enriches; changes nothing.
+# ---------------------------------------------------------------------------
+[[role]]
+name  = "tier1-analyst"
+tools = [
+  "siem.get_event",
+  "siem.search_events",
+  "cases.list_cases",
+  "cases.get_case",
+]
+  [role.grants]
+  intel = ["*"]                            # read-only lookups, see threat-intel.toml
+  edr   = ["get_host", "list_detections"]  # no response actions
+
+# ---------------------------------------------------------------------------
+# detection-engineer -- builds and tunes detections. SIEM search and the
+# context needed to judge a rule; no case writes, no endpoint actions.
+# ---------------------------------------------------------------------------
+[[role]]
+name  = "detection-engineer"
+tools = ["edr.list_detections"]
+  [role.grants]
+  siem  = ["search_events", "get_event", "list_saved_searches"]
+  intel = ["*"]
+
+# ---------------------------------------------------------------------------
+# ir-lead -- runs the incident. Writes to the case and can contain a host.
+# ---------------------------------------------------------------------------
+[[role]]
+name  = "ir-lead"
+tools = [
+  "siem.search_events",
+  "siem.get_event",
+  "ioc-sweep.sweep_iocs",
+]
+  [role.grants]
+  intel = ["*"]
+  cases = ["list_cases", "get_case", "add_case_note", "update_case_status"]
+  edr   = ["get_host", "list_detections", "isolate_host", "release_host"]
+
+# ---------------------------------------------------------------------------
+# vuln-analyst -- exposure management. Findings and assets, read-only.
+# ---------------------------------------------------------------------------
+[[role]]
+name  = "vuln-analyst"
+tools = []
+  [role.grants]
+  vulnscan = ["list_findings", "get_finding", "get_asset"]
+  intel    = ["lookup_hash"]
+
+# ---------------------------------------------------------------------------
+# cloud-security -- cloud posture findings and resource configuration.
+# ---------------------------------------------------------------------------
+[[role]]
+name  = "cloud-security"
+tools = []
+  [role.grants]
+  cloudposture = ["list_findings", "get_resource"]
+  vulnscan     = ["list_findings", "get_finding"]
+
+# ---------------------------------------------------------------------------
+# onboarding -- may authenticate, may call nothing. A valid, empty role.
+# ---------------------------------------------------------------------------
+[[role]]
+name  = "onboarding"
+tools = []
+
+# Left: the group name as it appears in the token claim named by
+# oidc.groups_claim. Right: a role defined above.
+[group_to_role]
+"blue-tier1"      = "tier1-analyst"
+"blue-detection"  = "detection-engineer"
+"blue-ir"         = "ir-lead"
+"blue-vuln"       = "vuln-analyst"
+"blue-cloud"      = "cloud-security"
+"blue-onboarding" = "onboarding"

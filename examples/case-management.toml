@@ -1,0 +1,50 @@
+# Case management / ticketing
+#
+# For example, an MCP server for your case management or ticketing system.
+# Names are placeholders.
+#
+# Append this file to base.toml. CFG is the path of that combined file.
+#
+# 1. Vault key:
+#
+#      CASES_API_KEY
+#
+# 2. Register and sign:
+#
+#      mcp-gateway upstream register -config "$CFG" -name cases -transport stdio \
+#        -command /usr/local/bin/your-cases-mcp \
+#        -arg --url -arg https://cases.example.org \
+#        -env CASES_API_KEY
+#      mcp-gateway sign -config "$CFG" cases
+#
+# 3. Approve after reviewing each definition:
+#
+#      mcp-gateway tool list    -config "$CFG" -server cases
+#      mcp-gateway tool approve -config "$CFG" cases list_cases
+#      mcp-gateway tool approve -config "$CFG" cases get_case
+#      mcp-gateway tool approve -config "$CFG" cases add_case_note
+#      mcp-gateway tool approve -config "$CFG" cases update_case_status
+#
+# Every analyst acts through the gateway's one CASES_API_KEY, so the case
+# system sees a single account. Who actually asked is recorded in the
+# gateway's audit trail (`mcp-gateway audit -subject IDENTITY`), not in the
+# case system.
+
+# Tier 1 reads the queue and the cases.
+[[role]]
+name  = "tier1-analyst"
+tools = ["cases.list_cases", "cases.get_case"]
+
+# The incident lead also writes to the case.
+[[role]]
+name  = "ir-lead"
+tools = [
+  "cases.list_cases",
+  "cases.get_case",
+  "cases.add_case_note",
+  "cases.update_case_status",
+]
+
+[group_to_role]
+"blue-tier1" = "tier1-analyst"
+"blue-ir"    = "ir-lead"

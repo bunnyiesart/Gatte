@@ -1,0 +1,37 @@
+# Cloud security posture
+#
+# For example, an MCP server that reads posture findings and resource
+# configuration from your cloud security tooling. Names are placeholders.
+#
+# Append this file to base.toml. CFG is the path of that combined file.
+#
+# 1. Vault keys. Give them names specific to this upstream: if another
+#    upstream also declares a generic name such as API_KEY, both receive the
+#    same value, because the vault is one flat namespace (ADR-0018).
+#
+#      CLOUDPOSTURE_ACCESS_KEY_ID
+#      CLOUDPOSTURE_SECRET_ACCESS_KEY
+#
+# 2. Register and sign. The upstream name may not contain "." -- that is the
+#    separator in "cloudposture.list_findings".
+#
+#      mcp-gateway upstream register -config "$CFG" -name cloudposture -transport stdio \
+#        -command /usr/local/bin/your-cloudposture-mcp \
+#        -arg --read-only \
+#        -env CLOUDPOSTURE_ACCESS_KEY_ID -env CLOUDPOSTURE_SECRET_ACCESS_KEY
+#      mcp-gateway sign -config "$CFG" cloudposture
+#
+# 3. Approve after reviewing each definition:
+#
+#      mcp-gateway tool list    -config "$CFG" -server cloudposture
+#      mcp-gateway tool approve -config "$CFG" cloudposture list_findings
+#      mcp-gateway tool approve -config "$CFG" cloudposture get_resource
+
+[[role]]
+name  = "cloud-security"
+tools = []
+  [role.grants]
+  cloudposture = ["list_findings", "get_resource"]
+
+[group_to_role]
+"blue-cloud" = "cloud-security"

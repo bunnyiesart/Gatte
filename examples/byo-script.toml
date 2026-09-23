@@ -1,0 +1,42 @@
+# Bring your own script
+#
+# Any program that speaks MCP over stdin/stdout can sit behind the gateway:
+# an in-house IOC sweep, a wrapper around an internal API, a script your
+# team already runs by hand. Names are placeholders.
+#
+# What the gateway gives the process when it spawns it:
+#   - its command and arguments, exactly as registered and signed;
+#   - PATH and HOME from the gateway's own environment;
+#   - each -env name, set to the value the vault holds under that name.
+# Nothing else is inherited. The analyst's token is never passed on.
+#
+# Append this file to base.toml. CFG is the path of that combined file.
+#
+# 1. Vault key:
+#
+#      IOC_SWEEP_API_KEY
+#
+# 2. Register and sign. Use absolute paths; re-sign after any change to the
+#    command, arguments or -env names (the signature covers them).
+#
+#      mcp-gateway upstream register -config "$CFG" -name ioc-sweep -transport stdio \
+#        -command /usr/local/bin/python3 \
+#        -arg /usr/local/libexec/gatte-tools/ioc_sweep.py \
+#        -env IOC_SWEEP_API_KEY
+#      mcp-gateway sign -config "$CFG" ioc-sweep
+#
+# 3. Approve after reviewing the definition:
+#
+#      mcp-gateway tool list    -config "$CFG" -server ioc-sweep
+#      mcp-gateway tool approve -config "$CFG" ioc-sweep sweep_iocs
+#
+# The script runs as the gateway's own service user, in the same process
+# tree that holds every credential (see "Security model" in ../README.md).
+# Put behind the gateway only code you would trust with that.
+
+[[role]]
+name  = "ir-lead"
+tools = ["ioc-sweep.sweep_iocs"]
+
+[group_to_role]
+"blue-ir" = "ir-lead"

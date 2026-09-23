@@ -1,0 +1,58 @@
+# Minimal Gatte configuration, without roles.
+#
+# Every example in this directory is a set of [[role]] blocks plus a
+# [group_to_role] table that you append to this file. The full reference,
+# with every key explained, is ../config.example.toml.
+#
+# Two things must be edited before this file loads:
+#
+#   1. signer.trusted_keys -- paste the line printed by
+#        mcp-gateway sign -generate-key -out /usr/local/etc/mcp-gateway/signing.key
+#      The placeholder below is not valid base64 on purpose, so an unedited
+#      copy is refused at load instead of trusting a key nobody chose.
+#   2. oidc.issuer and oidc.audience -- your identity provider and the URL
+#      your reverse proxy exposes this gateway on.
+#
+# No secret value goes in this file. Credentials live in the sops+age file
+# named by vault.secrets_file.
+
+# Loopback only. The gateway refuses any other bind and terminates no TLS;
+# put a TLS-terminating reverse proxy in front of it.
+listen = "127.0.0.1:8080"
+
+# SQLite file: upstream registry, tool quarantine, audit trail, signatures.
+database = "/var/db/mcp-gateway/mcp-gateway.db"
+
+[oidc]
+issuer   = "https://idp.example.org/realms/blue-team"
+audience = "https://gatte.example.org/mcp"
+# Name of the token claim that carries the analyst's groups.
+groups_claim = "groups"
+
+[vault]
+# A flat JSON object, encrypted with sops+age: { "VAR_NAME": "value", ... }.
+# Each key is the environment variable name an upstream declares with -env.
+secrets_file = "/usr/local/etc/mcp-gateway/secrets.enc.json"
+age_key_file = "/usr/local/etc/mcp-gateway/age.key"
+
+[signer]
+key_file = "/usr/local/etc/mcp-gateway/signing.key"
+trusted_keys = [
+  "REPLACE-WITH-THE-LINE-PRINTED-BY-sign-generate-key",
+]
+require_signed = true
+
+[quarantine]
+# How often every upstream's tool list is re-read, so a tool whose
+# definition changed after approval stops being served.
+refresh_interval = "5m"
+
+[response]
+max_bytes    = 1048576
+call_timeout = "2m"
+
+# Optional second copy of the audit trail as JSONL, for a log shipper to
+# forward to your SIEM. Both keys are required together.
+[audit.siem]
+path  = "/var/log/mcp-gateway/audit.jsonl"
+chain = "gatte-01"

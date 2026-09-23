@@ -1,0 +1,51 @@
+# SIEM / log search
+#
+# For example, an MCP server for your SIEM that exposes event search.
+# Everything named below -- upstream name, command, flags, variable names,
+# tool names -- is a placeholder. Use your server's real command and flags,
+# and the tool names `mcp-gateway tool list` shows after the gateway has
+# connected to it.
+#
+# Append this file to base.toml. CFG is the path of that combined file.
+#
+# 1. Add the credential to the vault (the sops file), under a name no other
+#    upstream uses -- the vault is one flat namespace (ADR-0018):
+#
+#      SIEM_API_TOKEN
+#
+# 2. Register and sign. Non-secret settings such as the SIEM's URL go in
+#    -arg (they are covered by the signature); secrets go in -env as names.
+#
+#      mcp-gateway upstream register -config "$CFG" -name siem -transport stdio \
+#        -command /usr/local/bin/your-siem-mcp \
+#        -arg --base-url -arg https://siem.example.org \
+#        -env SIEM_API_TOKEN
+#      mcp-gateway sign -config "$CFG" siem
+#
+# 3. Once the gateway has connected (serve), every tool is pending. Review
+#    each definition, then approve the ones you intend to serve:
+#
+#      mcp-gateway tool list    -config "$CFG" -server siem
+#      mcp-gateway tool approve -config "$CFG" siem search_events
+#      mcp-gateway tool approve -config "$CFG" siem get_event
+#      mcp-gateway tool approve -config "$CFG" siem list_saved_searches
+
+# Detection engineering writes and tests queries, so it gets search and the
+# saved-search catalogue. Tool ids under [role.grants] are the server's own
+# names, without the "siem." prefix -- the key already names the upstream.
+[[role]]
+name  = "detection-engineer"
+tools = []
+  [role.grants]
+  siem = ["search_events", "get_event", "list_saved_searches"]
+
+# Tier 1 triages alerts: it can open the event behind an alert and run a
+# search, but not browse or edit saved searches. The flat `tools` form
+# takes namespaced names (UPSTREAM.TOOL), matched exactly, no wildcard.
+[[role]]
+name  = "tier1-analyst"
+tools = ["siem.get_event", "siem.search_events"]
+
+[group_to_role]
+"blue-detection" = "detection-engineer"
+"blue-tier1"     = "tier1-analyst"

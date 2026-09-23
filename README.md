@@ -169,3 +169,7 @@ authoritative.
 > date that file demands. Off and declared is a different posture from off
 > and advertised as on, which is what this was until today. Review falls due
 > 12 Mar 2027.
+
+## License
+
+Apache License 2.0. Copyright 2026 Gabriel Coelho. See [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE).

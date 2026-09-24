@@ -18,6 +18,7 @@ tooling, plus one file that combines them into a role policy.
 | [`vulnerability-scanner.toml`](vulnerability-scanner.toml) | Vulnerability scanner: keeping a scan-launching tool off the gateway by never approving it. |
 | [`cloud-posture.toml`](cloud-posture.toml) | Cloud security posture: two credentials, and why their names must be unique. |
 | [`byo-script.toml`](byo-script.toml) | Bring your own script: what the spawned process receives, and nothing else. |
+| [`ioc_sweep.py`](ioc_sweep.py) | The script `byo-script.toml` registers: a runnable, standard-library-only MCP stdio server (newline-delimited JSON-RPC). |
 | [`blue-team-roles.toml`](blue-team-roles.toml) | All of the above as one policy: tier1-analyst, detection-engineer, ir-lead, vuln-analyst, cloud-security, onboarding. |
 
 **Every upstream name, command, flag, variable name and tool name in these
@@ -50,6 +51,13 @@ Set `CFG` to your configuration file. Every operator command takes
 ```sh
 CFG=/usr/local/etc/mcp-gateway/config.toml
 ```
+
+The commands below are written bare. On a host laid out as in the
+[quick start](../README.md#quick-start), run them as the gateway's service
+account (`sudo -u mcpgw mcp-gateway ...`), except `sign`, which runs as root
+because only root reads the signing key. SQLite creates its `-wal` and `-shm`
+files owned by whoever opens the database first, so after a `sign` give the
+directory back with `sudo chown -R mcpgw:mcpgw /var/db/mcp-gateway`.
 
 ### 1. Register the upstream
 
@@ -86,14 +94,30 @@ key is a variable name an upstream declared with `-env`:
 Encrypting a new file (the form the repository's own test fixture uses):
 
 ```sh
-age-keygen -o age.key          # the identity; must be owner-only (chmod 600)
-sops --encrypt --age <recipient printed by age-keygen> \
-  --input-type json --output-type json secrets.json > secrets.enc.json
+umask 077                          # the plaintext is never readable by anyone else
+age-keygen -o age.key              # the identity; written owner-only
+R=$(age-keygen -y age.key)         # its public recipient, age1...
+vi secrets.json                    # the JSON object above, real values
+sops --encrypt --age "$R" --input-type json --output-type json \
+  secrets.json > secrets.enc.json
+shred -u secrets.json              # FreeBSD and macOS: rm -P secrets.json
 ```
 
-Point `vault.secrets_file` and `vault.age_key_file` at the results, and do
-not leave the plaintext `secrets.json` behind. Edit later with `sops` on the
-encrypted file.
+Point `vault.secrets_file` and `vault.age_key_file` at the results. The
+service account must be able to read both, and it should be the only
+account that reads `age.key`. Edit later with `sops` on the encrypted file,
+which never writes the plaintext to disk; it needs the identity, and on the
+paths the quick start uses that is (root, then restore `chgrp mcpgw` /
+`chmod 0640`):
+
+```sh
+sudo env SOPS_AGE_KEY_FILE=/usr/local/etc/mcp-gateway/age.key \
+    sops /usr/local/etc/mcp-gateway/secrets.enc.json
+```
+
+Only the operator's shell needs `SOPS_AGE_KEY_FILE`: `serve` sets it itself
+from `vault.age_key_file`. Restart the gateway afterwards -- credentials are
+read at dial time (`deploy/freebsd-jail.md`, "Rotating credentials").
 
 Two rules that matter as soon as you have more than one tool:
 
@@ -148,7 +172,12 @@ An approval pins the tool's name, description and input schema. If the
 upstream later changes any of them, the tool is marked **changed** and
 stops being served until someone approves the new definition. `tool approve`
 prints which roles the approval serves; `tool revoke SERVER TOOL` returns a
-tool to pending and takes effect on the next call, without a restart.
+tool to pending. Both take effect on the next call, without a restart.
+
+A tool is observed only once a running gateway has connected to its
+upstream, so `tool list` shows nothing to approve until `serve` has started.
+Run these commands from a second shell while `serve` is running; the
+console and the server share the SQLite file safely.
 
 A tool you never approve is simply not on the gateway. That is the way to
 keep, say, a scan-launching tool out of reach without modifying the server.
@@ -178,6 +207,16 @@ at startup, a `tools` entry without a namespace, `"upstream.*"` in `tools`,
 undefined role. It cannot check that a grant names a registered upstream,
 because upstreams live in the database; `serve` warns about that instead.
 
+A tool that is not callable for a caller -- no role grants it, or its
+definition is pending or changed -- is not in that caller's `tools/list`,
+and a `tools/call` naming it gets the same answer as a tool that does not
+exist: JSON-RPC error `-32602`, `unknown tool "edr.isolate_host"`. The
+gateway does not say which reason applied, so a caller cannot probe for
+tools it may not see. The audit trail does: the call is recorded as denied
+with reason `not visible to caller` (see `mcp-gateway audit`). When a grant
+seems not to work, check `tool list` for the tool's status first and the
+role in the configuration second.
+
 Role changes take effect after a restart.
 
 ## Checking your configuration offline
@@ -191,7 +230,7 @@ mcp-gateway upstream list -config "$CFG"
 ```
 
 Exit code 2 with a message means the configuration was refused; 0 or 1
-means it loaded. Each file in this directory was checked this way, appended
+means it loaded. Each `.toml` file in this directory was checked this way, appended
 to `base.toml` with a real key pasted into `signer.trusted_keys`. The
 unedited `base.toml` is refused on purpose: its `trusted_keys` placeholder
 is not a key.

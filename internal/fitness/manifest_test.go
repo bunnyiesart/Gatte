@@ -101,6 +101,10 @@ var gatePaths = []string{
 	"deploy/gatte-anchor-verify.sh",
 	"deploy/gatte-audit-fluentbit.conf",
 	"deploy/vm/gateway-upstreams.sh",
+	"examples/README.md",
+	"examples/base.toml",
+	"examples/blue-team-roles.toml",
+	"examples/ioc_sweep.py",
 
 	// Source paths named in prose as the place a guarantee is enforced.
 	"cmd/mcp-gateway",

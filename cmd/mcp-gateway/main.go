@@ -100,8 +100,9 @@ Commands:
   audit        Read the audit trail.
   version      Print the build version.
 
-Every command takes -config (default: mcp-gateway.toml). See
-config.example.toml for a documented configuration file.
+Every command except sign -generate-key takes -config (default:
+mcp-gateway.toml). See config.example.toml for a documented
+configuration file.
 
 Exit codes: 0 ok, 1 ran and found a problem, 2 could not run.
 `)
@@ -138,7 +139,9 @@ func openStore(cfg *config.Config) (*sql.DB, error) {
 func loadConfig(path string, stderr io.Writer) (*config.Config, bool) {
 	cfg, err := config.Load(path)
 	if err != nil {
-		fmt.Fprintf(stderr, "config: %v\n", err)
+		// config.Load's errors already start with "config:"; adding the
+		// prefix again printed it twice.
+		fmt.Fprintln(stderr, err)
 		if errors.Is(err, os.ErrNotExist) {
 			fmt.Fprintf(stderr, "\nNo configuration file at %q. Copy config.example.toml and edit it.\n", path)
 		}

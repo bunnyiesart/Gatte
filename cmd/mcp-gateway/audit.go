@@ -170,9 +170,9 @@ consistency and nothing more.
 
 WHERE THE EXPECTED VALUE COMES FROM, once [audit.siem] is configured.
 Every emitted line carries prev_hash and hash, and both are queryable
-fields in Graylog alongside chain:"NAME" from audit.siem.chain.
+fields in your SIEM alongside chain:"NAME" from audit.siem.chain.
 
-The head is NOT "the newest message". Graylog orders by arrival and ts is
+The head is NOT "the newest message". A SIEM orders by arrival and ts is
 the caller's clock; neither is the chain's order, which is insertion order
 here. Two records written in one tick arrive either way round, so "newest"
 picks one at random and is wrong half the time -- a false alarm on a trail
@@ -410,7 +410,7 @@ func runAuditVerify(e *opEnv, expectHead string) int {
 		// and this is the one an operator actually reads, because it
 		// prints at the moment they are looking for the value.
 		fmt.Fprintf(e.stdout, "\nThis gateway appends its trail to %s under chain %q. Fetch\n", e.cfg.Audit.SIEM.Path, chain)
-		fmt.Fprintf(e.stdout, "those lines from Graylog with chain:%q; the expected value is\n", chain)
+		fmt.Fprintf(e.stdout, "those lines from your SIEM with chain:%q; the expected value is\n", chain)
 		fmt.Fprintf(e.stdout, "the hash among them that is no other line's prev_hash -- NOT the newest\n")
 		fmt.Fprintf(e.stdout, "message, which is a different record whenever two land in one tick.\n")
 		fmt.Fprintf(e.stdout, "deploy/gatte-anchor-verify.sh derives it that way and runs this check.\n")

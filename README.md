@@ -46,46 +46,183 @@ steps for other kinds of blue team tooling.
 
 ## Quick start
 
-You need: Go (the version in `go.mod`), `sops` and `age` on the gateway
-host (`deploy/freebsd-jail.md` pins sops at 3.13.2 or later), an OIDC
-provider that puts group names in a token claim, and a TLS-terminating
-reverse proxy. The gateway binds loopback only and terminates no TLS.
+You need, on the gateway host:
+
+- **Go**, the version in `go.mod` (1.27.1). Distribution packages are
+  usually older (Ubuntu 24.04's is), so take the tarball from
+  <https://go.dev/dl/> and check it against the sha256 published there
+  (`https://go.dev/dl/?mode=json&include=all` lists every file's):
+
+  ```sh
+  curl -fLO https://go.dev/dl/go1.27.1.linux-amd64.tar.gz
+  echo "63d339f0da5ab53635a56f2490a7984dfe12dfcff22ad749f63edaf590168445  go1.27.1.linux-amd64.tar.gz" | sha256sum -c
+  # linux-arm64: 3450b45a3f9ee8568792736a5c5e70a1f2e9b36c35a8f74958c03e51d7d92bec
+  sudo tar -C /usr/local -xzf go1.27.1.linux-amd64.tar.gz
+  export PATH=/usr/local/go/bin:$PATH
+  echo 'export PATH=/usr/local/go/bin:$PATH' >> ~/.profile   # so a new shell finds go
+  ```
+
+  The `export` lasts for this shell only; the `~/.profile` line (FreeBSD:
+  the same file) is what makes `make build`, or a rebuild months later,
+  work from a fresh login. The second shell in step 6 below needs only
+  `/usr/local/bin`, which `sudo` already has.
+
+- **`sops`** 3.13.2 or later. Ubuntu does not package it; take the release
+  binary and check it against the release's checksum file (FreeBSD:
+  `pkg install sops`):
+
+  ```sh
+  V=v3.13.2 A=amd64                  # or A=arm64
+  base=https://github.com/getsops/sops/releases/download/$V
+  curl -fLO "$base/sops-$V.linux.$A" -fLO "$base/sops-$V.checksums.txt"
+  sha256sum -c --ignore-missing "sops-$V.checksums.txt"
+  sudo install -m 0755 "sops-$V.linux.$A" /usr/local/bin/sops
+  ```
+
+- **`age`** (`apt install age`, `pkg install age`) and `make`.
+- **An OIDC provider** that puts group names in a token claim, and a
+  **TLS-terminating reverse proxy**. The gateway binds loopback only and
+  terminates no TLS.
+
+The gateway runs as an unprivileged service account; these steps call it
+`mcpgw`. The layout keeps the signing key owned by root, out of that
+account's reach (see [Security model](#security-model)), and gives the
+account only what it has to write: its database and its audit log.
 
 ```sh
 make build                                        # -> bin/mcp-gateway
+sudo install -m 0755 bin/mcp-gateway /usr/local/bin/mcp-gateway
 
-# 1. A signing key. Prints the two [signer] lines to paste into the config.
-bin/mcp-gateway sign -generate-key -out /usr/local/etc/mcp-gateway/signing.key
+# 0. The service account and the three directories base.toml names.
+#    Linux:   sudo useradd --system --home-dir /var/db/mcp-gateway --no-create-home \
+#               --shell /usr/sbin/nologin mcpgw
+#    FreeBSD: sudo pw useradd mcpgw -d /var/db/mcp-gateway -s /usr/sbin/nologin
+sudo install -d -m 0750 -o root  -g mcpgw /usr/local/etc/mcp-gateway   # service reads, cannot write
+sudo install -d -m 0750 -o mcpgw -g mcpgw /var/db/mcp-gateway /var/log/mcp-gateway
+
+# 1. A signing key, owned by root (0600). Prints the [signer] lines for the config.
+sudo mcp-gateway sign -generate-key -out /usr/local/etc/mcp-gateway/signing.key
 
 # 2. A configuration: the minimal base plus a role policy.
-cat examples/base.toml examples/blue-team-roles.toml > /usr/local/etc/mcp-gateway/config.toml
-#    edit: signer.trusted_keys, oidc.issuer, oidc.audience, paths
+cat examples/base.toml examples/blue-team-roles.toml |
+  sudo tee /usr/local/etc/mcp-gateway/config.toml >/dev/null
+#    edit: signer.trusted_keys (the line step 1 printed), oidc.issuer, oidc.audience
 CFG=/usr/local/etc/mcp-gateway/config.toml
 
 # 3. The vault: a flat JSON object of VAR_NAME -> value, encrypted.
-age-keygen -o /usr/local/etc/mcp-gateway/age.key   # chmod 600
-sops --encrypt --age <recipient> --input-type json --output-type json \
-  secrets.json > /usr/local/etc/mcp-gateway/secrets.enc.json
+#    The plaintext is created owner-only and removed as soon as it is encrypted.
+sudo age-keygen -o /usr/local/etc/mcp-gateway/age.key
+sudo chown mcpgw:mcpgw /usr/local/etc/mcp-gateway/age.key          # 0600, service only
+R=$(sudo age-keygen -y /usr/local/etc/mcp-gateway/age.key)          # the public recipient
+umask 077
+vi secrets.json      # {"EDR_CLIENT_ID": "...", "EDR_CLIENT_SECRET": "..."}
+sops --encrypt --age "$R" --input-type json --output-type json secrets.json |
+  sudo tee /usr/local/etc/mcp-gateway/secrets.enc.json >/dev/null
+shred -u secrets.json                                              # FreeBSD: rm -P
+sudo chgrp mcpgw /usr/local/etc/mcp-gateway/secrets.enc.json
+sudo chmod 0640  /usr/local/etc/mcp-gateway/secrets.enc.json
 
-# 4. Register and sign each tool, naming its credentials (names only).
-bin/mcp-gateway upstream register -config "$CFG" -name edr -transport stdio \
+# 4. Register each tool, naming its credentials (names only), and sign it.
+#    Operator commands run as the service account, because they write the
+#    database it writes; sign runs as root, because only root reads the key,
+#    and SQLite may leave root-owned -wal/-shm files behind, hence the chown.
+sudo -u mcpgw mcp-gateway upstream register -config "$CFG" -name edr -transport stdio \
   -command /usr/local/bin/your-edr-mcp -env EDR_CLIENT_ID -env EDR_CLIENT_SECRET
-bin/mcp-gateway sign -config "$CFG" edr
+sudo mcp-gateway sign -config "$CFG" edr
+sudo chown -R mcpgw:mcpgw /var/db/mcp-gateway
+#    your-edr-mcp is a placeholder. To run these steps against a real upstream
+#    today: install examples/ioc_sweep.py (examples/byo-script.toml, steps
+#    2-4), register it as ioc-sweep with -env IOC_SWEEP_API_KEY, put
+#    IOC_SWEEP_API_KEY in secrets.json (step 3), sign, and approve
+#    `ioc-sweep sweep_iocs` in step 6; a token in group blue-ir then reaches
+#    ioc-sweep.sweep_iocs (examples/blue-team-roles.toml).
 
-# 5. Check the configuration offline, then run.
-bin/mcp-gateway upstream list -config "$CFG"
-bin/mcp-gateway serve -config "$CFG"
+# 5. Check the configuration offline, then run (in the foreground here;
+#    under your service manager in production).
+sudo -u mcpgw mcp-gateway upstream list -config "$CFG"
+sudo -u mcpgw mcp-gateway serve -config "$CFG"
 
-# 6. Approve the tools the gateway observed.
-bin/mcp-gateway tool list    -config "$CFG" -server edr
-bin/mcp-gateway tool approve -config "$CFG" edr get_host
+# 6. In a second shell, while serve runs: approve the tools it observed.
+#    The console shares the SQLite file with the running server; an approval,
+#    like a revoke, takes effect on the next call, without a restart.
+sudo -u mcpgw mcp-gateway tool list    -config "$CFG" -server edr
+sudo -u mcpgw mcp-gateway tool approve -config "$CFG" edr get_host
 ```
+
+On this first run, with only `edr` registered, `serve` logs two `WARN`
+lines: "a role grants tools that match nothing this gateway observed" and
+"a role grants a backend this gateway has no upstream registered for".
+They are expected. `blue-team-roles.toml` grants tools on upstreams you
+have not registered yet, and each grant takes effect once its upstream is
+registered, signed and approved. To stop the warnings, register those
+upstreams or delete the grants you will not use.
+
+`serve` runs `sops`, so it must be on the service account's `PATH`. On
+Ubuntu, `sudo` resets `PATH` to a `secure_path` that includes
+`/usr/local/bin`; elsewhere, check it. That `PATH`, and the account's
+`HOME`, are what the spawned upstreams receive. Tool names come from
+`tool list`, not from memory.
 
 Point the reverse proxy at `listen` (default `127.0.0.1:8080`) and point
 MCP clients at the URL you set as `oidc.audience`. The gateway publishes
 OAuth protected resource metadata (RFC 9728) at
 `/.well-known/oauth-protected-resource`, and also at that prefix plus the
 audience's path.
+
+### First call
+
+The endpoint is MCP's streamable HTTP transport in stateless mode: every
+request is a `POST` of one JSON-RPC message, no `Mcp-Session-Id` is issued
+or expected, and the answer comes back as `text/event-stream` (one
+`data:` line carrying the JSON-RPC response). The gateway answers MCP on
+every path except the metadata ones, so the path that matters is the one
+in `oidc.audience`: use that URL, and route it to `listen` at the proxy.
+
+Both `oidc.issuer` and `oidc.audience` must be absolute `https` URLs with no
+query or fragment; `http` is accepted only for `localhost`, `127.0.0.1` and
+`::1`, which is enough for a test IdP on the same host. `serve` reads the
+issuer's discovery document at startup and refuses to start without it.
+
+The bearer token must be a JWT from that issuer, signed with an
+asymmetric algorithm (RS*, PS*, ES* or EdDSA) by a key in its `jwks_uri`,
+unexpired, with:
+
+| Claim | Must be |
+|---|---|
+| `iss` | exactly `oidc.issuer` |
+| `aud` | `oidc.audience`, or a list containing it (RFC 8707) |
+| `sub` | present |
+| `oidc.groups_claim` (default `groups`) | a list with at least one group mapped in `[group_to_role]` |
+
+A token for a group that maps to no role authenticates and sees no tools.
+
+```sh
+URL=https://gatte.example.org/mcp      # = oidc.audience
+TOKEN=...                              # an access token from your IdP
+mcp() {
+  curl -s "$URL" -H "Authorization: Bearer $TOKEN" \
+    -H 'Content-Type: application/json' \
+    -H 'Accept: application/json, text/event-stream' \
+    -H 'MCP-Protocol-Version: 2025-06-18' -d "$1" | sed -n 's/^data: //p'
+}
+mcp '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"curl","version":"0"}}}'
+mcp '{"jsonrpc":"2.0","id":2,"method":"tools/list"}'
+mcp '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"edr.get_host","arguments":{"host":"ws-042"}}}'
+# With ioc-sweep registered instead (step 4), the call that answers today:
+mcp '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"ioc-sweep.sweep_iocs","arguments":{"iocs":["198.51.100.7"]}}}'
+# -> "swept 1 ioc(s): 198.51.100.7; key_present=true; env_names=..." (examples/byo-script.toml, step 4)
+```
+
+`tools/list` returns the tools the token's roles grant and an operator
+approved, named `upstream.tool`. A tool outside that set is answered as
+`unknown tool` (`examples/README.md`, step 5). A missing, malformed,
+expired or wrong-audience token gets `401` and a challenge pointing at the
+metadata document, with nothing in it that says which check failed:
+
+```
+HTTP/1.1 401 Unauthorized
+Www-Authenticate: Bearer resource_metadata="https://gatte.example.org/.well-known/oauth-protected-resource/mcp"
+```
 
 `mcp-gateway help` lists every command: `serve`, `upstream
 list|register|deregister`, `sign`, `tool list|approve|revoke`, `audit`,

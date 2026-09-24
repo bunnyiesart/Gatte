@@ -31,6 +31,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"text/tabwriter"
@@ -65,6 +66,36 @@ type opEnv struct {
 	db     *sql.DB
 	stdout io.Writer
 	stderr io.Writer
+	// configPath is the -config value this command actually loaded,
+	// made absolute. Empty only in tests that build an opEnv by hand.
+	configPath string
+}
+
+// cmd renders the command an operator should run next, for the hints this
+// console prints: "mcp-gateway SUB -config PATH". The -config goes right
+// after the subcommand because the flag package stops at the first
+// positional argument.
+//
+// Before 24 Sep 2026 every hint omitted -config. Pasted as shown, "mcp-gateway
+// sign NAME" loaded mcp-gateway.toml from the current directory rather than
+// the file the operator had just used -- refused when there was none, and
+// acting on a different gateway when there was one.
+func (e *opEnv) cmd(sub string) string {
+	if e.configPath == "" {
+		return "mcp-gateway " + sub
+	}
+	return "mcp-gateway " + sub + " -config " + opShellQuote(e.configPath)
+}
+
+// opShellQuote returns s unchanged when it is safe to paste into a POSIX
+// shell as one word, and single-quoted otherwise.
+func opShellQuote(s string) string {
+	if s != "" && strings.IndexFunc(s, func(r rune) bool {
+		return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("/._-+:@%=,", r))
+	}) < 0 {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // upstreams returns the Upstream Registry port, wired to SQLite.
@@ -126,7 +157,11 @@ func opRun(configPath string, stdout, stderr io.Writer, fn func(*opEnv) int) int
 	}
 	defer db.Close()
 
-	return fn(&opEnv{cfg: cfg, db: db, stdout: stdout, stderr: stderr})
+	abs, err := filepath.Abs(configPath)
+	if err != nil {
+		abs = configPath
+	}
+	return fn(&opEnv{cfg: cfg, db: db, stdout: stdout, stderr: stderr, configPath: abs})
 }
 
 // opFlagSet returns a flag set for subcommand name, already carrying the

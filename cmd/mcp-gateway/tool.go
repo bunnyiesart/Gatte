@@ -178,7 +178,7 @@ func runToolList(e *opEnv, server string, asJSON bool) int {
 		fmt.Fprint(e.stdout, "A change to an approved tool's description or schema is how a poisoned tool\ngets past an approval that already happened. Read the new definition on the\nupstream server before approving it.\n")
 	}
 	if len(pending) > 0 || len(changed) > 0 {
-		fmt.Fprint(e.stdout, "\nApprove with:\n\n    mcp-gateway tool approve SERVER TOOL\n")
+		fmt.Fprintf(e.stdout, "\nApprove with:\n\n    %s SERVER TOOL\n", e.cmd("tool approve"))
 	}
 	return exitOK
 }
@@ -211,7 +211,7 @@ func runToolApprove(e *opEnv, server, tool string) int {
 	before, err := q.Get(e.ctx(), server, tool)
 	switch {
 	case errors.Is(err, quarantine.ErrNotFound):
-		fmt.Fprintf(e.stderr, "no quarantine entry for tool %q on server %q.\n\nA tool can only be approved after the gateway has actually observed it, so\nan operator never approves a definition typed from memory. See what has\nbeen observed:\n\n    mcp-gateway tool list -server %s\n", tool, server, server)
+		fmt.Fprintf(e.stderr, "no quarantine entry for tool %q on server %q.\n\nA tool can only be approved after the gateway has actually observed it, so\nan operator never approves a definition typed from memory. See what has\nbeen observed:\n\n    %s -server %s\n", tool, server, e.cmd("tool list"), server)
 		return exitProblem
 	case errors.Is(err, quarantine.ErrInvalidStatus):
 		fmt.Fprintf(e.stderr, "the stored quarantine entry for %s.%s has an unrecognised status: %v\nThat row is corrupt or was hand-edited. Refusing to approve it.\n", server, tool, err)
@@ -329,7 +329,7 @@ func runToolRevoke(e *opEnv, server, tool string) int {
 	before, err := q.Get(e.ctx(), server, tool)
 	switch {
 	case errors.Is(err, quarantine.ErrNotFound):
-		fmt.Fprintf(e.stderr, "no quarantine entry for tool %q on server %q.\n\nThere is nothing to revoke: this gateway has never observed that tool. See\nwhat it has:\n\n    mcp-gateway tool list -server %s\n", tool, server, server)
+		fmt.Fprintf(e.stderr, "no quarantine entry for tool %q on server %q.\n\nThere is nothing to revoke: this gateway has never observed that tool. See\nwhat it has:\n\n    %s -server %s\n", tool, server, e.cmd("tool list"), server)
 		return exitProblem
 	case errors.Is(err, quarantine.ErrInvalidStatus):
 		fmt.Fprintf(e.stderr, "the stored quarantine entry for %s has an unrecognised status: %v\nThat row is corrupt or was hand-edited. Refusing to touch it.\n", name, err)
@@ -350,7 +350,7 @@ func runToolRevoke(e *opEnv, server, tool string) int {
 		// Refused, and the message has to explain a refusal that sounds
 		// unhelpful until you know what `changed` is holding. See
 		// quarantine.Tool.Revoked.
-		fmt.Fprintf(e.stderr, "%s is CHANGED, and a changed tool cannot be revoked.\n\nIt is already not being served, so revoking would stop nothing. What it\nwould do is relabel the entry as pending -- as though this tool were merely\nnew and unreviewed -- and that would erase the one record the gateway keeps\nof a definition being replaced after a human approved it. That record is\nwhat makes the rug pull visible in:\n\n    mcp-gateway tool list -server %s\n\nIf the new definition is legitimate, approve it (which re-baselines to it).\nIf it is not, leave the tool exactly as it is: changed, unusable, and\nvisible.\n", name, server)
+		fmt.Fprintf(e.stderr, "%s is CHANGED, and a changed tool cannot be revoked.\n\nIt is already not being served, so revoking would stop nothing. What it\nwould do is relabel the entry as pending -- as though this tool were merely\nnew and unreviewed -- and that would erase the one record the gateway keeps\nof a definition being replaced after a human approved it. That record is\nwhat makes the rug pull visible in:\n\n    %s -server %s\n\nIf the new definition is legitimate, approve it (which re-baselines to it).\nIf it is not, leave the tool exactly as it is: changed, unusable, and\nvisible.\n", name, e.cmd("tool list"), server)
 		return exitProblem
 	case err != nil:
 		fmt.Fprintf(e.stderr, "quarantine: revoking %s: %v\n", name, err)
@@ -379,8 +379,8 @@ human judgement; it does not un-see a tool.
 Approving it again is the way back, and it re-baselines to whatever the
 upstream is advertising at that moment:
 
-    mcp-gateway tool approve %s %s
-`, server, tool)
+    %s %s %s
+`, e.cmd("tool approve"), server, tool)
 
 	if after.Usable() {
 		// Should not happen: Revoked() returns a pending tool and pending is

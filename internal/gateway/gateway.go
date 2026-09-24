@@ -157,7 +157,8 @@ type Result struct {
 	// field (SEP-2106), or nil when the upstream sent none. Like Content it
 	// is bytes, not a decoded value: this package measures it and, when the
 	// tool declared an OutputSchema, validates it -- and hands on exactly
-	// what arrived either way.
+	// what arrived either way, save for one edit: an injected credential
+	// the upstream echoed is replaced by a placeholder (Dispatch, step 7).
 	StructuredContent json.RawMessage
 	// IsError reports a tool-level error (the call reached the tool and
 	// the tool refused), as distinct from a transport or routing failure.

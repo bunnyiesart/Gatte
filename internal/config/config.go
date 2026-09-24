@@ -515,6 +515,14 @@ func RequireLoopbackBind(listen string) error {
 		// LookupPort("") returns 0 with no error, and ":" is a real thing
 		// an operator types when deleting a port to "use the default".
 		// There is no default here; net.Listen would pick a random one.
+		//
+		// An EXPLICIT ":0" is a different thing and is allowed on purpose
+		// (24 set 2026, after a fuzz seed asked): nobody types a zero by
+		// deleting something, serve's startup summary prints the port the
+		// kernel chose, and cmd/mcp-gateway's serve tests depend on it to
+		// run in parallel without colliding. The host is still loopback,
+		// so ADR-0011's property -- never network-reachable directly --
+		// holds either way.
 		if port == "" {
 			return fmt.Errorf("listen: %q has no port. This gateway does not choose one for you -- "+
 				"an ephemeral port is a gateway nothing can reach", listen)

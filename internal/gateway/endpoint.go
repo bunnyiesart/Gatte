@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/rand"
@@ -1587,7 +1588,144 @@ func (g *Gateway) Dispatch(ctx context.Context, c Caller, namespacedTool string,
 		g.auditFailure(ctx, c, namespacedTool, rt.route.upstream, err)
 		return Result{}, fmt.Errorf("gateway: call %q: %w", namespacedTool, err)
 	}
+	// Step 7 (24 set 2026): the credential this upstream was spawned with
+	// is taken out of what it answered. auditFailure already drops an
+	// upstream's error TEXT because "401: token=... rejected" is an
+	// ordinary thing for an API client to say -- and an MCP SDK server
+	// turns exactly that handler error into an IsError result, which
+	// arrived here verbatim and went to the analyst and their model. The
+	// whole point of this gateway is that the backend's credential never
+	// reaches that side. After checkResult on purpose: the size ceiling
+	// and the output schema judge the bytes the upstream sent.
+	scrubbed, err := g.scrubResult(ctx, rt.route.upstream, res)
+	if err != nil {
+		g.auditFailure(ctx, c, namespacedTool, rt.route.upstream, err)
+		return Result{}, fmt.Errorf("gateway: call %q: %w", namespacedTool, err)
+	}
+	return scrubbed, nil
+}
+
+// ErrResultUnscrubbable means a result carried an injected credential and
+// could not be rewritten without it into something that is still JSON.
+// It is refused whole, the same way an oversized result is (ADR-0014):
+// forwarding it would forward the secret.
+var ErrResultUnscrubbable = errors.New("gateway: result carried an injected credential and could not be redacted")
+
+// scrubResult replaces, in res.Content and res.StructuredContent, every
+// credential value this upstream was handed at dial time.
+//
+// The values are RE-RESOLVED from the vault here, not remembered from the
+// dial. bringUp's `defer clear(env)` is a deliberate control -- the
+// plaintext lives only while it is being handed over -- and keeping a
+// copy on the connection to redact with would defeat it. What IS kept is
+// the per-upstream digest set (rememberCredentials), which names the
+// variables; a freshly resolved value whose digest matches is, byte for
+// byte, what the upstream holds. Resolve is a map lookup behind a stat
+// (sopsage, ADR-0023), the same price CredentialDrift pays every tick.
+//
+// Known residual, stated rather than hidden: after a rotation the vault
+// holds the NEW value while the running upstream still holds the old
+// one, so an echo of the old value is not caught. CredentialDrift already
+// reports that state as something to act on. An echo in another encoding
+// (base64, split across blocks) is not caught either: this is exact
+// matching of a known string, not detection.
+func (g *Gateway) scrubResult(ctx context.Context, upstream string, res Result) (Result, error) {
+	g.mu.RLock()
+	names := make([]string, 0, len(g.creds[upstream]))
+	for name := range g.creds[upstream] {
+		names = append(names, name)
+	}
+	g.mu.RUnlock()
+	if len(names) == 0 {
+		return res, nil
+	}
+	slices.Sort(names)
+
+	env := make(map[string]string, len(names))
+	defer func() { clear(env) }()
+	for _, name := range names {
+		secret, err := g.vault.Resolve(ctx, name)
+		if err != nil {
+			// Not fatal to the call: the vault being briefly unreadable is
+			// not evidence the result holds a secret, and CredentialDrift
+			// makes the same call. Only the variable name is logged.
+			g.log.ErrorContext(ctx, "gateway: could not re-read a credential to redact it from a tool result; that value is not being scrubbed from this result",
+				slog.String("upstream", upstream),
+				slog.String("env_var_name", name),
+				slog.String("detail", err.Error()))
+			continue
+		}
+		env[name] = secret.Value()
+	}
+
+	var hit []string
+	var err error
+	if res.Content, err = scrubJSON(res.Content, env, &hit); err != nil {
+		return Result{}, err
+	}
+	if res.StructuredContent, err = scrubJSON(res.StructuredContent, env, &hit); err != nil {
+		return Result{}, err
+	}
+	if len(hit) > 0 {
+		// The operator wants to know a backend echoes its key -- it will do
+		// it in its own logs too. Names only, never the value.
+		slices.Sort(hit)
+		g.log.WarnContext(ctx, "gateway: upstream echoed an injected credential in a tool result; redacted before it reached the client",
+			slog.String("upstream", upstream),
+			slog.Any("env_var_names", slices.Compact(hit)))
+	}
 	return res, nil
+}
+
+// scrubJSON replaces each value of env found in raw with the redaction
+// placeholder, appending the variable's name to hit when it did.
+//
+// raw is JSON text, so a value can appear two ways: as itself, inside a
+// string literal, or JSON-escaped (encoding/json escapes <, > and & by
+// default, and any encoder escapes " and \). Both are replaced. The bare
+// form is replaced only when it contains nothing JSON must escape --
+// otherwise a match could straddle structure and the replacement would
+// corrupt the document rather than a string inside it.
+func scrubJSON(raw json.RawMessage, env map[string]string, hit *[]string) (json.RawMessage, error) {
+	if len(raw) == 0 {
+		return raw, nil
+	}
+	out := []byte(raw)
+	changed := false
+	for name, value := range env {
+		if value == "" {
+			continue
+		}
+		forms := make([]string, 0, 2)
+		if !strings.ContainsAny(value, "\"\\") && !strings.ContainsFunc(value, func(r rune) bool { return r < 0x20 }) {
+			forms = append(forms, value)
+		}
+		if enc, err := json.Marshal(value); err == nil {
+			if escaped := string(enc[1 : len(enc)-1]); !slices.Contains(forms, escaped) {
+				forms = append(forms, escaped)
+			}
+		}
+		found := false
+		for _, form := range forms {
+			if bytes.Contains(out, []byte(form)) {
+				out = bytes.ReplaceAll(out, []byte(form), []byte(redacted))
+				found = true
+			}
+		}
+		if found {
+			changed = true
+			*hit = append(*hit, name)
+		}
+	}
+	if !changed {
+		return raw, nil
+	}
+	if !json.Valid(out) {
+		// A value short or common enough to match JSON syntax itself. Fail
+		// closed: the one thing this must not do is forward the secret.
+		return nil, ErrResultUnscrubbable
+	}
+	return json.RawMessage(out), nil
 }
 
 // RecordAuthFailure writes the audit record for a request that was

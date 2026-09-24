@@ -259,11 +259,50 @@ func (d *Dialer) Dial(ctx context.Context, spec gateway.UpstreamSpec, env map[st
 		// this design puts secrets in the environment, but an operator can
 		// still put one on a command line, and an error message is not the
 		// place to find out.
-		return nil, fmt.Errorf("stdio: upstream %q: connect to %q: %w", spec.Name, spec.Command, connErr)
+		return nil, fmt.Errorf("stdio: upstream %q: connect to %q: %w", spec.Name, spec.Command, scrubDialError(connErr, env))
 	}
 
 	return &upstream{name: spec.Name, session: session}, nil
 }
+
+// scrubDialError returns err with every value of env taken out of it.
+//
+// The handshake error can carry text the CHILD wrote: a JSON-RPC error
+// response to initialize becomes a *jsonrpc.Error whose Message is
+// whatever the upstream put there, and "bad key <the key>" is an ordinary
+// thing for a backend to answer. Wrapping that with %w broke the promise
+// on Dial above and on [gateway.Dialer] -- no value in an error -- and
+// left gateway.bringUp's redact as the only thing between the child's
+// words and a log line. That redact is a backstop, and it keeps its
+// cause reachable through Unwrap, so a caller doing errors.As for the
+// wire error got the raw text back (24 set 2026).
+//
+// When nothing matches, err is returned untouched and the chain stays
+// whole. When something does, the cause is NOT kept: only errors.Is is
+// preserved, through a method that answers yes/no and exposes no value,
+// so "was this a timeout" still works and the text cannot be dug out.
+func scrubDialError(err error, env map[string]string) error {
+	msg := err.Error()
+	for _, value := range env {
+		if value != "" {
+			msg = strings.ReplaceAll(msg, value, "[redacted]")
+		}
+	}
+	if msg == err.Error() {
+		return err
+	}
+	return scrubbedError{msg: msg, is: err}
+}
+
+// scrubbedError is a scrubbed message that still answers errors.Is for
+// its original cause, and deliberately has no Unwrap.
+type scrubbedError struct {
+	msg string
+	is  error
+}
+
+func (e scrubbedError) Error() string        { return e.msg }
+func (e scrubbedError) Is(target error) bool { return errors.Is(e.is, target) }
 
 // childEnv assembles the exact environment the child process will run with:
 // the inherited allowlist, read from the gateway's own environment, plus

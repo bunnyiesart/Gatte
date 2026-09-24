@@ -264,6 +264,19 @@ func (v *Verifier) Verify(ctx context.Context, rawToken string) (access.Identity
 		return access.Identity{}, v.reject(ctx, "empty bearer token", nil, rawToken)
 	}
 
+	// Compact serialisation only (24 set 2026). go-oidc hands the string to
+	// jose.ParseSigned, which also accepts the JSON serialisation -- and
+	// that form carries an UNPROTECTED header the attacker writes freely
+	// (even a second "kid") around a genuine signature. Nothing forged
+	// verified, but a valid token re-wrapped that way passed as a second
+	// wire encoding: one that proxies and DLP rules keyed on "eyJ..." do
+	// not see, and one scrub (which splits on '.') does not take apart.
+	// An OIDC access token in a Bearer header is compact (RFC 7519 §1,
+	// RFC 6750 §2.1); refusing everything else costs no real client.
+	if !isCompactJWS(rawToken) {
+		return access.Identity{}, v.reject(ctx, "token is not a compact-serialised JWS", nil, rawToken)
+	}
+
 	// This single call covers signature (against the cached-or-fetched
 	// JWKS), permitted algorithm, issuer, audience and expiry.
 	idToken, err := v.verifier.Verify(ctx, rawToken)
@@ -285,6 +298,29 @@ func (v *Verifier) Verify(ctx context.Context, rawToken string) (access.Identity
 		Name:    displayName(claims, idToken.Subject),
 		Groups:  v.groupsFrom(ctx, claims),
 	}, nil
+}
+
+// isCompactJWS reports whether raw has the shape of a JWS in compact
+// serialisation: exactly three non-empty base64url segments joined by '.'.
+// Shape only; the signature is go-oidc's to check. An empty third segment
+// (alg "none") is refused here as well, one layer before go-oidc would.
+func isCompactJWS(raw string) bool {
+	parts := strings.Split(raw, ".")
+	if len(parts) != 3 {
+		return false
+	}
+	for _, part := range parts {
+		if part == "" {
+			return false
+		}
+		for i := 0; i < len(part); i++ {
+			c := part[i]
+			if !(c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-' || c == '_') {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // reject logs why a token was refused and returns the one error every

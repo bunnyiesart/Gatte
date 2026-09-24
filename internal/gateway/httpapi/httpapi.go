@@ -383,7 +383,8 @@ func (h *Handler) authenticate(w http.ResponseWriter, r *http.Request, source st
 //     inspected the *other* one gets authenticated.
 //   - Any other scheme -- Basic, Negotiate, a bare token with no scheme.
 //   - A token containing whitespace, which is not a b64token and would mean
-//     this function had to guess where the credential ended.
+//     this function had to guess where the credential ended -- nor, more
+//     generally, anything outside the b64token grammar (isB64token).
 //   - A query parameter, a cookie, a custom header, or a request body. This
 //     function is given only the header set and reads only that one field;
 //     there is no fallback here because a fallback is precisely how a
@@ -399,10 +400,40 @@ func bearerToken(header http.Header) (string, bool) {
 		return "", false
 	}
 	token := strings.TrimLeft(rest, " \t")
-	if token == "" || strings.ContainsAny(token, " \t") {
+	if !isB64token(token) {
 		return "", false
 	}
 	return token, true
+}
+
+// isB64token reports whether token matches RFC 6750 section 2.1:
+//
+//	b64token = 1*( ALPHA / DIGIT / "-" / "." / "_" / "~" / "+" / "/" ) *"="
+//
+// The doc above always said the token was one; until 24 set 2026 the code
+// only refused whitespace, so `{"payload":...}` -- a JWS in JSON
+// serialisation that go-oidc then verified -- and bytes such as `"`, `;`,
+// `,`, NUL and `\` reached the verifier. Holding the grammar here keeps
+// every credential that gets past this line in the one shape proxies, DLP
+// rules and the verifier's scrub all expect.
+func isB64token(token string) bool {
+	i := 0
+	for ; i < len(token); i++ {
+		c := token[i]
+		if !(c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9' ||
+			c == '-' || c == '.' || c == '_' || c == '~' || c == '+' || c == '/') {
+			break
+		}
+	}
+	if i == 0 {
+		return false
+	}
+	for ; i < len(token); i++ {
+		if token[i] != '=' {
+			return false
+		}
+	}
+	return true
 }
 
 // credentialInQuery reports whether the URL carries something that looks

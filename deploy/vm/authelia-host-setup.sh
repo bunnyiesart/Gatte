@@ -44,7 +44,13 @@ bastille pkg "$JAIL" install -y authelia nginx curl jq >/dev/null
 # (Authelia and the verify script both dial id.example.internal by name).
 add_host() {
 	_file="$1"; _ip="$2"; _name="$3"
-	if grep -Eq "^[[:space:]]*$_ip[[:space:]]+.*\b$_name\b" "$_file" 2>/dev/null; then
+	# Field equality, not a regex: the IP's dots are regex wildcards (so
+	# an address "matched" the same digits with any byte where a dot was,
+	# and a prefix such as .1 matched .10 too) and \b is not
+	# POSIX ERE. shellcheck SC1087, 24 Sep 2026.
+	if awk -v ip="$_ip" -v name="$_name" '
+		$1 == ip { for (i = 2; i <= NF; i++) if ($i == name) found = 1 }
+		END { exit !found }' "$_file" 2>/dev/null; then
 		echo "  $_file already maps $_name"
 	else
 		# Drop any stale mapping for this name first, so a changed IP

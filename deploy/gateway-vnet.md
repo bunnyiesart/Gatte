@@ -180,7 +180,7 @@ is not evidence.
 
 The same script also checks that the jail still reaches the IdP over TLS with
 the CA (step 4 -- the gateway does OIDC discovery at startup and will not come
-up without it, ADR-0008), that no `10.17.x` destination appears twice in the
+up without it, ADR-0008), that no `198.51.100.x` / `203.0.113.x` destination appears twice in the
 routing table and forwarding is on (step 5), and that `authelia` is still a
 classic jail still answering on 443 (step 6).
 
@@ -244,7 +244,7 @@ somebody's intent rather than a side effect.
 If you want it fixed sooner, it is one line and it does not need a restart:
 
 ```bash
-jm ssh -- sh -c "sed -i '' 's/^10\.17\.89\.10\t*mcp\.soc\.internal/203.0.113.10\tmcp.example.internal/' \
+jm ssh -- sh -c "sed -i '' 's/^198\.51\.100\.10\t*mcp\.example\.internal/203.0.113.10\tmcp.example.internal/' \
     /usr/local/bastille/jails/authelia/root/etc/hosts"
 ```
 

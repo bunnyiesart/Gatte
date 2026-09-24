@@ -14,14 +14,14 @@ and the hole is useless without a client certificate.
 
 ```
   macOS                                    jailmachine VM (FreeBSD 15.1)
-  ┌──────────────────────────┐             ┌─────────────────────────────────┐
-  │ openvpn client           │             │ openvpn server                  │
-  │   utunN  192.0.2.2        │             │   tun0   192.0.2.1               │
-  │   route 198.51.100.0/24 ───┼──┐          │                                 │
-  │                          │  │          │   bastille0 (lo clone)          │
+  ┌──────────────────────────┐             ┌────────────────────────────────────┐
+  │ openvpn client           │             │ openvpn server                     │
+  │   utunN  192.0.2.2       │             │   tun0   192.0.2.1                 │
+  │   route 198.51.100.0/24 ─┼──┐          │                                    │
+  │                          │  │          │   bastille0 (lo clone)             │
   │ 127.0.0.1:1194 ──────────┼──┼─┐        │     198.51.100.10  mcp-gateway-test│
-  └──────────────────────────┘  │ │        │     198.51.100.20  authelia       │
-                                │ │        └─────────────────────────────────┘
+  └──────────────────────────┘  │ │        │     198.51.100.20  authelia        │
+                                │ │        └────────────────────────────────────┘
               gvproxy (on the Mac, userspace)      ▲
                 127.0.0.1:1194/udp ────────────────┘ 192.168.127.2:1194/udp
 ```
@@ -164,8 +164,10 @@ Destination        Gateway            Flags               Netif
 
 Two consequences.
 
-**The lab route wins, by being more specific.** `198.51.100.0/24` beats `10/8`
-on longest-prefix match, so the tunnel takes precedence while it is up. If the
+**The lab route wins, by being more specific.** (The addresses in this repo
+are RFC 5737 documentation stand-ins, sanitized 24 Sep 2026; the real lab
+subnet is a /24 inside `10/8`, which is the only reason this section exists.)
+The lab /24 beats `10/8` on longest-prefix match, so the tunnel takes precedence while it is up. If the
 corporate VPN ever starts pushing something equally or more specific for that
 range, it stops winning, and the symptom will be a tunnel that connects fine
 and reaches nothing.
@@ -244,7 +246,7 @@ Leave it running. In another terminal:
 ping -c 3 198.51.100.10
 nc -vz 198.51.100.10 443
 nc -vz 198.51.100.20 443
-netstat -rn -f inet | grep 10.17.89     # expect: 10.17.89/24 ... utunN
+netstat -rn -f inet | grep 198.51.100     # expect: 198.51.100/24 ... utunN
 ```
 
 Nothing is listening on `443` in either jail yet. With the tunnel up you should
@@ -262,7 +264,7 @@ Stop the tunnel with Ctrl-C, or `sudo pkill -f 'openvpn --config'`.
 this is not a stale baseline -- nothing built here created a non-VPN route:
 
 ```
-$ netstat -rn -f inet | grep -E "10\.17\.89|10\.8\.0"
+$ netstat -rn -f inet | grep -E "198\.51\.100|192\.0\.2"
 (no route to 198.51.100.0/24)
 
 $ ping -c 2 -t 3 198.51.100.10

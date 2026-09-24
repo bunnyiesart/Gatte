@@ -41,7 +41,6 @@ set -eu
 # variable. Cost an hour once. GW_JAIL is invisible to service(8).
 GW_JAIL="${GW_JAIL:-mcp-gateway-test}"
 STAGE="${STAGE:-/tmp/mcp-gateway-deploy}"
-GW_JAIL_ROOT="/usr/local/bastille/jails/$GW_JAIL/root"
 
 ETC=/usr/local/etc/mcp-gateway
 CONFIG="$ETC/config.toml"
@@ -51,7 +50,6 @@ LOG=/var/log/mcp-gateway/mcp-gateway.log
 NGINX_ACCESS=/var/log/nginx/mcp-access.log
 NGINX_ERROR=/var/log/nginx/mcp-error.log
 DBDIR=/var/db/mcp-gateway
-LIBEXEC=/usr/local/libexec/mcp-gateway
 
 CA=/usr/local/etc/soc-ca/ca.crt
 ENDPOINT="https://mcp.example.internal/"

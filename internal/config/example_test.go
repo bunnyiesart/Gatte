@@ -82,7 +82,7 @@ const deploymentTemplate = "../../deploy/gateway-jail/config.toml.template"
 //
 // config.example.toml being valid says nothing about this file: they are
 // two different files, and the terse one is the one that starts the
-// process on `the jail host`. The failure it guards against has a precedent in this
+// process on the jail host. The failure it guards against has a precedent in this
 // repo -- the shipped example carried a docsearch role that granted
 // nothing for weeks (GAB-30), silently -- and a template that does not
 // load is the louder, cheaper version of the same class.

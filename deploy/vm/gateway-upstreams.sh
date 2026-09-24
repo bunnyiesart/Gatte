@@ -40,7 +40,7 @@
 # Measured, because it happened: a provisioning run on 16 Sep 2026 against
 # the real jail stopped at the vault check with
 #
-#   !! the vault does not hold: CASEMGMT_API_TOKEN DOCSEARCH_PASSWORD ...
+#   | !! the vault does not hold: CASEMGMT_API_TOKEN DOCSEARCH_PASSWORD ...
 #
 # which is the check working. The binaries had already been installed by
 # then -- that part is idempotent and harmless -- and the registry was left

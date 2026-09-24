@@ -41,6 +41,7 @@ This file is the second one.
 - [ ] **Track 3** — the older half of the design record has never been swept
 - [ ] **Track 4** — the proofs skip silently where `sops` and `age` are missing
 - [ ] **Track 5** — `lab/probe` as a second protocol client *(filed; not required to close)*
+- [ ] **Track 6** — what the public history still carries *(owner decision; filed 24 Sep 2026)*
 
 Track 1 is the only one that needs a host. Tracks 2–4 are checkable from a
 clone and can run in any order, before or after it.
@@ -315,6 +316,31 @@ one does not.
 Whoever builds it is not redoing a proof; they are adding a second client.
 It is listed here so that it stays visible, and it is explicitly **not** a
 condition of closing this file.
+
+---
+
+## Track 6 — what the public history still carries *(owner decision, filed)*
+
+Recorded 24 Sep 2026, not acted on, because every fix is a history rewrite
+and a force-push of `origin/main`, which only the owner decides.
+
+- **The real network.** The tree was sanitized that day (RFC 5737 / 2544
+  stand-ins, `example.internal`; guarded by
+  `internal/fitness/sanitize_test.go`), but every earlier commit and several
+  commit messages still hold the real jail, service and VPN subnets, the jail
+  host's LAN address and the internal DNS zone. RFC 1918 / `.internal` only,
+  no credential with them -- but together they map the SOC network.
+- **The upstream fleet names** and their credential variable names, in
+  `c871a7d`. `9bed596`'s message says those commits never left this
+  machine; `git merge-base --is-ancestor c871a7d origin/main` now says they
+  did. Names only -- no value leaked, so there is nothing to rotate.
+- **The workstation identity.** 17 commits on `origin/main` carry a
+  `user@hostname.local` author e-mail. Newer commits use the noreply
+  address; a `.mailmap` would change only how the old ones display.
+
+The choice is between accepting all three as public, stated here, or one
+`git filter-repo` pass over the three and a force-push. Either closes this
+track; leaving it unread does not.
 
 ---
 

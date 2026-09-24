@@ -1347,9 +1347,9 @@ func TestIsLoopbackAddr(t *testing.T) {
 // cmd/mcp-gateway when the rule moved.
 func TestRequireLoopbackBind(t *testing.T) {
 	refused := []string{
-		"0.0.0.0:8080",     // the one an operator reaches for
+		"0.0.0.0:8080",       // the one an operator reaches for
 		"198.51.100.10:8080", // a jail's own address
-		"[::]:8080",        // the IPv6 equivalent of 0.0.0.0
+		"[::]:8080",          // the IPv6 equivalent of 0.0.0.0
 		"198.18.0.5:8080",
 	}
 	for _, addr := range refused {

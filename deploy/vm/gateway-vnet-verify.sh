@@ -142,11 +142,11 @@ fi
 head_ "5. no routing conflict with the classic-jail subnet"
 echo "--- netstat -rn -f inet ---"
 netstat -rn -f inet | sed 's/^/  /'
-DUP="$(netstat -rn -f inet | awk '{print $1}' | grep -E '^10\.17\.' | sort | uniq -d || true)"
+DUP="$(netstat -rn -f inet | awk '{print $1}' | grep -E '^(198\.51\.100|203\.0\.113)\.' | sort | uniq -d || true)"
 if [ -n "$DUP" ]; then
 	bad "duplicate route entries: $DUP"
 else
-	ok "every 10.17.x destination appears exactly once"
+	ok "every 198.51.100.x / 203.0.113.x destination appears exactly once"
 fi
 for _r in 198.51.100.20 203.0.113.10; do
 	echo "  route to $_r: $(route -n get "$_r" 2>/dev/null | awk '/interface:/ {print $2}')"

@@ -206,5 +206,5 @@ fi
 
 say "openvpn is running"
 sockstat -4 -l | grep -E ':1194' || { echo "!! nothing listening on udp/1194" >&2; exit 1; }
-netstat -rn -f inet | grep -E '10\.8\.0|10\.17\.(89|90)' || true
+netstat -rn -f inet | grep -E '192\.0\.2|198\.51\.100|203\.0\.113' || true
 say "done"

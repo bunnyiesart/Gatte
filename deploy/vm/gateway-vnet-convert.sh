@@ -297,6 +297,6 @@ say "checking the routing table for conflicts"
 if [ "$(netstat -rn -f inet | awk '$1=="'"$VNET_CIDR"'" {print $4}' | sort -u | wc -l | tr -d ' ')" -gt 1 ]; then
 	die "$VNET_CIDR is reachable through more than one interface -- resolve before trusting anything below"
 fi
-netstat -rn -f inet | grep -E '^(Destination|10\.8\.0|10\.17\.)' || true
+netstat -rn -f inet | grep -E '^(Destination|192\.0\.2|198\.51\.100|203\.0\.113)' || true
 
 say "done. Verify with deploy/gateway-vnet-verify.sh"

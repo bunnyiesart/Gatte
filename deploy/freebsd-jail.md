@@ -544,9 +544,17 @@ the difference between that belief being true and being false.
 
 Edit the encrypted file directly -- there is deliberately no
 `mcp-gateway rotate` subcommand, because it would give a binary that
-otherwise only *reads* the encrypted store a write path into it:
+otherwise only *reads* the encrypted store a write path into it. The file
+is `secrets.enc.json`, `sops` needs the age identity to open it, and the
+edit runs as root because the quick start leaves the file `root:mcpgw`
+0640 and `sops` rewrites it in place:
 
-    sops secrets.json
+    sudo env SOPS_AGE_KEY_FILE=/usr/local/etc/mcp-gateway/age.key \
+        sops /usr/local/etc/mcp-gateway/secrets.enc.json
+
+`sops` writes the file anew, so re-run the `chgrp mcpgw` / `chmod 0640`
+from the quick start's step 3 afterwards. Only the operator's shell needs
+`SOPS_AGE_KEY_FILE`: the adapter sets it itself for `serve` (above).
 
 **Then restart the gateway.** This is the part that is easy to miss and
 expensive to get wrong: credentials are resolved at *dial* time and passed

@@ -16,19 +16,38 @@
 #
 #      IOC_SWEEP_API_KEY
 #
-# 2. Register and sign. Use absolute paths; re-sign after any change to the
-#    command, arguments or -env names (the signature covers them).
+# 2. Install the script. ioc_sweep.py next to this file is a runnable,
+#    standard-library-only MCP server (newline-delimited JSON-RPC 2.0 on
+#    stdin/stdout) with one tool, sweep_iocs; replace its sweep() body with
+#    your own logic.
 #
-#      mcp-gateway upstream register -config "$CFG" -name ioc-sweep -transport stdio \
-#        -command /usr/local/bin/python3 \
+#      sudo install -d -m 0755 /usr/local/libexec/gatte-tools
+#      sudo install -m 0755 examples/ioc_sweep.py /usr/local/libexec/gatte-tools/
+#
+# 3. Register and sign. Use absolute paths; re-sign after any change to the
+#    command, arguments or -env names (the signature covers them). The
+#    interpreter path differs by OS (/usr/bin/python3 on Debian/Ubuntu,
+#    /usr/local/bin/python3 on FreeBSD), so take it from `command -v python3`
+#    at registration time; the registered path is what gets signed.
+#
+#      sudo -u mcpgw mcp-gateway upstream register -config "$CFG" -name ioc-sweep -transport stdio \
+#        -command "$(command -v python3)" \
 #        -arg /usr/local/libexec/gatte-tools/ioc_sweep.py \
 #        -env IOC_SWEEP_API_KEY
-#      mcp-gateway sign -config "$CFG" ioc-sweep
+#      sudo mcp-gateway sign -config "$CFG" ioc-sweep
 #
-# 3. Approve after reviewing the definition:
+# 4. With serve running, approve after reviewing the definition:
 #
-#      mcp-gateway tool list    -config "$CFG" -server ioc-sweep
-#      mcp-gateway tool approve -config "$CFG" ioc-sweep sweep_iocs
+#      sudo -u mcpgw mcp-gateway tool list    -config "$CFG" -server ioc-sweep
+#      sudo -u mcpgw mcp-gateway tool approve -config "$CFG" ioc-sweep sweep_iocs
+#
+#    A tools/call to ioc-sweep.sweep_iocs then answers "swept N ioc(s): ...;
+#    key_present=true; env_names=HOME,IOC_SWEEP_API_KEY,LC_CTYPE,PATH".
+#    LC_CTYPE does not come from the gateway, which passes only PATH, HOME
+#    and the -env names: Python 3.7 and later sets it itself when no locale
+#    is set (PEP 538 locale coercion). On Ubuntu 24.04, `env -i
+#    PATH=/usr/bin HOME=/tmp python3 -c 'import os; print(sorted(os.environ))'`
+#    prints ['HOME', 'LC_CTYPE', 'PATH'] with no gateway involved.
 #
 # The script runs as the gateway's own service user, in the same process
 # tree that holds every credential (see "Security model" in ../README.md).

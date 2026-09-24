@@ -43,10 +43,32 @@ func Load(path string) (*Config, error) {
 	}
 
 	if err := c.Validate(); err != nil {
-		return nil, fmt.Errorf("config: %s: %w", path, err)
+		return nil, &fileInvalidError{path: path, err: err}
 	}
 	return &c, nil
 }
+
+// fileInvalidError names the file a [Config.Validate] failure came from.
+//
+// Validate's error already opens with [ErrInvalid] ("config: invalid"), so
+// wrapping it with a "config: <path>: " prefix printed the package prefix
+// twice ("config: <path>: config: invalid"). This renders it once, in the
+// same "config: invalid: <path>: ..." shape as the other refusals in this
+// file, and still unwraps to the original error for errors.Is.
+type fileInvalidError struct {
+	path string
+	err  error
+}
+
+func (e *fileInvalidError) Error() string {
+	msg := e.err.Error()
+	if rest, ok := strings.CutPrefix(msg, ErrInvalid.Error()); ok {
+		return ErrInvalid.Error() + ": " + e.path + ":" + rest
+	}
+	return "config: " + e.path + ": " + msg
+}
+
+func (e *fileInvalidError) Unwrap() error { return e.err }
 
 // rejectUnknownKeys turns any key present in the file but absent from
 // [Config] into an error naming that key.

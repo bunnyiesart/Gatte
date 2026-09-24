@@ -1332,7 +1332,12 @@ func (s startupSummary) log(logger *slog.Logger) {
 			slog.Int("trusted_keys", s.TrustedKeys))
 	}
 	if s.SIEMChain != "" {
-		logger.Info("mcp-gateway: audit records are also emitted as JSONL for the SIEM (ADR-0017); a shipper must forward this file, and `audit -verify -expect-head` takes its expected value from the newest hash Graylog holds for this chain",
+		// CORRECTION, 24 Sep 2026. This line said the expected value was
+		// "the newest hash Graylog holds for this chain" -- the rule the
+		// 12 Sep correction in runAuditVerify removed as wrong half the time
+		// it matters, still printed here at every boot. It also named one
+		// product in a build that ships to any SIEM.
+		logger.Info("mcp-gateway: audit records are also emitted as JSONL for the SIEM (ADR-0017); a shipper must forward this file, and `audit -verify -expect-head` takes its expected value from your SIEM: among this chain's lines, the hash that is no other line's prev_hash (not the newest line; see `mcp-gateway audit -h`)",
 			slog.String("chain", s.SIEMChain),
 			slog.String("path", s.SIEMPath),
 		)

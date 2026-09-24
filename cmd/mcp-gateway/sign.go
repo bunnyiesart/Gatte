@@ -189,7 +189,7 @@ func runGenerateKey(path string, stdout, stderr io.Writer) int {
 	if err := signer.WriteKey(path, key); err != nil {
 		fmt.Fprintf(stderr, "write key: %v\n", err)
 		if errors.Is(err, fs.ErrExist) {
-			fmt.Fprintf(stderr, "\nA key already exists there and was left untouched. Overwriting it would\ninvalidate every signature it made. To rotate deliberately: generate the new\nkey at a different path, add its public half to signer.trusted_keys ALONGSIDE\nthe old one, re-sign every entry (`mcp-gateway sign NAME`), and only then\nremove the old key and its trusted_keys line.\n")
+			fmt.Fprintf(stderr, "\nA key already exists there and was left untouched. Overwriting it would\ninvalidate every signature it made. To rotate deliberately: generate the new\nkey at a different path, add its public half to signer.trusted_keys ALONGSIDE\nthe old one, re-sign every entry (`mcp-gateway sign -config FILE NAME`), and only then\nremove the old key and its trusted_keys line.\n")
 		}
 		return exitCannotRun
 	}
@@ -199,7 +199,7 @@ func runGenerateKey(path string, stdout, stderr io.Writer) int {
 	fmt.Fprintf(stdout, "\nTwo lines go into the configuration file. The path, so this key is used\nfor signing:\n\n    [signer]\n    key_file = %q\n", path)
 	fmt.Fprintf(stdout, "\nAnd the public half, so the gateway accepts what it signs -- without this\nthe gateway refuses every entry, signed or not:\n\n    trusted_keys = [\n      %q,  # %s\n    ]\n",
 		trustedKeyLine(pub), signer.KeyFingerprint(pub))
-	fmt.Fprintf(stdout, "\nThen sign each registry entry:\n\n    mcp-gateway sign NAME\n")
+	fmt.Fprintf(stdout, "\nThen sign each registry entry, naming the configuration file this key goes into:\n\n    mcp-gateway sign -config FILE NAME\n")
 	return exitOK
 }
 
@@ -246,7 +246,7 @@ Create the key with, for example:
 	entry, err := e.upstreams().Get(e.ctx(), name)
 	switch {
 	case errors.Is(err, registry.ErrNotFound):
-		fmt.Fprintf(e.stderr, "no upstream named %q is registered, so there is nothing to sign.\n\nList what is:\n\n    mcp-gateway upstream list\n", name)
+		fmt.Fprintf(e.stderr, "no upstream named %q is registered, so there is nothing to sign.\n\nList what is:\n\n    %s\n", name, e.cmd("upstream list"))
 		return exitProblem
 	case err != nil:
 		fmt.Fprintf(e.stderr, "registry: %v\n", err)
@@ -320,7 +320,7 @@ Create the key with, for example:
 		// normal outcome of legitimately editing an entry -- and it is
 		// also exactly what tampering looks like. The command cannot tell
 		// the two apart, so it says so instead of guessing.
-		fmt.Fprintf(e.stdout, "\nNOTE: the signature previously stored for %q did NOT match the entry as it\nstands now, and has just been replaced. If you changed this entry yourself,\nthat is expected. If you did not, you have re-signed a definition somebody\nelse changed -- check the fields above against what you intended, and read\nthe audit trail:\n\n    mcp-gateway audit\n", name)
+		fmt.Fprintf(e.stdout, "\nNOTE: the signature previously stored for %q did NOT match the entry as it\nstands now, and has just been replaced. If you changed this entry yourself,\nthat is expected. If you did not, you have re-signed a definition somebody\nelse changed -- check the fields above against what you intended, and read\nthe audit trail:\n\n    %s\n", name, e.cmd("audit"))
 	}
 
 	// ADR-0010 item 4, and it goes last on purpose: it is the only thing

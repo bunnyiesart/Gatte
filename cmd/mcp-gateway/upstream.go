@@ -135,7 +135,7 @@ func runUpstreamList(e *opEnv, asJSON bool) int {
 	}
 
 	if len(entries) == 0 {
-		fmt.Fprintf(e.stdout, "No upstream servers are registered.\n\nRegister one with:\n\n    mcp-gateway upstream register -name NAME -transport stdio -command CMD\n")
+		fmt.Fprintf(e.stdout, "No upstream servers are registered.\n\nRegister one with:\n\n    %s -name NAME -transport stdio -command CMD\n", e.cmd("upstream register"))
 		return exitProblem
 	}
 
@@ -172,9 +172,9 @@ func runUpstreamList(e *opEnv, asJSON bool) int {
 		if e.cfg.Signer.SignaturesRequired() {
 			verb = "refuses to serve"
 		}
-		fmt.Fprintf(e.stdout, "\n%d unsigned %s: %s\nThe gateway %s an unsigned entry (signer.require_signed = %t). Sign with:\n\n    mcp-gateway sign NAME\n",
+		fmt.Fprintf(e.stdout, "\n%d unsigned %s: %s\nThe gateway %s an unsigned entry (signer.require_signed = %t). Sign with:\n\n    %s NAME\n",
 			len(unsigned), opPlural(len(unsigned), "entry", "entries"),
-			strings.Join(unsigned, ", "), verb, e.cfg.Signer.SignaturesRequired())
+			strings.Join(unsigned, ", "), verb, e.cfg.Signer.SignaturesRequired(), e.cmd("sign"))
 	}
 	if len(invalid) > 0 {
 		// An absent signature is the normal state of a new entry; a
@@ -262,7 +262,7 @@ func runUpstreamRegister(e *opEnv, entry registry.UpstreamServer) int {
 	err := e.upstreams().Register(e.ctx(), entry)
 	switch {
 	case errors.Is(err, registry.ErrAlreadyExists):
-		fmt.Fprintf(e.stderr, "an upstream named %q is already registered.\n\nDeregister it first, or choose another name:\n\n    mcp-gateway upstream deregister %s\n", entry.Name, entry.Name)
+		fmt.Fprintf(e.stderr, "an upstream named %q is already registered.\n\nDeregister it first, or choose another name:\n\n    %s %s\n", entry.Name, e.cmd("upstream deregister"), entry.Name)
 		return exitProblem
 	case errors.Is(err, registry.ErrInvalid):
 		fmt.Fprintf(e.stderr, "%v\n", err)
@@ -307,7 +307,7 @@ func runUpstreamRegister(e *opEnv, entry registry.UpstreamServer) int {
 		// failed. Saying nothing about signing would be the same silence
 		// this block exists to break, and guessing would be worse than the
 		// bug being fixed here.
-		fmt.Fprintf(e.stderr, "\nWARNING: %q was registered, but whether it is signed could not be determined: %v\nDo not assume either way -- find out before relying on this entry:\n\n    mcp-gateway upstream list\n", entry.Name, err)
+		fmt.Fprintf(e.stderr, "\nWARNING: %q was registered, but whether it is signed could not be determined: %v\nDo not assume either way -- find out before relying on this entry:\n\n    %s\n", entry.Name, err, e.cmd("upstream list"))
 		return exitProblem
 	}
 
@@ -344,17 +344,17 @@ that earlier entry, and nobody reviewed the one you just registered. If
 that is not what you intended, remove it -- deregistering also removes the
 stored signature:
 
-    mcp-gateway upstream deregister %s
+    %s %s
 
 If it is what you intended, sign it yourself so the signature belongs to
 this entry and to you:
 
-    mcp-gateway sign %s
+    %s %s
 
 Either way, check what is actually stored:
 
-    mcp-gateway upstream list
-`, entry.Name, entry.Name, entry.Name)
+    %s
+`, entry.Name, e.cmd("upstream deregister"), entry.Name, e.cmd("sign"), entry.Name, e.cmd("upstream list"))
 		return exitProblem
 
 	case sigInvalid:
@@ -362,8 +362,8 @@ Either way, check what is actually stored:
 		// what require_signed says (ADR-0006 item 4), so the require_signed
 		// sentence below would be misleading here: this entry is not
 		// servable either way.
-		fmt.Fprintf(e.stdout, "\nWARNING: a signature is already stored under the name %q and it is INVALID for\nthe entry just registered -- it does not verify it, or it was made by a key\nthat is not in signer.trusted_keys.\n\nThe gateway refuses an entry with a signature it does not accept regardless of\nsigner.require_signed, so this entry will NOT be served. Left over from an\nearlier entry of this name, most likely. Signing replaces it:\n\n    mcp-gateway sign %s\n",
-			entry.Name, entry.Name)
+		fmt.Fprintf(e.stdout, "\nWARNING: a signature is already stored under the name %q and it is INVALID for\nthe entry just registered -- it does not verify it, or it was made by a key\nthat is not in signer.trusted_keys.\n\nThe gateway refuses an entry with a signature it does not accept regardless of\nsigner.require_signed, so this entry will NOT be served. Left over from an\nearlier entry of this name, most likely. Signing replaces it:\n\n    %s %s\n",
+			entry.Name, e.cmd("sign"), entry.Name)
 		return exitProblem
 	}
 
@@ -373,8 +373,8 @@ Either way, check what is actually stored:
 		verb = "refuse to serve"
 		consequence = "signer.require_signed is true, so the entry will NOT be served until it is signed"
 	}
-	fmt.Fprintf(e.stdout, "\nThis entry is NOT SIGNED. Registering never signs -- signing is a separate,\ndeliberate use of the signing key. The gateway will %s an unsigned entry:\n%s.\n\nSign it now:\n\n    mcp-gateway sign %s\n",
-		verb, consequence, entry.Name)
+	fmt.Fprintf(e.stdout, "\nThis entry is NOT SIGNED. Registering never signs -- signing is a separate,\ndeliberate use of the signing key. The gateway will %s an unsigned entry:\n%s.\n\nSign it now:\n\n    %s %s\n",
+		verb, consequence, e.cmd("sign"), entry.Name)
 	return exitOK
 }
 
@@ -426,7 +426,7 @@ func runUpstreamDeregister(e *opEnv, name string) int {
 		// about and is probably a typo. The command keeps going anyway:
 		// whether a row exists says nothing about whether the state keyed
 		// by the same name does.
-		fmt.Fprintf(e.stderr, "no upstream named %q is registered.\n\nList what is:\n\n    mcp-gateway upstream list\n", name)
+		fmt.Fprintf(e.stderr, "no upstream named %q is registered.\n\nList what is:\n\n    %s\n", name, e.cmd("upstream list"))
 		fmt.Fprintf(e.stdout, "\nChecking anyway for state left behind under that name -- a signature and\nany approvals are keyed by name, not by the entry, so they can outlive it.\n")
 	}
 

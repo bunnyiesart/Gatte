@@ -3,11 +3,11 @@
 # Mac -- deploy/gateway-vnet-rollback.sh copies this in and executes it.
 #
 # Puts `mcp-gateway-test` back the way gateway-vnet-convert.sh found it: a
-# classic (shared-stack) jail at 10.17.89.10 on the bastille0 loopback clone.
+# classic (shared-stack) jail at 198.51.100.10 on the bastille0 loopback clone.
 #
 # READ THIS BEFORE RUNNING IT. Rolling back re-creates the exact defect that
 # design/adr/0011 records: in a classic jail a bind to 127.0.0.1 is rewritten
-# to 10.17.89.10 and is reachable from the host, from the other jails, and
+# to 198.51.100.10 and is reachable from the host, from the other jails, and
 # across the VPN in cleartext. The gateway's requireLoopbackBind check will
 # pass and mean nothing. Roll back to unblock other work, not to ship.
 #
@@ -21,11 +21,11 @@ EPAIR_HOST=e0a_mcpgw
 BRIDGE_CLONE=bridge10
 BRIDGE=socbr0
 
-VNET_NET=10.17.90.0
-VNET_CIDR=10.17.90.0/24
+VNET_NET=203.0.113.0
+VNET_CIDR=203.0.113.0/24
 VNET_MASK=255.255.255.0
 
-CLASSIC_IP=10.17.89.10
+CLASSIC_IP=198.51.100.10
 
 JAILS_DIR=/usr/local/bastille/jails
 JAIL_DIR="$JAILS_DIR/$JAIL"
@@ -91,8 +91,8 @@ set_hosts_entry() {
 	sed -i '' -E "/^[[:space:]]*[0-9.]+[[:space:]]+${_name}[[:space:]]*\$/d" "$_file"
 	printf '%s\t%s\n' "$_ip" "$_name" >>"$_file"
 }
-set_hosts_entry "$JAIL_ROOT/etc/hosts" "$CLASSIC_IP" mcp.soc.internal
-set_hosts_entry /etc/hosts "$CLASSIC_IP" mcp.soc.internal
+set_hosts_entry "$JAIL_ROOT/etc/hosts" "$CLASSIC_IP" mcp.example.internal
+set_hosts_entry /etc/hosts "$CLASSIC_IP" mcp.example.internal
 
 # ---------------------------------------------------------------------- 5. pf
 if [ -f "$PF_CONF.pre-vnet" ]; then

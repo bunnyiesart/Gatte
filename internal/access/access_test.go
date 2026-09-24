@@ -862,22 +862,22 @@ func TestResourceIdentifier(t *testing.T) {
 		allowInsecure bool
 		wantErr       string
 	}{
-		{name: "https with a path", raw: "https://gw.soc.internal/mcp"},
-		{name: "https bare host", raw: "https://gw.soc.internal"},
+		{name: "https with a path", raw: "https://gw.example.internal/mcp"},
+		{name: "https bare host", raw: "https://gw.example.internal"},
 		{name: "loopback http", raw: "http://127.0.0.1:8080/mcp"},
 		{name: "loopback http by name", raw: "http://localhost:8080/mcp"},
 		{name: "ipv6 loopback http", raw: "http://[::1]:8080/mcp"},
-		{name: "http when explicitly allowed", raw: "http://gw.soc.internal/mcp", allowInsecure: true},
+		{name: "http when explicitly allowed", raw: "http://gw.example.internal/mcp", allowInsecure: true},
 
 		{name: "opaque string", raw: "mcp-gateway", wantErr: "absolute URI"},
 		{name: "scheme with no host", raw: "https:///mcp", wantErr: "absolute URI"},
-		{name: "routable http", raw: "http://gw.soc.internal/mcp", wantErr: "https"},
-		{name: "query string", raw: "https://gw.soc.internal/mcp?v=1", wantErr: "query"},
-		{name: "fragment", raw: "https://gw.soc.internal/mcp#f", wantErr: "fragment"},
+		{name: "routable http", raw: "http://gw.example.internal/mcp", wantErr: "https"},
+		{name: "query string", raw: "https://gw.example.internal/mcp?v=1", wantErr: "query"},
+		{name: "fragment", raw: "https://gw.example.internal/mcp#f", wantErr: "fragment"},
 		// An empty fragment leaves URL.Fragment empty but still ships a
 		// "#" to every client that reads the metadata, which RFC 9728
 		// section 2 forbids outright.
-		{name: "empty fragment", raw: "https://gw.soc.internal/mcp#", wantErr: "fragment"},
+		{name: "empty fragment", raw: "https://gw.example.internal/mcp#", wantErr: "fragment"},
 	}
 
 	for _, tc := range tests {

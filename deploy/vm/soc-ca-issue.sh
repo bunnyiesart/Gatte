@@ -34,7 +34,7 @@ MIN_DAYS="${SOC_CA_MIN_DAYS:-30}"
 
 usage() {
 	echo "usage: $0 NAME IP" >&2
-	echo "  e.g. $0 id.soc.internal 10.17.89.20" >&2
+	echo "  e.g. $0 id.example.internal 198.51.100.20" >&2
 	exit 2
 }
 

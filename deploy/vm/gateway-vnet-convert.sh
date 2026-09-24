@@ -40,16 +40,16 @@ EPAIR_JAIL=e0b_mcpgw
 BRIDGE_CLONE=bridge10
 BRIDGE=socbr0
 
-# The VNET subnet. Deliberately NOT 10.17.89.0/24 -- see the "Subnet" section
-# of deploy/gateway-vnet.md. In short: 10.17.89.10 and .20 exist as /32 host
+# The VNET subnet. Deliberately NOT 198.51.100.0/24 -- see the "Subnet" section
+# of deploy/gateway-vnet.md. In short: 198.51.100.10 and .20 exist as /32 host
 # routes on the bastille0 loopback clone, and a jail whose own /24 covers
-# 10.17.89.20 would treat Authelia as on-link and ARP for it on a bridge
+# 198.51.100.20 would treat Authelia as on-link and ARP for it on a bridge
 # where nothing answers.
-VNET_NET=10.17.90.0
-VNET_CIDR=10.17.90.0/24
+VNET_NET=203.0.113.0
+VNET_CIDR=203.0.113.0/24
 VNET_MASK=255.255.255.0
-HOST_IP=10.17.90.1
-JAIL_IP=10.17.90.10
+HOST_IP=203.0.113.1
+JAIL_IP=203.0.113.10
 PREFIX=24
 
 JAILS_DIR=/usr/local/bastille/jails
@@ -214,8 +214,8 @@ set_rc "$JAIL_RC" "defaultrouter" "$HOST_IP"
 
 # ------------------------------------------------------------------ 8. hosts
 #
-# mcp.soc.internal moves with the jail. id.soc.internal does not: Authelia is
-# untouched at 10.17.89.20, and the jail reaches it through the host now.
+# mcp.example.internal moves with the jail. id.example.internal does not: Authelia is
+# untouched at 198.51.100.20, and the jail reaches it through the host now.
 set_hosts_entry() {
 	_file="$1"; _ip="$2"; _name="$3"
 	[ -f "$_file" ] || return 0
@@ -227,9 +227,9 @@ set_hosts_entry() {
 	sed -i '' -E "/^[[:space:]]*[0-9.]+[[:space:]]+${_name}[[:space:]]*\$/d" "$_file"
 	printf '%s\t%s\n' "$_ip" "$_name" >>"$_file"
 }
-set_hosts_entry "$JAIL_ROOT/etc/hosts" "$JAIL_IP" mcp.soc.internal
-set_hosts_entry "$JAIL_ROOT/etc/hosts" 10.17.89.20 id.soc.internal
-set_hosts_entry /etc/hosts "$JAIL_IP" mcp.soc.internal
+set_hosts_entry "$JAIL_ROOT/etc/hosts" "$JAIL_IP" mcp.example.internal
+set_hosts_entry "$JAIL_ROOT/etc/hosts" 198.51.100.20 id.example.internal
+set_hosts_entry /etc/hosts "$JAIL_IP" mcp.example.internal
 
 # ---------------------------------------------------------------------- 9. pf
 #
@@ -241,7 +241,7 @@ set_hosts_entry /etc/hosts "$JAIL_IP" mcp.soc.internal
 # one.
 #
 # Deliberately no `pfctl -f`: reloading replaces a persist table's contents
-# with the file's, which would drop the 10.17.89.x entries bastille added for
+# with the file's, which would drop the 198.51.100.x entries bastille added for
 # the classic jails until those jails restart. Authelia is one of them.
 if grep -q "$VNET_CIDR" "$PF_CONF"; then
 	say "$PF_CONF already has $VNET_CIDR in the <$PF_TABLE> table"
@@ -257,7 +257,7 @@ pfctl -q -t "$PF_TABLE" -T add "$VNET_CIDR" 2>/dev/null || true
 # ------------------------------------------------------------- 10. VPN route
 #
 # The OpenVPN server pushes the jail subnet to clients. A client that only
-# learns 10.17.89.0/24 has no route to the gateway any more.
+# learns 198.51.100.0/24 has no route to the gateway any more.
 OVPN_CHANGED=0
 if [ -f "$OVPN_CONF" ]; then
 	if grep -q "push \"route $VNET_NET $VNET_MASK\"" "$OVPN_CONF"; then
@@ -266,7 +266,7 @@ if [ -f "$OVPN_CONF" ]; then
 		say "adding push route $VNET_NET $VNET_MASK to $OVPN_CONF"
 		# Marker-delimited so the rollback script can remove exactly this
 		# and nothing else.
-		printf '\n# >>> mcp-gateway VNET route (deploy/vm/gateway-vnet-convert.sh) >>>\n# The mcp-gateway jail is VNET and lives on its own subnet -- see\n# deploy/gateway-vnet.md. Without this the client keeps only\n# 10.17.89.0/24 and loses the gateway.\npush "route %s %s"\n# <<< mcp-gateway VNET route <<<\n' \
+		printf '\n# >>> mcp-gateway VNET route (deploy/vm/gateway-vnet-convert.sh) >>>\n# The mcp-gateway jail is VNET and lives on its own subnet -- see\n# deploy/gateway-vnet.md. Without this the client keeps only\n# 198.51.100.0/24 and loses the gateway.\npush "route %s %s"\n# <<< mcp-gateway VNET route <<<\n' \
 			"$VNET_NET" "$VNET_MASK" >>"$OVPN_CONF"
 		OVPN_CHANGED=1
 	fi
@@ -297,6 +297,6 @@ say "checking the routing table for conflicts"
 if [ "$(netstat -rn -f inet | awk '$1=="'"$VNET_CIDR"'" {print $4}' | sort -u | wc -l | tr -d ' ')" -gt 1 ]; then
 	die "$VNET_CIDR is reachable through more than one interface -- resolve before trusting anything below"
 fi
-netstat -rn -f inet | grep -E '^(Destination|10\.8\.0|10\.17\.)' || true
+netstat -rn -f inet | grep -E '^(Destination|192\.0\.2|198\.51\.100|203\.0\.113)' || true
 
 say "done. Verify with deploy/gateway-vnet-verify.sh"

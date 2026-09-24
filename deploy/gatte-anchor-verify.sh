@@ -35,7 +35,7 @@
 set -eu
 
 CHAIN="${CHAIN:-gatte-jail-01}"
-GW_HOST="${GW_HOST:-root@192.168.1.4}"
+GW_HOST="${GW_HOST:-root@198.18.0.4}"
 # Defaults match deploy/gateway-serve.sh and deploy/vm/gateway-serve-provision.sh
 # (`mcp-gateway-test`, `mcpgw`). They disagreed until 16 Sep 2026 -- this file
 # said `gatte` -- so the default run of this script pointed at a jail that may

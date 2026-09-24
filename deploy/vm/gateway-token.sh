@@ -29,10 +29,10 @@ USERNAME="${1:-analyst}"
 
 CA=/usr/local/etc/soc-ca/ca.crt
 SECRETS=/usr/local/bastille/jails/authelia/root/usr/local/etc/authelia/secrets
-ISSUER=https://id.soc.internal
+ISSUER=https://id.example.internal
 CLIENT_ID=mcp-gateway
-AUDIENCE='https://mcp.soc.internal/'
-REDIRECT_URI='https://mcp.soc.internal/oauth2/callback'
+AUDIENCE='https://mcp.example.internal/'
+REDIRECT_URI='https://mcp.example.internal/oauth2/callback'
 
 WORK=$(mktemp -d /tmp/gateway-token.XXXXXX)
 trap 'rm -rf "$WORK"' EXIT INT TERM

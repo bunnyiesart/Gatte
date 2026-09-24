@@ -8,21 +8,21 @@ routing table, its own `127.0.0.1`. Read `deploy/freebsd-jail.md` first for
 |---|---|
 | Jail | `mcp-gateway-test` |
 | Type | thin jail, **VNET** (`if_bridge` + `epair`) |
-| Address | `10.17.90.10/24` on its own `vnet0` |
-| Host side | bridge `socbr0` at `10.17.90.1/24` (clone unit `bridge10`) |
+| Address | `203.0.113.10/24` on its own `vnet0` |
+| Host side | bridge `socbr0` at `203.0.113.1/24` (clone unit `bridge10`) |
 | Epair | `e0a_mcpgw` (host, bridge member) ↔ `e0b_mcpgw` → renamed `vnet0` in the jail |
-| Names | `mcp.soc.internal` (10.17.90.10), `id.soc.internal` (10.17.89.20) |
-| Outbound | NAT out `vtnet0`, via `10.17.90.0/24` in pf's `<jails>` table |
-| VPN | `10.17.90.0/24` pushed to clients alongside `10.17.89.0/24` |
+| Names | `mcp.example.internal` (203.0.113.10), `id.example.internal` (198.51.100.20) |
+| Outbound | NAT out `vtnet0`, via `203.0.113.0/24` in pf's `<jails>` table |
+| VPN | `203.0.113.0/24` pushed to clients alongside `198.51.100.0/24` |
 
 ```bash
 ./deploy/gateway-vnet.sh           # convert (idempotent)
 ./deploy/gateway-vnet-verify.sh    # the acceptance test
-./deploy/gateway-vnet-rollback.sh  # back to a classic jail at 10.17.89.10
+./deploy/gateway-vnet-rollback.sh  # back to a classic jail at 198.51.100.10
 ```
 
 The `authelia` jail is untouched by all three. It is still a classic jail at
-`10.17.89.20` on `bastille0`, and `./deploy/authelia-verify.sh` still passes.
+`198.51.100.20` on `bastille0`, and `./deploy/authelia-verify.sh` still passes.
 
 ## Why
 
@@ -39,9 +39,9 @@ very jail, before the conversion:
 ```
 $ bastille cmd mcp-gateway-test sh -c "nc -l 127.0.0.1 18080 &"
 $ bastille cmd mcp-gateway-test sockstat -4 -l | grep 18080
-root  nc  36216  3  tcp4  10.17.89.10:18080  *:*
-$ nc -z 10.17.89.10 18080          # from the VM host, outside the jail
-Connection to 10.17.89.10 18080 port [tcp/*] succeeded!
+root  nc  36216  3  tcp4  198.51.100.10:18080  *:*
+$ nc -z 198.51.100.10 18080          # from the VM host, outside the jail
+Connection to 198.51.100.10 18080 port [tcp/*] succeeded!
 ```
 
 So `requireLoopbackBind` passed, the log said `listen=127.0.0.1:8080`, and
@@ -53,27 +53,27 @@ no address check inside the process can substitute for it.
 This is option (1) of the three that block lists, and the only one that makes
 the check mean what it says without adding a second place to verify.
 
-## Subnet: why the jail moved to 10.17.90.10
+## Subnet: why the jail moved to 203.0.113.10
 
 **Because a VNET jail needs a real bridge, and the classic jails are not on
 one.** `bastille0` is a *loopback clone*: the classic jail addresses live on
-it as `/32` aliases, which is why `netstat -rn` shows `10.17.89.20 ... UH
+it as `/32` aliases, which is why `netstat -rn` shows `198.51.100.20 ... UH
 bastille0` rather than a subnet route. There is no layer 2 there to attach an
 epair to.
 
-A bridge carrying `10.17.89.0/24` would technically coexist with those `/32`
+A bridge carrying `198.51.100.0/24` would technically coexist with those `/32`
 host routes -- a `/32` is more specific, so the host would keep reaching
 Authelia through `bastille0`. The problem is one hop further in, and it is
 not about the host's routing table at all:
 
-> A VNET jail at `10.17.89.10/24` considers `10.17.89.20` **on-link**. It
+> A VNET jail at `198.51.100.10/24` considers `198.51.100.20` **on-link**. It
 > would ARP for Authelia on `socbr0`, where nothing answers, and the OIDC
 > discovery the gateway performs at startup would fail. It would need a
-> host route for `10.17.89.20` installed inside the jail -- a per-address
+> host route for `198.51.100.20` installed inside the jail -- a per-address
 > exception, maintained by hand, that has to be remembered for every future
 > classic jail.
 
-Giving the VNET jail its own `10.17.90.0/24` makes `10.17.89.20` simply
+Giving the VNET jail its own `203.0.113.0/24` makes `198.51.100.20` simply
 off-link: it goes to the default route, the host forwards it to `bastille0`,
 and Authelia answers. No exceptions, no `/32` inside the jail, and a routing
 table where each destination appears exactly once (`gateway-vnet-verify.sh`
@@ -81,15 +81,15 @@ step 5 asserts that).
 
 The cost is real and is paid in three places, all of them handled:
 
-  - **`/etc/hosts`.** `mcp.soc.internal` moves to `10.17.90.10`, in the jail
+  - **`/etc/hosts`.** `mcp.example.internal` moves to `203.0.113.10`, in the jail
     and on the VM host. The convert script does both; the rollback undoes
     both.
   - **The VPN.** `deploy/openvpn-vm-setup.sh` now pushes *two* routes.
     Dropping the second does not fail loudly -- the client just silently has
     no route to the gateway.
   - **The TLS certificate.** When nginx lands in this jail, its certificate
-    must carry `IP:10.17.90.10`, not the old address:
-    `jm ssh -- /usr/local/etc/soc-ca/issue.sh mcp.soc.internal 10.17.90.10`.
+    must carry `IP:203.0.113.10`, not the old address:
+    `jm ssh -- /usr/local/etc/soc-ca/issue.sh mcp.example.internal 203.0.113.10`.
     `deploy/gateway-jail/nginx.conf` already listens on the new address.
 
 `net.inet.ip.forwarding` was already 1 and was decorative while everything
@@ -102,17 +102,17 @@ script asserts it rather than assuming it.
 On the VM host:
 
   - `cloned_interfaces` gains `bridge10`, renamed `socbr0`, addressed
-    `10.17.90.1/24` -- appended to the existing `lo1`, never replacing it,
+    `203.0.113.1/24` -- appended to the existing `lo1`, never replacing it,
     or Authelia loses `bastille0` on the next reboot.
   - `/etc/pf.conf`'s `table <jails> persist` becomes
-    `table <jails> persist { 10.17.90.0/24 }`, and the subnet is added to the
+    `table <jails> persist { 203.0.113.0/24 }`, and the subnet is added to the
     live table. **Deliberately without `pfctl -f`:** reloading replaces a
     persist table's contents with the file's, which would drop the
-    `10.17.89.x` entries bastille added at jail start -- Authelia's among
+    `198.51.100.x` entries bastille added at jail start -- Authelia's among
     them -- until those jails restart.
   - `/usr/local/etc/openvpn/openvpn.conf` gains a second `push "route"`,
     marker-delimited so the rollback can remove exactly it.
-  - `/etc/hosts`: `mcp.soc.internal` → `10.17.90.10`.
+  - `/etc/hosts`: `mcp.example.internal` → `203.0.113.10`.
 
 In `jail.conf`:
 
@@ -136,8 +136,8 @@ Inside the jail, in `/etc/rc.conf`:
 
 ```
 ifconfig_e0b_mcpgw_name="vnet0"
-ifconfig_vnet0="inet 10.17.90.10/24"
-defaultrouter="10.17.90.1"
+ifconfig_vnet0="inet 203.0.113.10/24"
+defaultrouter="203.0.113.1"
 ```
 
 Written by editing the file, not with `sysrc -R`: `sysrc -R` chroots, and a
@@ -164,13 +164,13 @@ the opposite answer. Both halves, from a real run:
   ok   -- bound to 127.0.0.1:18080, not rewritten to the jail's address
 
 == 2. that listener is unreachable from outside the jail
-  ok   -- VM host cannot reach 10.17.90.10:18080
-  ok   -- VM host cannot reach 10.17.90.1:18080 (the bridge address)
+  ok   -- VM host cannot reach 203.0.113.10:18080
+  ok   -- VM host cannot reach 203.0.113.1:18080 (the bridge address)
   ok   -- the VM host's own 127.0.0.1:18080 is silent
-  ok   -- the authelia jail cannot reach 10.17.90.10:18080
+  ok   -- the authelia jail cannot reach 203.0.113.10:18080
 
 == 3. control: a listener on the jail's ROUTABLE address IS reachable
-  ok   -- VM host reaches 10.17.90.10:18081
+  ok   -- VM host reaches 203.0.113.10:18081
 ```
 
 **Step 3 is not decoration.** Without it, step 2 would pass just as happily
@@ -180,7 +180,7 @@ is not evidence.
 
 The same script also checks that the jail still reaches the IdP over TLS with
 the CA (step 4 -- the gateway does OIDC discovery at startup and will not come
-up without it, ADR-0008), that no `10.17.x` destination appears twice in the
+up without it, ADR-0008), that no `198.51.100.x` / `203.0.113.x` destination appears twice in the
 routing table and forwarding is on (step 5), and that `authelia` is still a
 classic jail still answering on 443 (step 6).
 
@@ -196,7 +196,7 @@ loudly, if step 1 found no listener.
 Convert → verify → **`jm stop; jm start`** → verify → rollback → confirm the
 classic defect is back → convert → verify. All green, including across the
 reboot: `socbr0` is re-cloned from `rc.conf`, the pf table entry comes back
-from `pf.conf`, and `bastille list` shows `10.17.90.10` again with no manual
+from `pf.conf`, and `bastille list` shows `203.0.113.10` again with no manual
 step.
 
 ## Rollback
@@ -207,14 +207,14 @@ step.
 
 **Read this before running it.** Rolling back restores the exact defect
 ADR-0011 was written to close: a bind to `127.0.0.1` becomes a bind to
-`10.17.89.10`, reachable from the host, from the other jails, and across the
+`198.51.100.10`, reachable from the host, from the other jails, and across the
 VPN in cleartext, while the gateway's own check reports success. This is an
 unblock-other-work button, not a supported configuration. It has been
 exercised, and it does restore the defect -- verified:
 
 ```
-root nc  7635  3  tcp4  10.17.89.10:18080  *:*
-Connection to 10.17.89.10 18080 port [tcp/*] succeeded!
+root nc  7635  3  tcp4  198.51.100.10:18080  *:*
+Connection to 198.51.100.10 18080 port [tcp/*] succeeded!
 ```
 
 What it undoes, in order: stops the jail and reaps a leftover `e0a_mcpgw`;
@@ -222,7 +222,7 @@ restores `jail.conf` from `jail.conf.classic` (saved by the convert script
 before it changed anything, and never overwritten on a re-run -- that file is
 the rollback's whole basis, which is why the convert script refuses to run at
 all if it finds a VNET `jail.conf` without one); strips the four VNET lines
-from the jail's `rc.conf`; points `mcp.soc.internal` back at `10.17.89.10`
+from the jail's `rc.conf`; points `mcp.example.internal` back at `198.51.100.10`
 in both hosts files; restores `/etc/pf.conf` from `/etc/pf.conf.pre-vnet` and
 drops the table entry; removes the pushed route and restarts openvpn;
 destroys `socbr0` and removes it from `cloned_interfaces` -- **unless the
@@ -233,18 +233,18 @@ Idempotent, and a no-op with exit 0 on a jail that was never converted.
 
 ## The one thing this leaves stale
 
-The `authelia` jail's `/etc/hosts` still says `10.17.89.10 mcp.soc.internal`.
+The `authelia` jail's `/etc/hosts` still says `198.51.100.10 mcp.example.internal`.
 That is deliberate: the brief for this work was not to touch that jail, and
 nothing in Authelia resolves the gateway's name -- OIDC redirects are
 resolved by the *client*, not by the provider. `deploy/vm/authelia-host-setup.sh`
-now defaults `GATEWAY_IP` to `10.17.90.10`, so the next legitimate run of the
+now defaults `GATEWAY_IP` to `203.0.113.10`, so the next legitimate run of the
 Authelia provisioner corrects it, at a moment when restarting that jail is
 somebody's intent rather than a side effect.
 
 If you want it fixed sooner, it is one line and it does not need a restart:
 
 ```bash
-jm ssh -- sh -c "sed -i '' 's/^10\.17\.89\.10\t*mcp\.soc\.internal/10.17.90.10\tmcp.soc.internal/' \
+jm ssh -- sh -c "sed -i '' 's/^198\.51\.100\.10\t*mcp\.example\.internal/203.0.113.10\tmcp.example.internal/' \
     /usr/local/bastille/jails/authelia/root/etc/hosts"
 ```
 
@@ -255,7 +255,7 @@ has a private loopback; a bind to `127.0.0.1` inside it stays on
 `127.0.0.1`; that socket is unreachable from the VM host, from the host's own
 loopback, and from the `authelia` jail; the jail's routable address *is*
 reachable, so the previous sentence is isolation and not a dead network; the
-jail still completes OIDC discovery against `https://id.soc.internal` over
+jail still completes OIDC discovery against `https://id.example.internal` over
 TLS with the SOC CA; and all of that survives a VM reboot.
 
 Together with `requireLoopbackBind` in the binary, that is ADR-0011 item 1
@@ -265,12 +265,12 @@ actually holding in this deployment for the first time.
 
   - Anything about the VPN client's view. The pushed route is in the server
     config and openvpn restarted cleanly, but no Mac client was connected
-    during this work, so "a VPN client can reach 10.17.90.10 and cannot
+    during this work, so "a VPN client can reach 203.0.113.10 and cannot
     reach 127.0.0.1 in the jail" is untested. Reconnect and run the probes in
     `deploy/openvpn-access.md`.
   - ~~That nginx terminates TLS in front of the gateway.~~ **Superseded, 09
     Sep 2026.** nginx runs in this jail with a CA-issued certificate for
-    `mcp.soc.internal` / `IP:10.17.90.10` and proxies to `127.0.0.1:8080`.
+    `mcp.example.internal` / `IP:203.0.113.10` and proxies to `127.0.0.1:8080`.
     ADR-0011 item 2 is implemented. See `deploy/gateway-serve.md`.
   - ~~That `mcp-gateway serve` runs here.~~ **Superseded, 09 Sep 2026.** It
     does: configuration, sops+age vault, signing key, four signed upstreams

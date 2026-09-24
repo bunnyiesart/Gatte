@@ -177,7 +177,7 @@ func parseFlags(args []string, stderr io.Writer) (*config, int, error) {
 	cfg := &config{}
 	fs := flag.NewFlagSet("trafficgen", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	fs.StringVar(&cfg.endpoint, "endpoint", "", "gateway streamable-HTTP endpoint, e.g. https://mcp.soc.internal/ (required)")
+	fs.StringVar(&cfg.endpoint, "endpoint", "", "gateway streamable-HTTP endpoint, e.g. https://mcp.example.internal/ (required)")
 	fs.StringVar(&cfg.tokenFile, "token-file", "", "file holding the bearer token; defaults to $GATTE_TOKEN")
 	fs.StringVar(&cfg.caFile, "ca", "", "PEM root the gateway's certificate chains to (the SOC CA, for an internal name)")
 	fs.DurationVar(&cfg.duration, "duration", time.Minute, "how long to keep calling")

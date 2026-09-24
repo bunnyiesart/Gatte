@@ -11,11 +11,11 @@ assumes both.
 
 | | |
 |---|---|
-| Jail | `mcp-gateway-test`, VNET, `10.17.90.10` |
-| Front door | nginx, TLS on `10.17.90.10:443`, SAN `DNS:mcp.soc.internal, IP:10.17.90.10` |
+| Jail | `mcp-gateway-test`, VNET, `203.0.113.10` |
+| Front door | nginx, TLS on `203.0.113.10:443`, SAN `DNS:mcp.example.internal, IP:203.0.113.10` |
 | Gateway | `127.0.0.1:8080` inside that jail, loopback only |
 | Service | `service mcp_gateway start`, runs as **`mcpgw`**, not root |
-| IdP | Authelia at `https://id.soc.internal`, RS256, `aud: https://mcp.soc.internal/` |
+| IdP | Authelia at `https://id.example.internal`, RS256, `aud: https://mcp.example.internal/` |
 | Upstreams | the four `lab/servers/*` mocks, cross-compiled `freebsd/arm64` |
 | Vault | sops + age, `/usr/local/etc/mcp-gateway/secrets.json` |
 | Trust anchor | one Ed25519 key in `signer.trusted_keys`, `require_signed = true` |
@@ -99,7 +99,7 @@ PATH that includes `/usr/local/bin`.
 
 **4. `x509: certificate signed by unknown authority` against the IdP.**
 The jail "trusts the SOC CA" at `/usr/local/etc/ssl/certs/soc-ca.crt`, and
-`curl --cacert` against `https://id.soc.internal` returns 200 -- but Go's
+`curl --cacert` against `https://id.example.internal` returns 200 -- but Go's
 `crypto/x509` never looks in that directory. On FreeBSD it reads
 `/usr/local/etc/ssl/cert.pem`, `/etc/ssl/cert.pem`, and the directories
 `/etc/ssl/certs` and `/usr/local/share/certs`. The fix is deliberately
@@ -129,7 +129,7 @@ says -- **every** request through nginx got:
 
 ```
 HTTP/1.1 403 Forbidden
-Forbidden: invalid Host header "mcp.soc.internal"
+Forbidden: invalid Host header "mcp.example.internal"
 ```
 
 The MCP Go SDK (`v1.7.0`, `mcp/streamable.go`, `StreamableHTTPHandler.ServeHTTP`)
@@ -276,7 +276,7 @@ plus the four fixtures, and lost `threatintel.enrich` and
 held ten names, not twelve, and that is the union working, not a bug.
 
 **Positive.** All four called through the real path -- `POST
-https://mcp.soc.internal/` from the VM host, TLS verified against the SOC
+https://mcp.example.internal/` from the VM host, TLS verified against the SOC
 CA, nginx, then the gateway -- with an Authelia RS256 token for `dfirlead`:
 
 ```
@@ -395,7 +395,7 @@ run three times in a row, green each time.
    in a table. After approving the eight domain tools: 8 `approved`/usable,
    4 `pending` (the credcheck fixtures).
 
-4. **The headline.** `POST https://mcp.soc.internal/` from the VM host,
+4. **The headline.** `POST https://mcp.example.internal/` from the VM host,
    TLS verified against the SOC CA, through nginx, with an Authelia
    RS256 token for `analyst`:
 
@@ -420,7 +420,7 @@ run three times in a row, green each time.
 5. **Negatives.**
 
    - no token -> `401`, with
-     `WWW-Authenticate: Bearer resource_metadata="https://mcp.soc.internal/.well-known/oauth-protected-resource"`;
+     `WWW-Authenticate: Bearer resource_metadata="https://mcp.example.internal/.well-known/oauth-protected-resource"`;
    - garbage token -> `401`, body `authentication required`;
    - a **well-formed** JWT claiming `groups: ["dfir-leads"]` with a bogus
      signature -> `401`. This one is not decoration: without it, "garbage
@@ -489,7 +489,7 @@ run three times in a row, green each time.
     one-off session, reverted, and re-running the acceptance test will not
     reproduce it.
   - **Anything from a VPN client.** The client in every test is the VM
-    host, which reaches `10.17.90.10` across `socbr0`. That is external to
+    host, which reaches `203.0.113.10` across `socbr0`. That is external to
     the jail, which is the property that mattered, but no Mac was connected
     over OpenVPN during this work. `deploy/gateway-vnet.md` already carries
     the same caveat.
@@ -544,5 +544,5 @@ every stored signature. To rotate deliberately:
     exactly this reason. `signing.pub` must be updated to match, or the
     next provisioning run will render a config with the old anchor.
   - **the TLS certificate**: `jm ssh -- /usr/local/etc/soc-ca/issue.sh
-    mcp.soc.internal 10.17.90.10`, then reload nginx. Re-issuing generates
+    mcp.example.internal 203.0.113.10`, then reload nginx. Re-issuing generates
     a fresh key, so nginx must actually be reloaded.

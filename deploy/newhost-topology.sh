@@ -5,7 +5,7 @@
 # Run after deploy/newhost-bootstrap.sh, before the CA and the jails
 # themselves.
 #
-#   JAILHOST_TRANSPORT=ssh JAILHOST_HOST=192.168.1.4 sh deploy/newhost-topology.sh
+#   JAILHOST_TRANSPORT=ssh JAILHOST_HOST=198.18.0.4 sh deploy/newhost-topology.sh
 #
 # # Two decisions worth reading before changing anything here
 #
@@ -30,8 +30,8 @@ cd "$(dirname "$0")"
 . ./lib/remote.sh
 
 BRIDGE="${JAIL_BRIDGE:-bridge0}"
-JAIL_NET="${JAIL_NET:-10.17.90.0/24}"
-HOST_IP="${JAIL_HOST_IP:-10.17.90.1}"
+JAIL_NET="${JAIL_NET:-203.0.113.0/24}"
+HOST_IP="${JAIL_HOST_IP:-203.0.113.1}"
 EXT_IF="${EXT_IF:-re0}"
 
 echo "==> target: $(remote_target)"
@@ -46,7 +46,7 @@ echo "==> creating the bridge"
 remote_sh sysrc cloned_interfaces+="$BRIDGE"
 # One argument, not three. remote_sh forwards "$@" verbatim and the two
 # transports both space-join argv, so local quotes are gone by the time the
-# remote shell sees it: `sysrc ifconfig_bridge0="inet 10.17.90.1/24 up"`
+# remote shell sees it: `sysrc ifconfig_bridge0="inet 203.0.113.1/24 up"`
 # arrives as three words and sysrc rejects the second as a variable name.
 # Passing the whole command as a single string lets the REMOTE shell do the
 # quoting, which is the documented safe shape in deploy/lib/remote.sh.
@@ -99,7 +99,7 @@ cat > "$RULES" <<EOF
 
 ext_if    = "$EXT_IF"
 bridge_if = "$BRIDGE"
-lan_v4    = "192.168.1.0/24"
+lan_v4    = "198.18.0.0/24"
 jail_net  = "$JAIL_NET"
 
 set skip on lo0

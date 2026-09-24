@@ -51,9 +51,9 @@ VERSION="${VERSION:-$(git rev-parse --short HEAD 2>/dev/null || echo dev)}"
 # already discarded ssh's own explanation. The result is a deploy that
 # exits 255 having produced ZERO bytes on either stream.
 #
-# Measured on 12 Sep 2026, with JAILHOST_HOST set to `root@192.168.1.4`
-# instead of `192.168.1.4`: remote_sh builds "$JAILHOST_USER@$JAILHOST_HOST"
-# and so dialled root@root@192.168.1.4. ssh says exactly that, and the
+# Measured on 12 Sep 2026, with JAILHOST_HOST set to `root@198.18.0.4`
+# instead of `198.18.0.4`: remote_sh builds "$JAILHOST_USER@$JAILHOST_HOST"
+# and so dialled root@root@198.18.0.4. ssh says exactly that, and the
 # operator saw none of it.
 #
 # So: keep stderr, do not let the assignment trip set -e, and let the case
@@ -110,6 +110,6 @@ remote_sh "GW_JAIL=$GW_JAIL STAGE=$STAGE" \
 	"sh $STAGE/gateway-serve-provision.sh"
 
 echo
-echo "==> done. Jail $GW_JAIL is at 10.17.90.10; nginx terminates TLS there and"
+echo "==> done. Jail $GW_JAIL is at 203.0.113.10; nginx terminates TLS there and"
 echo "    proxies to the gateway on the jail's own 127.0.0.1:8080."
 echo "    Next: ./deploy/gateway-serve-verify.sh"

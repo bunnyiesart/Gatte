@@ -12,7 +12,7 @@
 #
 #     bastille cmd mcp-gateway-test sh -c "nc -l 127.0.0.1 18080 &"
 #     bastille cmd mcp-gateway-test sockstat -4 -l | grep 18080
-#     nc -z 10.17.90.10 18080          # from the VM host
+#     nc -z 203.0.113.10 18080          # from the VM host
 #
 # Non-zero exit means a check failed and the message says which. Nothing here
 # writes anything: it is safe to run whenever, and it cleans up its listeners.
@@ -20,12 +20,12 @@ set -eu
 
 JAIL="${JAIL:-mcp-gateway-test}"
 PEER_JAIL="${PEER_JAIL:-authelia}"     # probed from, never modified
-JAIL_IP="${JAIL_IP:-10.17.90.10}"
-HOST_IP="${HOST_IP:-10.17.90.1}"
+JAIL_IP="${JAIL_IP:-203.0.113.10}"
+HOST_IP="${HOST_IP:-203.0.113.1}"
 LOOPBACK_PORT=18080
 ROUTABLE_PORT=18081
 CA=/usr/local/etc/ssl/certs/soc-ca.crt
-ISSUER=https://id.soc.internal
+ISSUER=https://id.example.internal
 
 FAIL=0
 ok()   { echo "  ok   -- $*"; }
@@ -125,7 +125,7 @@ if ! bastille cmd "$JAIL" test -f "$CA" >/dev/null 2>&1; then
 else
 	DISC="$(bastille cmd "$JAIL" fetch --ca-cert="$CA" -q -o - \
 		"$ISSUER/.well-known/openid-configuration" 2>/dev/null | tr -d '\r' | grep -v '^\[' || true)"
-	if echo "$DISC" | grep -q '"issuer":"https://id.soc.internal"'; then
+	if echo "$DISC" | grep -q '"issuer":"https://id.example.internal"'; then
 		ok "discovery returned JSON with the expected issuer"
 		echo "  $(echo "$DISC" | cut -c1-160)..."
 	else
@@ -142,13 +142,13 @@ fi
 head_ "5. no routing conflict with the classic-jail subnet"
 echo "--- netstat -rn -f inet ---"
 netstat -rn -f inet | sed 's/^/  /'
-DUP="$(netstat -rn -f inet | awk '{print $1}' | grep -E '^10\.17\.' | sort | uniq -d || true)"
+DUP="$(netstat -rn -f inet | awk '{print $1}' | grep -E '^(198\.51\.100|203\.0\.113)\.' | sort | uniq -d || true)"
 if [ -n "$DUP" ]; then
 	bad "duplicate route entries: $DUP"
 else
-	ok "every 10.17.x destination appears exactly once"
+	ok "every 198.51.100.x / 203.0.113.x destination appears exactly once"
 fi
-for _r in 10.17.89.20 10.17.90.10; do
+for _r in 198.51.100.20 203.0.113.10; do
 	echo "  route to $_r: $(route -n get "$_r" 2>/dev/null | awk '/interface:/ {print $2}')"
 done
 if [ "$(sysctl -n net.inet.ip.forwarding)" = "1" ]; then
@@ -164,10 +164,10 @@ if [ "$(bastille config "$PEER_JAIL" get vnet 2>/dev/null)" = "enabled" ]; then
 else
 	ok "$PEER_JAIL is still a classic jail"
 fi
-if nc -z -w 3 10.17.89.20 443 2>/dev/null; then
-	ok "10.17.89.20:443 still answers from the VM host"
+if nc -z -w 3 198.51.100.20 443 2>/dev/null; then
+	ok "198.51.100.20:443 still answers from the VM host"
 else
-	bad "10.17.89.20:443 no longer answers"
+	bad "198.51.100.20:443 no longer answers"
 fi
 
 echo

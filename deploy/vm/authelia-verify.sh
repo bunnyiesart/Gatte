@@ -8,7 +8,7 @@
 #      advertising a jwks_uri;
 #   2. serves a JWKS with at least one key;
 #   3. issues an access token that is a JWT, not an opaque string;
-#   4. that JWT carries aud == https://mcp.soc.internal/, the right iss,
+#   4. that JWT carries aud == https://mcp.example.internal/, the right iss,
 #      and a groups claim.
 #
 # Every request goes through nginx over TLS and verifies against the CA
@@ -19,13 +19,13 @@
 # read the exit code alone.
 set -eu
 
-FQDN="${FQDN:-id.soc.internal}"
+FQDN="${FQDN:-id.example.internal}"
 ISSUER="https://$FQDN"
 CA=/usr/local/etc/soc-ca/ca.crt
 SECRETS=/usr/local/etc/authelia/secrets
 CLIENT_ID=mcp-gateway
-AUDIENCE='https://mcp.soc.internal/'
-REDIRECT_URI='https://mcp.soc.internal/oauth2/callback'
+AUDIENCE='https://mcp.example.internal/'
+REDIRECT_URI='https://mcp.example.internal/oauth2/callback'
 USER="${USER_UNDER_TEST:-analyst}"
 
 WORK=$(mktemp -d /tmp/authelia-verify.XXXXXX)

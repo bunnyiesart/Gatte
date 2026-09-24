@@ -104,6 +104,8 @@ j "service mcp_gateway stop >/dev/null 2>&1 || true"
 # vault and does not learn that the service they were upgrading is no longer
 # running. Failing loudly is right; failing loudly AND stopping the service
 # without saying so is not.
+# rc is assigned inside the trap string itself; shellcheck cannot see into it.
+# shellcheck disable=SC2154
 trap 'rc=$?; if [ "$rc" -ne 0 ]; then
 	echo "" >&2
 	echo "PROVISIONING FAILED (exit $rc) AND THE GATEWAY IS STOPPED." >&2

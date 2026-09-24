@@ -10,13 +10,13 @@
 set -eu
 
 JAIL="${JAIL:-authelia}"
-JAIL_IP="${JAIL_IP:-10.17.89.20}"
+JAIL_IP="${JAIL_IP:-198.51.100.20}"
 RELEASE="${RELEASE:-15.1-RELEASE}"
-FQDN="${FQDN:-id.soc.internal}"
-GATEWAY_FQDN="${GATEWAY_FQDN:-mcp.soc.internal}"
-# 10.17.90.10, not 10.17.89.10: mcp-gateway-test is a VNET jail on its own
+FQDN="${FQDN:-id.example.internal}"
+GATEWAY_FQDN="${GATEWAY_FQDN:-mcp.example.internal}"
+# 203.0.113.10, not 198.51.100.10: mcp-gateway-test is a VNET jail on its own
 # bridge and its own subnet. See deploy/gateway-vnet.md, "Subnet".
-GATEWAY_IP="${GATEWAY_IP:-10.17.90.10}"
+GATEWAY_IP="${GATEWAY_IP:-203.0.113.10}"
 CA_DIR=/usr/local/etc/soc-ca
 STAGE="${STAGE:-/tmp/authelia-stage}"
 JAIL_ROOT="/usr/local/bastille/jails/$JAIL/root"
@@ -41,10 +41,16 @@ bastille pkg "$JAIL" install -y authelia nginx curl jq >/dev/null
 # ------------------------------------------------------------------- hosts
 # There is no DNS in this lab. Both names have to resolve on the VM host
 # (that is where the verification curl runs from) and inside the jail
-# (Authelia and the verify script both dial id.soc.internal by name).
+# (Authelia and the verify script both dial id.example.internal by name).
 add_host() {
 	_file="$1"; _ip="$2"; _name="$3"
-	if grep -Eq "^[[:space:]]*$_ip[[:space:]]+.*\b$_name\b" "$_file" 2>/dev/null; then
+	# Field equality, not a regex: the IP's dots are regex wildcards (so
+	# an address "matched" the same digits with any byte where a dot was,
+	# and a prefix such as .1 matched .10 too) and \b is not
+	# POSIX ERE. shellcheck SC1087, 24 Sep 2026.
+	if awk -v ip="$_ip" -v name="$_name" '
+		$1 == ip { for (i = 2; i <= NF; i++) if ($i == name) found = 1 }
+		END { exit !found }' "$_file" 2>/dev/null; then
 		echo "  $_file already maps $_name"
 	else
 		# Drop any stale mapping for this name first, so a changed IP

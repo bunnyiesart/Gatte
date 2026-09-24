@@ -4,7 +4,7 @@
 #
 # It is a thin driver on purpose: everything it asserts happens on the VM,
 # in deploy/vm/gateway-serve-verify.sh, because the client has to be
-# somewhere that can reach 10.17.90.10 and the Mac (without the VPN up)
+# somewhere that can reach 203.0.113.10 and the Mac (without the VPN up)
 # cannot.
 #
 # Run ./deploy/gateway-serve.sh first. This one restarts the service, so it

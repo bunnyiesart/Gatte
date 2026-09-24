@@ -20,6 +20,17 @@ JAILHOST_HOST=jails.lab.internal \
   ./deploy/gateway-serve.sh        # a real box
 ```
 
+## The addresses in these files are stand-ins
+
+Every IP and hostname in `deploy/`, `design/` and the test fixtures is a
+documentation value, not the deployment's (sanitized 24 Sep 2026): the jail
+subnet is `198.51.100.0/24`, the service subnet `203.0.113.0/24`, the VPN
+`192.0.2.0/24` (all RFC 5737), the jail host's LAN `198.18.0.0/24`
+(RFC 2544), and the zone `example.internal`. Substitute your own before
+running anything. `192.168.127.2` is left as it is: that is gvproxy's fixed
+guest address, the same on every Mac. `internal/fitness/sanitize_test.go`
+fails the build if a real value comes back.
+
 ## Why this exists
 
 The lab is moving off a VM on someone's laptop onto dedicated hardware. Until
@@ -191,6 +202,6 @@ VM, the `ssh` one pointed at that same VM over plain `ssh` on
   jails the scripts expect. Nothing here provisions a bare machine.
 - `JAILHOST_USER` can do host-level root work without a password prompt.
   There is no `sudo` in any of these paths.
-- The jail addressing (`10.17.89.0/24` classic, `10.17.90.0/24` VNET) is still
+- The jail addressing (`198.51.100.0/24` classic, `203.0.113.0/24` VNET) is still
   hardcoded in `deploy/vm/*`. Moving to hardware that already uses those
   ranges is a separate job and this helper does not touch it.

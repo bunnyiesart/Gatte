@@ -13,11 +13,11 @@ conventions this follows.
 | | |
 |---|---|
 | Jail | `authelia` |
-| IP | `10.17.89.20` on `bastille0` |
+| IP | `198.51.100.20` on `bastille0` |
 | Release | `15.1-RELEASE` |
-| Names | `id.soc.internal` (this jail), `mcp.soc.internal` (10.17.90.10) |
-| Issuer | `https://id.soc.internal` |
-| Audience issued | `https://mcp.soc.internal/` |
+| Names | `id.example.internal` (this jail), `mcp.example.internal` (203.0.113.10) |
+| Issuer | `https://id.example.internal` |
+| Audience issued | `https://mcp.example.internal/` |
 | Packages | `authelia-4.39.20_5`, `nginx-1.30.4`, `curl`, `jq` |
 | CA | on the **VM host**, `/usr/local/etc/soc-ca` |
 
@@ -68,9 +68,9 @@ without taking the trust anchor with it:
 produced on stdout, last two lines, in that order:
 
 ```bash
-jm ssh -- /usr/local/etc/soc-ca/issue.sh mcp.soc.internal 10.17.90.10
-# /usr/local/etc/soc-ca/mcp.soc.internal.crt
-# /usr/local/etc/soc-ca/mcp.soc.internal.key
+jm ssh -- /usr/local/etc/soc-ca/issue.sh mcp.example.internal 203.0.113.10
+# /usr/local/etc/soc-ca/mcp.example.internal.crt
+# /usr/local/etc/soc-ca/mcp.example.internal.key
 ```
 
 To get the root out of the VM and into a client's trust store:
@@ -152,7 +152,7 @@ fails here too.
 ## Shape
 
 nginx terminates TLS on `0.0.0.0:443` with the CA-issued cert for
-`id.soc.internal` and proxies to Authelia on `127.0.0.1:9091`. Authelia
+`id.example.internal` and proxies to Authelia on `127.0.0.1:9091`. Authelia
 never listens off-loopback, so there is no cleartext OIDC endpoint even
 inside the jail.
 
@@ -160,19 +160,19 @@ The proxy is not decoration either: **Authelia derives the issuer and every
 endpoint URL in the discovery document from the incoming request's host and
 forwarded scheme.** `proxy_set_header Host $host` plus
 `X-Forwarded-Proto https` is what makes `iss` come out as
-`https://id.soc.internal`. Reach the jail by IP instead and discovery
-advertises `https://10.17.89.20` and the tokens say so too -- which the
+`https://id.example.internal`. Reach the jail by IP instead and discovery
+advertises `https://198.51.100.20` and the tokens say so too -- which the
 gateway, pinned to one issuer string, will reject. Consumers need the
 hosts entry, not just the route.
 
 There is no DNS in this lab. `authelia-host-setup.sh` writes
-`id.soc.internal` and `mcp.soc.internal` into the VM host's `/etc/hosts` and
+`id.example.internal` and `mcp.example.internal` into the VM host's `/etc/hosts` and
 the `authelia` jail's. It deliberately does **not** write into
 `mcp-gateway-test` -- that jail belongs to another stream. Whoever owns it
 adds:
 
 ```
-10.17.89.20	id.soc.internal
+198.51.100.20	id.example.internal
 ```
 
 No `bastille rdr` is configured. The provider is reachable from the VM and
@@ -210,7 +210,7 @@ user and authorise none of them, and the failure would look like a broken
 role mapping rather than a missing claim.
 
 **`audience` plus the RFC 8707 `resource` parameter.** The client is allowed
-to request `https://mcp.soc.internal/`, and the claims policy sets
+to request `https://mcp.example.internal/`, and the claims policy sets
 `access_token_audience_mode: 'specification'`, meaning `aud` contains the
 granted resource indicators and *not* the client id.
 
@@ -219,7 +219,7 @@ midnight. **The audience is not automatic.** Measured, on this jail:
 
 | authorization + token request | resulting `aud` |
 |---|---|
-| with `resource=https://mcp.soc.internal/` | `["https://mcp.soc.internal/"]` |
+| with `resource=https://mcp.example.internal/` | `["https://mcp.example.internal/"]` |
 | without `resource` | `[]` (empty) |
 
 An empty audience is the correct, fail-closed outcome -- the gateway rejects
@@ -240,8 +240,8 @@ script:
 
 | username | groups | email |
 |---|---|---|
-| `analyst` | `soc-analysts` | `analyst@soc.internal` |
-| `dfirlead` | `dfir-leads`, `soc-analysts` | `dfirlead@soc.internal` |
+| `analyst` | `soc-analysts` | `analyst@example.internal` |
+| `dfirlead` | `dfir-leads`, `soc-analysts` | `dfirlead@example.internal` |
 
 `dfirlead` is in two groups on purpose: a single-group user cannot
 distinguish "the gateway read the groups claim" from "the gateway assigned
@@ -300,10 +300,10 @@ built to exercise. It exits non-zero on the first failed assertion.
 
 ## Proven, by that script, on 09 Sep 2026
 
-1. `https://id.soc.internal/.well-known/openid-configuration` returns HTTP
+1. `https://id.example.internal/.well-known/openid-configuration` returns HTTP
    200 over TLS that verifies against the SOC CA root, parses as JSON,
-   reports `issuer: https://id.soc.internal`, and advertises
-   `jwks_uri: https://id.soc.internal/jwks.json`.
+   reports `issuer: https://id.example.internal`, and advertises
+   `jwks_uri: https://id.example.internal/jwks.json`.
 2. That JWKS serves one key: `kid=main kty=RSA alg=RS256 use=sig`.
 3. A full authorization code flow (`POST /api/firstfactor` ->
    `GET /api/oidc/authorization` -> `POST /api/oidc/token`) returns
@@ -314,21 +314,21 @@ built to exercise. It exits non-zero on the first failed assertion.
    verifies** against the RSA public key reconstructed from that JWKS
    entry. This is the check the gateway performs, done for real, not
    inferred from the header.
-6. `aud` contains exactly `https://mcp.soc.internal/`.
-7. `iss` is `https://id.soc.internal`.
+6. `aud` contains exactly `https://mcp.example.internal/`.
+7. `iss` is `https://id.example.internal`.
 8. `groups` is present and non-empty, and differs correctly per user.
 
 Decoded access token claims, user `analyst`:
 
 ```json
 {
-  "aud": [ "https://mcp.soc.internal/" ],
+  "aud": [ "https://mcp.example.internal/" ],
   "client_id": "mcp-gateway",
-  "email": "analyst@soc.internal",
+  "email": "analyst@example.internal",
   "exp": 1788944566,
   "groups": [ "soc-analysts" ],
   "iat": 1788940966,
-  "iss": "https://id.soc.internal",
+  "iss": "https://id.example.internal",
   "jti": "e2843d37-34d3-4972-9f13-f602ffc65538",
   "nbf": 1788940966,
   "preferred_username": "analyst",
@@ -341,13 +341,13 @@ User `dfirlead`, same flow:
 
 ```json
 {
-  "aud": [ "https://mcp.soc.internal/" ],
+  "aud": [ "https://mcp.example.internal/" ],
   "client_id": "mcp-gateway",
-  "email": "dfirlead@soc.internal",
+  "email": "dfirlead@example.internal",
   "exp": 1788944521,
   "groups": [ "dfir-leads", "soc-analysts" ],
   "iat": 1788940921,
-  "iss": "https://id.soc.internal",
+  "iss": "https://id.example.internal",
   "jti": "4dbcc453-a1bf-4ce7-9201-4d48f3c9717b",
   "nbf": 1788940921,
   "preferred_username": "dfirlead",
@@ -368,7 +368,7 @@ never printed by the script.
     Nothing in *this* jail changed to make that work.
   - ~~**That `mcp-gateway-test` can reach the provider.**~~ **Settled, 09
     Sep 2026: it does.** The gateway completes OIDC discovery against
-    `https://id.soc.internal` at every start. One trap that cost an hour and
+    `https://id.example.internal` at every start. One trap that cost an hour and
     is not this jail's fault: Go's `crypto/x509` does not read
     `/usr/local/etc/ssl/certs/`, where the gateway jail keeps `soc-ca.crt`,
     so discovery failed with "certificate signed by unknown authority" while

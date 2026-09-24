@@ -199,8 +199,12 @@ finding can be proved rather than argued.
   of the design record has not been swept, and some proofs skip silently
   where `sops` and `age` are missing.
 - This repository is a sanitized public copy of an internal SOC build.
-  The upstream names in it are sanitized, and some ADRs referred to in
-  `CLOSEOUT.md` live only in the private repository.
+  The upstream names in it are sanitized, and so, since 24 Sep 2026, are
+  its network addresses and hostnames: RFC 5737 / RFC 2544 stand-ins and
+  `*.example.internal`, held there by `internal/fitness/sanitize_test.go`.
+  Older pushed history still carries the real ones (`CLOSEOUT.md` Track 6).
+  Some ADRs referred to in `CLOSEOUT.md` live only in the private
+  repository.
 
 A running gateway keeps itself in step with the registry: `upstream
 register`, `upstream deregister` and a signature that stops verifying take

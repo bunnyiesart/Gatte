@@ -25,32 +25,32 @@ Created once, by hand, following `jailmachine`'s own README:
 
 ```bash
 jm ssh -- bastille bootstrap 15.1-RELEASE
-jm ssh -- bastille create mcp-gateway-test 15.1-RELEASE 10.17.89.10
+jm ssh -- bastille create mcp-gateway-test 15.1-RELEASE 198.51.100.10
 ```
 
 | | |
 |---|---|
 | Name | `mcp-gateway-test` |
 | Release | `15.1-RELEASE` (matches the VM's own version) |
-| IP | `10.17.89.10`, NAT'd out through the VM's `vtnet0` via `pf` |
+| IP | `198.51.100.10`, NAT'd out through the VM's `vtnet0` via `pf` |
 | Type | thin jail (base OS shared read-only via `nullfs` from `bastille`'s release cache; only `/usr/local`, `/etc`, `/var`, `/root`, `/tmp` etc. are jail-private) |
 
 Re-creating it after a `bastille destroy mcp-gateway-test` is the same
 two commands (bootstrap is a no-op if the release is already cached).
 
-### Superseded, 09 Sep 2026: it is a VNET jail at 10.17.90.10 now
+### Superseded, 09 Sep 2026: it is a VNET jail at 203.0.113.10 now
 
 **The two rows above describe how the jail was created, not what it is.**
-`bastille create ... 10.17.89.10` makes a *classic* jail, which has no
+`bastille create ... 198.51.100.10` makes a *classic* jail, which has no
 loopback of its own: a process binding `127.0.0.1` inside one has that bind
-rewritten to `10.17.89.10`, and the socket is then reachable from the VM
+rewritten to `198.51.100.10`, and the socket is then reachable from the VM
 host, from the other jails, and across the VPN in cleartext. `mcp-gateway`
 refuses any non-loopback bind (ADR-0011 item 1) -- and in a classic jail that
 refusal passes while meaning nothing, which is the defect ADR-0011's
 CORREÇÃO block records.
 
 So the jail was converted to **VNET**: its own network stack, its own
-`lo0`, its own `127.0.0.1`, on `10.17.90.10/24` behind the `socbr0` bridge.
+`lo0`, its own `127.0.0.1`, on `203.0.113.10/24` behind the `socbr0` bridge.
 `deploy/gateway-vnet.md` is the current description of its networking and
 supersedes the IP and Type rows here; the type is still a thin jail, and
 everything below in *this* file about deploying the binary, `sops`, and
@@ -59,7 +59,7 @@ rotating credentials is unaffected.
 ```bash
 ./deploy/gateway-vnet.sh           # convert (idempotent)
 ./deploy/gateway-vnet-verify.sh    # the acceptance test
-./deploy/gateway-vnet-rollback.sh  # back to a classic jail at 10.17.89.10
+./deploy/gateway-vnet-rollback.sh  # back to a classic jail at 198.51.100.10
 ```
 
 The two-command recreate above still works and still produces a classic
@@ -315,7 +315,7 @@ that the gateway is quiet.
 The four things below were already owned here:
 
 **1. A shipper has to read the file.** The Graylog input is Raw/Plaintext
-TCP at `10.17.90.30:5555` and expects exactly one JSON object per line,
+TCP at `203.0.113.30:5555` and expects exactly one JSON object per line,
 byte-identical to what the gateway wrote — the extractor is in COPY mode
 and `message` is the hash-chain anchor. A shipper must not re-wrap,
 pretty-print, or batch lines. Nothing in the gateway can check that one is
@@ -467,10 +467,10 @@ What this script does *not* set up, and what a real deployment needs:
     at all -- not just from authenticating. See "Rotating credentials"
     below and the operator note in ADR-0008. There is one to point at now:
     `deploy/authelia-jail.md` builds an Authelia provider in a second jail
-    at `https://id.soc.internal` (10.17.89.20), issuing JWT access tokens
-    with `aud` = `https://mcp.soc.internal/` and a `groups` claim. It does
+    at `https://id.example.internal` (198.51.100.20), issuing JWT access tokens
+    with `aud` = `https://mcp.example.internal/` and a `groups` claim. It does
     *not* add the hosts entry to this jail -- that is a deliberate boundary,
-    and `id.soc.internal` will not resolve here until someone adds it.
+    and `id.example.internal` will not resolve here until someone adds it.
   - **the public keys the gateway will trust for signatures.** ADR-0010
     (09 Sep 2026) moved the trust anchor out of the signature line and into
     the configuration file, and made `require_signed` -- on by default
@@ -544,9 +544,17 @@ the difference between that belief being true and being false.
 
 Edit the encrypted file directly -- there is deliberately no
 `mcp-gateway rotate` subcommand, because it would give a binary that
-otherwise only *reads* the encrypted store a write path into it:
+otherwise only *reads* the encrypted store a write path into it. The file
+is `secrets.enc.json`, `sops` needs the age identity to open it, and the
+edit runs as root because the quick start leaves the file `root:mcpgw`
+0640 and `sops` rewrites it in place:
 
-    sops secrets.json
+    sudo env SOPS_AGE_KEY_FILE=/usr/local/etc/mcp-gateway/age.key \
+        sops /usr/local/etc/mcp-gateway/secrets.enc.json
+
+`sops` writes the file anew, so re-run the `chgrp mcpgw` / `chmod 0640`
+from the quick start's step 3 afterwards. Only the operator's shell needs
+`SOPS_AGE_KEY_FILE`: the adapter sets it itself for `serve` (above).
 
 **Then restart the gateway.** This is the part that is easy to miss and
 expensive to get wrong: credentials are resolved at *dial* time and passed

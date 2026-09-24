@@ -1,6 +1,6 @@
 #!/usr/bin/env sh
-# Creates and provisions the `authelia` jail (10.17.89.20) inside the
-# jailmachine VM: Authelia as an OpenID Connect provider for id.soc.internal,
+# Creates and provisions the `authelia` jail (198.51.100.20) inside the
+# jailmachine VM: Authelia as an OpenID Connect provider for id.example.internal,
 # behind nginx doing TLS with a certificate from the SOC lab CA.
 #
 #     ./deploy/authelia-jail.sh
@@ -38,7 +38,7 @@ echo "==> running the host-side setup on the jail host"
 # success.
 #
 # That is not hypothetical: provisioning this against the new host with
-# JAIL_IP=10.17.90.20 produced a certificate whose SAN said 10.17.89.20 and
+# JAIL_IP=203.0.113.20 produced a certificate whose SAN said 198.51.100.20 and
 # an /etc/hosts entry pointing at an address that does not exist on that
 # network. The script reported "provisioned" and exited 0. OIDC discovery
 # from the gateway would have failed later, a long way from the cause.

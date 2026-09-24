@@ -37,11 +37,11 @@ remote_sh chmod +x "$JAIL_ROOT/usr/local/bin/mcp-gateway"
 echo "==> smoke test: running the binary inside the jail"
 remote_sh bastille cmd "$JAIL" /usr/local/bin/mcp-gateway version
 
-# 10.17.90.10, not 10.17.89.10: the jail became a VNET jail on its own
+# 203.0.113.10, not 198.51.100.10: the jail became a VNET jail on its own
 # bridge and moved subnet (deploy/gateway-vnet.md, "Subnet"). The old
 # address was left in this line for a while and is exactly the kind of
 # stale fact a deploy script should not be printing with authority.
-echo "==> done. jail IP: 10.17.90.10 -- 'jm ssh -- bastille list' to confirm"
+echo "==> done. jail IP: 203.0.113.10 -- 'jm ssh -- bastille list' to confirm"
 echo "    This installs the binary and nothing else. For a gateway that"
 echo "    actually serves -- vault, signing key, config, upstreams, rc.d --"
 echo "    use ./deploy/gateway-serve.sh (deploy/gateway-serve.md)."

@@ -17,15 +17,15 @@ set -eu
 VPN_DIR=/usr/local/etc/openvpn
 PKI_DIR="$VPN_DIR/pki"
 CLIENT_NAME="${CLIENT_NAME:-mac-client}"
-VPN_NET=10.8.0.0
+VPN_NET=192.0.2.0
 VPN_MASK=255.255.255.0
-JAIL_NET=10.17.89.0
+JAIL_NET=198.51.100.0
 JAIL_MASK=255.255.255.0
 # The mcp-gateway jail is a VNET jail and cannot share the classic jails'
-# subnet -- 10.17.89.10/.20 exist as /32 host routes on the bastille0
+# subnet -- 198.51.100.10/.20 exist as /32 host routes on the bastille0
 # loopback clone, and a bridge carrying the same /24 would make Authelia
 # look on-link to the jail. See deploy/gateway-vnet.md, "Subnet".
-VNET_JAIL_NET=10.17.90.0
+VNET_JAIL_NET=203.0.113.0
 VNET_JAIL_MASK=255.255.255.0
 
 say() { echo "==> $*"; }
@@ -105,7 +105,7 @@ server $VPN_NET $VPN_MASK
 # must not come through here. This tunnel is the only route to these two
 # networks and nothing else.
 #
-# Two, not one: the classic jails (Authelia at 10.17.89.20) sit on the
+# Two, not one: the classic jails (Authelia at 198.51.100.20) sit on the
 # bastille0 loopback clone, and the VNET mcp-gateway jail sits on a real
 # bridge that has to carry a different subnet. Dropping the second line does
 # not fail loudly -- the client simply has no route to the gateway.
@@ -136,7 +136,7 @@ group openvpn
 # the instant a client connects:
 #
 #   Failed to poll for packets: Operation not permitted (errno=1)
-#   MULTI_sva: pool returned IPv4=10.8.0.2
+#   MULTI_sva: pool returned IPv4=192.0.2.2
 #   Failed to create new peer: Operation not permitted (errno=1)
 #   Exiting due to fatal error
 #
@@ -166,7 +166,7 @@ chmod 600 "$VPN_DIR/openvpn.conf"
 # VM reboot; the sysctl call applies it now without one.
 if ! grep -q '^net.inet.ip.forwarding=1' /etc/sysctl.conf 2>/dev/null; then
 	say "enabling net.inet.ip.forwarding persistently"
-	printf '\n# VPN clients on 10.8.0.0/24 need to be routed into the jail\n# subnet 10.17.89.0/24 -- see deploy/openvpn-access.md\nnet.inet.ip.forwarding=1\n' >>/etc/sysctl.conf
+	printf '\n# VPN clients on 192.0.2.0/24 need to be routed into the jail\n# subnet 198.51.100.0/24 -- see deploy/openvpn-access.md\nnet.inet.ip.forwarding=1\n' >>/etc/sysctl.conf
 else
 	say "net.inet.ip.forwarding already in /etc/sysctl.conf"
 fi
@@ -206,5 +206,5 @@ fi
 
 say "openvpn is running"
 sockstat -4 -l | grep -E ':1194' || { echo "!! nothing listening on udp/1194" >&2; exit 1; }
-netstat -rn -f inet | grep -E '10\.8\.0|10\.17\.(89|90)' || true
+netstat -rn -f inet | grep -E '192\.0\.2|198\.51\.100|203\.0\.113' || true
 say "done"

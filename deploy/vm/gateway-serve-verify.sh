@@ -20,7 +20,7 @@
 #   8. no credential from the vault appears in any log.
 #
 # The client is the VM HOST, not the jail: the request crosses socbr0 and
-# arrives at 10.17.90.10:443 the way an analyst's would over the VPN. A
+# arrives at 203.0.113.10:443 the way an analyst's would over the VPN. A
 # curl from inside the jail would exercise the same nginx but would prove
 # nothing about reachability.
 #
@@ -41,7 +41,6 @@ set -eu
 # variable. Cost an hour once. GW_JAIL is invisible to service(8).
 GW_JAIL="${GW_JAIL:-mcp-gateway-test}"
 STAGE="${STAGE:-/tmp/mcp-gateway-deploy}"
-GW_JAIL_ROOT="/usr/local/bastille/jails/$GW_JAIL/root"
 
 ETC=/usr/local/etc/mcp-gateway
 CONFIG="$ETC/config.toml"
@@ -51,10 +50,9 @@ LOG=/var/log/mcp-gateway/mcp-gateway.log
 NGINX_ACCESS=/var/log/nginx/mcp-access.log
 NGINX_ERROR=/var/log/nginx/mcp-error.log
 DBDIR=/var/db/mcp-gateway
-LIBEXEC=/usr/local/libexec/mcp-gateway
 
 CA=/usr/local/etc/soc-ca/ca.crt
-ENDPOINT="https://mcp.soc.internal/"
+ENDPOINT="https://mcp.example.internal/"
 
 WORK=$(mktemp -d /tmp/gateway-verify.XXXXXX)
 trap 'rm -rf "$WORK"' EXIT INT TERM
@@ -342,7 +340,7 @@ echo "    body: $(head -c 200 "$WORK/resp")"
 # trusts. Without this, "garbage is rejected" could just mean "the parser
 # choked", which is a much weaker statement than "the signature is checked".
 FORGED=$(printf '%s' '{"alg":"RS256","kid":"main","typ":"at+jwt"}' | openssl base64 -A | tr -d '=' | tr '+/' '-_')
-FORGED="$FORGED.$(printf '%s' '{"iss":"https://id.soc.internal","aud":["https://mcp.soc.internal/"],"sub":"analyst","groups":["dfir-leads"],"exp":9999999999}' | openssl base64 -A | tr -d '=' | tr '+/' '-_').ZmFrZXNpZ25hdHVyZQ"
+FORGED="$FORGED.$(printf '%s' '{"iss":"https://id.example.internal","aud":["https://mcp.example.internal/"],"sub":"analyst","groups":["dfir-leads"],"exp":9999999999}' | openssl base64 -A | tr -d '=' | tr '+/' '-_').ZmFrZXNpZ25hdHVyZQ"
 STATUS=$(mcp "$FORGED" "$TOOLS_LIST")
 [ "$STATUS" = 401 ] || fail "a well-formed but unsigned JWT claiming dfir-leads got HTTP $STATUS, expected 401"
 ok "HTTP 401 for a well-formed JWT with a bogus signature claiming dfir-leads"

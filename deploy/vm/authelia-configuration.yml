@@ -1,5 +1,5 @@
 ---
-# Authelia configuration for the `authelia` jail (10.17.89.20), acting as an
+# Authelia configuration for the `authelia` jail (198.51.100.20), acting as an
 # OpenID Connect 1.0 Provider for mcp-gateway.
 #
 # Installed verbatim by deploy/vm/authelia-provision.sh at
@@ -71,8 +71,8 @@ session:
   expiration: '1 hour'
   inactivity: '30 minutes'
   cookies:
-    - domain: 'soc.internal'
-      authelia_url: 'https://id.soc.internal'
+    - domain: 'example.internal'
+      authelia_url: 'https://id.example.internal'
       # No default_redirection_url: Authelia rejects a value equal to
       # authelia_url, and there is no second host in this lab to send a
       # bare login at.
@@ -142,7 +142,7 @@ identity_providers:
         # and the gateway's configured audience have to stay identical --
         # trailing slash included.
         audience:
-          - 'https://mcp.soc.internal/'
+          - 'https://mcp.example.internal/'
 
         scopes:
           - 'openid'
@@ -152,7 +152,7 @@ identity_providers:
           - 'offline_access'
 
         redirect_uris:
-          - 'https://mcp.soc.internal/oauth2/callback'
+          - 'https://mcp.example.internal/oauth2/callback'
 
         grant_types:
           - 'authorization_code'

@@ -64,8 +64,8 @@ go build -o /tmp/lab-bin/probe ./lab/probe
 go build -o /tmp/lab-bin/trafficgen ./lab/trafficgen
 export GATTE_TOKEN=$(ssh jailhost /usr/local/bin/gateway-token.sh analyst)
 
-/tmp/lab-bin/trafficgen -endpoint https://mcp.soc.internal/ -ca /usr/local/etc/soc-ca/ca.crt -plan
-/tmp/lab-bin/trafficgen -endpoint https://mcp.soc.internal/ -ca /usr/local/etc/soc-ca/ca.crt \
+/tmp/lab-bin/trafficgen -endpoint https://mcp.example.internal/ -ca /usr/local/etc/soc-ca/ca.crt -plan
+/tmp/lab-bin/trafficgen -endpoint https://mcp.example.internal/ -ca /usr/local/etc/soc-ca/ca.crt \
         -duration 10m -rate 0.5 -seed 42 -confirm
 ```
 

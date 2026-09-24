@@ -308,7 +308,7 @@ func newHarnessWith(t *testing.T, opts harnessOptions) *harness {
 		}},
 		Policy:               policy,
 		Resource:             "http://127.0.0.1/mcp",
-		AuthorizationServers: []string{"https://auth.soc.internal/realms/soc"},
+		AuthorizationServers: []string{"https://auth.example.internal/realms/soc"},
 		ServerName:           "mcp-gateway-test",
 		ServerVersion:        "0.0.1",
 		Logger:               logger,
@@ -422,8 +422,8 @@ func TestNewRequiresEveryPort(t *testing.T) {
 			Gateway:              h.gw,
 			Verifier:             fakeVerifier{},
 			Policy:               &access.Policy{},
-			Resource:             "https://gw.soc.internal/mcp",
-			AuthorizationServers: []string{"https://auth.soc.internal"},
+			Resource:             "https://gw.example.internal/mcp",
+			AuthorizationServers: []string{"https://auth.example.internal"},
 			Logger:               slog.New(slog.NewTextHandler(io.Discard, nil)),
 		}
 	}
@@ -435,13 +435,13 @@ func TestNewRequiresEveryPort(t *testing.T) {
 		"no resource":              func(c *Config) { c.Resource = "  " },
 		"no authorization servers": func(c *Config) { c.AuthorizationServers = nil },
 		"relative resource":        func(c *Config) { c.Resource = "/mcp" },
-		"resource with fragment":   func(c *Config) { c.Resource = "https://gw.soc.internal/mcp#x" },
-		"resource with query":      func(c *Config) { c.Resource = "https://gw.soc.internal/mcp?a=b" },
+		"resource with fragment":   func(c *Config) { c.Resource = "https://gw.example.internal/mcp#x" },
+		"resource with query":      func(c *Config) { c.Resource = "https://gw.example.internal/mcp?a=b" },
 		// An http:// resource identifier is an instruction to every client
 		// that reads the metadata to put a bearer token on the wire in
 		// cleartext. Refused unless explicitly overridden.
-		"insecure resource":             func(c *Config) { c.Resource = "http://gw.soc.internal/mcp" },
-		"insecure authorization server": func(c *Config) { c.AuthorizationServers = []string{"http://auth.soc.internal"} },
+		"insecure resource":             func(c *Config) { c.Resource = "http://gw.example.internal/mcp" },
+		"insecure authorization server": func(c *Config) { c.AuthorizationServers = []string{"http://auth.example.internal"} },
 	}
 	for name, mutate := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -1145,7 +1145,7 @@ func TestProtectedResourceMetadata(t *testing.T) {
 			if doc.Resource != "http://127.0.0.1/mcp" {
 				t.Errorf("resource = %q, want the configured resource identifier", doc.Resource)
 			}
-			if !slices.Equal(doc.AuthorizationServers, []string{"https://auth.soc.internal/realms/soc"}) {
+			if !slices.Equal(doc.AuthorizationServers, []string{"https://auth.example.internal/realms/soc"}) {
 				t.Errorf("authorization_servers = %v", doc.AuthorizationServers)
 			}
 			// The document itself says the credential goes in the header.

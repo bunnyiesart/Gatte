@@ -19,7 +19,7 @@ CFG="$ETC/authelia.yml"
 USERS="$ETC/authelia/users_database.yml"
 
 CLIENT_ID=mcp-gateway
-AUDIENCE='https://mcp.soc.internal/'
+AUDIENCE='https://mcp.example.internal/'
 
 # ------------------------------------------------------------------ layout
 mkdir -p "$ETC/authelia" "$SECRETS" /var/db/authelia /var/log/authelia \
@@ -114,14 +114,14 @@ users:
     disabled: false
     displayname: 'SOC Analyst One'
     password: '${ANALYST_HASH}'
-    email: 'analyst@soc.internal'
+    email: 'analyst@example.internal'
     groups:
       - 'soc-analysts'
   dfirlead:
     disabled: false
     displayname: 'DFIR Lead One'
     password: '${DFIRLEAD_HASH}'
-    email: 'dfirlead@soc.internal'
+    email: 'dfirlead@example.internal'
     groups:
       - 'dfir-leads'
       - 'soc-analysts'
@@ -140,11 +140,11 @@ echo "  wrote $CFG and $ETC/nginx/nginx.conf"
 # The TLS material was issued by the CA on the VM host and dropped into
 # $ETC/nginx/tls by the host-side script. Fail loudly rather than starting
 # nginx on a certificate that is not there.
-for f in "$ETC/nginx/tls/id.soc.internal.crt" "$ETC/nginx/tls/id.soc.internal.key"; do
+for f in "$ETC/nginx/tls/id.example.internal.crt" "$ETC/nginx/tls/id.example.internal.key"; do
 	[ -s "$f" ] || { echo "provision: missing $f" >&2; exit 1; }
 done
-chmod 0644 "$ETC/nginx/tls/id.soc.internal.crt"
-chmod 0600 "$ETC/nginx/tls/id.soc.internal.key"
+chmod 0644 "$ETC/nginx/tls/id.example.internal.crt"
+chmod 0600 "$ETC/nginx/tls/id.example.internal.key"
 
 # --------------------------------------------------------------- validate
 echo "==> validating the Authelia configuration"

@@ -102,8 +102,8 @@ listen   = "127.0.0.1:9443"
 database = "/var/db/mcp-gateway/mcp-gateway.db"
 
 [oidc]
-issuer   = "https://id.soc.internal/realms/soc"
-audience = "https://gw.soc.internal/mcp"
+issuer   = "https://id.example.internal/realms/soc"
+audience = "https://gw.example.internal/mcp"
 
 [vault]
 secrets_file = "/usr/local/etc/mcp-gateway/secrets.enc.json"

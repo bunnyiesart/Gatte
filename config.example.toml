@@ -104,7 +104,7 @@ database = "/var/db/mcp-gateway/mcp-gateway.db"
 # Se errar: o gateway nao consegue buscar as chaves de assinatura e recusa
 # todo token -- falha fechada, e o modo certo de falhar. Confira tambem que
 # o issuer e alcancavel de *dentro* da jail, e nao so da sua estacao.
-issuer = "https://id.soc.internal/realms/soc"
+issuer = "https://id.example.internal/realms/soc"
 
 # Identificador deste gateway como recurso: o valor que o token precisa
 # trazer em `aud`, e o mesmo que a metadata RFC 9728 publica como
@@ -132,7 +132,7 @@ issuer = "https://id.soc.internal/realms/soc"
 # Se errar: audiencia divergente do que o IdP emite = todo token e recusado
 # com 401. Audiencia larga demais (ou compartilhada entre servicos) =
 # fronteira de seguranca perdida, sem nenhum sintoma visivel.
-audience = "https://gw.soc.internal/mcp"
+audience = "https://gw.example.internal/mcp"
 
 # Nome do claim que carrega os grupos do usuario. Provedores divergem
 # (`groups`, `roles`, `cognito:groups`, ...); deixar configuravel e o que
@@ -155,7 +155,7 @@ groups_claim = "groups"
 # Se errar: uma lista vazia (ou apontando para o lugar errado) faz o 401
 # devolver uma metadata que nao manda o cliente a lugar nenhum -- o cliente
 # nao tem como se recuperar sozinho.
-authorization_servers = ["https://id.soc.internal/realms/soc"]
+authorization_servers = ["https://id.example.internal/realms/soc"]
 
 
 # ===========================================================================

@@ -10,7 +10,7 @@
 
 # Loopback, and it cannot be anything else: the gateway refuses a
 # non-loopback bind (ADR-0011 item 1). nginx in this same jail terminates
-# TLS on 10.17.90.10:443 and proxies here.
+# TLS on 203.0.113.10:443 and proxies here.
 #
 # This is a real 127.0.0.1 only because the jail is now a VNET jail: in the
 # classic jail it used to be, the kernel rewrote this bind to the jail's
@@ -24,12 +24,12 @@ database = "/var/db/mcp-gateway/mcp-gateway.db"
 # Authelia, in its own jail (ADR-0011 item 4). Must be reachable from THIS
 # jail -- discovery happens at startup, and an unreachable issuer stops the
 # process from coming up at all, not merely from authenticating (ADR-0008).
-issuer = "https://id.soc.internal"
+issuer = "https://id.example.internal"
 
 # This gateway's own resource identifier (RFC 8707). Tokens minted for any
 # other service of the same IdP are refused. Never defaulted, and it must
 # match what Authelia puts in `aud` exactly.
-audience = "https://mcp.soc.internal/"
+audience = "https://mcp.example.internal/"
 
 groups_claim = "groups"
 
@@ -61,7 +61,7 @@ trusted_keys = [
 #      an unopenable path is a STARTUP FAILURE, on purpose, because the
 #      operator who asked for the sink is the one who can fix it;
 #   2. a shipper (filebeat/vector) must read the file and forward it to the
-#      Raw/Plaintext TCP input at 10.17.90.30:5555, one JSON object per
+#      Raw/Plaintext TCP input at 203.0.113.30:5555, one JSON object per
 #      line, byte-identical -- no re-wrapping, no pretty-printing, no
 #      batching. Nothing here can check that one is installed, and without
 #      it this is a file that grows and anchors nothing.

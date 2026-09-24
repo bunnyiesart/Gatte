@@ -52,7 +52,7 @@ import (
 // MetadataPath is the well-known path of the OAuth 2.0 Protected Resource
 // Metadata document (RFC 9728 section 3).
 //
-// When Config.Resource carries a path -- "https://gw.soc.internal/mcp" --
+// When Config.Resource carries a path -- "https://gw.example.internal/mcp" --
 // RFC 9728 section 3.1 says the metadata lives at that path *appended* to
 // the well-known prefix ("/.well-known/oauth-protected-resource/mcp"). This
 // handler serves both that computed location and the bare prefix, because
@@ -95,7 +95,7 @@ type Config struct {
 
 	// Resource is this gateway's resource identifier: the absolute URI that
 	// RFC 8707 resource indicators name and that RFC 9728 metadata
-	// advertises, e.g. "https://gw.soc.internal/mcp".
+	// advertises, e.g. "https://gw.example.internal/mcp".
 	//
 	// It should be the same value configured as the OIDC verifier's expected
 	// audience. This package cannot check that -- Verifier is an opaque

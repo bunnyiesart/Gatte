@@ -38,10 +38,10 @@ listen   = "127.0.0.1:9443"
 database = "/var/db/mcp-gateway/mcp-gateway.db"
 
 [oidc]
-issuer                = "https://id.soc.internal/realms/soc"
-audience              = "https://gw.soc.internal/mcp"
+issuer                = "https://id.example.internal/realms/soc"
+audience              = "https://gw.example.internal/mcp"
 groups_claim          = "soc_groups"
-authorization_servers = ["https://id.soc.internal/realms/soc", "https://id2.soc.internal/realms/soc"]
+authorization_servers = ["https://id.example.internal/realms/soc", "https://id2.example.internal/realms/soc"]
 
 [vault]
 secrets_file = "/usr/local/etc/mcp-gateway/secrets.enc.json"
@@ -81,8 +81,8 @@ const minimalConfig = `
 database = "/var/db/mcp-gateway/mcp-gateway.db"
 
 [oidc]
-issuer   = "https://id.soc.internal/realms/soc"
-audience = "https://gw.soc.internal/mcp"
+issuer   = "https://id.example.internal/realms/soc"
+audience = "https://gw.example.internal/mcp"
 
 [vault]
 secrets_file = "/usr/local/etc/mcp-gateway/secrets.enc.json"
@@ -158,18 +158,18 @@ func TestLoadCompleteFile(t *testing.T) {
 	if c.Database != "/var/db/mcp-gateway/mcp-gateway.db" {
 		t.Errorf("Database = %q", c.Database)
 	}
-	if c.OIDC.Issuer != "https://id.soc.internal/realms/soc" {
+	if c.OIDC.Issuer != "https://id.example.internal/realms/soc" {
 		t.Errorf("OIDC.Issuer = %q", c.OIDC.Issuer)
 	}
-	if c.OIDC.Audience != "https://gw.soc.internal/mcp" {
+	if c.OIDC.Audience != "https://gw.example.internal/mcp" {
 		t.Errorf("OIDC.Audience = %q", c.OIDC.Audience)
 	}
 	if c.OIDC.GroupsClaim != "soc_groups" {
 		t.Errorf("OIDC.GroupsClaim = %q, want the configured value, not the default", c.OIDC.GroupsClaim)
 	}
 	wantServers := []string{
-		"https://id.soc.internal/realms/soc",
-		"https://id2.soc.internal/realms/soc",
+		"https://id.example.internal/realms/soc",
+		"https://id2.example.internal/realms/soc",
 	}
 	if !reflect.DeepEqual(c.OIDC.AuthorizationServers, wantServers) {
 		t.Errorf("OIDC.AuthorizationServers = %v, want %v", c.OIDC.AuthorizationServers, wantServers)
@@ -215,7 +215,7 @@ func TestLoadAppliesDocumentedDefaults(t *testing.T) {
 	if c.OIDC.GroupsClaim != DefaultGroupsClaim {
 		t.Errorf("OIDC.GroupsClaim = %q, want %q", c.OIDC.GroupsClaim, DefaultGroupsClaim)
 	}
-	want := []string{"https://id.soc.internal/realms/soc"}
+	want := []string{"https://id.example.internal/realms/soc"}
 	if !reflect.DeepEqual(c.OIDC.AuthorizationServers, want) {
 		t.Errorf("OIDC.AuthorizationServers = %v, want it defaulted to [issuer] %v", c.OIDC.AuthorizationServers, want)
 	}
@@ -264,7 +264,7 @@ func TestAudienceHasNoDefault(t *testing.T) {
 	// have quietly filled it in from the issuer.
 	c := &Config{
 		Database: "/tmp/x.db",
-		OIDC:     OIDC{Issuer: "https://id.soc.internal/realms/soc"},
+		OIDC:     OIDC{Issuer: "https://id.example.internal/realms/soc"},
 		Vault:    Vault{SecretsFile: "/tmp/s.json", AgeKeyFile: "/tmp/age.key"},
 	}
 	_ = c.Validate()
@@ -313,7 +313,7 @@ func TestLoadRejectsUnknownKeyVariants(t *testing.T) {
 		},
 		{
 			name:    "unknown table",
-			mutate:  func(s string) string { return s + "\n[telemetry]\nendpoint = \"https://otel.soc.internal\"\n" },
+			mutate:  func(s string) string { return s + "\n[telemetry]\nendpoint = \"https://otel.example.internal\"\n" },
 			wantKey: "telemetry",
 		},
 		{
@@ -492,7 +492,7 @@ func TestLoadReportsEveryProblemAtOnce(t *testing.T) {
 }
 
 func TestLoadRejectsNonAbsoluteIssuer(t *testing.T) {
-	contents := strings.Replace(minimalConfig, `"https://id.soc.internal/realms/soc"`, `"id.soc.internal/realms/soc"`, 1)
+	contents := strings.Replace(minimalConfig, `"https://id.example.internal/realms/soc"`, `"id.example.internal/realms/soc"`, 1)
 	err := loadErr(t, contents)
 	if !errors.Is(err, ErrInvalid) {
 		t.Errorf("error does not wrap ErrInvalid: %v", err)
@@ -536,8 +536,8 @@ trusted_keys = ["` + testTrustedKey + `"]
 // Loopback http is accepted here because it is accepted there: the rule is
 // about bearer tokens crossing a network, and 127.0.0.1 crosses none.
 func TestOIDCIdentifiersMustBeUsableByTheServingProcess(t *testing.T) {
-	const goodIssuer = "https://id.soc.internal/realms/soc"
-	const goodAudience = "https://gw.soc.internal/mcp"
+	const goodIssuer = "https://id.example.internal/realms/soc"
+	const goodAudience = "https://gw.example.internal/mcp"
 
 	tests := []struct {
 		name     string
@@ -546,11 +546,11 @@ func TestOIDCIdentifiersMustBeUsableByTheServingProcess(t *testing.T) {
 		wantErr  string // the field the message must name; "" means it must load
 	}{
 		{"opaque audience", goodIssuer, "mcp-gateway", "oidc.audience"},
-		{"http audience on a routable host", goodIssuer, "http://gw.soc.internal/mcp", "oidc.audience"},
-		{"audience with a query string", goodIssuer, "https://gw.soc.internal/mcp?v=1", "oidc.audience"},
-		{"audience with a fragment", goodIssuer, "https://gw.soc.internal/mcp#mcp", "oidc.audience"},
+		{"http audience on a routable host", goodIssuer, "http://gw.example.internal/mcp", "oidc.audience"},
+		{"audience with a query string", goodIssuer, "https://gw.example.internal/mcp?v=1", "oidc.audience"},
+		{"audience with a fragment", goodIssuer, "https://gw.example.internal/mcp#mcp", "oidc.audience"},
 		{"http issuer on a routable host", "http://idp.internal:8080", goodAudience, "oidc.issuer"},
-		{"issuer with a query string", "https://id.soc.internal/realms/soc?x=1", goodAudience, "oidc.issuer"},
+		{"issuer with a query string", "https://id.example.internal/realms/soc?x=1", goodAudience, "oidc.issuer"},
 		{"https audience and issuer", goodIssuer, goodAudience, ""},
 		{"loopback http, which serve accepts", "http://127.0.0.1:8080", "http://127.0.0.1:8080/mcp", ""},
 		{"localhost http, which serve accepts", "http://localhost:8080", "http://localhost:8080/mcp", ""},
@@ -579,14 +579,14 @@ func TestOIDCIdentifiersMustBeUsableByTheServingProcess(t *testing.T) {
 // the same check, and defaults to [issuer] -- so an explicit list was the
 // one way to reach that check with a value Validate had never looked at.
 func TestAuthorizationServersAreCheckedToo(t *testing.T) {
-	contents := oidcConfig("https://id.soc.internal/realms/soc", "https://gw.soc.internal/mcp",
-		`authorization_servers = ["https://id.soc.internal/realms/soc", "http://id2.soc.internal"]`)
+	contents := oidcConfig("https://id.example.internal/realms/soc", "https://gw.example.internal/mcp",
+		`authorization_servers = ["https://id.example.internal/realms/soc", "http://id2.example.internal"]`)
 
 	err := loadErr(t, contents)
 	if !strings.Contains(err.Error(), "oidc.authorization_servers") {
 		t.Errorf("error does not name oidc.authorization_servers: %v", err)
 	}
-	if !strings.Contains(err.Error(), "id2.soc.internal") {
+	if !strings.Contains(err.Error(), "id2.example.internal") {
 		t.Errorf("error does not name the offending entry: %v", err)
 	}
 }
@@ -885,8 +885,8 @@ func TestToAccessPolicyPropagatesNewPolicyErrors(t *testing.T) {
 	c := &Config{
 		Database: "/var/db/mcp-gateway/mcp-gateway.db",
 		OIDC: OIDC{
-			Issuer:   "https://id.soc.internal/realms/soc",
-			Audience: "https://gw.soc.internal/mcp",
+			Issuer:   "https://id.example.internal/realms/soc",
+			Audience: "https://gw.example.internal/mcp",
 		},
 		Vault: Vault{
 			SecretsFile: "/usr/local/etc/mcp-gateway/secrets.enc.json",
@@ -1320,7 +1320,7 @@ func TestIsLoopbackAddr(t *testing.T) {
 		{"0.0.0.0:8080", false},
 		{"[::]:8080", false},
 		{"10.0.0.5:8080", false},
-		{"gw.soc.internal:8080", false},
+		{"gw.example.internal:8080", false},
 		// Unparseable is reported as exposed on purpose: a spurious
 		// warning costs one line, a missed one costs an exposure.
 		{"garbage", false},
@@ -1347,10 +1347,10 @@ func TestIsLoopbackAddr(t *testing.T) {
 // cmd/mcp-gateway when the rule moved.
 func TestRequireLoopbackBind(t *testing.T) {
 	refused := []string{
-		"0.0.0.0:8080",     // the one an operator reaches for
-		"10.17.89.10:8080", // a jail's own address
-		"[::]:8080",        // the IPv6 equivalent of 0.0.0.0
-		"192.168.1.5:8080",
+		"0.0.0.0:8080",       // the one an operator reaches for
+		"198.51.100.10:8080", // a jail's own address
+		"[::]:8080",          // the IPv6 equivalent of 0.0.0.0
+		"198.18.0.5:8080",
 	}
 	for _, addr := range refused {
 		t.Run("refuses "+addr, func(t *testing.T) {

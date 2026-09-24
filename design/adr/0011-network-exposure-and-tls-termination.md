@@ -63,17 +63,17 @@ escuta o IP da jail em 443 com TLS; o gateway escuta `127.0.0.1:8080`.
 > ```
 > $ nc -l 127.0.0.1 18080 &
 > $ sockstat -4 -l | grep 18080
-> root  nc  32734  3  tcp4  10.17.89.10:18080  *:*
+> root  nc  32734  3  tcp4  198.51.100.10:18080  *:*
 > ```
 >
-> e de fora da jail, `nc -z 10.17.89.10 18080` **conecta**.
+> e de fora da jail, `nc -z 198.51.100.10 18080` **conecta**.
 >
 > A consequência é exatamente a classe de defeito que este ADR foi escrito
 > para fechar: `requireLoopbackBind` passa, o log diz `listen=127.0.0.1:8080`,
 > o operador acredita que o gateway só é alcançável pelo nginx — e o
 > gateway está escutando em texto claro no IP que o cliente da VPN alcança,
 > contornando o TLS inteiro. O mesmo vale para a Authelia, encontrada
-> escutando `10.17.89.20:9091` em HTTP simples com `address:
+> escutando `198.51.100.20:9091` em HTTP simples com `address:
 > 'tcp://127.0.0.1:9091'` escrito na configuração dela.
 >
 > **O que continua valendo:** recusar bind não-loopback continua correto e
@@ -90,23 +90,23 @@ escuta o IP da jail em 443 com TLS; o gateway escuta `127.0.0.1:8080`.
 >    endereços da jail, com o gateway fazendo bind nele. `127/8` não é
 >    roteado pela VPN, e `IsLoopback()` já aceita, então não exige mudança
 >    de código. Mais leve que VNET.
-> 3. **pf** bloqueando `10.17.89.10:8080` vindo de fora do host. Funciona,
+> 3. **pf** bloqueando `198.51.100.10:8080` vindo de fora do host. Funciona,
 >    mas é convenção verificada em outro lugar — precisamente o que o item
 >    1 queria deixar de ser.
 >
 > **RESOLVIDO no mesmo dia — opção (1), jail VNET.** Escolha de bunnyiesart.
 > `mcp-gateway-test` virou jail VNET com pilha de rede própria, em
-> `10.17.90.10/24` atrás da bridge `socbr0`. O teste de aceitação é o bloco
+> `203.0.113.10/24` atrás da bridge `socbr0`. O teste de aceitação é o bloco
 > de medição acima dando o resultado oposto, e dá:
 >
 > ```
 > $ bastille cmd mcp-gateway-test sockstat -4 -l | grep 18080
 > root  nc  13801  3  tcp4  127.0.0.1:18080  *:*      <- não mais reescrito
 >
-> controle: 10.17.90.10:18081 alcançável do host da VM  -> OK
-> 10.17.90.10:18080 do host da VM                       -> recusado
+> controle: 203.0.113.10:18081 alcançável do host da VM  -> OK
+> 203.0.113.10:18080 do host da VM                       -> recusado
 > 127.0.0.1:18080 no host da VM                         -> silencioso
-> 10.17.90.10:18080 de dentro da jail authelia          -> recusado
+> 203.0.113.10:18080 de dentro da jail authelia          -> recusado
 > ```
 >
 > O **controle** importa tanto quanto a negativa: sem ele, o teste passaria
@@ -116,16 +116,16 @@ escuta o IP da jail em 443 com TLS; o gateway escuta `127.0.0.1:8080`.
 > **A sub-rede teve de mudar**, e a razão é a mesma coisa que causou o
 > defeito: `bastille0` é clone de loopback, os endereços das jails clássicas
 > são aliases `/32` nele, e não há camada 2 onde prender um epair. Uma jail
-> VNET em `10.17.89.10/24` trataria `10.17.89.20` como *on-link*, faria ARP
+> VNET em `198.51.100.10/24` trataria `198.51.100.20` como *on-link*, faria ARP
 > pela Authelia numa bridge onde ninguém responde, e a descoberta OIDC
-> falharia no arranque do gateway. Em `10.17.90.0/24` a Authelia fica
+> falharia no arranque do gateway. Em `203.0.113.0/24` a Authelia fica
 > off-link, sai pela rota default, e o host encaminha — e é aqui que
 > `net.inet.ip.forwarding`, ligado antes por precaução, deixa de ser
 > decorativo.
 >
 > Três consequências, todas tratadas: `/etc/hosts` das jails, a rota
-> `10.17.90.0/24` empurrada pela VPN, e o SAN do certificado do nginx, que
-> precisa carregar `IP:10.17.90.10`.
+> `203.0.113.0/24` empurrada pela VPN, e o SAN do certificado do nginx, que
+> precisa carregar `IP:203.0.113.10`.
 >
 > Sobrevive a `jm stop`/`jm start` sem passo manual, e o rollback foi
 > **executado**, não só escrito: reverte para jail clássica e o defeito
@@ -133,7 +133,7 @@ escuta o IP da jail em 443 com TLS; o gateway escuta `127.0.0.1:8080`.
 > certa.
 >
 > **O que continua não verificado:** que um cliente na ponta da VPN alcança
-> `10.17.90.10` — a segunda rota está empurrada e o openvpn reiniciou
+> `203.0.113.10` — a segunda rota está empurrada e o openvpn reiniciou
 > limpo, mas isso é esperado, não medido, até alguém conectar o túnel.
 
 Escolhido em vez de terminar TLS no próprio binário porque mantém material

@@ -11,7 +11,7 @@
 # cleartext with the check reporting success. VNET is option (1) of the three
 # that block lists, and the only one that makes the check mean what it says.
 #
-# The jail moves from 10.17.89.10 to 10.17.90.10 in the process. See
+# The jail moves from 198.51.100.10 to 203.0.113.10 in the process. See
 # deploy/gateway-vnet.md, "Subnet", for why it is not allowed to stay.
 #
 # Idempotent, and safe to re-run after editing deploy/vm/gateway-vnet-*.sh.
@@ -42,4 +42,4 @@ echo "==> done. Verify with:"
 echo "    ./deploy/gateway-vnet-verify.sh"
 echo
 echo "    VPN clients must reconnect to pick up the pushed route for"
-echo "    10.17.90.0/24; the gateway is at 10.17.90.10 now."
+echo "    203.0.113.0/24; the gateway is at 203.0.113.10 now."

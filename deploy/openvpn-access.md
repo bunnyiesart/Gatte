@@ -1,6 +1,6 @@
 # Reaching the jails: an OpenVPN tunnel
 
-The jails live on `10.17.89.0/24` inside the `jailmachine` VM. The Mac has no
+The jails live on `198.51.100.0/24` inside the `jailmachine` VM. The Mac has no
 route there and cannot get one, because the VM's network is a **gvproxy**
 userspace stack: the guest is `192.168.127.2` on a network that exists only
 inside a process on the Mac, and the only way in is a port forward gvproxy
@@ -14,14 +14,14 @@ and the hole is useless without a client certificate.
 
 ```
   macOS                                    jailmachine VM (FreeBSD 15.1)
-  ┌──────────────────────────┐             ┌─────────────────────────────────┐
-  │ openvpn client           │             │ openvpn server                  │
-  │   utunN  10.8.0.2        │             │   tun0   10.8.0.1               │
-  │   route 10.17.89.0/24 ───┼──┐          │                                 │
-  │                          │  │          │   bastille0 (lo clone)          │
-  │ 127.0.0.1:1194 ──────────┼──┼─┐        │     10.17.89.10  mcp-gateway-test│
-  └──────────────────────────┘  │ │        │     10.17.89.20  authelia       │
-                                │ │        └─────────────────────────────────┘
+  ┌──────────────────────────┐             ┌────────────────────────────────────┐
+  │ openvpn client           │             │ openvpn server                     │
+  │   utunN  192.0.2.2       │             │   tun0   192.0.2.1                 │
+  │   route 198.51.100.0/24 ─┼──┐          │                                    │
+  │                          │  │          │   bastille0 (lo clone)             │
+  │ 127.0.0.1:1194 ──────────┼──┼─┐        │     198.51.100.10  mcp-gateway-test│
+  └──────────────────────────┘  │ │        │     198.51.100.20  authelia        │
+                                │ │        └────────────────────────────────────┘
               gvproxy (on the Mac, userspace)      ▲
                 127.0.0.1:1194/udp ────────────────┘ 192.168.127.2:1194/udp
 ```
@@ -33,30 +33,30 @@ the ADRs under `design/` are unaffected. This is lab access plumbing.
 > gateway moved.**
 >
 > `mcp-gateway-test` was converted to a **VNET** jail and is at
-> **`10.17.90.10`**, on a real bridge (`socbr0`, host side `10.17.90.1/24`),
+> **`203.0.113.10`**, on a real bridge (`socbr0`, host side `203.0.113.1/24`),
 > not on the `bastille0` loopback clone. A VNET jail needs layer 2 to attach
 > an epair to, and `bastille0` has none; it could not stay on
-> `10.17.89.0/24` because a jail whose own `/24` covers `10.17.89.20` would
+> `198.51.100.0/24` because a jail whose own `/24` covers `198.51.100.20` would
 > treat Authelia as on-link and ARP for it on a bridge where nothing
 > answers. See `deploy/gateway-vnet.md`, "Subnet".
 >
 > Consequences for this document:
 >
->   - The server now pushes **two** routes, `10.17.89.0/24` *and*
->     `10.17.90.0/24`. `deploy/openvpn-vm-setup.sh` writes both. A client
+>   - The server now pushes **two** routes, `198.51.100.0/24` *and*
+>     `203.0.113.0/24`. `deploy/openvpn-vm-setup.sh` writes both. A client
 >     connected before this change has only the first and silently has no
 >     route to the gateway -- reconnect.
->   - Everywhere below that says `10.17.89.10`, read `10.17.90.10`. The
+>   - Everywhere below that says `198.51.100.10`, read `203.0.113.10`. The
 >     recorded command transcripts are left as they were run, because
 >     editing captured output to match a later reality is how a lab notebook
 >     stops being evidence. The diagram is the same: `mcp-gateway-test` has
 >     moved off `bastille0` onto `socbr0`.
->   - `10.17.89.20 authelia` is unchanged, still a classic jail on
+>   - `198.51.100.20 authelia` is unchanged, still a classic jail on
 >     `bastille0`.
 >
 > Untested at the time of writing: the client's view. No Mac client was
 > connected when the route was added, so "a VPN client reaches
-> `10.17.90.10`" is expected, not measured. Run the probes below after
+> `203.0.113.10`" is expected, not measured. Run the probes below after
 > reconnecting.
 
 ## Two CAs, on purpose
@@ -107,11 +107,11 @@ The jail addresses are `/32`s on `bastille0`, which is a *loopback clone*:
 
 ```
 bastille0: flags=1008049<UP,LOOPBACK,RUNNING,...>
-        inet 10.17.89.10 netmask 0xffffffff
-        inet 10.17.89.20 netmask 0xffffffff
+        inet 198.51.100.10 netmask 0xffffffff
+        inet 198.51.100.20 netmask 0xffffffff
 ```
 
-A packet arriving on `tun0` for `10.17.89.10` is destined for an address the
+A packet arriving on `tun0` for `198.51.100.10` is destined for an address the
 host already owns, so it is delivered locally rather than forwarded, and the
 forwarding sysctl never enters the decision. The moment any jail becomes a
 VNET jail on an `epair` -- a different interface with a genuinely remote
@@ -121,7 +121,7 @@ If you want to know for certain, bring the tunnel up and run
 `jm ssh -- sysctl net.inet.ip.forwarding=0`, retest, and set it back; that
 experiment has **not** been run here.
 
-**A pushed route** -- `push "route 10.17.89.0 255.255.255.0"`. Confirmed
+**A pushed route** -- `push "route 198.51.100.0 255.255.255.0"`. Confirmed
 arriving at the client (see "What is proven" below).
 
 **No `pf` rule, and no NAT.** Deliberately nothing, and this was checked
@@ -136,19 +136,19 @@ rather than skipped:
 there is nothing to punch a hole through. The existing `nat` entries are for
 the `<jails>` and `<cni-nat>` tables going *out* to `vtnet0`, which is jail
 egress to the internet and has nothing to do with this path. NAT is not needed
-inbound either, because the jails' replies to `10.8.0.0/24` already have a
+inbound either, because the jails' replies to `192.0.2.0/24` already have a
 route:
 
 ```
-# jm ssh -- route -n get 10.8.0.2
+# jm ssh -- route -n get 192.0.2.2
   interface: tun0
 ```
 
 Adding a NAT rule here would work, and would also hide every client's real
-tunnel address behind `10.8.0.1` in the jails' logs, for no gain. So: none.
+tunnel address behind `192.0.2.1` in the jails' logs, for no gain. So: none.
 
 **No `redirect-gateway`.** The Mac's normal internet traffic must not come
-through a lab VM. This tunnel is the only route to `10.17.89.0/24` and is not
+through a lab VM. This tunnel is the only route to `198.51.100.0/24` and is not
 a route to anything else.
 
 ## The Mac already routes 10.0.0.0/8 somewhere else
@@ -158,20 +158,22 @@ VPN on `utun5` holding a `10/8` route:
 
 ```
 Destination        Gateway            Flags               Netif
-10                 10.69.71.17        UGSc                utun5
-192.168.0/16       10.69.71.17        UGSc                utun5
+10                 198.18.1.17        UGSc                utun5
+192.168.0/16       198.18.1.17        UGSc                utun5
 ```
 
 Two consequences.
 
-**The lab route wins, by being more specific.** `10.17.89.0/24` beats `10/8`
-on longest-prefix match, so the tunnel takes precedence while it is up. If the
+**The lab route wins, by being more specific.** (The addresses in this repo
+are RFC 5737 documentation stand-ins, sanitized 24 Sep 2026; the real lab
+subnet is a /24 inside `10/8`, which is the only reason this section exists.)
+The lab /24 beats `10/8` on longest-prefix match, so the tunnel takes precedence while it is up. If the
 corporate VPN ever starts pushing something equally or more specific for that
 range, it stops winning, and the symptom will be a tunnel that connects fine
 and reaches nothing.
 
 **It is also why the without-tunnel test times out instead of saying "no route
-to host".** With the tunnel down, packets for `10.17.89.10` are handed to the
+to host".** With the tunnel down, packets for `198.51.100.10` are handed to the
 corporate VPN, which black-holes them. Unreachable either way, but the error
 message is misleading.
 
@@ -241,10 +243,10 @@ sudo openvpn --config ~/.config/mcp-gateway-lab/openvpn/mcp-gateway-lab.ovpn
 Leave it running. In another terminal:
 
 ```bash
-ping -c 3 10.17.89.10
-nc -vz 10.17.89.10 443
-nc -vz 10.17.89.20 443
-netstat -rn -f inet | grep 10.17.89     # expect: 10.17.89/24 ... utunN
+ping -c 3 198.51.100.10
+nc -vz 198.51.100.10 443
+nc -vz 198.51.100.20 443
+netstat -rn -f inet | grep 198.51.100     # expect: 198.51.100/24 ... utunN
 ```
 
 Nothing is listening on `443` in either jail yet. With the tunnel up you should
@@ -262,18 +264,18 @@ Stop the tunnel with Ctrl-C, or `sudo pkill -f 'openvpn --config'`.
 this is not a stale baseline -- nothing built here created a non-VPN route:
 
 ```
-$ netstat -rn -f inet | grep -E "10\.17\.89|10\.8\.0"
-(no route to 10.17.89.0/24)
+$ netstat -rn -f inet | grep -E "198\.51\.100|192\.0\.2"
+(no route to 198.51.100.0/24)
 
-$ ping -c 2 -t 3 10.17.89.10
+$ ping -c 2 -t 3 198.51.100.10
 2 packets transmitted, 0 packets received, 100.0% packet loss
 ping exit=2
 
-$ nc -vz -G 3 -w 3 10.17.89.10 443
-nc: connectx to 10.17.89.10 port 443 (tcp) failed: Operation timed out
+$ nc -vz -G 3 -w 3 198.51.100.10 443
+nc: connectx to 198.51.100.10 port 443 (tcp) failed: Operation timed out
 
-$ nc -vz -G 3 -w 3 10.17.89.20 443
-nc: connectx to 10.17.89.20 port 443 (tcp) failed: Operation timed out
+$ nc -vz -G 3 -w 3 198.51.100.20 443
+nc: connectx to 198.51.100.20 port 443 (tcp) failed: Operation timed out
 ```
 
 **The server is up, unprivileged, and listening.**
@@ -282,7 +284,7 @@ nc: connectx to 10.17.89.20 port 443 (tcp) failed: Operation timed out
 # service openvpn status      -> openvpn is running as pid 25767
 # sockstat -4 -l | grep 1194  -> openvpn openvpn 25767 6 udp4 *:1194 *:*
 # sysctl net.inet.ip.forwarding -> net.inet.ip.forwarding: 1
-# ifconfig tun0               -> inet 10.8.0.1 netmask 0xffffff00
+# ifconfig tun0               -> inet 192.0.2.1 netmask 0xffffff00
 ```
 
 **A real client on the Mac completes the handshake through the gvproxy UDP
@@ -294,24 +296,24 @@ therefore no root, so it exercises everything except the last hop:
 VERIFY OK: depth=1, CN=mcp-gateway-lab-vpn-ca
 VERIFY OK: depth=0, CN=server
 [server] Peer Connection Initiated with [AF_INET]127.0.0.1:1194
-PUSH: Received control message: 'PUSH_REPLY,route 10.17.89.0 255.255.255.0,
-  route-gateway 10.8.0.1,topology subnet,ping 10,ping-restart 60,
-  ifconfig 10.8.0.2 255.255.255.0,peer-id 0,cipher AES-256-GCM,...'
+PUSH: Received control message: 'PUSH_REPLY,route 198.51.100.0 255.255.255.0,
+  route-gateway 192.0.2.1,topology subnet,ping 10,ping-restart 60,
+  ifconfig 192.0.2.2 255.255.255.0,peer-id 0,cipher AES-256-GCM,...'
 OPTIONS IMPORT: route options modified
 Initialization Sequence Completed
 ```
 
 That is: the UDP forward carries traffic both ways, tls-crypt is right, the
 client cert is accepted, the server cert passes `remote-cert-tls server`, and
-the client receives `route 10.17.89.0 255.255.255.0` and `10.8.0.2`.
+the client receives `route 198.51.100.0 255.255.255.0` and `192.0.2.2`.
 
 **Traffic sourced from the VPN subnet reaches both jails, including on 443.**
 Run inside the VM, sourcing from the tunnel address:
 
 ```
-# ping -c 2 -S 10.8.0.1 10.17.89.10   -> 0.0% packet loss
-# ping -c 2 -S 10.8.0.1 10.17.89.20   -> 0.0% packet loss
-# nc -vz -s 10.8.0.1 10.17.89.10 443  -> Connection to 10.17.89.10 443 succeeded!
+# ping -c 2 -S 192.0.2.1 198.51.100.10   -> 0.0% packet loss
+# ping -c 2 -S 192.0.2.1 198.51.100.20   -> 0.0% packet loss
+# nc -vz -s 192.0.2.1 198.51.100.10 443  -> Connection to 198.51.100.10 443 succeeded!
 ```
 
 (the `443` listener for that last one was a temporary `nc` started via
@@ -337,7 +339,7 @@ that is this: add `tun-mtu 1400` to the server config and re-run the setup.
 **Whether `net.inet.ip.forwarding=1` is required.** See "Routing" above --
 reasoned, not tested.
 
-**Anything about `authelia`.** The jail exists at `10.17.89.20` and answers
+**Anything about `authelia`.** The jail exists at `198.51.100.20` and answers
 ICMP. Nothing was listening on `443` there when this was written.
 
 ### A trap that was hit, and is now fixed
@@ -351,7 +353,7 @@ client connects:
 
 ```
 Failed to poll for packets: Operation not permitted (errno=1)
-MULTI_sva: pool returned IPv4=10.8.0.2
+MULTI_sva: pool returned IPv4=192.0.2.2
 Failed to create new peer: Operation not permitted (errno=1)
 Exiting due to fatal error
 ```

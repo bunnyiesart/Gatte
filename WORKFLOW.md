@@ -533,7 +533,7 @@ Address what `AGENTS.md` §2 names as explicitly undesigned:
   failures are recorded at all (they produced *zero* records before), and
   every record carries a source address taken from the rightmost
   `X-Forwarded-For` entry — the one the proxy wrote, not the one a client
-  can forge. All three are running in the deployment on `bun`.
+  can forge. All three are running in the deployment on the jail host.
 
   **Closed on 15 Sep 2026 by ADR-0021**, which is the part this item never
   reached: an operational heartbeat on the same JSONL path the trail ships

@@ -92,11 +92,11 @@ func TestCredentialRotationDoesNotInvalidateSignature(t *testing.T) {
 	// path into a registry entry.
 	vaultBefore := map[string]string{
 		"CASEMGMT_API_KEY": "casemgmt-key-BEFORE-8f31c0d2",
-		"CASEMGMT_URL":     "https://casemgmt.soc.internal",
+		"CASEMGMT_URL":     "https://casemgmt.example.internal",
 	}
 	vaultAfter := map[string]string{
 		"CASEMGMT_API_KEY": "casemgmt-key-AFTER-4a97e15b",
-		"CASEMGMT_URL":     "https://casemgmt.soc.internal",
+		"CASEMGMT_URL":     "https://casemgmt.example.internal",
 	}
 	if maps.Equal(vaultBefore, vaultAfter) {
 		t.Fatal("test setup: nothing was rotated, so this test would assert nothing")

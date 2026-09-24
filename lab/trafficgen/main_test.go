@@ -157,9 +157,9 @@ func TestGuardEndpointBlocksRemoteWithoutConfirm(t *testing.T) {
 		{"http://127.0.0.1:8080/", false, false},
 		{"http://localhost:8080/", false, false},
 		{"http://[::1]:8080/", false, false},
-		{"https://mcp.soc.internal/", false, true},
-		{"https://mcp.soc.internal/", true, false},
-		{"https://10.17.90.10/", false, true},
+		{"https://mcp.example.internal/", false, true},
+		{"https://mcp.example.internal/", true, false},
+		{"https://203.0.113.10/", false, true},
 	}
 	for _, c := range cases {
 		err := guardEndpoint(c.endpoint, c.confirm)
@@ -393,7 +393,7 @@ func TestRunPlanMakesNoCalls(t *testing.T) {
 func TestRunRefusesRemoteEndpointWithoutConfirm(t *testing.T) {
 	t.Setenv("GATTE_TOKEN", "tok")
 	var stdout, stderr bytes.Buffer
-	code := run([]string{"-endpoint", "https://mcp.soc.internal/", "-duration", "10ms"}, &stdout, &stderr)
+	code := run([]string{"-endpoint", "https://mcp.example.internal/", "-duration", "10ms"}, &stdout, &stderr)
 	if code != exitUsageErr {
 		t.Fatalf("exit = %d, want %d", code, exitUsageErr)
 	}

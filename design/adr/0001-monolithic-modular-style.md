@@ -24,6 +24,18 @@ componentes (`design/02-components.md`): `Gateway Endpoint`,
 Um processo, um binário, comunicação síncrona interna, um SQLite embutido
 para registro/quarentena/auditoria (não para segredos).
 
+> **CORREÇÃO — 28 set 2026.** "Oito componentes" e "SQLite para
+> registro/quarentena/auditoria" já não descrevem o código. Há dois pacotes
+> de domínio a mais, cada um com porta e adaptador, que não estão entre os
+> oito de `design/02-components.md`: `internal/quota` (+ `quota/sqlite`,
+> ADR-0030) e `internal/telemetry` (+ `telemetry/gelf`, ADR-0029). O SQLite
+> guarda também assinaturas e contadores de quota: `openStore` migra cinco
+> esquemas no mesmo handle (`cmd/mcp-gateway/main.go:132-137`). O resto
+> desta decisão continua de pé — um processo, um binário, nenhum salto de
+> rede entre componentes nossos (o GELF vai para um SIEM externo) — e a
+> fitness function abaixo é estrutural, então cobre os dois pacotes novos
+> sem lista de nomes.
+
 **Justificativa técnica:** análise de quantum (`design/03-style.md`, Q1)
 mostrou que nenhum dos oito componentes precisa de características
 operacionais divergentes o bastante para justificar um segundo quantum —

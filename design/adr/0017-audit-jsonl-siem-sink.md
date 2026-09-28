@@ -81,6 +81,16 @@ implantação já rodar). O caminho de request do gateway não pode ter
 dependência remota nenhuma, nem engolida: um `connect` TCP pendurado é
 latência, e latência nenhum `err != nil` esconde.
 
+> **CORREÇÃO — 28 set 2026.** O sink JSONL continua sendo um arquivo, mas
+> "nunca um cliente de rede" já não vale para o processo: desde a ADR-0029
+> uma cópia GELF opcional de cada registro aceito sai por UDP ou TCP
+> (`telemetryRecorder`, `cmd/mcp-gateway/telemetry.go:51-56`). A regra
+> deste parágrafo — nenhuma dependência remota no caminho de request — é
+> mantida ali por construção, não por ausência de cliente: `Emit` não
+> recebe `ctx` nem devolve erro, e a fila é limitada e descarta
+> (ADR-0029 §3–4). A cópia GELF não carrega o elo da cadeia; a âncora
+> continua sendo esta linha.
+
 ### 3. A linha carrega `prev_hash` e `hash` — e é essa a âncora da `0015`
 
 Com os dois na linha, a cauda truncada localmente aparece como: a cabeça
@@ -249,6 +259,12 @@ e com que frequência é procedimento de implantação, e enquanto for manual a
 detecção depende de alguém olhar. Também não há alerta no Graylog para
 "parou de chegar linha deste `chain`", que é como um shipper morto (ou
 morto de propósito) se pareceria.
+
+> **CORREÇÃO — 28 set 2026.** A segunda metade fechou: a ADR-0021 pôs um
+> batimento no mesmo arquivo, e a receita do alerta "parou de chegar linha
+> deste `chain`" está em `deploy/freebsd-jail.md` ("Alerting on a chain
+> that went quiet"). A primeira continua aberta e sem dono: ninguém compara
+> as cabeças (CLOSEOUT Track 2).
 
 ## Compliance
 

@@ -26,6 +26,25 @@
 >   configuração. Leia `0010` antes de confiar em qualquer afirmação sobre
 >   este controle: o que vale hoje é o que está lá.
 
+> **CORREÇÃO — 28 set 2026.** Três frases deste ADR deixaram de descrever
+> o sistema:
+>
+> - **"Verificada no boot"** (acima e em Compliance (c)): desde a ADR-0020
+>   a assinatura é verificada no `Connect` **e** a cada rodada do
+>   `Reconcile` (`internal/gateway/endpoint.go:1063-1074`), contra o
+>   verifier montado uma vez no arranque — mudar `signer.trusted_keys`
+>   continua exigindo restart.
+> - **Item 1, "nunca gravado em disco", e "nenhum segredo em disco fora do
+>   arquivo cifrado" (Consequências):** falso para uma entrada `oci`.
+>   Enquanto o container vive, o podman guarda os valores resolvidos no
+>   `Config.Env` do container, num arquivo sob o storage do usuário do
+>   gateway; é residual aceito na ADR-0028 §D, via 2 (e via 7, se o podman
+>   morre antes de cumprir o `--rm`). Para `stdio` a frase continua valendo.
+> - **Item 3, o que o hash cobre:** além de `command/url + args + nomes de
+>   env`, cobre `Name` (ADR-0006 §3), `Transport` e, para entrada com
+>   imagem, `Image` sob outra tag (`internal/signer/signer.go:84-86,
+>   124-141`; ADR-0028 §C). Continua excluindo valores de segredo.
+
 ## Contexto
 
 "Security" foi a primeira característica priorizada (`design/01-discovery.md`)

@@ -84,6 +84,12 @@ Security and Simplicity & deployability above convenience.
   or `age-keygen` are not found on `PATH`, so CI/dev environments without
   them don't get a false build failure, but any environment that *does*
   have them runs the real binary, not a mock.
+  > **CORREÇÃO — 28 set 2026.** Os testes continuam pulando, mas "CI sem
+  > eles não recebe falha" deixou de ser verdade, por decisão (CLOSEOUT
+  > Track 4): `make ci` recusa rodar sem `sops`, `age` e `age-keygen`
+  > (`require-devtools`) e falha em qualquer teste pulado, nomeando-o
+  > (`race-noskip`) — ver o `Makefile`. `make test` e `go test` puros
+  > seguem só avisando.
 - Onde vive o teste: `internal/vault/sopsage/*_test.go`.
 - Quando roda: a cada `make test`.
 

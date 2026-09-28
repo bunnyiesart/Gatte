@@ -49,6 +49,21 @@ E as duas tabelas moram no **mesmo arquivo SQLite** (`main.go` migra as
 quatro no mesmo handle), então "escrita no registro" e "escrita nas
 assinaturas" são a mesma permissão. Não há degrau entre uma e outra.
 
+> **CORREÇÃO — 28 set 2026.** Duas coisas mudaram debaixo deste ADR, e
+> nenhuma muda a decisão:
+>
+> - `openStore` migra **cinco** esquemas no mesmo handle, não quatro — os
+>   contadores de quota (ADR-0030) entraram
+>   (`cmd/mcp-gateway/main.go:132-137`). O argumento fica igual: escrita no
+>   registro e nas assinaturas continuam sendo uma permissão só.
+> - Desde a ADR-0020 a verificação contra a âncora roda a cada rodada do
+>   `Reconcile`, não uma vez por processo — mas contra o `Verifier`
+>   construído uma única vez no arranque (`endpoint.go:1071-1073`). O que
+>   isso quer dizer para a rotação das Consequências: adicionar a chave
+>   nova é restart; re-assinar vale na rodada seguinte, sem restart;
+>   remover a velha é outro restart. Uma chave retirada de `trusted_keys`
+>   continua aceita até o processo reiniciar.
+
 ## Decisão
 
 **As chaves públicas confiáveis vivem no arquivo de configuração, e a

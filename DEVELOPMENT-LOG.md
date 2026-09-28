@@ -505,11 +505,89 @@ the 8-component design in `design/02-components.md`:
   mechanism. Today it doesn't (each upstream MCP server is an isolated
   Docker container), so no action needed now — flagged for whenever that
   changes.
+
+  > **CORRECTION — 28 Sep 2026.** "Each upstream MCP server is an isolated
+  > Docker container" does not describe Gatte. A `stdio` entry is a plain
+  > child process of the gateway on the same host, with no container. An
+  > `oci` entry is a rootless podman container, not Docker (ADR-0028). No
+  > loadable-extension mechanism exists, as the bullet says. Two bullets up,
+  > "Audit Trail design validated, no gap" was overtaken on 09 Sep 2026,
+  > when ADR-0012 found three gaps.
 - **Independent confirmation, not new information:** multiple API-gateway
   operators separately describe a single gateway instance as "the most
   critical failure point in the system" — this is the same SPOF risk
   `design/adr/0001` already named and accepted; outside sources just
   confirm it's a commonly underestimated cost, not a theoretical one.
+
+---
+
+## 11. Sweep of the older design record (CLOSEOUT Track 3, 28 Sep 2026)
+
+This is the written record Track 3 asks for. I read ADRs `0001`–`0019`,
+`CONCEPTS.md` and this file whole, asking one question per sentence: does
+it describe the system as of commit `fabddc8`, and can I make it fail? I
+checked claims against the code by reading it and, where a targeted run
+was cheap, with `go test -run`. The reference points were `0020`–`0030` and
+the nine fixes of 28 Sep 2026. Accepted ADRs were not rewritten. Each false
+passage got a dated `CORREÇÃO — 28 set 2026` block next to it (English
+`CORRECTION` blocks in the two English files), with file:line evidence and
+the later ADR that moved the ground.
+
+| document | found | corrected |
+|---|---|---|
+| `0001` | "eight components" and "SQLite for registry/quarantine/audit" are stale. `quota` and `telemetry` are domain packages with ports and adapters, and `openStore` migrates five schemas | block after Decisão |
+| `0002` | nothing false found | — |
+| `0003` | "verified at boot" (now every `Reconcile` too); "never written to disk" is false for `oci` (podman `Config.Env`, 0028 §D); the hash also covers Name, Transport and Image | one block under the Ressalva |
+| `0004` | the FECHADO block's "dials what came in" does not hold while `[quota]` and the registry disagree (0030). Suspension and the 5 s retry are accurate | block inside the FECHADO block |
+| `0005` | "CI without the binaries gets no failure" is false since `make ci` (Track 4) | block in Compliance |
+| `0006` | one tag `v1` → `v1` plus `v2-image`; covered fields listed; the registry schema did gain `image`; verification runs every tick, not only at boot | block after §3 |
+| `0007` | nothing newly false. Its existing correction is carried by `0019`, and `Status` is still never read for access in `internal/gateway` | — |
+| `0008` | nothing false found. The real-IdP test is still unwritten, as its correction says (no env-gated test in `internal/access`) | — |
+| `0009` | six direct dependencies, not five (`jsonschema-go`, since 0014); "or an explicit reload" does not exist (SIGINT/SIGTERM only) | block after §1 |
+| `0010` | five migrations, not four; per-tick verification (0020) against a boot-time verifier, so a key rotation takes two restarts | block after Contexto |
+| `0011` | items 2–4 describe the abandoned jail lab; the gateway now has a TLS *client* (GELF, 0029); GAB-24's source address exists; the loopback rule moved to `config.RequireLoopbackBind` | block after item 1 |
+| `0012` | "one line per attempt, no rate limit" is false since 0027, and the trail no longer answers "how many" auth failures; "no hash chain" is overtaken by 0015/0017; item 3 depends on the retired nginx topology | two blocks |
+| `0013` | the window between ticks is `refresh_interval` **plus** the round's own duration (timer reset after the work), not "up to one interval"; a gone upstream is marked by `Refresh` and closed by the next `Reconcile` (0024) | block after "O que continua em aberto" |
+| `0014` | `OutputSchema` is not in the quarantine fingerprint, so a substitute that drops or loosens its output schema stays approved and goes unvalidated; item 3 ("size, blocks, types are recorded") is not delivered for accepted results | block after §1 |
+| `0015` | nothing false found. `List` orders by parsed instants with id as tiebreak (`807a6f8`), which is still "by timestamp"; `BEGIN IMMEDIATE` is now DSN-wide (`_txlock=immediate`), which does not contradict §3 | — |
+| `0016` | `q.Approve` has no production caller. The only caller is `ApproveFingerprint`, compare-and-approve. The upstream name rule is now a charset, not only "no separator" | block after Contexto §2 |
+| `0017` | "never a network client" is no longer true of the process (GELF, 0029); "no Graylog alert on a quiet chain" is closed by 0021 and the recipe in `deploy/freebsd-jail.md`. The head comparison still has no owner | two blocks |
+| `0018` | "reported, not refused" has an exception: a variable shared between a budgeted and an unbudgeted entry is refused (0030 decision 12) | block after §1 |
+| `0019` | nothing false found (size ceiling on the re-marshal confirmed in `response.go:162-179`) | — |
+| `CONCEPTS.md` | §1.6 describes the pre-gateway spawn model; §2.3's per-identity credential table is not Gatte's (credential per backend only); §2.5's audit standard is met only in part (no parameters, no correlation ID); "never persists a resolved secret to disk" is false for `oci` | four blocks |
+| `DEVELOPMENT-LOG.md` | §10.2 "each upstream is an isolated Docker container" is false; "Audit Trail validated, no gap" was overtaken by 0012. The rest is dated history and was left as it is | one block in §10.2 |
+
+**Found, and outside this sweep's files, so not edited:**
+
+- ADR-0020's Consequências and `WORKFLOW.md` (the "window did not close"
+  bullet) state the window as "up to one interval"; `README.md`'s
+  security posture says "within one `quarantine.refresh_interval`". All
+  three are short by a round's duration (up to about two minutes at the
+  current timeouts). The precise wording is in `0013`'s block, and the
+  others should be brought to it.
+- The doc comment on `registry.UpstreamServer.Validate`
+  (`internal/registry/registry.go:117`) still says the transport "must be
+  exactly TransportStdio". The code accepts `oci`. It is Go, and this
+  sweep did not edit Go.
+- The `0014` finding is a gap in the system, not only in the text: the
+  output contract a result is validated against is upstream-controlled
+  and unapproved. The correction states it; closing it would be a design
+  decision (adding `OutputSchema` to the fingerprint re-quarantines every
+  tool that declares one).
+
+Checked and true, which is why a sentence you might expect to be flagged
+is not: 0003/0004's "skips, does not fail" still holds for `make test`;
+0004's claim that `Dispatch` re-reads the quarantine on every call
+(`admit`, `endpoint.go:2262`); 0010's warning on an empty trusted set
+(`endpoint.go:760-766`); 0013's `Forget` on deregister
+(`cmd/mcp-gateway/upstream.go:499`). Targeted runs, all `ok`:
+the five `internal/gateway/authlimit_test.go` tests,
+`TestReconcile_ClosesAnUpstreamWhoseSignatureStopsVerifying`,
+`TestConnect_RefusesASecondEntryCarryingABudgetedCredential`,
+`TestReconcile_ClosesALiveEntryThatStartsSharingABudgetedCredential`, the
+four canonical-encoding tests in `internal/signer` (among them
+`TestCanonical_StdioEntryKeepsV1Bytes`) and
+`TestVerify_ImageInjectedIntoStdioRowBreaksSignature`.
 
 ---
 

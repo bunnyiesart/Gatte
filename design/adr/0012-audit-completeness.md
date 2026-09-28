@@ -63,6 +63,19 @@ Fica anotado o que isto abre: quem martelar tokens gera uma linha por
 tentativa, e nada aqui limita taxa. É melhor que o silêncio de hoje, e é
 uma pendência real, não um detalhe.
 
+> **CORREÇÃO — 28 set 2026.** "Uma linha por tentativa" e "sem limite de
+> taxa" (aqui e nas Consequências) são falsos desde a ADR-0027. Um balde de
+> fichas em `RecordAuthFailure` — 5/s com rajada de 20 por origem, 50/s com
+> rajada de 200 no total (`internal/gateway/authlimit.go:24-31`) — decide
+> se a linha durável é escrita. Passado o teto, a trilha **não responde
+> mais "quantas" falhas de autenticação houve**: responde "esta origem
+> tentou" (a primeira de cada origem é sempre escrita) e "o teto disparou",
+> uma linha por origem por minuto com razão `auth failures rate-limited`
+> (`endpoint.go:187`). A contagem exata só existe no log operacional, que
+> recebe toda tentativa (`endpoint.go:2122`); o `Denied` do batimento
+> (ADR-0021) sub-conta durante um flood. O que continua valendo daqui: o
+> token nunca entra, e a identidade é `(unauthenticated)`.
+
 ### 3. Endereço de origem: a entrada **mais à direita** do `X-Forwarded-For`
 
 Este é o ponto onde é fácil escrever a vulnerabilidade em vez do controle.
@@ -104,6 +117,16 @@ encadeamento de hash, então quem tem escrita no banco ainda apaga ou edita
 história. Fora do escopo aqui e registrado de propósito — a decisão do
 `0010` sobre âncora de confiança tratou o mesmo ator para assinatura, e o
 trail merece a mesma conversa um dia.
+
+> **CORREÇÃO — 28 set 2026.** Essa conversa aconteceu: a ADR-0015
+> encadeia os registros por hash e a ADR-0017 põe a âncora da cabeça fora
+> do host. Pela correção da própria 0015, quem escreve o banco ainda
+> reescreve a história e re-encadeia; o que o detecta é só a comparação da
+> cabeça com o SIEM, que hoje não tem dono (CLOSEOUT Track 2). E o item 3
+> depende do nginx co-locado da ADR-0011, cuja topologia de jail foi
+> abandonada: a regra "entrada mais à direita" (`sourceAddress`,
+> `internal/gateway/httpapi/httpapi.go:563`) só é certa atrás de um proxy
+> que acrescenta ao header e seja o único caminho.
 
 ## Compliance
 

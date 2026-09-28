@@ -42,6 +42,16 @@ compartilhamento continua possível e passa a ser visível, então o quinto
 backend que queira um nome comum se anuncia no boot que o introduz, em vez
 de numa falha de autenticação semanas depois.
 
+> **CORREÇÃO — 28 set 2026.** "Reportado, e não recusado" tem uma exceção
+> desde a ADR-0030 (decisão 12): quando uma das entradas que compartilham
+> a variável é orçada por um `[[quota.provider]]` e a outra não,
+> `CheckQuotaCoverage` falha (`internal/gateway/endpoint.go:2405`, laço
+> `byEnvVar` a partir da linha 2444). No `Connect` isso é fatal
+> (`ErrQuotaMisconfigured`); no `Reconcile`, a entrada não orçada é
+> fechada ou deixa de ser discada. Entre entradas sem quota, o
+> compartilhamento continua só reportado (`sharedCredentials`,
+> `cmd/mcp-gateway/serve.go:1066`).
+
 ### 2. Chavear por `(upstream, variável)` fica registrado como **não feito**, com o motivo
 
 É a correção estrutural e continua sendo a direção certa. Não entra agora

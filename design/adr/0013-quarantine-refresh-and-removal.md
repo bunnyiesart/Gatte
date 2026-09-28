@@ -132,6 +132,27 @@ uma tool envenenada é servida. Encurtá-la é baixar o intervalo, e isso é
 troca explícita, não bug. E nada aqui protege o banco de quem tem escrita
 nele — mesma conversa do `0010` e do `0012`.
 
+> **CORREÇÃO — 28 set 2026. O tamanho da janela, dito uma vez e com
+> precisão.** A mesma troca aparece em três lugares — aqui, nas
+> Consequências da ADR-0020 ("por até um intervalo") e no `WORKFLOW.md`
+> ("for up to `quarantine.refresh_interval`") — e os dois últimos a dão
+> curta. O laço reinicia o timer **depois** do trabalho da rodada
+> (`cmd/mcp-gateway/serve.go:697-702, 806`): o intervalo é descanso entre
+> rodadas, não agenda. Então, entre duas observações do mesmo upstream,
+> passam `quarantine.refresh_interval` (padrão 5 min,
+> `internal/config/config.go:598`) **mais** a duração da rodada, limitada
+> por `reconcileTimeout` 60 s + `refreshTimeout` 30 s + os 30 s da checagem
+> de credencial (`serve.go:66,78`). É essa a janela para uma tool
+> envenenada e para um upstream desregistrado. Enquanto o registro está
+> ilegível o `Refresh` não roda, mas nada é servido.
+>
+> E "um refresh que falha não derruba nada e não altera estado" (item 1)
+> tem uma exceção desde a ADR-0024: uma listagem que falha com
+> `ErrUpstreamGone` marca a conexão como morta
+> (`internal/gateway/endpoint.go:1365-1368`), e o `Reconcile` seguinte a
+> fecha e redisca. O `Refresh` em si continua sem fechar nada; qualquer
+> outra falha segue não mudando estado.
+
 ## Compliance
 
 - [x] Automatizável? Sim.

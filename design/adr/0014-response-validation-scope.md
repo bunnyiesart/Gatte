@@ -79,6 +79,13 @@ a *definição* da tool e não o que ela devolve.
 > custo: toda tool que já declarava `OutputSchema` precisa ser reaprovada
 > uma vez depois da atualização.
 >
+> **Medido na bancada, e maior do que o texto acima supõe.** A frase do
+> Contexto, "nenhum dos quatro backends declara `OutputSchema`", não vale
+> mais: servidores FastMCP geram um esquema de saída a partir da anotação
+> de retorno (`-> dict`). Na primeira subida depois da mudança, as 6 tools
+> aprovadas foram todas para `changed`. Numa implantação que já serve
+> backends FastMCP, conte com reaprovar tudo uma vez.
+>
 > E o item 3 abaixo não é entregue: para um resultado aceito, nada de
 > tamanho, número de blocos, tipos de conteúdo ou esquema é registrado em
 > lugar nenhum. Só a recusa deixa rastro — uma linha `failed` com razão

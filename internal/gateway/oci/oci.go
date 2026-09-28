@@ -8,6 +8,8 @@
 //
 //	podman run --rm -i --log-driver=none --pull=never \
 //	           --read-only --read-only-tmpfs=false --tmpfs=/tmp \
+//	           --cap-drop=all --security-opt=no-new-privileges \
+//	           --user=UID:GID --pids-limit=N --memory=M --cpus=C \
 //	           --name NAME --network=POLICY \
 //	           --env VAR [--env VAR...] IMAGE@sha256:DIGEST
 //
@@ -105,11 +107,17 @@
 // The root filesystem is read-only with one named tmpfs, because
 // design/adr/0028 §B item 3 decided that and says in as many words that it is
 // a property of the run flags rather than of the image -- so an image
-// built to that contract has it only if this package emits it. What the
-// wrapper does not do is drop capabilities or pin a seccomp profile beyond
-// podman's default: no ADR has decided those, and an adapter is the wrong
-// place to invent container policy that operators would then find only by
-// reading Go source.
+// built to that contract has it only if this package emits it.
+//
+// CORRECTION -- 28 Sep 2026. This paragraph ended "What the wrapper does
+// not do is drop capabilities ...: no ADR has decided those". One has now
+// (design/adr/0034): every container drops all capabilities, cannot gain
+// privilege through setuid, runs under a numeric non-root UID:GID that the
+// command line imposes whatever USER the image declares, and under a pids,
+// memory and CPU ceiling. The numbers are the operator's ([oci] in the
+// configuration, through [WithLimits]); the flags are not. What the wrapper
+// still does not do is pin a seccomp profile beyond podman's default or
+// restrict egress beyond --network.
 package oci
 
 import (
@@ -164,6 +172,10 @@ var (
 	// separate sentinel from ErrInvalidEnvName because the name is
 	// well-formed: what is wrong with it is what it would do.
 	ErrRuntimeDirectingEnvName = errors.New("oci: environment variable name steers the container runtime")
+	// ErrInvalidLimits means the uid or resource policy is one this
+	// adapter will not run a container under: a root or symbolic uid, or
+	// a limit whose value would be no limit (design/adr/0034).
+	ErrInvalidLimits = errors.New("oci: invalid container limits")
 	// ErrInvalidContainerName means the name chosen for the container
 	// would not be safe to hand back to the runtime.
 	ErrInvalidContainerName = errors.New("oci: invalid container name")
@@ -236,6 +248,7 @@ type Dialer struct {
 	podman       string
 	cleanupEnv   []string
 	cleanupGrace time.Duration
+	limits       Limits
 }
 
 var _ gateway.Dialer = (*Dialer)(nil)
@@ -246,8 +259,8 @@ type Option func(*Dialer)
 // WithPodmanPath sets the container runtime binary to exec (default:
 // "podman", resolved against the gateway's PATH).
 //
-// This is a path, not a policy: there is no option in this package that
-// changes what the runtime is asked to do. Left configurable because a
+// This is a path, not a policy: apart from the numbers in [WithLimits],
+// no option in this package changes what the runtime is asked to do. Left configurable because a
 // deployment may install podman outside PATH, and because the tests need a
 // runtime they can observe.
 func WithPodmanPath(path string) Option {
@@ -265,6 +278,16 @@ func WithPodmanPath(path string) Option {
 func WithCleanupEnv(names ...string) Option {
 	return func(d *Dialer) {
 		d.cleanupEnv = append([]string(nil), names...)
+	}
+}
+
+// WithLimits sets the uid and resource limits every container runs under
+// (design/adr/0034). A zero field keeps its [DefaultLimits] value; there is
+// no value of any field that drops its flag, and a value [ValidateLimits]
+// refuses makes every dial fail -- the composition root checks first.
+func WithLimits(l Limits) Option {
+	return func(d *Dialer) {
+		d.limits = l.withDefaults()
 	}
 }
 
@@ -294,6 +317,7 @@ func New(inner gateway.Dialer, opts ...Option) *Dialer {
 		podman:       defaultPodman,
 		cleanupEnv:   DefaultCleanupEnv(),
 		cleanupGrace: defaultCleanupGrace,
+		limits:       DefaultLimits(),
 	}
 	for _, opt := range opts {
 		opt(d)
@@ -325,7 +349,7 @@ func (d *Dialer) Dial(ctx context.Context, spec gateway.UpstreamSpec, env map[st
 	if err != nil {
 		return nil, fmt.Errorf("upstream %q: %w", spec.Name, err)
 	}
-	p, err := buildPlan(spec, env, planOptions{Podman: d.podman, ContainerName: containerName})
+	p, err := buildPlan(spec, env, planOptions{Podman: d.podman, ContainerName: containerName, Limits: d.limits})
 	if err != nil {
 		return nil, fmt.Errorf("upstream %q: %w", spec.Name, err)
 	}

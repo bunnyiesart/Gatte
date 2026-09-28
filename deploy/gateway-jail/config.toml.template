@@ -54,6 +54,12 @@ trusted_keys = [
 # require_signed is left unset on purpose: it defaults to true, and writing
 # it out invites someone to "temporarily" flip it.
 
+# The four lab mocks are credentialed stdio backends, and FreeBSD has no
+# podman for -transport oci. Refused without this line, and every boot with
+# it logs a WARN (design/adr/0034).
+[upstreams]
+allow_credentialed_stdio = true
+
 # Second copy of the audit trail, in JSONL, for the SOC's Graylog
 # (ADR-0017). Commented out, and enabling it is two steps and not one:
 #

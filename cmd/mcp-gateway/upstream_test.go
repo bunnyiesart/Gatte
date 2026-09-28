@@ -559,7 +559,9 @@ func TestCmdUpstream_BadUsage(t *testing.T) {
 // flags parsed, config read, database opened and migrated, entry
 // persisted across two separate command invocations.
 func TestCmdUpstream_EndToEndThroughAConfigFile(t *testing.T) {
-	configPath := writeOperatorConfig(t, signerSection(t, writeSigningKey(t, 0o600)))
+	// A credentialed stdio entry needs the opt-in (design/adr/0034).
+	configPath := writeOperatorConfig(t, signerSection(t, writeSigningKey(t, 0o600))+
+		"\n[upstreams]\nallow_credentialed_stdio = true\n")
 
 	var out, errBuf bytes.Buffer
 	code := cmdUpstream([]string{

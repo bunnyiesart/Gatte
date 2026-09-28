@@ -36,7 +36,9 @@ What it does, for any stdio MCP server you put behind it:
 - **Backends as containers, optionally.** `-transport oci` runs a backend
   as an ephemeral rootless `podman run --rm -i` from a digest-pinned image,
   read-only root, no network unless the signed entry grants it; the digest
-  is inside the signature (`design/adr/0028-transporte-oci.md`). A grant is
+  is inside the signature (`design/adr/0028-transporte-oci.md`). Every
+  container drops all capabilities, runs under a non-root numeric uid and
+  under pids, memory and CPU limits (`[oci]`, `design/adr/0034`). A grant is
   `slirp4netns`, `pasta` or a named podman network; `host`, `private`,
   `container:*`, `ns:*` and `:options` are refused. A granted network is
   not a destination allowlist: which hosts the backend reaches is the host
@@ -275,9 +277,18 @@ What an upstream must be, in this build:
 - **Configured by arguments and environment variables.** It receives its
   signed arguments, `PATH` and `HOME`, and the variables it declared.
 - **Code you would trust with the gateway's service account** if it is a
-  stdio upstream, because it runs as that account (below). An oci upstream
-  runs as the same host user too, but inside a container that has neither
-  the vault nor the signing key mounted.
+  stdio upstream, because it runs as that account (below). A stdio entry
+  that declares `-env` credentials is refused unless the configuration sets
+  `[upstreams] allow_credentialed_stdio = true`, which logs a WARN at every
+  boot; `examples/base.toml` sets it. An oci upstream runs under a non-root
+  uid inside a container that has neither the vault nor the signing key
+  mounted.
+- **No variable whose value is code.** `LD_*`, `DYLD_*`, `GCONV_PATH` and
+  the interpreter knobs (`NODE_OPTIONS`, `PYTHONPATH`, `PYTHONSTARTUP`,
+  `PERL5OPT`, `BASH_ENV`, `BASH_FUNC_*`, `JAVA_TOOL_OPTIONS`, ...), and
+  `PATH` and `HOME`, which choose where code is loaded from, are refused
+  as `-env` names on both transports: the names are signed, the vault's
+  values are not.
 
 ## Security model
 
@@ -317,14 +328,18 @@ until 16 Sep 2026 and now keeps the key owned by root.
 
 **It is not a control against someone executing code as the service
 user.** That actor reads the decrypted vault and the signing key and writes
-the trail. The backends -- the least trusted code in the system -- run as
-that same user, with no separate uid, nested jail or Capsicum between them
+the trail. A stdio backend -- the least trusted code in the system -- runs
+as that same user, with no separate uid, nested jail or Capsicum between it
 and the process holding every credential. Declared in `AGENTS.md` §2, not
-solved. The oci transport narrows it without closing it: a containerised
-backend has its own mount namespace with a read-only root and none of the
-gateway's files, so reading the vault takes a container escape rather than
-an `open()`; it is still the same host uid under rootless podman
-(`design/adr/0028-transporte-oci.md` §D).
+solved; since `design/adr/0034` a stdio entry is not given credentials
+unless `[upstreams] allow_credentialed_stdio = true` says so, loudly. The
+oci transport narrows it without closing it: a containerised backend has
+its own mount namespace with a read-only root and none of the gateway's
+files, no capabilities, and a non-root uid that rootless podman maps to a
+subordinate host uid rather than the gateway's, so reading the vault takes
+a container escape rather than an `open()`. The container runtime itself
+still runs as the gateway's user, and its limits hold only where cgroup v2
+delegates them (`design/adr/0028-transporte-oci.md` §D, `design/adr/0034`).
 
 **It does not contain a backend's egress.** A stdio backend has the host's
 network, and an oci backend with a network grant reaches anything that

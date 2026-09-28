@@ -72,7 +72,26 @@ var (
 	// ErrInvalidEnv means the caller's env map held a name or value that
 	// cannot be passed to a process safely -- see validateEnvEntry.
 	ErrInvalidEnv = errors.New("stdio: invalid environment entry")
+	// ErrCodeLoadingEnv means the env map named a variable whose value the
+	// loader or an interpreter reads as code (LD_PRELOAD, NODE_OPTIONS,
+	// PYTHONSTARTUP, ...; [gateway.IsCodeLoadingEnvName]). Separate from
+	// ErrInvalidEnv because the name is well-formed: what is wrong with it
+	// is what it would do (design/adr/0034 item 3).
+	ErrCodeLoadingEnv = errors.New("stdio: environment variable is read as code")
 )
+
+// ValidateEnvVarNames reports whether every name an entry declares can be
+// set in a child's environment by this adapter. It is the name half of the
+// dial-time rule, exported so the operator console refuses a bad entry
+// where it is written, as it does for the oci adapter's rules.
+func ValidateEnvVarNames(names []string) error {
+	for _, name := range names {
+		if err := validateEnvEntry(name, ""); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 // defaultShutdownGrace is how long Close waits, after closing the child's
 // stdin, for it to exit on its own before escalating to SIGTERM and then
@@ -360,6 +379,13 @@ func validateEnvEntry(name, value string) error {
 	}
 	if strings.IndexByte(value, 0) >= 0 {
 		return fmt.Errorf("%w: value of environment variable %q contains a NUL byte", ErrInvalidEnv, name)
+	}
+	// The entry's names are signed and the vault's values are not, so a
+	// name on this list would turn an unsigned value into code in the
+	// child, beside every credential it was given.
+	if gateway.IsCodeLoadingEnvName(name) {
+		return fmt.Errorf("%w: %q is read as code by the dynamic loader or an interpreter, not as a credential; "+
+			"an entry may not set it (design/adr/0034)", ErrCodeLoadingEnv, name)
 	}
 	return nil
 }

@@ -682,7 +682,7 @@ func (h *Handler) getServer(r *http.Request) *mcp.Server {
 			)
 			continue
 		}
-		srv.AddTool(&mcp.Tool{
+		if err := addTool(srv, &mcp.Tool{
 			Name: def.Name,
 			// Description and schema are re-advertised exactly as the
 			// upstream wrote them and Tool Quarantine fingerprinted them
@@ -691,7 +691,13 @@ func (h *Handler) getServer(r *http.Request) *mcp.Server {
 			// reviewing the quarantine ever saw.
 			Description: def.Description,
 			InputSchema: schema,
-		}, h.dispatchTool(c.gwCaller, def.Name))
+		}, h.dispatchTool(c.gwCaller, def.Name)); err != nil {
+			h.log.ErrorContext(r.Context(), "httpapi: tool not served: the MCP SDK refused its definition",
+				slog.String("tool", def.Name),
+				slog.String("detail", err.Error()),
+			)
+			continue
+		}
 		served[def.Name] = struct{}{}
 	}
 
@@ -700,6 +706,27 @@ func (h *Handler) getServer(r *http.Request) *mcp.Server {
 	// including any the SDK's own middleware might later short-circuit.
 	srv.AddReceivingMiddleware(h.recordUnservedToolCalls(c.gwCaller, served))
 	return srv
+}
+
+// addTool is srv.AddTool with its panic turned into an error.
+//
+// AddTool panics on any definition it considers invalid, and the
+// definition is upstream-controlled. gateway.validateSchema refuses at
+// discovery everything known to trigger that (shape, x-mcp-header rules),
+// so this is the second guard, for a rule the SDK grows after that list
+// was written: without it one such tool panicked the whole request, and
+// every caller whose role included it lost tools/list and every other tool
+// with it. Skipping just that tool is the fail-closed reading. The panic
+// value is the SDK's own message about the schema; it carries no request
+// data.
+func addTool(srv *mcp.Server, t *mcp.Tool, h mcp.ToolHandler) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("%v", r)
+		}
+	}()
+	srv.AddTool(t, h)
+	return nil
 }
 
 // methodToolsCall is the JSON-RPC method name for a tool invocation. The

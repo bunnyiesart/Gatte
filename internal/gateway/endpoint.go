@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
@@ -2617,7 +2618,90 @@ func validateSchema(raw json.RawMessage) error {
 	if typ != "object" {
 		return fmt.Errorf("%w: type is %v, want \"object\"", ErrUnusableSchema, typ)
 	}
+	if err := validateHeaderAnnotations(raw); err != nil {
+		return fmt.Errorf("%w: %w", ErrUnusableSchema, err)
+	}
 	return nil
+}
+
+// headerSchemaProperty is the slice of a JSON Schema property that
+// x-mcp-header validation reads. It deliberately mirrors the go-sdk's own
+// decoding (mcp/streamable_headers.go, v1.7.0) field for field, including
+// "type" as a plain string: a schema the SDK cannot decode this way is one
+// it skips validating, and refusing it here would withhold a tool the SDK
+// serves without complaint.
+type headerSchemaProperty struct {
+	Type       string                          `json:"type"`
+	XMCPHeader json.RawMessage                 `json:"x-mcp-header,omitempty"`
+	Properties map[string]headerSchemaProperty `json:"properties,omitempty"`
+}
+
+// validateHeaderAnnotations applies the rules mcp.Server.AddTool enforces
+// on x-mcp-header annotations -- and panics on (go-sdk v1.7.0,
+// validateParamHeaderAnnotations) -- so that discovery refuses a schema
+// that breaks them instead of letting it reach a serving surface.
+//
+// The shape checks above were the whole of the "what AddTool accepts" bar,
+// and an upstream advertising `x-mcp-header` on an array property, a
+// header name that is not an HTTP token, or two names equal but for case
+// passed discovery; once approved, AddTool panicked in httpapi.getServer
+// on every request from every caller whose role included the tool,
+// tools/list included. The rules are restated rather than borrowed because
+// this package does not import the SDK; httpapi also recovers around each
+// AddTool, so a rule the SDK grows later costs one tool, not the listing.
+// Re-check this against the SDK on every bump.
+func validateHeaderAnnotations(raw json.RawMessage) error {
+	var root headerSchemaProperty
+	if err := json.Unmarshal(raw, &root); err != nil {
+		return nil // The SDK skips what it cannot decode; see headerSchemaProperty.
+	}
+	return validateHeadersIn(root.Properties, "", map[string]bool{})
+}
+
+func validateHeadersIn(props map[string]headerSchemaProperty, prefix string, seen map[string]bool) error {
+	// Sorted so the property named in the error does not depend on map
+	// order; the SDK's order does not matter, only whether it refuses.
+	for _, name := range slices.Sorted(maps.Keys(props)) {
+		prop := props[name]
+		path := name
+		if prefix != "" {
+			path = prefix + "." + name
+		}
+		if prop.XMCPHeader != nil {
+			switch prop.Type {
+			case "string", "integer", "boolean":
+			default:
+				return fmt.Errorf("property %q: x-mcp-header on a non-primitive type %q", path, prop.Type)
+			}
+			var header string
+			if err := json.Unmarshal(prop.XMCPHeader, &header); err != nil || header == "" {
+				return fmt.Errorf("property %q: x-mcp-header must be a non-empty string", path)
+			}
+			if strings.IndexFunc(header, func(c rune) bool { return !isHTTPTokenChar(c) }) >= 0 {
+				return fmt.Errorf("property %q: x-mcp-header value is not an HTTP token", path)
+			}
+			lower := strings.ToLower(header)
+			if seen[lower] {
+				return fmt.Errorf("property %q: duplicate x-mcp-header value (case-insensitive)", path)
+			}
+			seen[lower] = true
+		}
+		if len(prop.Properties) > 0 {
+			if err := validateHeadersIn(prop.Properties, path, seen); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// isHTTPTokenChar reports whether c is an RFC 9110 tchar.
+func isHTTPTokenChar(c rune) bool {
+	switch {
+	case c >= '0' && c <= '9', c >= 'A' && c <= 'Z', c >= 'a' && c <= 'z':
+		return true
+	}
+	return strings.ContainsRune("!#$%&'*+-.^_`|~", c)
 }
 
 // CredentialDrift is one connected upstream still running on a credential

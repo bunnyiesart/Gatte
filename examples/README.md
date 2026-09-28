@@ -29,11 +29,13 @@ after the gateway has connected to it, never from memory.
 
 ## What an upstream has to be, in this build
 
-- **A local process speaking MCP over stdio.** That is the only transport
-  this build dials. `-transport http` is recognised and refused at
-  registration ("this build dials \"stdio\" only"), and there is no
-  container transport. A vendor-hosted MCP server reachable only over HTTP
-  cannot be registered directly.
+- **A local process speaking MCP over stdio, or a container image that is
+  one.** `-transport stdio` spawns a process; `-transport oci -image
+  NAME@sha256:<digest>` runs it as an ephemeral `podman run --rm -i`
+  container, pinned by digest because the signature covers the image.
+  `-transport http` is recognised and refused at registration ("this build
+  dials \"stdio\" and \"oci\" only"). A vendor-hosted MCP server reachable
+  only over HTTP cannot be registered directly.
 - **Configured by arguments and environment variables.** The process gets
   its registered arguments, `PATH` and `HOME` from the gateway's
   environment, and each variable it declared with `-env`, set from the

@@ -46,6 +46,9 @@ func upstreamUsage(w io.Writer) {
   mcp-gateway upstream register [-config FILE] -name NAME -transport stdio
                                 -command CMD [-arg ARG ...]
                                 [-env VARNAME ...]
+  mcp-gateway upstream register [-config FILE] -name NAME -transport oci
+                                -image NAME@sha256:HEX [-arg PODMAN-FLAG ...]
+                                [-env VARNAME ...]
   mcp-gateway upstream deregister [-config FILE] NAME
 
 Registering does not sign. Run "mcp-gateway sign NAME" afterwards, or the
@@ -54,6 +57,13 @@ gateway will not trust the entry.
 -env takes environment variable NAMES only, never values: the Credential
 Vault resolves a name to a value in memory at spawn time, and the registry
 has no field capable of holding a secret.
+
+-transport oci runs the upstream as an ephemeral container (podman run --rm
+-i), and -image must be pinned to an exact digest -- NAME@sha256: plus 64 hex
+characters -- because the signature covers the image, and a tag can be
+repointed at other bytes. Print the digest with:
+    podman inspect --format '{{index .RepoDigests 0}}' NAME:TAG
+For oci, -arg carries podman flags the entry signs (e.g. -arg --network=none).
 
 Exit codes: 0 ok, 1 ran and found a problem, 2 could not run.
 `)
@@ -83,6 +93,7 @@ type upstreamJSON struct {
 	Command     string    `json:"command,omitempty"`
 	Args        []string  `json:"args,omitempty"`
 	URL         string    `json:"url,omitempty"`
+	Image       string    `json:"image,omitempty"`
 	EnvVarNames []string  `json:"env_var_names"`
 	Signature   string    `json:"signature"`
 	CreatedAt   time.Time `json:"created_at"`
@@ -118,6 +129,7 @@ func runUpstreamList(e *opEnv, asJSON bool) int {
 				Command:     entry.Command,
 				Args:        entry.Args,
 				URL:         entry.URL,
+				Image:       entry.Image,
 				EnvVarNames: envVarNamesOrEmpty(entry),
 				Signature:   string(states[i]),
 				CreatedAt:   entry.CreatedAt,
@@ -209,8 +221,9 @@ func envVarNamesOrEmpty(s registry.UpstreamServer) []string {
 func upstreamRegister(args []string, stdout, stderr io.Writer) int {
 	fs, configPath := opFlagSet("upstream register", stderr)
 	name := fs.String("name", "", "name of the entry, e.g. \"casemgmt\" (required)")
-	transport := fs.String("transport", string(registry.TransportStdio), "\"stdio\" (spawn a process). \"http\" is recognised but has no dialer in this build and is refused")
+	transport := fs.String("transport", string(registry.TransportStdio), "\"stdio\" (spawn a process) or \"oci\" (an ephemeral podman container). \"http\" is recognised but has no dialer in this build and is refused")
 	command := fs.String("command", "", "command to spawn, for -transport stdio")
+	image := fs.String("image", "", "digest-pinned image to run, for -transport oci: NAME@sha256:<64 hex>")
 	url := fs.String("url", "", "endpoint URL, for -transport http. Kept for when an http dialer exists; registering http is refused until then")
 	var argv opStringList
 	fs.Var(&argv, "arg", "argument for the spawned command; repeat, in order")
@@ -242,12 +255,21 @@ func upstreamRegister(args []string, stdout, stderr io.Writer) int {
 		Command:     *command,
 		Args:        argv,
 		URL:         *url,
+		Image:       *image,
 		EnvVarNames: envs,
 	}
 	// Validated here rather than left to the adapter: a malformed entry is
 	// bad usage, and reporting it before the database is even opened means
 	// the operator sees the rule they broke and nothing else.
 	if err := entry.Validate(); err != nil {
+		fmt.Fprintf(stderr, "%v\n\n", err)
+		upstreamUsage(stderr)
+		return exitCannotRun
+	}
+	// podman's rules, which the domain package cannot know: an entry the
+	// oci dialer would refuse forever must not register, sign and then
+	// fail at every restart.
+	if err := dialTimeRefusal(entry); err != nil {
 		fmt.Fprintf(stderr, "%v\n\n", err)
 		upstreamUsage(stderr)
 		return exitCannotRun
@@ -276,6 +298,9 @@ func runUpstreamRegister(e *opEnv, entry registry.UpstreamServer) int {
 	tw := opTable(e.stdout)
 	fmt.Fprintf(tw, "  transport\t%s\n", entry.Transport)
 	fmt.Fprintf(tw, "  command / url\t%s\n", opCommandLine(entry))
+	if entry.Image != "" {
+		fmt.Fprintf(tw, "  image\t%s\n", entry.Image)
+	}
 	fmt.Fprintf(tw, "  env var names\t%s\n", opDash(strings.Join(entry.EnvVarNames, ", ")))
 	if !opFlushTable(tw, e.stderr) {
 		return exitProblem

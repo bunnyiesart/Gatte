@@ -275,6 +275,15 @@ Create the key with, for example:
 	// replacement happens.
 	prevValid := hadPrev && verifier.Verify(entry, prev) == nil
 
+	// A valid signature over a definition the dialer refuses is an entry
+	// the gateway never serves; refuse to make one rather than print "the
+	// gateway will now serve it". Only a row written past `upstream
+	// register` (which runs the same check) can get here.
+	if err := dialTimeRefusal(entry); err != nil {
+		fmt.Fprintf(e.stderr, "refusing to sign %q: the dialer for its transport would refuse it at every start:\n    %v\n", name, err)
+		return exitProblem
+	}
+
 	sig := s.Sign(entry)
 	if err := sigs.Put(e.ctx(), name, sig); err != nil {
 		fmt.Fprintf(e.stderr, "signatures: %v\n", err)
@@ -288,6 +297,9 @@ Create the key with, for example:
 	tw := opTable(e.stdout)
 	fmt.Fprintf(tw, "  transport\t%s\n", entry.Transport)
 	fmt.Fprintf(tw, "  command / url\t%s\n", opCommandLine(entry))
+	if entry.Image != "" {
+		fmt.Fprintf(tw, "  image\t%s\n", entry.Image)
+	}
 	fmt.Fprintf(tw, "  env var names\t%s\n", opDash(strings.Join(entry.EnvVarNames, ", ")))
 	fmt.Fprintf(tw, "  key file\t%s\n", keyFile)
 	fmt.Fprintf(tw, "  public key\t%s\n", signer.KeyFingerprint(s.PublicKey()))

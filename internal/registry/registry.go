@@ -14,6 +14,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -62,6 +63,10 @@ const (
 	TransportStdio Transport = "stdio"
 	// TransportHTTP is a remote server reached over HTTP.
 	TransportHTTP Transport = "http"
+	// TransportOCI runs the upstream as an ephemeral, digest-pinned
+	// container: a stdio child that is `podman run --rm -i`, built by
+	// internal/gateway/oci. Ported from the internal line on 28 Sep 2026.
+	TransportOCI Transport = "oci"
 )
 
 // UpstreamServer is a registered backend MCP server the gateway can
@@ -77,6 +82,7 @@ type UpstreamServer struct {
 	Transport Transport
 	Command   string // binary/command to spawn, for TransportStdio
 	Args      []string
+	Image     string // digest-pinned image reference, for TransportOCI; never a value
 	// URL is unreachable through Register in this build and that is not a
 	// bug: TransportHTTP is refused at Validate (GAB-19), so the only
 	// transport that reads this field never gets stored. The field, its
@@ -137,6 +143,19 @@ func (s UpstreamServer) Validate() error {
 		if strings.TrimSpace(s.Command) == "" {
 			return fmt.Errorf("%w: command must not be empty for stdio transport", ErrInvalid)
 		}
+		if err := rejectImage(TransportStdio, s.Image); err != nil {
+			return err
+		}
+	case TransportOCI:
+		if err := validateImage(s.Image); err != nil {
+			return err
+		}
+		if err := rejectUnusedByOCI("command", s.Command); err != nil {
+			return err
+		}
+		if err := rejectUnusedByOCI("url", s.URL); err != nil {
+			return err
+		}
 	case TransportHTTP:
 		// Refused at the point of acceptance, not at dial time. Nothing in
 		// this build dials http: internal/gateway/stdio serves "stdio" only
@@ -151,10 +170,10 @@ func (s UpstreamServer) Validate() error {
 		// not the error; the absence of a dialer is. When one exists, this
 		// case becomes the URL check it used to be and nothing else here
 		// has to move.
-		return fmt.Errorf("%w: upstream %q declares transport %q; this build dials %q only. The constant is reserved for when an http dialer exists -- until then, register this upstream as stdio or leave it out",
-			ErrTransportUnsupported, s.Name, TransportHTTP, TransportStdio)
+		return fmt.Errorf("%w: upstream %q declares transport %q; this build dials %q and %q only. The constant is reserved for when an http dialer exists -- until then, register this upstream as stdio or oci, or leave it out",
+			ErrTransportUnsupported, s.Name, TransportHTTP, TransportStdio, TransportOCI)
 	default:
-		return fmt.Errorf("%w: transport must be %q (%q is recognised but has no dialer in this build)", ErrInvalid, TransportStdio, TransportHTTP)
+		return fmt.Errorf("%w: transport must be %q or %q (%q is recognised but has no dialer in this build)", ErrInvalid, TransportStdio, TransportOCI, TransportHTTP)
 	}
 
 	for _, name := range s.EnvVarNames {
@@ -197,4 +216,35 @@ type Repository interface {
 	// Deregister removes the UpstreamServer registered under name. It
 	// returns ErrNotFound if no entry has that name.
 	Deregister(ctx context.Context, name string) error
+}
+
+// digestPinned is NAME@sha256:<64 lowercase hex>. A tag can be repointed at
+// other bytes without changing the entry, so a signature over a tag would
+// attest a name instead of the code that runs.
+var digestPinned = regexp.MustCompile(`^[^@\s]+@sha256:[0-9a-f]{64}$`)
+
+func validateImage(image string) error {
+	if strings.TrimSpace(image) == "" {
+		return fmt.Errorf("%w: image must not be empty for oci transport; pin it by digest, as in \"mcp-iris@sha256:<64 hex chars>\"", ErrInvalid)
+	}
+	if !digestPinned.MatchString(image) {
+		return fmt.Errorf("%w: image %q is not pinned by digest; a tag can be repointed at other bytes without changing this entry, so the signature would attest a name instead of the code that runs. Use \"NAME@sha256:<64 hex chars>\" -- podman inspect --format '{{index .RepoDigests 0}}' NAME:TAG prints the digest", ErrInvalid, image)
+	}
+	return nil
+}
+
+func rejectImage(t Transport, image string) error {
+	if strings.TrimSpace(image) == "" {
+		return nil
+	}
+	return fmt.Errorf("%w: image must be empty for %s transport; only oci entries run an image", ErrInvalid, t)
+}
+
+func rejectUnusedByOCI(field, value string) error {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	return fmt.Errorf("%w: %s must be empty for oci transport; an oci entry runs the image named in image, "+
+		"and nothing reads %s -- leaving it set would put a field in the signature that has no effect on what runs",
+		ErrInvalid, field, field)
 }

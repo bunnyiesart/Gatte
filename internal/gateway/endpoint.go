@@ -981,6 +981,7 @@ func specChanged(was, now registry.UpstreamServer) bool {
 	return was.Transport != now.Transport ||
 		was.Command != now.Command ||
 		was.URL != now.URL ||
+		was.Image != now.Image ||
 		!slices.Equal(was.Args, now.Args) ||
 		!slices.Equal(was.EnvVarNames, now.EnvVarNames)
 }
@@ -2544,6 +2545,7 @@ func specFor(entry registry.UpstreamServer) UpstreamSpec {
 		Command:   entry.Command,
 		Args:      slices.Clone(entry.Args),
 		URL:       entry.URL,
+		Image:     entry.Image,
 	}
 }
 

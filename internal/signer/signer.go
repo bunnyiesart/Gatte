@@ -63,12 +63,27 @@ var (
 // later without silently making old and new signatures interchangeable.
 const canonicalTag = "mcp-gateway/signer/canonical/v1"
 
+// canonicalTagImage is the tag of the encoding that also covers Image
+// (28 Sep 2026, with the oci transport). It is used for every entry that
+// has an image -- every oci entry, and any other entry whose row somehow
+// carries one -- so the image digest, which IS the code that runs, is
+// inside the signature (ADR-0018 in the internal line). An entry without an
+// image keeps the v1 bytes exactly, so every signature made before the oci
+// transport existed still verifies and nothing has to be re-signed.
+//
+// A separate tag rather than an optional field: v1 and v2 bytes can never
+// coincide, so a v1 signature can never authenticate an entry with an
+// image, and a stdio row given an image by a direct database write stops
+// verifying instead of keeping its old signature.
+const canonicalTagImage = "mcp-gateway/signer/canonical/v2-image"
+
 // Canonical returns the exact bytes a signature over s covers.
 //
 // # What is covered, and what is deliberately not
 //
-// Covered: the tag above, Name, Transport, Command, URL, Args in order,
-// and EnvVarNames *sorted*.
+// Covered: the tag above, Name, Transport, Command, URL, Image (only for an
+// entry that has one, under canonicalTagImage), Args in order, and
+// EnvVarNames *sorted*.
 //
 // Name is covered although ADR-0003 lists only command/url, args and env
 // var names. Including it binds a signature to the entry it was made for,
@@ -109,7 +124,12 @@ const canonicalTag = "mcp-gateway/signer/canonical/v1"
 func Canonical(s registry.UpstreamServer) []byte {
 	var buf []byte
 
-	buf = appendField(buf, canonicalTag)
+	withImage := s.Image != "" || s.Transport == registry.TransportOCI
+	if withImage {
+		buf = appendField(buf, canonicalTagImage)
+	} else {
+		buf = appendField(buf, canonicalTag)
+	}
 	buf = appendField(buf, s.Name)
 	buf = appendField(buf, string(s.Transport))
 	// Command and URL are both always written, even though only one is
@@ -117,6 +137,9 @@ func Canonical(s registry.UpstreamServer) []byte {
 	// thing for an attacker to shift around than a conditional one.
 	buf = appendField(buf, s.Command)
 	buf = appendField(buf, s.URL)
+	if withImage {
+		buf = appendField(buf, s.Image)
+	}
 
 	buf = appendCount(buf, len(s.Args))
 	for _, arg := range s.Args {

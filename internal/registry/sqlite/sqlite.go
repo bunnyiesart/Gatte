@@ -33,7 +33,21 @@ CREATE TABLE IF NOT EXISTS upstream_servers (
 	if _, err := db.Exec(stmt); err != nil {
 		return fmt.Errorf("sqlite: migrate upstream_servers: %w", err)
 	}
+	// The oci transport's image column, retrofitted (28 Sep 2026). CREATE
+	// TABLE IF NOT EXISTS is a no-op against a database made before it, so
+	// without the ALTER the column would exist only in fresh databases.
+	// Defaults to '' -- what every stdio entry holds.
+	if _, err := db.Exec(`ALTER TABLE upstream_servers ADD COLUMN image TEXT NOT NULL DEFAULT ''`); err != nil && !isDuplicateColumn(err) {
+		return fmt.Errorf("sqlite: migrate upstream_servers: %w", err)
+	}
 	return nil
+}
+
+// isDuplicateColumn reports the error SQLite gives an ALTER TABLE ADD
+// COLUMN for a column that already exists -- the second and every later
+// run of Migrate.
+func isDuplicateColumn(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "duplicate column name")
 }
 
 // Repository is a SQLite-backed implementation of registry.Repository.
@@ -81,14 +95,15 @@ func (r *Repository) Register(ctx context.Context, s registry.UpstreamServer) er
 	s.UpdatedAt = now
 
 	const stmt = `
-INSERT INTO upstream_servers (name, transport, command, args, url, env_var_names, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+INSERT INTO upstream_servers (name, transport, command, args, url, image, env_var_names, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	_, err = r.db.ExecContext(ctx, stmt,
 		s.Name,
 		string(s.Transport),
 		s.Command,
 		string(args),
 		s.URL,
+		s.Image,
 		string(envVarNames),
 		s.CreatedAt.Format(time.RFC3339),
 		s.UpdatedAt.Format(time.RFC3339),
@@ -105,7 +120,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
 // Get implements registry.Repository.
 func (r *Repository) Get(ctx context.Context, name string) (registry.UpstreamServer, error) {
 	const stmt = `
-SELECT name, transport, command, args, url, env_var_names, created_at, updated_at
+SELECT name, transport, command, args, url, image, env_var_names, created_at, updated_at
 FROM upstream_servers
 WHERE name = ?`
 	row := r.db.QueryRowContext(ctx, stmt, name)
@@ -123,7 +138,7 @@ WHERE name = ?`
 // List implements registry.Repository.
 func (r *Repository) List(ctx context.Context) ([]registry.UpstreamServer, error) {
 	const stmt = `
-SELECT name, transport, command, args, url, env_var_names, created_at, updated_at
+SELECT name, transport, command, args, url, image, env_var_names, created_at, updated_at
 FROM upstream_servers
 ORDER BY name`
 	rows, err := r.db.QueryContext(ctx, stmt)
@@ -177,7 +192,7 @@ func scanUpstreamServer(row rowScanner) (registry.UpstreamServer, error) {
 		createdAt, updatedAt string
 	)
 
-	if err := row.Scan(&s.Name, &transport, &s.Command, &args, &s.URL, &envVarNames, &createdAt, &updatedAt); err != nil {
+	if err := row.Scan(&s.Name, &transport, &s.Command, &args, &s.URL, &s.Image, &envVarNames, &createdAt, &updatedAt); err != nil {
 		return registry.UpstreamServer{}, err
 	}
 

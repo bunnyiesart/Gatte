@@ -324,14 +324,37 @@ func opCommandLine(s registry.UpstreamServer) string {
 	if s.Transport == registry.TransportHTTP {
 		return opDash(s.URL)
 	}
+	// For oci the first token is the image rather than a command: an oci
+	// entry has no Command, and its Args are the signed container wrapper
+	// -- the network policy above all, which is the difference between a
+	// backend that can reach the internet and one that cannot.
+	head := s.Command
+	if s.Transport == registry.TransportOCI {
+		head = opImageRef(s.Image)
+	}
 	parts := make([]string, 0, 1+len(s.Args))
-	for _, p := range append([]string{s.Command}, s.Args...) {
+	for _, p := range append([]string{head}, s.Args...) {
 		if strings.ContainsAny(p, " \t") {
 			p = strconv.Quote(p)
 		}
 		parts = append(parts, p)
 	}
-	return opDash(strings.Join(parts, " "))
+	return opDash(strings.TrimSpace(strings.Join(parts, " ")))
+}
+
+// opImageRef abbreviates a digest-pinned image reference for a table
+// column: the name in full, the hex shortened to twelve digits. The full
+// reference is in `upstream list -json` and in what `sign` prints. A
+// reference that is not pinned is printed whole: Validate refuses to store
+// one, so seeing it means the row was written past the domain, and
+// abbreviating that evidence would hide the one thing worth seeing.
+func opImageRef(image string) string {
+	const shown = 12
+	name, digest, ok := strings.Cut(image, "@sha256:")
+	if !ok || len(digest) <= shown {
+		return opDash(image)
+	}
+	return name + "@sha256:" + digest[:shown] + "..."
 }
 
 // opPlural picks the singular or plural form for n. Grammar is not

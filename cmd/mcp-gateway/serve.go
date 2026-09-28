@@ -24,7 +24,6 @@ import (
 	"github.com/bunnyiesart/Gatte/internal/config"
 	"github.com/bunnyiesart/Gatte/internal/gateway"
 	"github.com/bunnyiesart/Gatte/internal/gateway/httpapi"
-	gwstdio "github.com/bunnyiesart/Gatte/internal/gateway/stdio"
 	"github.com/bunnyiesart/Gatte/internal/quarantine"
 	quarantinesqlite "github.com/bunnyiesart/Gatte/internal/quarantine/sqlite"
 	"github.com/bunnyiesart/Gatte/internal/registry"
@@ -354,7 +353,7 @@ func buildServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) (
 		Quarantine: quar,
 		Audit:      aud,
 		Policy:     policy,
-		Dialer:     gwstdio.New(gwstdio.WithClientInfo("mcp-gateway", buildVersion)),
+		Dialer:     newTransportDialer(),
 		// Wiring these is GAB-18 plus ADR-0010, and they are the reason
 		// gateway.verifyEntry exists: without a Store the gateway checks no
 		// entry's integrity at all, and without a Verifier it would check

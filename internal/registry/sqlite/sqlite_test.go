@@ -286,3 +286,46 @@ func TestRepository_Deregister_NonexistentReturnsErrNotFound(t *testing.T) {
 		t.Fatalf("Deregister error = %v, want ErrNotFound", err)
 	}
 }
+
+// A database created before the oci transport has no image column, and
+// CREATE TABLE IF NOT EXISTS does not add one. Migrate must retrofit it,
+// keep the old rows (as image-less stdio entries), be idempotent, and then
+// store and return an oci entry's image.
+func TestMigrate_RetrofitsTheImageColumnOntoAPreOCIDatabase(t *testing.T) {
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	if _, err := db.Exec(`CREATE TABLE upstream_servers (
+	name TEXT PRIMARY KEY, transport TEXT NOT NULL, command TEXT NOT NULL,
+	args TEXT NOT NULL, url TEXT NOT NULL, env_var_names TEXT NOT NULL,
+	created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`); err != nil {
+		t.Fatalf("create pre-oci table: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO upstream_servers VALUES
+	('old', 'stdio', '/bin/old', '[]', '', '[]', '2026-09-01T00:00:00Z', '2026-09-01T00:00:00Z')`); err != nil {
+		t.Fatalf("insert pre-oci row: %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := regsqlite.Migrate(db); err != nil {
+			t.Fatalf("Migrate run %d: %v", i+1, err)
+		}
+	}
+	repo := regsqlite.New(db)
+	ctx := context.Background()
+	old, err := repo.Get(ctx, "old")
+	if err != nil || old.Image != "" || old.Command != "/bin/old" {
+		t.Fatalf("pre-oci row after migrate = %+v, %v", old, err)
+	}
+	const img = "localhost/casemgmt-mcp@sha256:abababababababababababababababababababababababababababababababab"
+	if err := repo.Register(ctx, registry.UpstreamServer{
+		Name: "casemgmt", Transport: registry.TransportOCI, Image: img,
+	}); err != nil {
+		t.Fatalf("Register oci: %v", err)
+	}
+	got, err := repo.Get(ctx, "casemgmt")
+	if err != nil || got.Image != img {
+		t.Fatalf("oci row = %+v, %v; want image %s", got, err, img)
+	}
+}

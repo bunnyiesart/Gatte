@@ -44,6 +44,7 @@ import (
 	"github.com/bunnyiesart/Gatte/internal/gateway"
 	"github.com/bunnyiesart/Gatte/internal/quarantine"
 	quarantinesql "github.com/bunnyiesart/Gatte/internal/quarantine/sqlite"
+	"github.com/bunnyiesart/Gatte/internal/quota"
 	"github.com/bunnyiesart/Gatte/internal/registry"
 	"github.com/bunnyiesart/Gatte/internal/store"
 	"github.com/bunnyiesart/Gatte/internal/vault"
@@ -280,6 +281,7 @@ func newHarnessWith(t *testing.T, opts harnessOptions) *harness {
 		Quarantine: served,
 		Audit:      auditsql.New(db),
 		Policy:     policy,
+		Quota:      noQuota(t),
 		Dialer:     dialer,
 		Now:        func() time.Time { return time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC) },
 		Logger:     logger,
@@ -843,6 +845,11 @@ var forbiddenSubstrings = []string{
 	"sub-analyst", "sub-dfir", "sub-nobody",
 	"may not call",
 	"quarantin", "Quarantin",
+	// Account names and reset instants. The quota's own error text names
+	// both, correctly, for the operator's log and the audit trail -- and
+	// neither may travel to a client: the class is distinguishable, the
+	// text is not.
+	"virustotal", "abusech", "resets at",
 	"access:", "gateway:", "httpapi:",
 	"sql:", "database", "goroutine",
 	"10.0.0.", "connection refused",
@@ -887,6 +894,29 @@ func TestDifferentInternalFailuresLookIdentical(t *testing.T) {
 	}{
 		{"policy refusal naming one subject", forbiddenA, classForbidden},
 		{"policy refusal naming another", forbiddenB, classForbidden},
+
+		// Two genuinely different exhaustion errors, built by the real
+		// component: different account, different limit, different reset
+		// instant. They must reach the wire as one byte-identical answer,
+		// which is what proves the class is what travels and the text is
+		// not (design/adr/0030-quota-por-analista.md decision 7).
+		{"quota spent on one account", quota.Exhausted(quota.Charge{
+			Provider:    "virustotal",
+			Limit:       500,
+			WindowStart: time.Date(2026, 9, 8, 0, 0, 0, 0, time.UTC),
+			WindowEnd:   time.Date(2026, 9, 9, 0, 0, 0, 0, time.UTC),
+		}), classQuotaExhausted},
+		{"quota spent on another", quota.Exhausted(quota.Charge{
+			Provider:    "abusech",
+			Limit:       12,
+			WindowStart: time.Date(2026, 9, 8, 11, 0, 0, 0, time.UTC),
+			WindowEnd:   time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC),
+		}), classQuotaExhausted},
+		// A counter that could not be established is NOT the same class: a
+		// caller learns that the gateway failed, never which of its stores
+		// did. Reading and writing fail identically, and both land here.
+		{"quota counter unreadable", fmt.Errorf("%w: %w", quota.ErrUnavailable, sql.ErrConnDone), classInternal},
+		{"quota counter unwritable", fmt.Errorf("%w: quota/sqlite: reserve: %w", quota.ErrUnavailable, errors.New("attempt to write a readonly database")), classInternal},
 
 		{"unknown tool", gateway.ErrUnknownTool, classUnknownTool},
 		{"quarantined tool", fmt.Errorf("%w: casemgmt.pending_tool -> casemgmt.pending_tool", gateway.ErrToolQuarantined), classUnknownTool},
@@ -1713,5 +1743,31 @@ func TestRejectCallDoesNotLogTheErrorText(t *testing.T) {
 		if !strings.Contains(line, want) {
 			t.Errorf("the refusal line does not carry %q, so it says less than it must:\n%s", want, line)
 		}
+	}
+}
+
+// TestQuotaExhaustedIsItsOwnClass pins the two facts about a spent
+// allowance that TestDifferentInternalFailuresLookIdentical only checks for
+// consistency: it answers 429, the status every client and proxy already
+// reads as "try again later", and its message is the same constant word an
+// operator greps the trail for (design/adr/0030-quota-por-analista.md
+// decision 7). Not 403 -- the analyst's role is fine -- and not 500 -- the
+// gateway is working exactly as configured.
+func TestQuotaExhaustedIsItsOwnClass(t *testing.T) {
+	err := fmt.Errorf("gateway: call: %w", quota.Exhausted(quota.Charge{
+		Provider:    "virustotal",
+		Limit:       5,
+		WindowStart: time.Date(2026, 9, 8, 0, 0, 0, 0, time.UTC),
+		WindowEnd:   time.Date(2026, 9, 9, 0, 0, 0, 0, time.UTC),
+	}))
+	class := classify(err)
+	if class != classQuotaExhausted {
+		t.Fatalf("classify = %v, want classQuotaExhausted", class)
+	}
+	if got := class.status(); got != http.StatusTooManyRequests {
+		t.Errorf("status = %d, want %d", got, http.StatusTooManyRequests)
+	}
+	if got := class.message(); got != "quota exhausted" {
+		t.Errorf("message = %q, want %q", got, "quota exhausted")
 	}
 }

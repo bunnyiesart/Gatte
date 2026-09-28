@@ -143,6 +143,7 @@ name = "hunter"
 		Quarantine: quar,
 		Audit:      auditsqlite.New(db),
 		Policy:     policy,
+		Quota:      noQuota(t),
 		Dialer:     prefixDialer{},
 		Logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})

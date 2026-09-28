@@ -26,6 +26,8 @@ import (
 	"github.com/bunnyiesart/Gatte/internal/gateway/httpapi"
 	"github.com/bunnyiesart/Gatte/internal/quarantine"
 	quarantinesqlite "github.com/bunnyiesart/Gatte/internal/quarantine/sqlite"
+	"github.com/bunnyiesart/Gatte/internal/quota"
+	quotasqlite "github.com/bunnyiesart/Gatte/internal/quota/sqlite"
 	"github.com/bunnyiesart/Gatte/internal/registry"
 	registrysqlite "github.com/bunnyiesart/Gatte/internal/registry/sqlite"
 	"github.com/bunnyiesart/Gatte/internal/signer"
@@ -349,6 +351,32 @@ func buildServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) (
 		return fail(err)
 	}
 
+	// The per-analyst quota (design/adr/0030-quota-por-analista.md). The
+	// limit comes from the file and the counter from the database, and they
+	// meet here: the plan carries what the operator declared, the store
+	// holds what has been spent, and the Gate is what Dispatch consults.
+	//
+	// A file with no [[quota.provider]] block yields an EMPTY plan, and an
+	// empty plan is still wired. That is deliberate: quota.NewGate refuses
+	// a nil plan or a nil store precisely so that "no quota" cannot be
+	// spelled as a port somebody forgot to pass, which is how the control
+	// would come to be off on a host nobody suspected. An empty plan admits
+	// every call without touching the counter, so the gateway behaves as it
+	// did before the quota existed.
+	//
+	// Note which half of the component is handed to the Gateway. The Gate
+	// holds a quota.Store, which can only reserve; the console's read port
+	// (quota.Reader) is a different interface over the same adapter and is
+	// wired in operator.go alone. The request path cannot read a counter.
+	quotaPlan, err := cfg.ToQuotaPlan()
+	if err != nil {
+		return fail(err)
+	}
+	quotaGate, err := quota.NewGate(quotaPlan, quotasqlite.New(db))
+	if err != nil {
+		return fail(fmt.Errorf("quota: %w", err))
+	}
+
 	// The trust anchor. Config.Validate has already decoded these once and
 	// refused a malformed entry, so a failure here is a wiring bug rather
 	// than an operator's typo -- but it is still reported instead of
@@ -369,6 +397,7 @@ func buildServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) (
 		Quarantine: quar,
 		Audit:      aud,
 		Policy:     policy,
+		Quota:      quotaGate,
 		Dialer:     newTransportDialer(),
 		// Wiring these is GAB-18 plus ADR-0010, and they are the reason
 		// gateway.verifyEntry exists: without a Store the gateway checks no
@@ -404,8 +433,19 @@ func buildServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) (
 	startedAt := time.Now()
 
 	connErr := gw.Connect(connectCtx)
+	if errors.Is(connErr, gateway.ErrQuotaMisconfigured) {
+		// Fatal, and the second Connect failure that is. A quota account
+		// naming an upstream that is absent, or an unbudgeted entry carrying
+		// a budgeted entry's credential, means a third party's budget the
+		// operator believes is protected is being spent uncounted -- and
+		// unlike a backend that will not dial, it cannot come right on its
+		// own: it is two files on disk disagreeing. Serving anyway would make
+		// the fix wait for somebody to notice, which for a quota means
+		// waiting for the provider to start answering 429 to the whole team.
+		return fail(fmt.Errorf("quota policy does not match the upstream registry: %w", connErr))
+	}
 	if errors.Is(connErr, gateway.ErrRegistryUnavailable) {
-		// Fatal, and the one Connect failure that is. ADR-0004's
+		// Fatal, like the quota disagreement above. ADR-0004's
 		// fail-closed rule means the routing table is empty and will stay
 		// empty; a process that listens on the port and serves nothing to
 		// everybody is worse than one that refuses to start, because only
@@ -701,6 +741,16 @@ func (s *serveStack) refreshLoop(ctx context.Context, logger *slog.Logger) {
 			s.heartbeat(ctx, logger)
 			timer.Reset(registryRetryEvery)
 			continue
+		case errors.Is(reconcileErr, gateway.ErrQuotaMisconfigured):
+			// Not a suspension: everything already connected keeps serving.
+			// But the fleet cannot grow -- nothing registered, changed or
+			// found dead is brought up -- until the registry and the
+			// [quota] section agree again, which only an operator can make
+			// happen (design/adr/0030). Said at Error every round for the
+			// reason the case above gives. The Refresh below still runs, so
+			// what is connected stays observed.
+			logger.Error("mcp-gateway: the quota policy and the upstream registry disagree, so no upstream is being brought up until they agree; see `mcp-gateway quota list`",
+				slog.String("detail", reconcileErr.Error()))
 		default:
 			// Partial by construction, like Refresh's: one upstream that
 			// would not dial, or an entry refused by its own contract or

@@ -16,6 +16,7 @@ import (
 	"github.com/bunnyiesart/Gatte/internal/config"
 	"github.com/bunnyiesart/Gatte/internal/quarantine"
 	quarantinesqlite "github.com/bunnyiesart/Gatte/internal/quarantine/sqlite"
+	quotasqlite "github.com/bunnyiesart/Gatte/internal/quota/sqlite"
 	"github.com/bunnyiesart/Gatte/internal/registry"
 	registrysqlite "github.com/bunnyiesart/Gatte/internal/registry/sqlite"
 	"github.com/bunnyiesart/Gatte/internal/signer"
@@ -63,6 +64,7 @@ func newOpTestEnv(t *testing.T) opTestEnv {
 		"audit trail":       auditsqlite.Migrate,
 		"tool quarantine":   quarantinesqlite.Migrate,
 		"entry signatures":  signersqlite.Migrate,
+		"quota counters":    quotasqlite.Migrate,
 	} {
 		if err := migrate(db); err != nil {
 			t.Fatalf("migrate %s: %v", name, err)

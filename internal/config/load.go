@@ -9,6 +9,7 @@ import (
 	"github.com/BurntSushi/toml"
 
 	"github.com/bunnyiesart/Gatte/internal/access"
+	"github.com/bunnyiesart/Gatte/internal/quota"
 )
 
 // Load reads, parses and validates the TOML configuration file at path,
@@ -258,4 +259,44 @@ func (c *Config) ToAccessPolicy() (*access.Policy, error) {
 		return nil, fmt.Errorf("config: building access policy: %w", err)
 	}
 	return policy, nil
+}
+
+// ToQuotaPlan converts the configured accounts into a [quota.Plan].
+//
+// It lives beside ToAccessPolicy, and is the same shape for the same
+// reason: config owns the file format and the domain type it maps onto, so
+// cmd/mcp-gateway stays a wiring file with no third opinion in between.
+//
+// A configuration with no [[quota.provider]] block yields an empty plan,
+// not a nil one. That distinction is the whole of how "no account is
+// budgeted" is said out loud: an empty plan charges nothing and is wired
+// into a Gate like any other, while a nil one would make quota.NewGate
+// refuse -- which is what stops "the quota is off" from ever being
+// expressible as a field somebody forgot.
+//
+// [quota.NewPlan] re-validates every provider that [Config.Validate]
+// already checked, and the duplication is deliberate for the reason
+// ToAccessPolicy gives: Validate protects the operator by reporting every
+// problem in the file at once, NewPlan protects the domain type from any
+// caller. Neither may assume the other ran.
+func (c *Config) ToQuotaPlan() (*quota.Plan, error) {
+	providers := make([]quota.Provider, 0, len(c.Quota.Providers))
+	for _, p := range c.Quota.Providers {
+		providers = append(providers, quota.Provider{
+			Name:     p.Name,
+			Upstream: p.Upstream,
+			Limit:    p.Limit,
+			Window:   p.Window,
+			// Cloned so the plan never shares a backing array with the
+			// parsed file. NewPlan clones too; doing it here costs nothing
+			// and keeps this function correct if that ever changes.
+			Tools: slices.Clone(p.Tools),
+		})
+	}
+
+	plan, err := quota.NewPlan(providers, slices.Clone(c.Quota.FreeTools))
+	if err != nil {
+		return nil, fmt.Errorf("config: building quota plan: %w", err)
+	}
+	return plan, nil
 }

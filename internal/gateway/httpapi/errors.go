@@ -9,6 +9,7 @@ import (
 
 	"github.com/bunnyiesart/Gatte/internal/access"
 	"github.com/bunnyiesart/Gatte/internal/gateway"
+	"github.com/bunnyiesart/Gatte/internal/quota"
 )
 
 // This file is the one place an internal error is turned into something a
@@ -36,6 +37,12 @@ const (
 	msgForbidden        = "forbidden"
 	msgInternal         = "internal error"
 	msgMethodNotAllowed = "method not allowed"
+	// msgQuotaExhausted is deliberately the same wording as the audit
+	// trail's reasonQuotaExhausted. An analyst reporting what they saw and
+	// an operator grepping the trail for it should land on the same word;
+	// two spellings of one event is how the two halves of an incident stop
+	// being searchable together.
+	msgQuotaExhausted = "quota exhausted"
 	// msgUnknownToolNoName is used when there is no caller-supplied name to
 	// echo. It is never richer than this.
 	msgUnknownToolNoName = "unknown tool"
@@ -55,6 +62,32 @@ const (
 	classForbidden
 	classUnknownTool
 	classMethodNotAllowed
+	// classQuotaExhausted is the caller's own per-analyst limit, spent for
+	// this window (design/adr/0030 decision 7).
+	//
+	// It is a class of its own rather than folded into classForbidden or
+	// classInternal, and that is this file's one substantive addition in a
+	// while, so the argument is written out. What it discloses is a fact
+	// about the caller, to the caller: that THEY have spent THEIR
+	// allowance. It says nothing about which tools exist, which are under
+	// suspicion, what other analysts have spent, or which account was
+	// charged -- the message below is a constant, like every other one
+	// here. The account name and the reset instant are in the gateway's
+	// own error, which rejectCall writes to the operator's log; the trail
+	// carries the analyst, the tool and the reason; and `mcp-gateway quota
+	// usage` is where somebody looks up how much is left. None of that is
+	// on the wire.
+	//
+	// Folding it into classForbidden would tell somebody whose role is
+	// fine that their role is not, and the difference matters at 03:00:
+	// one resolves itself when the window rolls over, the other needs a
+	// reviewed change to a file. Folding it into classInternal would tell
+	// them the gateway is broken when it is working exactly as configured.
+	// This is the same exception access.ErrForbidden already is -- what
+	// leaks is the operator's published policy, not the SOC's posture --
+	// and note the bound it inherits: the class is distinguishable, the
+	// text is not.
+	classQuotaExhausted
 )
 
 // String names the class for the operator's log. It is never sent to a
@@ -69,6 +102,8 @@ func (c failureClass) String() string {
 		return "unknown-tool"
 	case classMethodNotAllowed:
 		return "method-not-allowed"
+	case classQuotaExhausted:
+		return "quota-exhausted"
 	default:
 		return "internal"
 	}
@@ -85,6 +120,11 @@ func (c failureClass) status() int {
 		return http.StatusNotFound
 	case classMethodNotAllowed:
 		return http.StatusMethodNotAllowed
+	case classQuotaExhausted:
+		// 429, not 403: a spent allowance is a temporal condition that
+		// resolves when the window rolls over, and every client library
+		// and proxy in existence already reads 429 that way.
+		return http.StatusTooManyRequests
 	default:
 		return http.StatusInternalServerError
 	}
@@ -101,6 +141,8 @@ func (c failureClass) message() string {
 		return msgUnknownToolNoName
 	case classMethodNotAllowed:
 		return msgMethodNotAllowed
+	case classQuotaExhausted:
+		return msgQuotaExhausted
 	default:
 		return msgInternal
 	}
@@ -131,10 +173,20 @@ func classify(err error) failureClass {
 		return classForbidden
 	case errors.Is(err, gateway.ErrUnknownTool), errors.Is(err, gateway.ErrToolQuarantined):
 		return classUnknownTool
+	case errors.Is(err, quota.ErrExhausted):
+		return classQuotaExhausted
 	default:
 		// Everything else -- ErrQuarantineUnavailable, ErrRegistryUnavailable,
 		// ErrClosed, an audit-store failure, a transport error, a Go runtime
 		// error -- is an internal error and says exactly that.
+		//
+		// quota.ErrUnavailable lands here, deliberately and without a case
+		// of its own: a counter that could not be read or written is this
+		// gateway's problem, and telling a caller which of its stores is
+		// unwell hands them a map of what to break next. The refusal is
+		// identical to any other internal failure from outside, and fully
+		// distinguishable in the log and the trail, where reasonQuotaUnavailable
+		// names it.
 		return classInternal
 	}
 }
@@ -179,7 +231,7 @@ func jsonRPCError(class failureClass, tool string) error {
 	}
 
 	code := jsonrpc.CodeInternalError
-	if class == classUnauthenticated || class == classForbidden {
+	if class == classUnauthenticated || class == classForbidden || class == classQuotaExhausted {
 		// JSON-RPC 2.0 has no authorization code; the spec's registry stops
 		// at "invalid request". The code is not the signal here -- the
 		// constant message is -- so the nearest standard code is used rather

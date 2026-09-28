@@ -45,6 +45,8 @@ import (
 	auditsql "github.com/bunnyiesart/Gatte/internal/audit/sqlite"
 	"github.com/bunnyiesart/Gatte/internal/quarantine"
 	quarantinesql "github.com/bunnyiesart/Gatte/internal/quarantine/sqlite"
+	"github.com/bunnyiesart/Gatte/internal/quota"
+	quotasql "github.com/bunnyiesart/Gatte/internal/quota/sqlite"
 	"github.com/bunnyiesart/Gatte/internal/registry"
 	"github.com/bunnyiesart/Gatte/internal/signer"
 	"github.com/bunnyiesart/Gatte/internal/store"
@@ -313,6 +315,32 @@ func (v *fakeVault) Resolve(_ context.Context, name string) (vault.Secret, error
 	return vault.NewSecret(value), nil
 }
 
+// emptyQuotaGate is the quota of an installation with no [quota] section:
+// a Gate over an empty plan, which admits every call without touching its
+// store. The store is a real adapter anyway, over its own database, so a
+// test that wires this and then somehow reaches it fails on a real error
+// rather than a nil pointer.
+func emptyQuotaGate(t *testing.T) *quota.Gate {
+	t.Helper()
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	if err := quotasql.Migrate(db); err != nil {
+		t.Fatalf("quota migrate: %v", err)
+	}
+	plan, err := quota.NewPlan(nil, nil)
+	if err != nil {
+		t.Fatalf("quota.NewPlan: %v", err)
+	}
+	gate, err := quota.NewGate(plan, quotasql.New(db))
+	if err != nil {
+		t.Fatalf("quota.NewGate: %v", err)
+	}
+	return gate
+}
+
 // Compile-time proof the fakes satisfy the ports they stand in for.
 var (
 	_ Upstream            = (*fakeUpstream)(nil)
@@ -345,6 +373,35 @@ type harness struct {
 	vault      *fakeVault
 	quarantine quarantine.Store
 	audit      audit.Recorder
+	// counters reads back what the quota spent, for the tests that assert
+	// a refusal debited nothing or that a failed call debited anyway. It
+	// is the read PORT, which the Gateway itself is never given -- these
+	// tests can see counters precisely because they are standing in for
+	// the Operator Console here, not for the request path.
+	//
+	// nil when a test supplied its own quota.Store, since a hand-written
+	// store has nothing to read back.
+	counters quota.Reader
+}
+
+// quotaSetup is the quota half of a harness.
+//
+// The zero value is what almost every test wants: no account declared, so
+// nothing is charged and the Store is never reached -- which is exactly
+// the shape of a deployment with no [quota] section, and why every test
+// written before the quota existed runs unchanged.
+type quotaSetup struct {
+	// providers are the declared accounts. Empty means nothing is charged.
+	providers []quota.Provider
+	// freeTools are tools declared to spend no budgeted account. A harness
+	// that declares an account over an upstream must name every other tool
+	// that upstream serves, or the gateway withholds it from the routing
+	// table (UndeclaredQuotaTools), felt from the fixture side.
+	freeTools []string
+	// store replaces the real SQLite-backed counter. Non-nil only in the
+	// tests that need a counter which fails on command, since the real
+	// adapter offers no honest way to force an unreadable table.
+	store quota.Store
 }
 
 // newHarness wires a Gateway with fake Registry/Vault/Dialer and the real
@@ -365,6 +422,18 @@ func newHarness(t *testing.T, allowed ...string) *harness {
 // allocating a megabyte to raise the floor.
 func newLimitedHarness(t *testing.T, maxResultBytes int64, allowed ...string) *harness {
 	t.Helper()
+	return newFullHarness(t, maxResultBytes, quotaSetup{}, allowed...)
+}
+
+// newQuotaHarness is newHarness with declared quota accounts, and
+// optionally a counter that misbehaves. Everything else is identical.
+func newQuotaHarness(t *testing.T, q quotaSetup, allowed ...string) *harness {
+	t.Helper()
+	return newFullHarness(t, 0, q, allowed...)
+}
+
+func newFullHarness(t *testing.T, maxResultBytes int64, q quotaSetup, allowed ...string) *harness {
+	t.Helper()
 
 	db, err := store.Open(":memory:")
 	if err != nil {
@@ -377,6 +446,9 @@ func newLimitedHarness(t *testing.T, maxResultBytes int64, allowed ...string) *h
 	if err := auditsql.Migrate(db); err != nil {
 		t.Fatalf("audit migrate: %v", err)
 	}
+	if err := quotasql.Migrate(db); err != nil {
+		t.Fatalf("quota migrate: %v", err)
+	}
 
 	policy, err := access.NewPolicy(
 		[]access.Role{{Name: "n1-triage", Tools: allowed}},
@@ -386,6 +458,25 @@ func newLimitedHarness(t *testing.T, maxResultBytes int64, allowed ...string) *h
 		t.Fatalf("access.NewPolicy: %v", err)
 	}
 
+	// The quota, wired the way the composition root wires it: the plan
+	// from declared policy, the counter from the same database the audit
+	// trail writes to. The Gateway is handed the Store half; the harness
+	// keeps the Reader half, standing in for the Operator Console.
+	plan, err := quota.NewPlan(q.providers, q.freeTools)
+	if err != nil {
+		t.Fatalf("quota.NewPlan: %v", err)
+	}
+	quotaStore := q.store
+	var counters quota.Reader
+	if quotaStore == nil {
+		real := quotasql.New(db)
+		quotaStore, counters = real, real
+	}
+	gate, err := quota.NewGate(plan, quotaStore)
+	if err != nil {
+		t.Fatalf("quota.NewGate: %v", err)
+	}
+
 	h := &harness{
 		t:          t,
 		dialer:     newFakeDialer(),
@@ -393,6 +484,7 @@ func newLimitedHarness(t *testing.T, maxResultBytes int64, allowed ...string) *h
 		vault:      newFakeVault(),
 		quarantine: quarantinesql.New(db),
 		audit:      auditsql.New(db),
+		counters:   counters,
 	}
 
 	gw, err := New(Config{
@@ -401,6 +493,7 @@ func newLimitedHarness(t *testing.T, maxResultBytes int64, allowed ...string) *h
 		Quarantine:     h.quarantine,
 		Audit:          h.audit,
 		Policy:         policy,
+		Quota:          gate,
 		Dialer:         h.dialer,
 		MaxResultBytes: maxResultBytes,
 		Now:            func() time.Time { return fixedAt },
@@ -519,6 +612,32 @@ func defWithOutput(name, description, outputSchema string) ToolDef {
 	d := def(name, description)
 	d.OutputSchema = json.RawMessage(outputSchema)
 	return d
+}
+
+// used returns what the analyst of fromAnalyst has spent against one
+// account, summed over every window -- the tests here all run on one fixed
+// clock, so that sum is this window's count.
+//
+// It reads through quota.Reader, the OPERATOR's port. The Gateway holds
+// quota.Store and cannot read a counter at all, which is the separation
+// the component is built around; a test asserting on counters is standing
+// in for `mcp-gateway quota usage`, not for anything in the request path.
+func (h *harness) used(account string) int {
+	h.t.Helper()
+	if h.counters == nil {
+		h.t.Fatal("this harness was given its own quota store, so there are no counters to read")
+	}
+	rows, err := h.counters.Usage(context.Background())
+	if err != nil {
+		h.t.Fatalf("quota Usage: %v", err)
+	}
+	total := 0
+	for _, row := range rows {
+		if row.Provider == account && row.Analyst == analyst.Subject {
+			total += row.Used
+		}
+	}
+	return total
 }
 
 // respond sets what one upstream returns from its next tool call.
@@ -1235,7 +1354,7 @@ func TestNew_RejectsMissingPorts(t *testing.T) {
 	if _, err := New(Config{}); err == nil {
 		t.Fatal("New with no ports: want an error")
 	}
-	for _, missing := range []string{"Registry", "Vault", "Quarantine", "Audit", "Policy", "Dialer"} {
+	for _, missing := range []string{"Registry", "Vault", "Quarantine", "Audit", "Policy", "Quota", "Dialer"} {
 		cfg := fullConfig(t)
 		switch missing {
 		case "Registry":
@@ -1248,6 +1367,11 @@ func TestNew_RejectsMissingPorts(t *testing.T) {
 			cfg.Audit = nil
 		case "Policy":
 			cfg.Policy = nil
+		case "Quota":
+			// A nil quota Gate must be a construction error and not "then
+			// nothing is counted": an installation with no account wires a
+			// Gate over an empty plan, which charges nothing out loud.
+			cfg.Quota = nil
 		case "Dialer":
 			cfg.Dialer = nil
 		}
@@ -1338,6 +1462,7 @@ func fullConfig(t *testing.T) Config {
 		Quarantine: quarantinesql.New(db),
 		Audit:      auditsql.New(db),
 		Policy:     policy,
+		Quota:      emptyQuotaGate(t),
 		Dialer:     newFakeDialer(),
 	}
 }

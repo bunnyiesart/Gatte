@@ -42,6 +42,8 @@ import (
 	"github.com/bunnyiesart/Gatte/internal/config"
 	"github.com/bunnyiesart/Gatte/internal/quarantine"
 	quarantinesqlite "github.com/bunnyiesart/Gatte/internal/quarantine/sqlite"
+	"github.com/bunnyiesart/Gatte/internal/quota"
+	quotasqlite "github.com/bunnyiesart/Gatte/internal/quota/sqlite"
 	"github.com/bunnyiesart/Gatte/internal/registry"
 	registrysqlite "github.com/bunnyiesart/Gatte/internal/registry/sqlite"
 	"github.com/bunnyiesart/Gatte/internal/signer"
@@ -113,6 +115,18 @@ func (e *opEnv) tools() quarantine.Store { return quarantinesqlite.New(e.db) }
 // SQLite. Signatures live in their own table, not as a column of the
 // registry (design/adr/0006 item 2).
 func (e *opEnv) signatures() signer.Store { return signersqlite.New(e.db) }
+
+// quotaCounters returns the per-analyst quota's READ port, wired to
+// SQLite (design/adr/0030-quota-por-analista.md decision 10).
+//
+// Note which port: quota.Reader, not quota.Store. The same adapter value
+// satisfies both, and which one a caller is handed decides what it can do
+// -- the console reads counters and cannot debit one, while the Gateway
+// holds the Store, debits, and cannot read. Handing this side to the
+// serving process would put "what has this analyst been looking up" one
+// call away from the request path; handing the other side to the console
+// would make `quota list` able to spend somebody's allowance.
+func (e *opEnv) quotaCounters() quota.Reader { return quotasqlite.New(e.db) }
 
 // auditTrail returns the Audit Trail port, wired to SQLite.
 //

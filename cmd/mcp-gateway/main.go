@@ -15,6 +15,7 @@
 //	tool list|approve|revoke  Tool Quarantine
 //	sign                      sign a registry entry
 //	audit                     read the Audit Trail
+//	quota list|usage          per-analyst quota: the policy, and the counters
 //	version
 //
 // Exit codes follow the convention the rest of this project's tooling
@@ -37,6 +38,7 @@ import (
 	auditsqlite "github.com/bunnyiesart/Gatte/internal/audit/sqlite"
 	"github.com/bunnyiesart/Gatte/internal/config"
 	quarantinesqlite "github.com/bunnyiesart/Gatte/internal/quarantine/sqlite"
+	quotasqlite "github.com/bunnyiesart/Gatte/internal/quota/sqlite"
 	registrysqlite "github.com/bunnyiesart/Gatte/internal/registry/sqlite"
 	signersqlite "github.com/bunnyiesart/Gatte/internal/signer/sqlite"
 	"github.com/bunnyiesart/Gatte/internal/store"
@@ -73,6 +75,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return cmdSign(rest, stdout, stderr)
 	case "audit":
 		return cmdAudit(rest, stdout, stderr)
+	case "quota":
+		return cmdQuota(rest, stdout, stderr)
 	case "version":
 		fmt.Fprintln(stdout, version())
 		return exitOK
@@ -98,6 +102,7 @@ Commands:
   tool         List quarantined tools; approve one, or revoke an approval.
   sign         Sign a registry entry so the gateway will serve it.
   audit        Read the audit trail.
+  quota        Show the declared limits and what each analyst has spent.
   version      Print the build version.
 
 Every command except sign -generate-key takes -config (default:
@@ -111,11 +116,14 @@ Exit codes: 0 ok, 1 ran and found a problem, 2 could not run.
 // openStore opens the SQLite file named by the config and migrates every
 // component's schema.
 //
-// All four migrations live here, together, deliberately: a component
+// All five migrations live here, together, deliberately: a component
 // whose table is missing fails at the first query, deep inside a request,
 // rather than at startup. Running them all from the composition root
 // means an operator learns about a broken database when they start the
-// process.
+// process. internal/fitness enforces the "all": every /sqlite adapter that
+// exports a Migrate must be named in this map, because forgetting one is
+// invisible in every test that builds its own database and shows up only
+// on the host that has been running since before the component existed.
 func openStore(cfg *config.Config) (*sql.DB, error) {
 	db, err := store.Open(cfg.Database)
 	if err != nil {
@@ -126,6 +134,7 @@ func openStore(cfg *config.Config) (*sql.DB, error) {
 		"audit trail":       auditsqlite.Migrate,
 		"tool quarantine":   quarantinesqlite.Migrate,
 		"entry signatures":  signersqlite.Migrate,
+		"quota counters":    quotasqlite.Migrate,
 	} {
 		if err := migrate(db); err != nil {
 			db.Close()

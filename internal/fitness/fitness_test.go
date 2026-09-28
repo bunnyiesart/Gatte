@@ -51,6 +51,8 @@ import (
 	_ "github.com/bunnyiesart/Gatte/internal/gateway/stdio"
 	_ "github.com/bunnyiesart/Gatte/internal/quarantine"
 	_ "github.com/bunnyiesart/Gatte/internal/quarantine/sqlite"
+	_ "github.com/bunnyiesart/Gatte/internal/quota"
+	_ "github.com/bunnyiesart/Gatte/internal/quota/sqlite"
 	_ "github.com/bunnyiesart/Gatte/internal/registry"
 	_ "github.com/bunnyiesart/Gatte/internal/registry/sqlite"
 	_ "github.com/bunnyiesart/Gatte/internal/signer"
@@ -73,6 +75,14 @@ type goPackage struct {
 	ImportPath string
 	Imports    []string
 	Deps       []string
+
+	// Dir and GoFiles are what the AST-based fitness functions in
+	// migrate_test.go and quota_test.go need: where the package lives and
+	// which files are its non-test source. They are read from the same
+	// `go list -json` call the import-graph rules use, so both mechanisms
+	// see exactly one view of the module.
+	Dir     string
+	GoFiles []string
 }
 
 // moduleRoot returns the directory containing this module's go.mod, so

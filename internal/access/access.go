@@ -388,6 +388,26 @@ func plural(n int, one, many string) string {
 	return many
 }
 
+// ValidateGroupName reports whether group can be a group_to_role key. It
+// is exported for the same reason ValidateRole is: config.Validate calls
+// this one predicate instead of restating it, so the file that loads is
+// the file that serves (GAB-30).
+//
+// Besides empty, it refuses a name that is not already trimmed. The oidc
+// adapter trims every group it reads from a token, so " soc-dfir" can never
+// equal any caller's group: the mapping would load, look correct and grant
+// nothing -- the same silent dead mapping ValidateRole refuses for role
+// names.
+func ValidateGroupName(group string) error {
+	if strings.TrimSpace(group) == "" {
+		return fmt.Errorf("%w: empty group name in mapping", ErrInvalidPolicy)
+	}
+	if group != strings.TrimSpace(group) {
+		return fmt.Errorf("%w: group name %q has leading or trailing whitespace", ErrInvalidPolicy, group)
+	}
+	return nil
+}
+
 // Policy maps a caller's IdP groups to the roles they hold, and answers
 // the one question the request path asks: may this identity call this
 // tool?
@@ -438,8 +458,8 @@ func NewPolicy(roles []Role, groupToRole map[string]string) (*Policy, error) {
 
 	mapping := make(map[string]string, len(groupToRole))
 	for group, roleName := range groupToRole {
-		if strings.TrimSpace(group) == "" {
-			return nil, fmt.Errorf("%w: empty group name in mapping", ErrInvalidPolicy)
+		if err := ValidateGroupName(group); err != nil {
+			return nil, err
 		}
 		if _, ok := byName[roleName]; !ok {
 			return nil, fmt.Errorf("%w: group %q maps to undefined role %q", ErrNoSuchRole, group, roleName)

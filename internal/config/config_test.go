@@ -770,6 +770,7 @@ func TestValidateAcceptsNothingToAccessPolicyRefuses(t *testing.T) {
 		"duplicate role":                                               "\n[[role]]\nname  = \"analyst\"\ntools = []\n\n[[role]]\nname  = \"analyst\"\ntools = []\n",
 		"group mapped to an unknown role":                              "\n[[role]]\nname  = \"analyst\"\ntools = []\n\n[group_to_role]\n\"soc-n1\" = \"analist\"\n",
 		"empty group name in the mapping":                              "\n[[role]]\nname  = \"analyst\"\ntools = []\n\n[group_to_role]\n\"\" = \"analyst\"\n",
+		"untrimmed group name in the mapping":                          "\n[[role]]\nname  = \"analyst\"\ntools = []\n\n[group_to_role]\n\" soc-n1\" = \"analyst\"\n",
 		"role granting nothing, which is a legitimate thing to define": "\n[[role]]\nname  = \"onboarding\"\ntools = []\n",
 	}
 

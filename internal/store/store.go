@@ -62,7 +62,20 @@ func Open(path string) (*sql.DB, error) {
 		// second writer simply loses its write. WAL narrows that window --
 		// readers stop blocking writers -- but writers still exclude each
 		// other. Five seconds is a ceiling on waiting, not a target.
-		dsn = "file:" + path + "?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)"
+		//
+		// _txlock=immediate makes every BeginTx on the pool a BEGIN
+		// IMMEDIATE. busy_timeout alone did not cover the write paths that
+		// need it most: quarantine Observe/Approve/Revoke each read a row
+		// and then write it, and under the default DEFERRED mode the write
+		// lock is only requested at the first write. SQLite refuses that
+		// read-to-write upgrade at once with SQLITE_BUSY (or
+		// SQLITE_BUSY_SNAPSHOT under WAL) rather than waiting: measured,
+		// 15 to 30 of 50 discovery Observe calls failed beside a concurrent
+		// `tool approve` from a second handle. IMMEDIATE takes the write
+		// lock at BEGIN, which is where the busy handler does apply. It
+		// does not touch the audit append, which issues its own BEGIN
+		// IMMEDIATE on a dedicated Conn rather than going through BeginTx.
+		dsn = "file:" + path + "?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_txlock=immediate"
 	}
 
 	db, err := sql.Open("sqlite", dsn)

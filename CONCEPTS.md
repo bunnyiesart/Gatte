@@ -139,6 +139,14 @@ protocol-level operation (`tools/list`) rather than baked into a prompt —
 which is the entire reason a credential-broker gateway in front of them is
 a coherent idea at all.
 
+> **CORRECTION — 28 Sep 2026.** "A process a client (Claude Code, via
+> `.mcp.json`) spawns over stdio" is the setup before the gateway. Behind
+> Gatte, the analyst's client talks to the gateway over Streamable HTTP
+> (`internal/gateway/httpapi/httpapi.go:267`), and the gateway is the one
+> that starts each backend: a `stdio` registry entry is a child process of
+> the gateway, and an `oci` entry is a podman container started once per
+> connection and removed when it closes (ADR-0028 §A).
+
 ---
 
 # Part 2 — MCP gateways, mechanically
@@ -210,6 +218,14 @@ exchange exists: passthrough breaks per-backend audit, breaks downstream
 rate-limiting, and makes every request to every backend look like it came
 from the gateway, not from the actual caller.
 
+> **CORRECTION — 28 Sep 2026.** This project's gateway keys the credential
+> by backend only, not by `(client identity, target backend)`. Every
+> analyst's call to a backend leaves with the same credential; it is the
+> only mode Gatte has (ADR-0018, ADR-0030 context). Per-analyst
+> attribution comes from the audit trail, and per-analyst limits on a
+> shared third-party key come from the quota (ADR-0030). No per-analyst
+> credential exists.
+
 ## 2.4 Composition, mechanically — a worked example
 
 Aggregation is a **router**: one call in, one call out, same shape.
@@ -247,6 +263,13 @@ five matter together — "who called what" alone can't answer "did this
 analyst's lookup at 03:14 correlate with the incident we're now
 investigating"; you need target and outcome too, or the log is decoration,
 not evidence.
+
+> **CORRECTION — 28 Sep 2026.** ADR-0012 and ADR-0015 cite this paragraph
+> as their standard, and Gatte meets it only in part. On purpose, its
+> *what* is the namespaced tool name, with no parameters and no hash of
+> them (ADR-0017 §5, ADR-0029), and there is no session correlation ID.
+> The record has seven fields: identity, tool, target upstream, timestamp,
+> outcome, reason, source address (`internal/audit/audit.go:88-143`).
 
 ## 2.6 Lineage: this is not a new pattern
 
@@ -417,3 +440,10 @@ Every mechanism above shows up concretely in this project's own decisions:
 - Part 3's 401-vs-403 and secret-zero material → the exact reasoning
   behind `Access Control`'s credential-stripping requirement and why the
   Credential Vault never persists a resolved secret to disk.
+
+  > **CORRECTION — 28 Sep 2026.** The vault still writes nothing, but for
+  > an `oci` entry a resolved secret does reach disk. While the container
+  > lives, podman keeps the values in its `Config.Env`, in a file under the
+  > gateway user's storage. That is the accepted residual in ADR-0028 §D,
+  > route 2, and route 7 if podman dies before honouring `--rm`. For
+  > `stdio` entries the sentence holds.

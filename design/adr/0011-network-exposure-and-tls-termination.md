@@ -39,6 +39,26 @@ Isso é mais restritivo do que "avise bem alto", e a diferença é o ponto:
 um aviso é uma decisão delegada a quem tem pressa. Uma recusa é uma
 decisão que já foi tomada por quem estava pensando no assunto.
 
+> **CORREÇÃO — 28 set 2026.** O item 1 continua valendo e mudou de lugar:
+> a recusa é `config.RequireLoopbackBind` (`internal/config/config.go:503`),
+> aplicada pelo `Validate`, com a matriz de endereços em
+> `TestRequireLoopbackBind` e `TestValidateRefusesANonLoopbackListen`
+> (`internal/config/config_test.go`) e o caminho do arranque em
+> `TestBuildServer_RefusesANonLoopbackBind`. Três outras frases deste ADR
+> não descrevem mais o sistema:
+>
+> - **Itens 2–4 (nginx, OpenVPN e Authelia em jails bastille):** são a
+>   topologia do laboratório FreeBSD, substrato que o dono abandonou
+>   (bloco de 18 set 2026 no Track 1 do `CLOSEOUT.md`). Ficam como registro
+>   do que foi medido ali, não como descrição de uma implantação.
+> - **"Nenhum código de TLS, nenhum certificado" (Consequências):** o
+>   gateway continua sem TLS de servidor e sem `listen_tls`, mas desde a
+>   ADR-0029 tem um cliente TLS opcional para o GELF sobre TCP, com
+>   `telemetry.tls_ca_file` (`internal/telemetry/gelf/gelf.go:31,125`).
+> - **"O endereço de origem que falta nos registros (GAB-24)":** não falta
+>   mais — `audit.Record.SourceAddress` (`internal/audit/audit.go:113`),
+>   ADR-0012 item 3.
+
 ### 2. TLS é terminado por um proxy reverso **na mesma jail**
 
 Consequência direta do item 1, e a parte que é fácil errar: se o gateway

@@ -38,6 +38,14 @@ Custo medido antes de aceitar, como manda o `0005`:
 é a quinta e única nova dependência direta, ao lado de go-oidc, go-jose,
 o SDK de MCP e o driver SQLite.
 
+> **CORREÇÃO — 28 set 2026.** São seis dependências diretas, não cinco:
+> `github.com/google/jsonschema-go` entrou em 11 set 2026 com a validação
+> de resposta da ADR-0014 (`go.mod:5-11`; importada em
+> `internal/gateway/response.go`). E o "(ou um reload explícito)" do item 2
+> abaixo não existe: não há reload de configuração, `main.go` trata só
+> SIGINT/SIGTERM (`cmd/mcp-gateway/main.go:173`), então mudar papel é
+> restart — como a correção da ADR-0020 já diz para `trusted_keys`.
+
 ### 2. Papéis em arquivo versionado, não em tabela
 
 A alternativa séria era guardar papéis no SQLite e administrá-los por

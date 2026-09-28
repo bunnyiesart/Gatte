@@ -52,6 +52,15 @@ confirmar como válido.
 > de um buraco que durou de 31 ago a 15 set 2026, e apagá-lo tornaria a
 > decisão mais limpa do que ela foi.
 >
+> **CORREÇÃO — 28 set 2026.** "Discando o que entrou" tem uma exceção desde
+> a ADR-0030: enquanto `[quota]` e o registro discordam, o `Reconcile` não
+> disca nada — nem entrada nova, nem alterada, nem backend morto — e o
+> conjunto vivo só encolhe (`internal/gateway/endpoint.go:1038-1057`). Não
+> é suspensão: o que já servia continua servindo, e o laço loga em Error a
+> cada rodada (`cmd/mcp-gateway/serve.go:744-753`). A suspensão por
+> registro ilegível e o retry de 5 s continuam como descritos
+> (`serve.go:96`).
+>
 > **CORREÇÃO, 09 set 2026 — o retry não existe. Só metade desta decisão
 > foi implementada.**
 >

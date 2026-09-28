@@ -38,7 +38,7 @@ This file is the second one.
 
 - [ ] **Track 1** — the deployment has never run this build
 - [ ] **Track 2** — the anchor comparison has no owner
-- [ ] **Track 3** — the older half of the design record has never been swept
+- [x] **Track 3** — the older half of the design record has never been swept *(closed 28 Sep 2026: sweep record in `DEVELOPMENT-LOG.md` §11)*
 - [x] **Track 4** — the proofs skip silently where `sops` and `age` are missing *(closed 28 Sep 2026: `make ci` refuses to run without the three binaries and fails on any skipped test, naming them; the banner of `make test` no longer states a count)*
 - [ ] **Track 5** — `lab/probe` as a second protocol client *(filed; not required to close)*
 - [ ] **Track 6** — what the public history still carries *(owner decision; filed 24 Sep 2026)*

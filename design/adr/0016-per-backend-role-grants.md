@@ -70,6 +70,18 @@ Ou seja: sob `["*"]`, uma tool que aparece amanhã no upstream **não** é
 servida amanhã. Ela nasce `pending`, invisível e não chamável, até um
 humano aprovar aquela definição.
 
+> **CORREÇÃO — 28 set 2026.** O último item da lista acima envelheceu,
+> e o argumento ficou mais forte, não mais fraco. `q.Approve` não tem mais
+> chamador de produção: o único é `q.ApproveFingerprint`
+> (`cmd/mcp-gateway/tool.go:279`), que só baselina o fingerprint que o
+> operador viu, conferido na mesma transação da escrita (senão
+> `ErrFingerprintMoved`). O subcomando continua com exatamente dois
+> argumentos, mais `-fingerprint` opcional (`tool.go:194-203`). Mais
+> abaixo, "`Validate` recusa nome com separador" também ficou estreito: o
+> nome de upstream agora tem de casar `[A-Za-z0-9][A-Za-z0-9_-]*`
+> (`internal/registry/registry.go:111,151-158`), o que recusa o ponto e
+> mais coisas.
+
 ### 3. O custo real do coringa, dito por inteiro
 
 O coringa não é de graça, e o ADR seria desonesto se parasse no parágrafo

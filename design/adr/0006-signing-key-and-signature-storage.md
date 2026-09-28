@@ -70,6 +70,20 @@ de forja de assinatura, não detalhe estético. A tag versionada existe
 para que uma mudança futura de formato não deixe assinaturas velhas e
 novas silenciosamente intercambiáveis.
 
+> **CORREÇÃO — 28 set 2026.** A tag já não é uma só. `v1` continua sendo a
+> de toda entrada **sem** imagem, com os bytes fixados por
+> `TestCanonical_StdioEntryKeepsV1Bytes`; uma entrada com imagem, ou de
+> transporte `oci`, é codificada sob `mcp-gateway/signer/canonical/v2-image`
+> com `Image` logo depois de `URL` (`internal/signer/signer.go:64,78,127-141`;
+> ADR-0028 §C). Os campos cobertos são `Name`, `Transport`, `Command`,
+> `URL`, `Image` (só sob `v2-image`), `Args` em ordem e `EnvVarNames`
+> ordenados. A consequência "o esquema da Fase 1 não muda" também não é
+> mais literal: `upstream_servers` ganhou a coluna `image` (ADR-0028,
+> `TestMigrate_RetrofitsTheImageColumnOntoAPreOCIDatabase`) — por causa do
+> transporte, não da assinatura, que continua em tabela própria. E o item 4
+> abaixo diz "no boot": desde a ADR-0020 a verificação roda também a cada
+> rodada do `Reconcile`.
+
 ### 4. Verificação no boot recusa entrada inválida, não entrada ausente
 
 Assinatura **inválida** (não bate com o conteúdo) é recusa: a entrada não é

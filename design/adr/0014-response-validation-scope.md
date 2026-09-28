@@ -60,6 +60,22 @@ contra um backend trocado por outro que responde com forma diferente — que
 é a metade do rug pull que a quarentena não cobre, já que a quarentena olha
 a *definição* da tool e não o que ela devolve.
 
+> **CORREÇÃO — 28 set 2026.** "Útil contra um backend trocado" só vale
+> para um substituto que **mantenha** o `OutputSchema` declarado. O
+> esquema de saída não entra na impressão digital da quarentena: `Hash`
+> cobre nome, descrição e `InputSchema` (`internal/quarantine/quarantine.go:107-113`,
+> via `identityOf`, `internal/gateway/endpoint.go:3119-3125`), e o esquema
+> usado para validar é recompilado da listagem de cada rodada
+> (`endpoint.go:1468`). Um substituto que apague ou afrouxe o
+> `OutputSchema` continua `approved` e passa sem validação nenhuma.
+>
+> E o item 3 abaixo não é entregue: para um resultado aceito, nada de
+> tamanho, número de blocos, tipos de conteúdo ou esquema é registrado em
+> lugar nenhum. Só a recusa deixa rastro — uma linha `failed` com razão
+> `result too large` ou `result violates output schema`
+> (`internal/gateway/response.go:61-62`), e uma linha de log com a
+> razão e a classe do erro (`auditFailure`, `endpoint.go:2652-2681`).
+
 Quando não há `OutputSchema` declarado, não há validação de esquema. O
 gateway **não inventa** um esquema a partir da primeira resposta que viu:
 inferir contrato de uma amostra e depois tratá-lo como regra é como se

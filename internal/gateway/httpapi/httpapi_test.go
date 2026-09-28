@@ -197,7 +197,7 @@ type harness struct {
 	server  *httptest.Server
 	db      *sql.DB
 	dialer  *fakeDialer
-	logs    *bytes.Buffer
+	logs    *lockedBuffer
 }
 
 // harnessOptions lets one test bend the wiring without every other test
@@ -272,7 +272,7 @@ func newHarnessWith(t *testing.T, opts harnessOptions) *harness {
 	}
 	dialer.upstream("logsearch").result = gateway.Result{Content: json.RawMessage(`[{"type":"text","text":"0 hits"}]`)}
 
-	logs := &bytes.Buffer{}
+	logs := &lockedBuffer{}
 	logger := slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
 	gw, err := gateway.New(gateway.Config{
@@ -1770,4 +1770,26 @@ func TestQuotaExhaustedIsItsOwnClass(t *testing.T) {
 	if got := class.message(); got != "quota exhausted" {
 		t.Errorf("message = %q, want %q", got, "quota exhausted")
 	}
+}
+
+// lockedBuffer is the harness's log sink. The SDK logs from its own
+// connection goroutines (go-sdk v1.8.0 added such a line on the session
+// path), so a plain bytes.Buffer read by the test while the server is still
+// writing is a data race -- caught under -race in
+// TestBrokenQuarantineIsAGenericFiveHundred on 28 Sep 2026.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }

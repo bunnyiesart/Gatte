@@ -143,3 +143,54 @@ func TestSecQuarantine_ApproveRacingObserveNeverRevertsObservedHash(t *testing.T
 		}
 	}
 }
+
+// TestSecQuarantine_ConcurrentWritersDoNotFailObserve: two writers on the
+// same database file (the running gateway's discovery and an operator's
+// `mcp-gateway tool approve` from another process) must not make Observe
+// fail. Observe/Approve/Revoke opened DEFERRED transactions (read, then
+// upgrade to write); under WAL a read-then-write upgrade that loses the
+// race returns SQLITE_BUSY_SNAPSHOT immediately -- busy_timeout does not
+// retry it -- so the discovery observation was dropped. store.Open's
+// _txlock=immediate takes the write lock at BEGIN, where the busy handler
+// applies.
+func TestSecQuarantine_ConcurrentWritersDoNotFailObserve(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "q.db")
+	gw, db1 := secOpenFile(t, path)
+	defer db1.Close()
+	op, db2 := secOpenFile(t, path) // a second process-equivalent handle
+	defer db2.Close()
+
+	current := secMustObserve(t, gw, "casemgmt", secIdent("t", "T.", secSchema)).ObservedHash
+	if _, err := op.Approve(context.Background(), "casemgmt", "t"); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var failures []error
+	start := make(chan struct{})
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		<-start
+		for i := 0; i < 50; i++ {
+			if _, err := gw.Observe(context.Background(), "casemgmt", secIdent("t", "T.", secSchema)); err != nil {
+				mu.Lock()
+				failures = append(failures, err)
+				mu.Unlock()
+			}
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		<-start
+		for i := 0; i < 50; i++ {
+			_, _ = op.ApproveFingerprint(context.Background(), "casemgmt", "t", current)
+		}
+	}()
+	close(start)
+	wg.Wait()
+	if len(failures) > 0 {
+		t.Fatalf("%d/50 Observe calls failed under a concurrent approve from a second handle; first: %v", len(failures), failures[0])
+	}
+}

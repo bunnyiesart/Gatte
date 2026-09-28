@@ -589,10 +589,10 @@ func New(cfg Config) (*Gateway, error) {
 // connected is Refresh, and neither of those tears anything down that the
 // registry still describes the same way.
 //
-// For each upstream, in order: the credentials named by the registry entry
-// are resolved through the Credential Vault, the backend is dialed with
-// those values, its tools are listed, and every tool is handed to
-// quarantine.Store.Observe. Observing is what makes a newly-appeared tool
+// For each upstream, concurrently with the others (see the body for why):
+// the credentials named by the registry entry are resolved through the
+// Credential Vault, the backend is dialed with those values, its tools are
+// listed, and every tool is handed to quarantine.Store.Observe. Observing is what makes a newly-appeared tool
 // land in pending and a silently-rewritten one land in changed, so a tool
 // the gateway has never routed before is never served on the strength of
 // having been discovered.
@@ -637,6 +637,8 @@ func (g *Gateway) Connect(ctx context.Context) error {
 	dialed := make(map[string]registry.UpstreamServer, len(entries))
 	candidates := map[string]map[string]routedTool{}
 	var failures []error
+	// ready is every entry that passed both gates, in registry order.
+	var ready []registry.UpstreamServer
 
 	// Once per Connect, not once per entry: a per-entry warning in a fleet
 	// of twenty is a wall of text nobody reads, and these are precisely the
@@ -686,24 +688,38 @@ func (g *Gateway) Connect(ctx context.Context) error {
 			continue
 		}
 
-		up, err := g.bringUp(ctx, entry)
-		if err != nil {
-			failures = append(failures, err)
-			g.log.ErrorContext(ctx, "gateway: upstream not brought up",
-				slog.String("upstream", entry.Name), slog.String("detail", err.Error()))
-			continue
-		}
+		ready = append(ready, entry)
+	}
 
-		defs, err := up.ListTools(ctx)
-		if err != nil {
-			// The connection is useless without a tool list, and leaving it
-			// open would leak a subprocess.
-			_ = up.Close()
-			failures = append(failures, fmt.Errorf("%w: %q: list tools: %w", ErrUpstreamUnavailable, entry.Name, err))
+	// Each ready entry is brought up and listed in its own goroutine, all
+	// under ctx, and handed to the quarantine as soon as it answers. Done
+	// one after another, as it used to be, a backend whose dial or
+	// tools/list never answered spent the whole connect budget and every
+	// entry after it failed with an expired context -- one hung upstream
+	// kept the rest of the fleet down until a restart, which is not the
+	// "one broken backend is skipped" promise above. A fixed per-entry
+	// slice of the budget would fix that by starving a slow but healthy
+	// start instead; concurrency gives every entry the whole budget and
+	// costs the hung one only itself. (Ported from the internal tree,
+	// 2026-09-24.)
+	//
+	// routesFor stays on this goroutine, in the order answers arrive, so
+	// the quarantine is consulted while ctx is still live for everyone who
+	// answered in time. Failures are joined in name order afterwards so the
+	// error does not depend on who answered first.
+	answers := make(chan broughtUp, len(ready))
+	for _, entry := range ready {
+		go func() { answers <- g.bringUpAndList(ctx, entry) }()
+	}
+	perUpstream := make(map[string][]error, len(ready))
+	for range ready {
+		got := <-answers
+		perUpstream[got.entry.Name] = got.errs
+		if got.up == nil {
 			continue
 		}
-		conns[entry.Name] = up
-		dialed[entry.Name] = entry
+		conns[got.entry.Name] = got.up
+		dialed[got.entry.Name] = got.entry
 
 		// unmeasured is deliberately ignored here. At boot there is no
 		// earlier observation to fall back on, so a tool the quarantine
@@ -711,9 +727,12 @@ func (g *Gateway) Connect(ctx context.Context) error {
 		// checked later -- and the fail-closed reading of that is "do not
 		// route it", which is what routesFor already did. Refresh, which
 		// does have an earlier measurement, reads the flag instead.
-		got := g.routesFor(ctx, entry.Name, defs)
-		candidates[entry.Name] = got.routes
-		failures = append(failures, got.failures...)
+		routed := g.routesFor(ctx, got.entry.Name, got.defs)
+		candidates[got.entry.Name] = routed.routes
+		perUpstream[got.entry.Name] = append(perUpstream[got.entry.Name], routed.failures...)
+	}
+	for _, name := range slices.Sorted(maps.Keys(perUpstream)) {
+		failures = append(failures, perUpstream[name]...)
 	}
 
 	routes, conflicts := mergeRoutes(candidates)
@@ -729,6 +748,40 @@ func (g *Gateway) Connect(ctx context.Context) error {
 		return ErrClosed
 	}
 	return errors.Join(failures...)
+}
+
+// broughtUp is one entry's outcome in Connect: a live connection and its
+// tool list, or no connection and the failures that explain why.
+type broughtUp struct {
+	entry registry.UpstreamServer
+	up    Upstream
+	defs  []ToolDef
+	errs  []error
+}
+
+// bringUpAndList dials entry and asks it for its tools, for Connect. It
+// touches no state Connect owns -- bringUp's rememberCredentials takes g.mu
+// itself -- which is what lets Connect run it for every entry at once.
+func (g *Gateway) bringUpAndList(ctx context.Context, entry registry.UpstreamServer) (got broughtUp) {
+	got.entry = entry
+	up, err := g.bringUp(ctx, entry)
+	if err != nil {
+		got.errs = append(got.errs, err)
+		g.log.ErrorContext(ctx, "gateway: upstream not brought up",
+			slog.String("upstream", entry.Name), slog.String("detail", err.Error()))
+		return got
+	}
+
+	defs, err := up.ListTools(ctx)
+	if err != nil {
+		// The connection is useless without a tool list, and leaving it
+		// open would leak a subprocess.
+		_ = up.Close()
+		got.errs = append(got.errs, fmt.Errorf("%w: %q: list tools: %w", ErrUpstreamUnavailable, entry.Name, err))
+		return got
+	}
+	got.up, got.defs = up, defs
+	return got
 }
 
 // Reconcile makes the set of live connections match the Upstream Registry,
@@ -939,22 +992,48 @@ func (g *Gateway) Reconcile(ctx context.Context) error {
 		return ErrClosed
 	}
 
-	add := map[string]Upstream{}
-	addEntries := map[string]registry.UpstreamServer{}
+	var toDial []string
 	for _, name := range wantNames {
-		entry := want[name]
 		if _, stillLive := live[name]; stillLive && !slices.Contains(remove, name) {
 			continue
 		}
-		up, err := g.bringUp(ctx, entry)
-		if err != nil {
+		toDial = append(toDial, name)
+	}
+
+	// Dialed concurrently, each under the round's whole ctx, for the reason
+	// Connect's comment gives: one after another, a backend whose dial
+	// never returned spent the whole reconcileTimeout and every entry
+	// sorted after it failed with an expired context -- round after round,
+	// for as long as it hung, so a healthy upstream registered beside a
+	// broken one never came up. Outcomes are read back in name order so
+	// the log and the joined error stay deterministic.
+	type dialOutcome struct {
+		up  Upstream
+		err error
+	}
+	outcomes := make([]dialOutcome, len(toDial))
+	var wg sync.WaitGroup
+	for i, name := range toDial {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			up, err := g.bringUp(ctx, want[name])
+			outcomes[i] = dialOutcome{up: up, err: err}
+		}()
+	}
+	wg.Wait()
+
+	add := map[string]Upstream{}
+	addEntries := map[string]registry.UpstreamServer{}
+	for i, name := range toDial {
+		if err := outcomes[i].err; err != nil {
 			failures = append(failures, err)
 			g.log.ErrorContext(ctx, "gateway: upstream not brought up; it will be retried next round",
-				slog.String("upstream", entry.Name), slog.String("detail", err.Error()))
+				slog.String("upstream", name), slog.String("detail", err.Error()))
 			continue
 		}
-		add[name] = up
-		addEntries[name] = entry
+		add[name] = outcomes[i].up
+		addEntries[name] = want[name]
 	}
 
 	// After the work, and before the new connections are published: this
@@ -1072,10 +1151,40 @@ func (g *Gateway) Refresh(ctx context.Context) error {
 	candidates := map[string]map[string]routedTool{}
 	var failures []error
 
+	// Every upstream is asked at once, and each answer is handed to the
+	// quarantine as it arrives. Asked one after another under the one ctx,
+	// as they used to be, an upstream whose tools/list never answered spent
+	// the whole refresh budget, and every upstream sorted after it failed
+	// with an expired context and kept its previous tool list -- so a rug
+	// pull on any of them went un-observed, and stayed served, for as long
+	// as the first one hung. That broke the promise above that every
+	// upstream that did answer is refreshed regardless. (Ported from the
+	// internal tree, 2026-09-24.)
+	//
+	// Only ListTools runs off this goroutine. Everything that reads or
+	// writes gateway state -- markGone, routesFor and its quarantine
+	// Observe, the candidate table -- stays here, one answer at a time.
+	// Failures are joined in name order so the error does not depend on
+	// who answered first.
+	type listed struct {
+		name string
+		defs []ToolDef
+		err  error
+	}
+	answers := make(chan listed, len(names))
 	for _, name := range names {
-		defs, err := conns[name].ListTools(ctx)
+		up := conns[name]
+		go func() {
+			defs, err := up.ListTools(ctx)
+			answers <- listed{name: name, defs: defs, err: err}
+		}()
+	}
+	perUpstream := make(map[string][]error, len(names))
+	for range names {
+		answer := <-answers
+		name, defs, err := answer.name, answer.defs, answer.err
 		if err != nil {
-			failures = append(failures, fmt.Errorf("%w: %q: list tools: %w", ErrUpstreamUnavailable, name, err))
+			perUpstream[name] = append(perUpstream[name], fmt.Errorf("%w: %q: list tools: %w", ErrUpstreamUnavailable, name, err))
 			// Death is the one listing failure that is evidence rather
 			// than the absence of it (ADR-0024). Recorded here, acted on
 			// by the next Reconcile -- this function closes nothing, by
@@ -1105,7 +1214,7 @@ func (g *Gateway) Refresh(ctx context.Context) error {
 		}
 
 		got := g.routesFor(ctx, name, defs)
-		failures = append(failures, got.failures...)
+		perUpstream[name] = append(perUpstream[name], got.failures...)
 		if got.unmeasured {
 			// The quarantine store, not the backend, is what failed. Nothing
 			// about this upstream can be judged right now, so nothing about
@@ -1123,6 +1232,9 @@ func (g *Gateway) Refresh(ctx context.Context) error {
 			continue
 		}
 		candidates[name] = got.routes
+	}
+	for _, name := range names {
+		failures = append(failures, perUpstream[name]...)
 	}
 
 	routes, conflicts := mergeRoutes(candidates)

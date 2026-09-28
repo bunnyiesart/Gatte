@@ -55,6 +55,10 @@ var (
 	// tool whose status is StatusChanged. See Tool.Revoked for why that is
 	// refused rather than allowed as a no-op.
 	ErrChangedIsNotRevocable = errors.New("quarantine: a changed tool cannot be revoked")
+	// ErrFingerprintMoved is returned by ApproveFingerprint and
+	// Tool.ApprovedFingerprint when the observed fingerprint is no longer
+	// the one the operator reviewed. See Tool.ApprovedFingerprint.
+	ErrFingerprintMoved = errors.New("quarantine: the observed fingerprint changed since it was reviewed")
 )
 
 // hashDomainTag is mixed into every Hash as its first length-prefixed
@@ -280,6 +284,24 @@ func (t Tool) Approved(now time.Time) Tool {
 	return next
 }
 
+// ApprovedFingerprint is Approved with a precondition: the fingerprint
+// being baselined must be reviewedHash, the one the operator actually
+// looked at. Otherwise it returns ErrFingerprintMoved and no new state.
+//
+// It closes a review-then-approve race. Observed leaves a pending tool
+// pending while it replaces ObservedHash, so a discovery cycle landing
+// between the operator's review and the approval used to have the approval
+// baseline a definition no human saw -- and since the quarantine keeps
+// fingerprints, not definitions, nothing afterwards would show the switch.
+// An upstream alternating a benign and a poisoned definition across
+// refreshes could aim for exactly that window.
+func (t Tool) ApprovedFingerprint(reviewedHash string, now time.Time) (Tool, error) {
+	if t.ObservedHash != reviewedHash {
+		return Tool{}, ErrFingerprintMoved
+	}
+	return t.Approved(now), nil
+}
+
 // Revoked returns the state t transitions to when an operator withdraws
 // their own approval: back to pending, with the approved baseline cleared
 // and the last observation kept.
@@ -372,6 +394,15 @@ type Store interface {
 	// definition the gateway has actually seen, never one typed from
 	// memory.
 	Approve(ctx context.Context, serverName, toolName string) (Tool, error)
+
+	// ApproveFingerprint is Approve with a compare-and-approve
+	// precondition, checked in the same transaction as the write: it
+	// approves only if the currently-observed fingerprint is still
+	// reviewedHash, and otherwise returns ErrFingerprintMoved and changes
+	// nothing. It is what the operator console uses, so that what gets
+	// baselined is what the operator was shown (see
+	// Tool.ApprovedFingerprint).
+	ApproveFingerprint(ctx context.Context, serverName, toolName, reviewedHash string) (Tool, error)
 
 	// Revoke returns (serverName, toolName) to pending and returns the
 	// resulting state, per Tool.Revoked -- an operator withdrawing an

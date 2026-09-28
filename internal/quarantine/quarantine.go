@@ -70,6 +70,14 @@ var (
 // that collide with the old scheme's.
 const hashDomainTag = "mcp-gateway/quarantine/tool-identity/v1"
 
+// hashDomainTagOutput is the tag of the identity that also covers the
+// tool's declared OutputSchema (28 Sep 2026). Used only for a tool that
+// declares one, so a tool without an output schema keeps its v1 fingerprint
+// and its approval. Before it, the output schema was outside the
+// fingerprint: a backend that dropped or loosened it kept the tool approved
+// while its results silently stopped being validated (ADR-0014).
+const hashDomainTagOutput = "mcp-gateway/quarantine/tool-identity/v2-output"
+
 // ToolIdentity is the part of an upstream tool's definition that the
 // quarantine fingerprints: everything that, if changed, changes what the
 // tool tells an LLM to do or what it accepts.
@@ -91,6 +99,11 @@ type ToolIdentity struct {
 	Description string
 	// InputSchema is the tool's raw JSON input schema bytes, hashed as-is.
 	InputSchema []byte
+	// OutputSchema is the tool's raw JSON output schema bytes, or empty
+	// when it declares none. It decides whether results are validated
+	// (ADR-0014), so changing, loosening or dropping it is a change to what
+	// was approved.
+	OutputSchema []byte
 }
 
 // Hash returns the hex-encoded SHA-256 fingerprint of t: the identity of
@@ -106,10 +119,17 @@ type ToolIdentity struct {
 // exactly that case.
 func Hash(t ToolIdentity) string {
 	h := sha256.New()
-	writeField(h, []byte(hashDomainTag))
+	if len(t.OutputSchema) == 0 {
+		writeField(h, []byte(hashDomainTag))
+	} else {
+		writeField(h, []byte(hashDomainTagOutput))
+	}
 	writeField(h, []byte(t.Name))
 	writeField(h, []byte(t.Description))
 	writeField(h, t.InputSchema)
+	if len(t.OutputSchema) != 0 {
+		writeField(h, t.OutputSchema)
+	}
 	return hex.EncodeToString(h.Sum(nil))
 }
 

@@ -2979,3 +2979,39 @@ func TestCredentialDrift_TheKeyNeverLeaves(t *testing.T) {
 		t.Errorf("a 64-hex-character digest appears in the drift report or the log:\n%s", report)
 	}
 }
+
+// The output schema decides whether results are validated (ADR-0014), so it
+// is part of what an operator approved: a backend that loosens it, or drops
+// it, puts the tool back in quarantine exactly like a rewritten description
+// does. Before 28 Sep 2026 neither change touched the fingerprint, and the
+// tool stayed approved while its results stopped being checked.
+func TestRefresh_AChangedOrDroppedOutputSchemaStopsTheToolBeingServed(t *testing.T) {
+	strict := `{"type":"object","properties":{"id":{"type":"string"}},"required":["id"],"additionalProperties":false}`
+	for name, next := range map[string]ToolDef{
+		"loosened": defWithOutput("list_cases", "List CASEMGMT cases.", `{"type":"object"}`),
+		"dropped":  def("list_cases", "List CASEMGMT cases."),
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t, "casemgmt.list_cases")
+			h.register("casemgmt")
+			h.serve("casemgmt", defWithOutput("list_cases", "List CASEMGMT cases.", strict))
+			h.mustConnect()
+			h.approve("casemgmt", "list_cases")
+			if got := h.listNames(analyst); len(got) != 1 {
+				t.Fatalf("precondition: ListTools = %v, want the approved tool", got)
+			}
+
+			h.serve("casemgmt", next)
+			if err := h.refresh(); err != nil {
+				t.Fatalf("Refresh: %v", err)
+			}
+			if got := h.quarantineStatus("casemgmt", "list_cases"); got.Status != quarantine.StatusChanged || got.Usable() {
+				t.Errorf("after the output schema was %s: status=%q usable=%v, want %q and not usable",
+					name, got.Status, got.Usable(), quarantine.StatusChanged)
+			}
+			if got := h.listNames(analyst); len(got) != 0 {
+				t.Errorf("ListTools = %v, want empty", got)
+			}
+		})
+	}
+}

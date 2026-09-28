@@ -69,6 +69,16 @@ a *definição* da tool e não o que ela devolve.
 > (`endpoint.go:1468`). Um substituto que apague ou afrouxe o
 > `OutputSchema` continua `approved` e passa sem validação nenhuma.
 >
+> **FECHADO no mesmo dia, por decisão do dono.** `quarantine.Hash` passa a
+> cobrir o `OutputSchema` de toda tool que declara um, sob a tag
+> `tool-identity/v2-output`; uma tool sem esquema de saída mantém a
+> impressão `v1` byte a byte (`TestHash_WithoutOutputSchemaKeepsTheV1Fingerprint`,
+> valor dourado do codificador anterior). Afrouxar ou apagar o esquema põe a
+> tool em `changed` e ela deixa de ser servida
+> (`TestRefresh_AChangedOrDroppedOutputSchemaStopsTheToolBeingServed`). O
+> custo: toda tool que já declarava `OutputSchema` precisa ser reaprovada
+> uma vez depois da atualização.
+>
 > E o item 3 abaixo não é entregue: para um resultado aceito, nada de
 > tamanho, número de blocos, tipos de conteúdo ou esquema é registrado em
 > lugar nenhum. Só a recusa deixa rastro — uma linha `failed` com razão

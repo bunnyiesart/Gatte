@@ -3118,9 +3118,10 @@ func closeAll(conns map[string]Upstream) error {
 // schema by the time an adapter can see it).
 func identityOf(def ToolDef) quarantine.ToolIdentity {
 	return quarantine.ToolIdentity{
-		Name:        def.Name,
-		Description: def.Description,
-		InputSchema: def.InputSchema,
+		Name:         def.Name,
+		Description:  def.Description,
+		InputSchema:  def.InputSchema,
+		OutputSchema: def.OutputSchema,
 	}
 }
 

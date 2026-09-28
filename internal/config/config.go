@@ -52,6 +52,7 @@ type Config struct {
 	Quarantine Quarantine `toml:"quarantine"`
 	Response   Response   `toml:"response"`
 	Audit      Audit      `toml:"audit"`
+	Telemetry  Telemetry  `toml:"telemetry"`
 
 	// Roles defines what each role may call. Order is irrelevant.
 	Roles []Role `toml:"role"`
@@ -934,6 +935,104 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	// [telemetry] (design/adr/0029). The section is optional and absent by
+	// default, so none of these rules is about a control somebody left off:
+	// what they refuse is a block that reads as though telemetry were on
+	// when it is not, and a block that would send messages the SOC's
+	// Graylog cannot route.
+	//
+	// The messages below are in Portuguese, unlike the rest of this file,
+	// and that follows ADR-0029 rather than drifting from it: this is the
+	// one section whose failure mode is a Graylog stream rule, and the
+	// person reading the error at 03:00 is the SOC analyst who wrote the
+	// stream rule.
+	//
+	// What is NOT checked here, and cannot be: that the address answers,
+	// that the name resolves, that tls_ca_file exists and holds a
+	// certificate. The first two are network questions, and a gateway that
+	// asks them at startup is a gateway a DNS blip refuses to boot. The
+	// third is local and belongs to the adapter, which is the code that
+	// reads the file -- also a startup failure, just not this one's.
+	tel := c.Telemetry
+	// `tls = false` is deliberately not in this list and cannot be: it is
+	// indistinguishable from the key being absent. The consequence is
+	// narrow and worth naming -- a [telemetry] block holding nothing but
+	// `tls = false` loads as a section that says nothing, which is what it
+	// is.
+	telemetryWritten := strings.TrimSpace(tel.Transport) != "" ||
+		tel.TLS ||
+		strings.TrimSpace(tel.TLSCAFile) != "" ||
+		strings.TrimSpace(tel.Host) != "" ||
+		strings.TrimSpace(tel.ClienteSOC) != "" ||
+		tel.Buffer != nil
+
+	switch {
+	case !tel.Enabled() && telemetryWritten:
+		errs = append(errs, errors.New(
+			`telemetry.address: obrigatorio quando qualquer outra chave de [telemetry] e escrita -- a secao inteira ausente e o jeito de desligar a telemetria, e um bloco preenchido sem destino e um operador que acha que ligou. Escreva o destino (address = "192.0.2.11:12201") ou apague a secao`))
+	case tel.Enabled():
+		// Validated as written, not trimmed. `address = " 192.0.2.11:12201"`
+		// splits cleanly into a host with a leading space, which resolves to
+		// nothing -- and trimming it here would be this package quietly
+		// repairing a value the adapter receives verbatim, which is the
+		// GAB-30 shape.
+		host, port, err := net.SplitHostPort(tel.Address)
+		if err != nil || host == "" || port == "" ||
+			strings.TrimSpace(host) != host || strings.TrimSpace(port) != port {
+			errs = append(errs, fmt.Errorf(
+				`telemetry.address: %q nao e host:port -- um input GELF e uma porta, nao um nome, e nao ha porta padrao para adivinhar. Escreva: address = "192.0.2.11:12201"`,
+				tel.Address))
+		}
+
+		switch tel.Transport {
+		case telemetryTransportUDP, telemetryTransportTCP:
+		default:
+			errs = append(errs, fmt.Errorf(
+				`telemetry.transport: %q nao e "udp" nem "tcp", e nao ha default -- a escolha muda o que este gateway consegue te CONTAR: sob udp uma escrita bem-sucedida significa que o datagrama saiu do socket e nada mais, entao perda no caminho e invisivel para o contador. Escreva: transport = "tcp"`,
+				tel.Transport))
+		}
+
+		if tel.TLS && tel.Transport == telemetryTransportUDP {
+			errs = append(errs, errors.New(
+				`telemetry.tls: nao existe GELF UDP sobre TLS -- ou transport = "tcp", ou tls = false`))
+		}
+		if strings.TrimSpace(tel.TLSCAFile) != "" && !tel.TLS {
+			errs = append(errs, errors.New(
+				"telemetry.tls_ca_file: escrito com tls = false, e as duas linhas se contradizem -- uma ancora de confianca para uma conexao em claro nao e usada por nada. Escreva tls = true ou apague a linha"))
+		}
+
+		if strings.TrimSpace(tel.Host) == "" {
+			errs = append(errs, errors.New(
+				`telemetry.host: obrigatorio -- e o campo pelo qual todo dashboard do Graylog agrupa, e resolver hostname em runtime devolve um id que muda a cada restart quando o processo e containerizado, o que estilhaca o agrupamento sem avisar ninguem. Escreva o nome estavel: host = "mcp-gateway-01"`))
+		}
+
+		switch {
+		case strings.TrimSpace(tel.ClienteSOC) == "":
+			errs = append(errs, errors.New(
+				`telemetry.cliente_soc: obrigatorio -- e o campo por onde o Graylog do SOC roteia mensagem para o stream do cliente, e sem ele os eventos entram no sistema sem cair em stream nenhum, o que e pior do que nao enviar: parece que funcionou. Escreva: cliente_soc = "example-client"`))
+		case strings.TrimSpace(tel.ClienteSOC) != tel.ClienteSOC:
+			// GAB-30's class, a fourth time: `name = "analyst "` lived in the
+			// gap between a rule that trimmed and a rule that did not. Here
+			// the second reader is not another package, it is a Graylog
+			// stream rule.
+			errs = append(errs, fmt.Errorf(
+				`telemetry.cliente_soc: %q tem espaco no inicio ou no fim -- uma stream rule que casa "example-client" nao casa "example-client ", e as mensagens chegariam e ficariam invisiveis. Escreva: cliente_soc = "example-client"`,
+				tel.ClienteSOC))
+		}
+
+		if tel.Buffer != nil {
+			switch n := *tel.Buffer; {
+			case n <= 0:
+				errs = append(errs, errors.New(
+					"telemetry.buffer: precisa ser positivo -- buffer = 0 seria envio sincrono, e o caminho de request nunca espera pela telemetria. Se a intencao era desligar a telemetria, apague a secao [telemetry]; se era diminuir a memoria, escreva o numero: buffer = 512"))
+			case n < MinTelemetryBuffer:
+				errs = append(errs, fmt.Errorf(
+					"telemetry.buffer: %d esta abaixo do minimo %d -- uma fila desse tamanho descarta em qualquer rajada normal, e o contador de descarte vira ruido em vez de sinal. Escreva: buffer = 4096",
+					n, MinTelemetryBuffer))
+			}
+		}
+	}
+
 	for group, role := range c.GroupToRole {
 		if strings.TrimSpace(group) == "" {
 			errs = append(errs, errors.New("group_to_role: contains an empty group name"))
@@ -947,4 +1046,161 @@ func (c *Config) Validate() error {
 		return nil
 	}
 	return errors.Join(append([]error{ErrInvalid}, errs...)...)
+}
+
+// Telemetry sends one GELF message to a Graylog input per record the Audit
+// Trail accepted (design/adr/0029-telemetria-gelf.md). It is an ADDITIONAL
+// sink: the SQLite trail stays the source of truth (ADR-0012), so an event
+// lost on this path loses a COPY and never the evidence.
+//
+// The whole section is optional, and its absence is the normal state of
+// this deployment today -- see Address for why nothing ships enabled.
+//
+// That shape reads like the trap Quarantine.RefreshInterval and
+// Response.MaxBytes are built to prevent, so the difference is written down
+// rather than left to be re-derived. There, a zero switches a SECURITY
+// CONTROL off, and the file refuses it. Telemetry is not a security
+// control: it is a copy of a trail that keeps being written either way, and
+// a gateway with no [telemetry] section still audits everything it audited
+// before.
+//
+// The omission is still defended twice, because "I thought I had turned it
+// on" is a real failure even for a copy. A section written without a
+// destination is a fatal load error (Validate, first rule below), and
+// startup says out loud where the events are going or that they are going
+// nowhere.
+type Telemetry struct {
+	// Address is the GELF input to send to, as host:port -- e.g.
+	// "192.0.2.11:12201". Empty is the off switch, and empty is what ships.
+	//
+	// Never resolved here, and not by the adapter's constructor either. A
+	// SIEM whose name resolves at 03:00 and does not at 04:00 must not get
+	// to decide whether this gateway starts.
+	Address string `toml:"address"`
+
+	// Transport is "udp" or "tcp". Required, and deliberately with NO
+	// default.
+	//
+	// The choice changes what this gateway can afterwards TELL you, which
+	// is too much to decide on somebody's behalf: under udp a successful
+	// write means the datagram left the socket and nothing more, so loss on
+	// the way is invisible to the counters; under tcp it means the bytes
+	// were accepted by the connection, which still does not say Graylog
+	// indexed them. An operator who had to write the word has met the
+	// argument.
+	Transport string `toml:"transport"`
+
+	// TLS wraps the TCP connection. Only with Transport "tcp": there is no
+	// GELF UDP over TLS, and a file asking for one is refused rather than
+	// quietly sending in the clear.
+	//
+	// There is no key that disables certificate verification, and that is
+	// not an omission -- an InsecureSkipVerify in a file is a
+	// production-grade hole opened during one afternoon of debugging.
+	TLS bool `toml:"tls"`
+
+	// TLSCAFile is the PEM holding the CA that signed the Graylog input's
+	// certificate. Empty means the system pool.
+	//
+	// A PATH, never a value (ADR-0009 §3) -- and note that a CA certificate
+	// is public material, so this whole section accepts no secret at all.
+	// That is a property of the design rather than an accident: the sink
+	// authenticates to nothing and carries no credential.
+	//
+	// Whether the file exists on this host and has a certificate inside is
+	// read and answered by the adapter, not here. This package validates
+	// FORM and CONTRADICTION; both failures stop startup either way.
+	TLSCAFile string `toml:"tls_ca_file"`
+
+	// Host is the GELF `host` field. Required, with no fallback.
+	//
+	// It could have defaulted to os.Hostname(), and that was refused: in a
+	// containerised process that returns an id which changes at every
+	// restart, while every Graylog dashboard groups by this field -- so the
+	// grouping would shatter with nobody being told. One line in the file
+	// removes the failure mode.
+	Host string `toml:"host"`
+
+	// ClienteSOC is the GELF `_cliente_soc` field: the SOC's Graylog routes
+	// a message to a client's stream by it, so a message without it enters
+	// the system and lands in no stream at all -- which is worse than not
+	// sending, because it looks like it worked.
+	//
+	// One thing measured on 14 set 2026, worth knowing before writing this
+	// line: on all 16 GELF AMQP inputs of that Graylog, cliente_soc is a
+	// STATIC FIELD OF THE INPUT. Graylog does not overwrite a field the
+	// message already carries, so the value written here OVERRIDES what a
+	// correctly configured input would have said. It is necessary -- one
+	// shared input cannot tell which gateway a message came from -- and it
+	// does invert the authority: a wrong value here beats a right one
+	// there.
+	ClienteSOC string `toml:"cliente_soc"`
+
+	// Buffer is how many events may wait in the queue while the destination
+	// is unreachable. Unset means DefaultTelemetryBuffer.
+	//
+	// The only number in this section the code cannot pick, because the
+	// right value depends on the installation's traffic: it decides how
+	// much of an outage is absorbed without losing anything. Every other
+	// number the sink needs -- dial timeout, write timeout, backoff, close
+	// budget -- is a constant in the adapter, which is also how this
+	// section stays free of duration fields and therefore of TOML's
+	// bare-integer trap (see MinRefreshInterval). What that costs is not
+	// being able to retune without recompiling; what it buys is nobody
+	// writing `write_timeout = 5` at 03:00 and turning the sink into a
+	// 100% discarder.
+	//
+	// A pointer for the reason Signer.RequireSigned,
+	// Quarantine.RefreshInterval and Response.MaxBytes are pointers: the
+	// zero value cannot be told apart from an operator writing zero. Unset
+	// means the default; written as zero or negative is refused, and so is
+	// a number too small to have been meant.
+	Buffer *int `toml:"buffer"`
+}
+
+// The two transports telemetry.transport may name. Unexported: the adapter
+// owns the type that carries them onto the wire (gelf.Transport), and a
+// second exported spelling of the same two words in this package would be
+// one more thing that can disagree with it.
+const (
+	telemetryTransportUDP = "udp"
+	telemetryTransportTCP = "tcp"
+)
+
+// DefaultTelemetryBuffer is the queue capacity when the file does not say.
+//
+// 4096 events. An audit.Record is ~200 bytes in memory, so the queue's
+// worst case is ~1 MiB -- irrelevant beside the 1 MiB ceiling on ONE tool
+// result. What 4096 buys is the WINDOW: minutes of traffic, long enough for
+// Graylog to restart without a single event being discarded. A much larger
+// number would buy nothing more, because an outage lasting longer than
+// minutes is the case `mcp-gateway audit --since` answers, not the case
+// memory answers.
+const DefaultTelemetryBuffer = 4096
+
+// MinTelemetryBuffer catches the operator who thought "a few messages".
+//
+// Under it the queue discards on any ordinary burst, and the discard
+// counter stops being a signal that something is wrong and becomes noise
+// nobody reads.
+const MinTelemetryBuffer = 64
+
+// Enabled reports whether any audit event is sent anywhere.
+//
+// It is the address and nothing else. There is deliberately no `enabled`
+// key beside it: a second way to spell "off" is a second thing to misread
+// at 03:00, and the two would eventually disagree.
+func (t Telemetry) Enabled() bool {
+	return strings.TrimSpace(t.Address) != ""
+}
+
+// BufferSize reports the queue capacity, resolving the unset case to
+// DefaultTelemetryBuffer. Validate has already refused a non-positive or
+// too-small value, so what this returns is always usable as a channel
+// capacity.
+func (t Telemetry) BufferSize() int {
+	if t.Buffer == nil {
+		return DefaultTelemetryBuffer
+	}
+	return *t.Buffer
 }

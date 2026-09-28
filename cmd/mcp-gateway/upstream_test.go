@@ -247,12 +247,41 @@ func TestUpstreamRegister_InvalidEntryIsRejected(t *testing.T) {
 			// than quietly re-accepting the old behaviour.
 			name: "http is refused: no dialer serves it",
 			args: []string{"register", "-name", "casemgmt", "-transport", "http"},
-			want: "this build dials \"stdio\" only",
+			want: "this build dials \"stdio\" and \"oci\" only",
 		},
 		{
 			name: "http with a url is refused just the same",
 			args: []string{"register", "-name", "casemgmt", "-transport", "http", "-url", "https://casemgmt.internal/mcp"},
-			want: "this build dials \"stdio\" only",
+			want: "this build dials \"stdio\" and \"oci\" only",
+		},
+		{
+			name: "oci without an image",
+			args: []string{"register", "-name", "casemgmt", "-transport", "oci"},
+			want: "image must not be empty for oci transport",
+		},
+		{
+			// A tag can be repointed at other bytes without changing the
+			// entry, so a signature over it would attest a name, not code.
+			name: "oci with a tag instead of a digest",
+			args: []string{"register", "-name", "casemgmt", "-transport", "oci", "-image", "localhost/casemgmt-mcp:latest"},
+			want: "is not pinned by digest",
+		},
+		{
+			name: "oci with a command",
+			args: []string{"register", "-name", "casemgmt", "-transport", "oci", "-image", ociTestImage, "-command", "docker"},
+			want: "command must be empty for oci transport",
+		},
+		{
+			name: "stdio with an image",
+			args: []string{"register", "-name", "casemgmt", "-transport", "stdio", "-command", "docker", "-image", ociTestImage},
+			want: "image must be empty for stdio transport",
+		},
+		{
+			// podman's rules, checked at the prompt: a bind mount would
+			// register and sign cleanly and then be refused at every start.
+			name: "oci with a wrapper flag the dialer refuses",
+			args: []string{"register", "-name", "casemgmt", "-transport", "oci", "-image", ociTestImage, "-arg", "-v", "-arg", "/:/host"},
+			want: "oci",
 		},
 		{
 			name: "env var name with whitespace",
@@ -547,4 +576,31 @@ func TestCmdUpstream_EndToEndThroughAConfigFile(t *testing.T) {
 	out.Reset()
 	errBuf.Reset()
 	requireExit(t, cmdUpstream([]string{"list", "-config", configPath}, &out, &errBuf), exitProblem, "list after deregister")
+}
+
+// ociTestImage is a syntactically valid digest-pinned reference.
+const ociTestImage = "localhost/casemgmt-mcp@sha256:abababababababababababababababababababababababababababababababab"
+
+// An oci entry registers, lists with its image, and signs with the image in
+// what `sign` prints -- the digest is the code that runs, so the operator
+// sees it at the moment of asserting it.
+func TestRunUpstreamRegister_OCIEntryRoundTrips(t *testing.T) {
+	e := newOpTestEnv(t)
+	entry := registry.UpstreamServer{
+		Name:        "casemgmt",
+		Transport:   registry.TransportOCI,
+		Image:       ociTestImage,
+		Args:        []string{"--network=none"},
+		EnvVarNames: []string{"CASEMGMT_API_KEY"},
+	}
+	requireExit(t, runUpstreamRegister(e.opEnv, entry), exitOK, "register oci")
+	requireContains(t, e.stdoutText(), ociTestImage, "register oci prints the full image")
+
+	got, err := e.upstreams().Get(context.Background(), "casemgmt")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Image != ociTestImage || got.Transport != registry.TransportOCI {
+		t.Fatalf("stored entry = %+v, want transport oci and image %s", got, ociTestImage)
+	}
 }

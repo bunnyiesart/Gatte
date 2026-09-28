@@ -220,8 +220,9 @@ type UpstreamSpec struct {
 	// Name is the upstream's registered name, used to namespace its tools
 	// and to attribute audit records.
 	Name string
-	// Transport is "stdio" or "http" as a TYPE, but only "stdio" is
-	// servable in this build: registry.Validate refuses an http entry with
+	// Transport is "stdio", "oci" or "http" as a TYPE. "stdio" and "oci"
+	// are servable in this build (oci is a stdio child that is `podman run`,
+	// internal/gateway/oci); registry.Validate refuses an http entry with
 	// ErrTransportUnsupported (GAB-19), so no such entry reaches a Dialer.
 	//
 	// The distinction is worth the extra line. "http" is not invalid and
@@ -229,9 +230,15 @@ type UpstreamSpec struct {
 	// yet, and the constant stays declared so the day a dialer lands is a
 	// dialer landing and not a schema change.
 	Transport string
-	// Command and Args describe the process to spawn, for stdio.
+	// Command and Args describe the process to spawn, for stdio. For oci,
+	// Command is empty and Args are the extra `podman run` flags the entry
+	// signs (its network policy, ADR-0016 item 5a in the internal line).
 	Command string
 	Args    []string
+	// Image is the digest-pinned image reference, for oci; empty otherwise.
+	// Never a value: credentials reach the container as environment, set by
+	// the dialer from the resolved env map, not through the reference.
+	Image string
 	// URL is the endpoint to reach, for http -- and therefore always
 	// empty in this build, since no http entry survives
 	// registry.Validate to become a spec. See Transport above.

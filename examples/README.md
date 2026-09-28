@@ -75,7 +75,12 @@ mcp-gateway upstream register -config "$CFG" -name edr -transport stdio \
 - `-arg` is repeatable and carries non-secret settings. Arguments are
   stored in the registry in plaintext and shown by `upstream list`.
 - `-env` is repeatable and takes **names only**. `-env EDR_CLIENT_SECRET=...`
-  is refused without echoing the value.
+  is refused without echoing the value. A `-transport stdio` entry with
+  `-env` is refused unless the configuration sets `[upstreams]
+  allow_credentialed_stdio = true` (`base.toml` does, and every boot logs a
+  WARN for it). Where podman exists, prefer `-transport oci`
+  (`design/adr/0034`). Names whose value is code (`LD_PRELOAD`,
+  `NODE_OPTIONS`, `PYTHONPATH`, ...) are refused on both transports.
 
 `upstream list` shows what is registered and whether each entry is signed.
 `upstream deregister NAME` removes an entry together with its signature and

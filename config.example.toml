@@ -458,6 +458,52 @@ max_bytes = 1048576
 
 
 # ===========================================================================
+# [oci] -- uid e limites de todo container `oci` (ADR-0034)
+# ===========================================================================
+# Todo `podman run` leva, sempre, `--cap-drop=all` e
+# `--security-opt=no-new-privileges`, que nao tem ajuste. Esta secao da os
+# NUMEROS das quatro flags abaixo; nenhum valor desliga a flag, e zero,
+# negativo ou ilegivel e recusado na carga. Todas as chaves sao opcionais.
+#
+#   user       -- `--user`, "UID:GID" numerico, nenhuma metade 0. Imposto
+#                 qualquer que seja o USER da imagem, entao uma imagem fora
+#                 do contrato (USER root) nao roda como root. Nome e
+#                 recusado: seria resolvido pelo /etc/passwd da propria
+#                 imagem. Padrao "65534:65534" (nobody). Uma imagem cujos
+#                 arquivos so o proprio USER le precisa do uid dela aqui.
+#   pids_limit -- `--pids-limit`. Padrao 256.
+#   memory     -- `--memory`, inteiro com uma unidade b/k/m/g, minimo 6m.
+#                 Padrao "512m".
+#   cpus       -- `--cpus`, em nucleos. Padrao 1.0.
+#
+# Os limites precisam de cgroup v2 com os controladores `memory`, `pids` e
+# `cpu` delegados ao usuario do gateway. Sem a delegacao o `run` falha e o
+# upstream nao sobe; em cgroup v1 rootless o podman IGNORA os limites com
+# um aviso no stderr, que o gateway descarta. Confira no host
+# (`podman info --format '{{.Host.CgroupsVersion}}'` e o `cgroup.controllers`
+# do usuario) -- o gateway nao consegue.
+#
+# [oci]
+# user       = "10001:10001"
+# pids_limit = 256
+# memory     = "512m"
+# cpus       = 1.0
+
+
+# ===========================================================================
+# [upstreams] -- stdio com credencial (ADR-0034)
+# ===========================================================================
+# Um upstream `stdio` roda com o uid do proprio gateway: um open() na chave
+# age e o cofre inteiro. Por isso uma entrada `stdio` que declara `-env` e
+# recusada no `upstream register`, no `sign` e no dial, e a saida e
+# registra-la como `-transport oci`. Onde nao ha podman (FreeBSD) ou para os
+# mocks do lab, esta chave libera -- e todo boot com ela ligada loga um WARN.
+#
+# [upstreams]
+# allow_credentialed_stdio = true
+
+
+# ===========================================================================
 # [audit.siem] -- segunda copia da trilha, em JSONL, para o SIEM (ADR-0017)
 # ===========================================================================
 # OPCIONAL, e a secao inteira esta comentada de proposito: sem ela o gateway

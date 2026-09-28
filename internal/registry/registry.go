@@ -114,11 +114,13 @@ var safeUpstreamName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]*$`)
 //
 //   - Name must be non-empty, must not contain the namespace separator,
 //     and must match safeUpstreamName.
-//   - Transport must be exactly TransportStdio. TransportHTTP is a
+//   - Transport must be TransportStdio or TransportOCI. TransportHTTP is a
 //     recognised value with no dialer behind it, so it is refused here
 //     rather than accepted and failed at dial time -- see
 //     ErrTransportUnsupported.
-//   - If Transport is TransportStdio, Command must be non-empty.
+//   - If Transport is TransportStdio, Command must be non-empty and Image
+//     empty; if TransportOCI, Image must be digest-pinned and Command and
+//     URL empty.
 //   - Every entry in EnvVarNames must look like an environment variable
 //     name: non-empty and free of whitespace.
 //

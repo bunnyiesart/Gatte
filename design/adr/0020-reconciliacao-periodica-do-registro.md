@@ -211,7 +211,9 @@ backend que falhou de subir no boot volta sozinho quando voltar a discar.
 **Impactos negativos aceitos:**
 
 - **A janela não fecha, só passa a existir.** Entre dois ticks, um upstream
-  desregistrado continua sendo servido por até um intervalo. Encurtar custa
+  desregistrado continua sendo servido por até um intervalo. (CORREÇÃO — 28
+  set 2026: até um intervalo **mais a duração da rodada**, porque o timer é
+  rearmado depois do trabalho; ver o bloco do `0013`.) Encurtar custa
   uma leitura de registro e um `tools/list` por upstream mais frequentes.
   É a mesma troca do ADR-0013, feita com os olhos abertos.
 - **Suspensão é um estado novo em que o processo está vivo e inútil.** É o

@@ -368,7 +368,9 @@ finding can be proved rather than argued.
 
 A running gateway keeps itself in step with the registry: `upstream
 register`, `upstream deregister` and a signature that stops verifying take
-effect within one `quarantine.refresh_interval`; an unreadable registry
+effect within one `quarantine.refresh_interval` plus the time one
+maintenance round takes (the timer is reset after the round, not before,
+`design/adr/0013`'s 28 Sep 2026 correction); an unreadable registry
 serves nothing until it can be read again (`design/adr/0020`). Role changes
 and credential rotation need a restart.
 

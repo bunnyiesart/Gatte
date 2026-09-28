@@ -275,9 +275,10 @@ What an upstream must be, in this build:
   mounted.
 - **No variable whose value is code.** `LD_*`, `DYLD_*`, `GCONV_PATH` and
   the interpreter knobs (`NODE_OPTIONS`, `PYTHONPATH`, `PYTHONSTARTUP`,
-  `PERL5OPT`, `BASH_ENV`, `JAVA_TOOL_OPTIONS`, ...) are refused as `-env`
-  names on both transports: the names are signed, the vault's values are
-  not.
+  `PERL5OPT`, `BASH_ENV`, `BASH_FUNC_*`, `JAVA_TOOL_OPTIONS`, ...), and
+  `PATH` and `HOME`, which choose where code is loaded from, are refused
+  as `-env` names on both transports: the names are signed, the vault's
+  values are not.
 
 ## Security model
 

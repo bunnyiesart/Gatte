@@ -189,8 +189,8 @@ func TestBuildServer_TheOptInIsLoud(t *testing.T) {
 func TestOCIConfigRuleIsTheDialRule(t *testing.T) {
 	users := []string{"65534:65534", "10001:10001", "1:1", "0:0", "0", "root", "mcp", "10001", "10001:0", "00:1", "4294967296:1", "4294967295:1"}
 	mems := []string{"512m", "6m", "1g", "6291456b", "64k", "5m", "512", "0m", "1.5g", "512mb", "1t"}
-	pids := []int{1, 256, 0, -1}
-	cpus := []float64{1, 0.5, 0.01, 0, -1, math.Inf(1)}
+	pids := []int{1, 256, 0, -1, 1 << 22, 1<<22 + 1}
+	cpus := []float64{1, 0.5, 0.01, 0.009, 1e-9, 0, -1, math.Inf(1)}
 
 	check := func(l gwoci.Limits) {
 		t.Helper()

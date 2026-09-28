@@ -1197,12 +1197,14 @@ type OCI struct {
 	// image declares. Neither half may be 0, and a name is refused: it
 	// would be resolved by the image's own /etc/passwd.
 	User string `toml:"user"`
-	// PidsLimit is --pids-limit. Must be positive.
+	// PidsLimit is --pids-limit. Between 1 and 4194304 (the kernel's
+	// PID_MAX_LIMIT).
 	PidsLimit *int `toml:"pids_limit"`
 	// Memory is --memory: a whole number and one unit of b, k, m or g, at
 	// least 6m.
 	Memory string `toml:"memory"`
-	// CPUs is --cpus, in cores. Must be positive.
+	// CPUs is --cpus, in cores. At least 0.01 (podman's floor), and no
+	// more than the host has, which podman checks at run.
 	CPUs *float64 `toml:"cpus"`
 }
 
@@ -1218,6 +1220,8 @@ var (
 const (
 	ociMaxID     = 1<<32 - 2
 	ociMinMemory = 6 << 20
+	ociMinCPUs   = 0.01
+	ociMaxPids   = 1 << 22
 )
 
 // Validate reports every problem with the section. Exported for the
@@ -1246,8 +1250,9 @@ func (o OCI) validate() []error {
 				"is resolved by the image's own /etc/passwd, and 0 is root", o.User))
 		}
 	}
-	if o.PidsLimit != nil && *o.PidsLimit <= 0 {
-		errs = append(errs, fmt.Errorf("oci.pids_limit: %d must be positive; there is no value that means unlimited", *o.PidsLimit))
+	if o.PidsLimit != nil && (*o.PidsLimit <= 0 || *o.PidsLimit > ociMaxPids) {
+		errs = append(errs, fmt.Errorf("oci.pids_limit: %d must be between 1 and %d; there is no value that means unlimited",
+			*o.PidsLimit, ociMaxPids))
 	}
 	if o.Memory != "" {
 		ok := false
@@ -1260,8 +1265,8 @@ func (o OCI) validate() []error {
 			errs = append(errs, fmt.Errorf("oci.memory: %q must be a whole number with one unit of b, k, m or g, at least 6m", o.Memory))
 		}
 	}
-	if o.CPUs != nil && (math.IsNaN(*o.CPUs) || math.IsInf(*o.CPUs, 0) || *o.CPUs <= 0) {
-		errs = append(errs, fmt.Errorf("oci.cpus: %v must be a positive number of cores", *o.CPUs))
+	if o.CPUs != nil && (math.IsNaN(*o.CPUs) || math.IsInf(*o.CPUs, 0) || *o.CPUs < ociMinCPUs) {
+		errs = append(errs, fmt.Errorf("oci.cpus: %v must be a number of cores of at least 0.01", *o.CPUs))
 	}
 	return errs
 }

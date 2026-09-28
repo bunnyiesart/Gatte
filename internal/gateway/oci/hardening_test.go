@@ -68,6 +68,11 @@ func TestBuildPlanRefusesALimitThatIsNoLimit(t *testing.T) {
 		"cpus -1":         func(l *Limits) { l.CPUs = -1 },
 		"cpus NaN":        func(l *Limits) { l.CPUs = math.NaN() },
 		"cpus Inf":        func(l *Limits) { l.CPUs = math.Inf(1) },
+		// Below podman's floor of 0.01 core the run fails at every dial,
+		// and below 0.00001 the CFS quota rounds to 0 -- no limit at all.
+		"cpus 0.009":            func(l *Limits) { l.CPUs = 0.009 },
+		"cpus 1e-9":             func(l *Limits) { l.CPUs = 1e-9 },
+		"pids above kernel max": func(l *Limits) { l.PidsLimit = 1<<22 + 1 },
 	}
 	for name, mutate := range cases {
 		opts := testOptions()

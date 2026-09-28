@@ -140,7 +140,9 @@ From `design/adr/0003-security-controls.md`'s explicit "not covered" list:
   separate uid, no nested jail, no Capsicum. ADR-0003 accepted "one host,
   one service account" and never named this consequence. Isolating them is
   platform work this team has no role to operate; the gap is real and is
-  declared rather than closed.
+  declared rather than closed. Since ADR-0034 a stdio entry with `-env`
+  credentials is refused unless `[upstreams] allow_credentialed_stdio =
+  true`; `-transport oci` is the isolated path.
 - **A flood of unauthenticated requests DENIES SERVICE to authenticated
   analysts.** Every rejected request writes a row (ADR-0012, and the row is
   the detection), through the same single SQLite writer that `Dispatch` must

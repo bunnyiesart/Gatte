@@ -208,6 +208,17 @@ const maxID = 1<<32 - 2
 // minMemory is podman's own floor for --memory.
 const minMemory = 6 << 20
 
+// minCPUs is podman's floor for --cpus: 0.01 core is a CFS quota of
+// 1000us per 100000us period, the kernel's minimum. Below it podman refuses
+// the run, and below 0.00001 the quota rounds to 0, which is no limit.
+// There is no ceiling here: podman refuses a value above the host's CPU
+// count, and the host is not known where the configuration is loaded.
+const minCPUs = 0.01
+
+// maxPids is the kernel's PID_MAX_LIMIT on 64-bit Linux (2^22). A larger
+// --pids-limit is not a limit.
+const maxPids = 1 << 22
+
 // ValidateLimits reports whether l is a container policy this adapter will
 // run under. It is the rule buildPlan applies, exported so the
 // composition root can refuse to start on it instead of refusing every oci
@@ -223,14 +234,15 @@ func ValidateLimits(l Limits) error {
 			return fmt.Errorf("%w: user %q is out of range", ErrInvalidLimits, l.User)
 		}
 	}
-	if l.PidsLimit <= 0 {
-		return fmt.Errorf("%w: pids limit %d must be positive; there is no value that means unlimited", ErrInvalidLimits, l.PidsLimit)
+	if l.PidsLimit <= 0 || l.PidsLimit > maxPids {
+		return fmt.Errorf("%w: pids limit %d must be between 1 and %d; there is no value that means unlimited",
+			ErrInvalidLimits, l.PidsLimit, maxPids)
 	}
 	if bytes, ok := memoryBytes(l.Memory); !ok || bytes < minMemory {
 		return fmt.Errorf("%w: memory %q must be a whole number with one unit of b, k, m or g, at least 6m", ErrInvalidLimits, l.Memory)
 	}
-	if math.IsNaN(l.CPUs) || math.IsInf(l.CPUs, 0) || l.CPUs <= 0 {
-		return fmt.Errorf("%w: cpus %v must be a positive number of cores", ErrInvalidLimits, l.CPUs)
+	if math.IsNaN(l.CPUs) || math.IsInf(l.CPUs, 0) || l.CPUs < minCPUs {
+		return fmt.Errorf("%w: cpus %v must be a number of cores of at least 0.01", ErrInvalidLimits, l.CPUs)
 	}
 	return nil
 }

@@ -131,6 +131,29 @@ func stampOf(path string) (fileStamp, error) {
 	return fileStamp{modTime: info.ModTime(), size: info.Size()}, nil
 }
 
+// String and GoString keep an accidental %v/%+v/%#v of a *Provider -- a
+// config struct in a debug dump, say -- from printing the whole decrypted
+// store, which fmt would otherwise do by reflecting over the unexported
+// map. Only the count is shown; not even the names, since they are the
+// operator's business and not the log's.
+//
+// Pointer receivers, unlike the internal tree's value ones: Provider holds
+// a sync.RWMutex, so a Provider value is never copied (vet copylocks) and
+// New only ever hands out a *Provider. The count is read under the lock
+// because a reload may be replacing the map.
+func (p *Provider) String() string {
+	if p == nil {
+		return "sopsage.Provider(nil)"
+	}
+	p.mu.RLock()
+	n := len(p.secrets)
+	p.mu.RUnlock()
+	return fmt.Sprintf("sopsage.Provider{%d secrets}", n)
+}
+
+// GoString covers %#v, which bypasses String.
+func (p *Provider) GoString() string { return p.String() }
+
 // New decrypts secretsFile (a sops-encrypted JSON document, top level a
 // flat object of string values) using the age identity in ageKeyFile, and
 // returns a Provider ready to serve Resolve. ctx bounds the sops

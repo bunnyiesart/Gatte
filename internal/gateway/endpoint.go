@@ -1,7 +1,6 @@
 package gateway
 
 import (
-	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/rand"
@@ -11,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
@@ -589,10 +589,10 @@ func New(cfg Config) (*Gateway, error) {
 // connected is Refresh, and neither of those tears anything down that the
 // registry still describes the same way.
 //
-// For each upstream, in order: the credentials named by the registry entry
-// are resolved through the Credential Vault, the backend is dialed with
-// those values, its tools are listed, and every tool is handed to
-// quarantine.Store.Observe. Observing is what makes a newly-appeared tool
+// For each upstream, concurrently with the others (see the body for why):
+// the credentials named by the registry entry are resolved through the
+// Credential Vault, the backend is dialed with those values, its tools are
+// listed, and every tool is handed to quarantine.Store.Observe. Observing is what makes a newly-appeared tool
 // land in pending and a silently-rewritten one land in changed, so a tool
 // the gateway has never routed before is never served on the strength of
 // having been discovered.
@@ -637,6 +637,8 @@ func (g *Gateway) Connect(ctx context.Context) error {
 	dialed := make(map[string]registry.UpstreamServer, len(entries))
 	candidates := map[string]map[string]routedTool{}
 	var failures []error
+	// ready is every entry that passed both gates, in registry order.
+	var ready []registry.UpstreamServer
 
 	// Once per Connect, not once per entry: a per-entry warning in a fleet
 	// of twenty is a wall of text nobody reads, and these are precisely the
@@ -686,24 +688,38 @@ func (g *Gateway) Connect(ctx context.Context) error {
 			continue
 		}
 
-		up, err := g.bringUp(ctx, entry)
-		if err != nil {
-			failures = append(failures, err)
-			g.log.ErrorContext(ctx, "gateway: upstream not brought up",
-				slog.String("upstream", entry.Name), slog.String("detail", err.Error()))
-			continue
-		}
+		ready = append(ready, entry)
+	}
 
-		defs, err := up.ListTools(ctx)
-		if err != nil {
-			// The connection is useless without a tool list, and leaving it
-			// open would leak a subprocess.
-			_ = up.Close()
-			failures = append(failures, fmt.Errorf("%w: %q: list tools: %w", ErrUpstreamUnavailable, entry.Name, err))
+	// Each ready entry is brought up and listed in its own goroutine, all
+	// under ctx, and handed to the quarantine as soon as it answers. Done
+	// one after another, as it used to be, a backend whose dial or
+	// tools/list never answered spent the whole connect budget and every
+	// entry after it failed with an expired context -- one hung upstream
+	// kept the rest of the fleet down until a restart, which is not the
+	// "one broken backend is skipped" promise above. A fixed per-entry
+	// slice of the budget would fix that by starving a slow but healthy
+	// start instead; concurrency gives every entry the whole budget and
+	// costs the hung one only itself. (Ported from the internal tree,
+	// 2026-09-24.)
+	//
+	// routesFor stays on this goroutine, in the order answers arrive, so
+	// the quarantine is consulted while ctx is still live for everyone who
+	// answered in time. Failures are joined in name order afterwards so the
+	// error does not depend on who answered first.
+	answers := make(chan broughtUp, len(ready))
+	for _, entry := range ready {
+		go func() { answers <- g.bringUpAndList(ctx, entry) }()
+	}
+	perUpstream := make(map[string][]error, len(ready))
+	for range ready {
+		got := <-answers
+		perUpstream[got.entry.Name] = got.errs
+		if got.up == nil {
 			continue
 		}
-		conns[entry.Name] = up
-		dialed[entry.Name] = entry
+		conns[got.entry.Name] = got.up
+		dialed[got.entry.Name] = got.entry
 
 		// unmeasured is deliberately ignored here. At boot there is no
 		// earlier observation to fall back on, so a tool the quarantine
@@ -711,9 +727,12 @@ func (g *Gateway) Connect(ctx context.Context) error {
 		// checked later -- and the fail-closed reading of that is "do not
 		// route it", which is what routesFor already did. Refresh, which
 		// does have an earlier measurement, reads the flag instead.
-		got := g.routesFor(ctx, entry.Name, defs)
-		candidates[entry.Name] = got.routes
-		failures = append(failures, got.failures...)
+		routed := g.routesFor(ctx, got.entry.Name, got.defs)
+		candidates[got.entry.Name] = routed.routes
+		perUpstream[got.entry.Name] = append(perUpstream[got.entry.Name], routed.failures...)
+	}
+	for _, name := range slices.Sorted(maps.Keys(perUpstream)) {
+		failures = append(failures, perUpstream[name]...)
 	}
 
 	routes, conflicts := mergeRoutes(candidates)
@@ -729,6 +748,40 @@ func (g *Gateway) Connect(ctx context.Context) error {
 		return ErrClosed
 	}
 	return errors.Join(failures...)
+}
+
+// broughtUp is one entry's outcome in Connect: a live connection and its
+// tool list, or no connection and the failures that explain why.
+type broughtUp struct {
+	entry registry.UpstreamServer
+	up    Upstream
+	defs  []ToolDef
+	errs  []error
+}
+
+// bringUpAndList dials entry and asks it for its tools, for Connect. It
+// touches no state Connect owns -- bringUp's rememberCredentials takes g.mu
+// itself -- which is what lets Connect run it for every entry at once.
+func (g *Gateway) bringUpAndList(ctx context.Context, entry registry.UpstreamServer) (got broughtUp) {
+	got.entry = entry
+	up, err := g.bringUp(ctx, entry)
+	if err != nil {
+		got.errs = append(got.errs, err)
+		g.log.ErrorContext(ctx, "gateway: upstream not brought up",
+			slog.String("upstream", entry.Name), slog.String("detail", err.Error()))
+		return got
+	}
+
+	defs, err := up.ListTools(ctx)
+	if err != nil {
+		// The connection is useless without a tool list, and leaving it
+		// open would leak a subprocess.
+		_ = up.Close()
+		got.errs = append(got.errs, fmt.Errorf("%w: %q: list tools: %w", ErrUpstreamUnavailable, entry.Name, err))
+		return got
+	}
+	got.up, got.defs = up, defs
+	return got
 }
 
 // Reconcile makes the set of live connections match the Upstream Registry,
@@ -939,22 +992,48 @@ func (g *Gateway) Reconcile(ctx context.Context) error {
 		return ErrClosed
 	}
 
-	add := map[string]Upstream{}
-	addEntries := map[string]registry.UpstreamServer{}
+	var toDial []string
 	for _, name := range wantNames {
-		entry := want[name]
 		if _, stillLive := live[name]; stillLive && !slices.Contains(remove, name) {
 			continue
 		}
-		up, err := g.bringUp(ctx, entry)
-		if err != nil {
+		toDial = append(toDial, name)
+	}
+
+	// Dialed concurrently, each under the round's whole ctx, for the reason
+	// Connect's comment gives: one after another, a backend whose dial
+	// never returned spent the whole reconcileTimeout and every entry
+	// sorted after it failed with an expired context -- round after round,
+	// for as long as it hung, so a healthy upstream registered beside a
+	// broken one never came up. Outcomes are read back in name order so
+	// the log and the joined error stay deterministic.
+	type dialOutcome struct {
+		up  Upstream
+		err error
+	}
+	outcomes := make([]dialOutcome, len(toDial))
+	var wg sync.WaitGroup
+	for i, name := range toDial {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			up, err := g.bringUp(ctx, want[name])
+			outcomes[i] = dialOutcome{up: up, err: err}
+		}()
+	}
+	wg.Wait()
+
+	add := map[string]Upstream{}
+	addEntries := map[string]registry.UpstreamServer{}
+	for i, name := range toDial {
+		if err := outcomes[i].err; err != nil {
 			failures = append(failures, err)
 			g.log.ErrorContext(ctx, "gateway: upstream not brought up; it will be retried next round",
-				slog.String("upstream", entry.Name), slog.String("detail", err.Error()))
+				slog.String("upstream", name), slog.String("detail", err.Error()))
 			continue
 		}
-		add[name] = up
-		addEntries[name] = entry
+		add[name] = outcomes[i].up
+		addEntries[name] = want[name]
 	}
 
 	// After the work, and before the new connections are published: this
@@ -1073,10 +1152,40 @@ func (g *Gateway) Refresh(ctx context.Context) error {
 	candidates := map[string]map[string]routedTool{}
 	var failures []error
 
+	// Every upstream is asked at once, and each answer is handed to the
+	// quarantine as it arrives. Asked one after another under the one ctx,
+	// as they used to be, an upstream whose tools/list never answered spent
+	// the whole refresh budget, and every upstream sorted after it failed
+	// with an expired context and kept its previous tool list -- so a rug
+	// pull on any of them went un-observed, and stayed served, for as long
+	// as the first one hung. That broke the promise above that every
+	// upstream that did answer is refreshed regardless. (Ported from the
+	// internal tree, 2026-09-24.)
+	//
+	// Only ListTools runs off this goroutine. Everything that reads or
+	// writes gateway state -- markGone, routesFor and its quarantine
+	// Observe, the candidate table -- stays here, one answer at a time.
+	// Failures are joined in name order so the error does not depend on
+	// who answered first.
+	type listed struct {
+		name string
+		defs []ToolDef
+		err  error
+	}
+	answers := make(chan listed, len(names))
 	for _, name := range names {
-		defs, err := conns[name].ListTools(ctx)
+		up := conns[name]
+		go func() {
+			defs, err := up.ListTools(ctx)
+			answers <- listed{name: name, defs: defs, err: err}
+		}()
+	}
+	perUpstream := make(map[string][]error, len(names))
+	for range names {
+		answer := <-answers
+		name, defs, err := answer.name, answer.defs, answer.err
 		if err != nil {
-			failures = append(failures, fmt.Errorf("%w: %q: list tools: %w", ErrUpstreamUnavailable, name, err))
+			perUpstream[name] = append(perUpstream[name], fmt.Errorf("%w: %q: list tools: %w", ErrUpstreamUnavailable, name, err))
 			// Death is the one listing failure that is evidence rather
 			// than the absence of it (ADR-0024). Recorded here, acted on
 			// by the next Reconcile -- this function closes nothing, by
@@ -1106,7 +1215,7 @@ func (g *Gateway) Refresh(ctx context.Context) error {
 		}
 
 		got := g.routesFor(ctx, name, defs)
-		failures = append(failures, got.failures...)
+		perUpstream[name] = append(perUpstream[name], got.failures...)
 		if got.unmeasured {
 			// The quarantine store, not the backend, is what failed. Nothing
 			// about this upstream can be judged right now, so nothing about
@@ -1124,6 +1233,9 @@ func (g *Gateway) Refresh(ctx context.Context) error {
 			continue
 		}
 		candidates[name] = got.routes
+	}
+	for _, name := range names {
+		failures = append(failures, perUpstream[name]...)
 	}
 
 	routes, conflicts := mergeRoutes(candidates)
@@ -1678,50 +1790,45 @@ func (g *Gateway) scrubResult(ctx context.Context, upstream string, res Result) 
 	return res, nil
 }
 
-// scrubJSON replaces each value of env found in raw with the redaction
+// scrubJSON masks every value of env found in raw with the redaction
 // placeholder, appending the variable's name to hit when it did.
 //
-// raw is JSON text, so a value can appear two ways: as itself, inside a
-// string literal, or JSON-escaped (encoding/json escapes <, > and & by
-// default, and any encoder escapes " and \). Both are replaced. The bare
-// form is replaced only when it contains nothing JSON must escape --
-// otherwise a match could straddle structure and the replacement would
-// corrupt the document rather than a string inside it.
+// raw is JSON text, so a value appears inside a string literal as a JSON
+// encoder wrote it -- itself when nothing needs escaping, escaped when it
+// holds <, >, &, " or \ -- and a backend that formatted it with %q or
+// embedded a JSON payload in its message puts that rendering in, escaped
+// once more. [jsonRenderingsOf] lists all of them, and [maskSpans] masks
+// the union of their matches in one pass, so a short value inside a longer
+// one cannot split it. The bare form of a value JSON must escape is never
+// matched -- it could straddle structure and corrupt the document rather
+// than a string inside it.
 func scrubJSON(raw json.RawMessage, env map[string]string, hit *[]string) (json.RawMessage, error) {
 	if len(raw) == 0 {
 		return raw, nil
 	}
-	out := []byte(raw)
-	changed := false
+	names := make([]string, 0, len(env))
 	for name, value := range env {
-		if value == "" {
-			continue
+		if value != "" {
+			names = append(names, name)
 		}
-		forms := make([]string, 0, 2)
-		if !strings.ContainsAny(value, "\"\\") && !strings.ContainsFunc(value, func(r rune) bool { return r < 0x20 }) {
-			forms = append(forms, value)
-		}
-		if enc, err := json.Marshal(value); err == nil {
-			if escaped := string(enc[1 : len(enc)-1]); !slices.Contains(forms, escaped) {
-				forms = append(forms, escaped)
-			}
-		}
-		found := false
-		for _, form := range forms {
-			if bytes.Contains(out, []byte(form)) {
-				out = bytes.ReplaceAll(out, []byte(form), []byte(redacted))
-				found = true
-			}
-		}
-		if found {
+	}
+	slices.Sort(names)
+	forms := make([][]string, len(names))
+	for i, name := range names {
+		forms[i] = jsonRenderingsOf(env[name])
+	}
+	out, matched := maskSpans(string(raw), forms)
+	changed := false
+	for i, m := range matched {
+		if m {
 			changed = true
-			*hit = append(*hit, name)
+			*hit = append(*hit, names[i])
 		}
 	}
 	if !changed {
 		return raw, nil
 	}
-	if !json.Valid(out) {
+	if !json.Valid([]byte(out)) {
 		// A value short or common enough to match JSON syntax itself. Fail
 		// closed: the one thing this must not do is forward the secret.
 		return nil, ErrResultUnscrubbable
@@ -2565,19 +2672,14 @@ func targetOf(namespacedTool string) string {
 // The Dialer and Provider contracts both already forbid a value in an
 // error. This is the belt to those braces, applied at the one boundary
 // where such a mistake would be turned into a returned error and a log
-// line by this package.
+// line by this package. The masking itself is [MaskCredentials]: the
+// union of every match span, raw and escaped, in one pass.
 func redact(err error, env map[string]string) error {
 	if err == nil {
 		return nil
 	}
-	msg := err.Error()
-	for _, value := range env {
-		if value == "" {
-			continue
-		}
-		msg = strings.ReplaceAll(msg, value, redacted)
-	}
-	if msg == err.Error() {
+	msg, masked := MaskCredentials(err.Error(), env)
+	if !masked {
 		return err
 	}
 	return redactedError{msg: msg, cause: err}
@@ -2630,7 +2732,90 @@ func validateSchema(raw json.RawMessage) error {
 	if typ != "object" {
 		return fmt.Errorf("%w: type is %v, want \"object\"", ErrUnusableSchema, typ)
 	}
+	if err := validateHeaderAnnotations(raw); err != nil {
+		return fmt.Errorf("%w: %w", ErrUnusableSchema, err)
+	}
 	return nil
+}
+
+// headerSchemaProperty is the slice of a JSON Schema property that
+// x-mcp-header validation reads. It deliberately mirrors the go-sdk's own
+// decoding (mcp/streamable_headers.go, v1.7.0) field for field, including
+// "type" as a plain string: a schema the SDK cannot decode this way is one
+// it skips validating, and refusing it here would withhold a tool the SDK
+// serves without complaint.
+type headerSchemaProperty struct {
+	Type       string                          `json:"type"`
+	XMCPHeader json.RawMessage                 `json:"x-mcp-header,omitempty"`
+	Properties map[string]headerSchemaProperty `json:"properties,omitempty"`
+}
+
+// validateHeaderAnnotations applies the rules mcp.Server.AddTool enforces
+// on x-mcp-header annotations -- and panics on (go-sdk v1.7.0,
+// validateParamHeaderAnnotations) -- so that discovery refuses a schema
+// that breaks them instead of letting it reach a serving surface.
+//
+// The shape checks above were the whole of the "what AddTool accepts" bar,
+// and an upstream advertising `x-mcp-header` on an array property, a
+// header name that is not an HTTP token, or two names equal but for case
+// passed discovery; once approved, AddTool panicked in httpapi.getServer
+// on every request from every caller whose role included the tool,
+// tools/list included. The rules are restated rather than borrowed because
+// this package does not import the SDK; httpapi also recovers around each
+// AddTool, so a rule the SDK grows later costs one tool, not the listing.
+// Re-check this against the SDK on every bump.
+func validateHeaderAnnotations(raw json.RawMessage) error {
+	var root headerSchemaProperty
+	if err := json.Unmarshal(raw, &root); err != nil {
+		return nil // The SDK skips what it cannot decode; see headerSchemaProperty.
+	}
+	return validateHeadersIn(root.Properties, "", map[string]bool{})
+}
+
+func validateHeadersIn(props map[string]headerSchemaProperty, prefix string, seen map[string]bool) error {
+	// Sorted so the property named in the error does not depend on map
+	// order; the SDK's order does not matter, only whether it refuses.
+	for _, name := range slices.Sorted(maps.Keys(props)) {
+		prop := props[name]
+		path := name
+		if prefix != "" {
+			path = prefix + "." + name
+		}
+		if prop.XMCPHeader != nil {
+			switch prop.Type {
+			case "string", "integer", "boolean":
+			default:
+				return fmt.Errorf("property %q: x-mcp-header on a non-primitive type %q", path, prop.Type)
+			}
+			var header string
+			if err := json.Unmarshal(prop.XMCPHeader, &header); err != nil || header == "" {
+				return fmt.Errorf("property %q: x-mcp-header must be a non-empty string", path)
+			}
+			if strings.IndexFunc(header, func(c rune) bool { return !isHTTPTokenChar(c) }) >= 0 {
+				return fmt.Errorf("property %q: x-mcp-header value is not an HTTP token", path)
+			}
+			lower := strings.ToLower(header)
+			if seen[lower] {
+				return fmt.Errorf("property %q: duplicate x-mcp-header value (case-insensitive)", path)
+			}
+			seen[lower] = true
+		}
+		if len(prop.Properties) > 0 {
+			if err := validateHeadersIn(prop.Properties, path, seen); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// isHTTPTokenChar reports whether c is an RFC 9110 tchar.
+func isHTTPTokenChar(c rune) bool {
+	switch {
+	case c >= '0' && c <= '9', c >= 'A' && c <= 'Z', c >= 'a' && c <= 'z':
+		return true
+	}
+	return strings.ContainsRune("!#$%&'*+-.^_`|~", c)
 }
 
 // CredentialDrift is one connected upstream still running on a credential

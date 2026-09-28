@@ -46,13 +46,18 @@ func cmdTool(args []string, stdout, stderr io.Writer) int {
 func toolUsage(w io.Writer) {
 	fmt.Fprint(w, `Usage:
   mcp-gateway tool list [-config FILE] [-server NAME] [-json]
-  mcp-gateway tool approve [-config FILE] SERVER TOOL
+  mcp-gateway tool approve [-config FILE] [-fingerprint SHA256] SERVER TOOL
   mcp-gateway tool revoke [-config FILE] SERVER TOOL
 
 "list" is the approval queue: it shows every tool the gateway has observed,
 including the pending and changed ones, which are precisely the ones that
 need a human. A tool is usable only when an operator approved it AND the
 definition being advertised now still matches what was approved.
+
+"approve" baselines the fingerprint the tool is advertising when the command
+reads it, and refuses if that moves before the approval is written. Pass
+-fingerprint with the full hash you reviewed (tool list -json) to refuse
+also when the tool changed between your review and this command.
 
 "revoke" is the way back: it withdraws an approval and returns the tool to
 pending, so a running gateway stops serving it on the very next call. It
@@ -186,6 +191,7 @@ func runToolList(e *opEnv, server string, asJSON bool) int {
 // toolApprove approves one quarantined tool.
 func toolApprove(args []string, stdout, stderr io.Writer) int {
 	fs, configPath := opFlagSet("tool approve", stderr)
+	fingerprint := fs.String("fingerprint", "", "approve only if the observed fingerprint is still this one (the full sha256 `tool list -json` prints)")
 	if code, ok := opParse(fs, args, stdout, stderr, toolUsage); !ok {
 		return code
 	}
@@ -197,12 +203,28 @@ func toolApprove(args []string, stdout, stderr io.Writer) int {
 	server, tool := fs.Arg(0), fs.Arg(1)
 
 	return opRun(*configPath, stdout, stderr, func(e *opEnv) int {
-		return runToolApprove(e, server, tool)
+		return runToolApproveFingerprint(e, server, tool, *fingerprint)
 	})
 }
 
 func runToolApprove(e *opEnv, server, tool string) int {
+	return runToolApproveFingerprint(e, server, tool, "")
+}
+
+// runToolApproveFingerprint approves server.tool. reviewed, when not empty,
+// is the full fingerprint the operator reviewed (with or without the
+// "sha256:" prefix); the approval is refused if the tool is no longer
+// advertising it.
+//
+// Either way the approval itself is compare-and-approve against the
+// fingerprint read by the Get below -- the one this command prints -- so a
+// discovery cycle landing between that read and the write can no longer
+// get a definition baselined that nobody was shown. Without -fingerprint
+// the window that remains is between the operator's own review and running
+// this command; -fingerprint closes that one too.
+func runToolApproveFingerprint(e *opEnv, server, tool, reviewed string) int {
 	q := e.tools()
+	reviewed = strings.TrimPrefix(strings.TrimSpace(reviewed), "sha256:")
 
 	// Read the state first. Approve returns the state *after* the
 	// transition, and what an operator most needs to be told -- that they
@@ -222,6 +244,11 @@ func runToolApprove(e *opEnv, server, tool string) int {
 	}
 
 	name := server + "." + tool
+
+	if reviewed != "" && reviewed != before.ObservedHash {
+		fmt.Fprintf(e.stderr, "NOT approved: %s is now advertising sha256:%s, not the sha256:%s you reviewed.\nThe upstream's definition changed since you looked at it. Read the current\ndefinition on the upstream server, then approve that fingerprint if it is sound.\n", name, before.ObservedHash, reviewed)
+		return exitProblem
+	}
 
 	// Everything that makes this a decision rather than a keystroke is
 	// printed before the change, not after it.
@@ -249,7 +276,11 @@ func runToolApprove(e *opEnv, server, tool string) int {
 	// decision rather than a keystroke.
 	printGrantCoverage(e.stdout, e.cfg.Roles, server, tool)
 
-	after, err := q.Approve(e.ctx(), server, tool)
+	after, err := q.ApproveFingerprint(e.ctx(), server, tool, before.ObservedHash)
+	if errors.Is(err, quarantine.ErrFingerprintMoved) {
+		fmt.Fprintf(e.stderr, "NOT approved: %s changed while this command ran -- it is no longer advertising\nsha256:%s. Run `mcp-gateway tool list` and review it again.\n", name, before.ObservedHash)
+		return exitProblem
+	}
 	if err != nil {
 		fmt.Fprintf(e.stderr, "quarantine: approving %s: %v\n", name, err)
 		return exitCannotRun

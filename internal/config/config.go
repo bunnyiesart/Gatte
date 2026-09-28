@@ -1034,8 +1034,13 @@ func (c *Config) Validate() error {
 	}
 
 	for group, role := range c.GroupToRole {
+		// access.ValidateGroupName, not a restatement of it (GAB-30): an
+		// untrimmed key is refused by access.NewPolicy, so it must be
+		// refused here too or the file loads and serve dies on restart.
 		if strings.TrimSpace(group) == "" {
 			errs = append(errs, errors.New("group_to_role: contains an empty group name"))
+		} else if err := access.ValidateGroupName(group); err != nil {
+			errs = append(errs, fmt.Errorf("group_to_role[%q]: %w", group, err))
 		}
 		if !seen[role] {
 			errs = append(errs, fmt.Errorf("group_to_role[%q]: maps to undefined role %q", group, role))

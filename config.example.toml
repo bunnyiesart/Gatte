@@ -759,6 +759,171 @@ tools = []
 
 # ===========================================================================
 # Grupo do IdP -> papel
+
+# ===========================================================================
+# [telemetry] -- copia dos eventos de auditoria para o SIEM, em GELF (ADR-0029)
+# ===========================================================================
+# **Esta secao vem inteira sem destino, de proposito, e a razao nao e
+# cautela generica: hoje nao existe endereco correto para escrever aqui.**
+# Muitas instalacoes do Graylog so tem inputs `GELFAMQPInput` (um por
+# cliente), e este sink nao fala AMQP: ele fala GELF sobre UDP ou TCP. Quem
+# quiser liga-lo confere primeiro que existe um input GELF UDP ou TCP no
+# Graylog e escreve o endereco DELE. Um endereco inventado num arquivo de
+# exemplo e um endereco que alguem cola em producao, onde ele parece
+# telemetria e e um socket mandando datagrama para o vazio.
+#
+# O cabecalho `[telemetry]` fica descomentado abaixo e todas as chaves
+# comentadas. Isso e legal e significa "sem destino": nenhum evento sai do
+# processo. Descomentar UMA chave sem descomentar `address` NAO carrega --
+# o gateway recusa subir dizendo qual linha falta. Isso e a segunda defesa,
+# porque "achei que tinha ligado" e a falha real desta secao.
+#
+# ---------------------------------------------------------------------
+# ISTO E UMA **COPIA**. A FONTE DE VERDADE CONTINUA SENDO O SQLITE.
+# ---------------------------------------------------------------------
+# O Audit Trail (ADR-0012) e escrito primeiro e sempre; o sink so ve o que o
+# SQLite ja ACEITOU. Perder evento aqui perde uma copia, nunca a evidencia.
+# Por isso, e ao contrario de `quarantine.refresh_interval` e de
+# `response.max_bytes`, esta secao PODE ficar ausente sem que nada de
+# seguranca fique desligado: um gateway sem `[telemetry]` audita exatamente
+# tudo o que auditaria com ela.
+#
+# E por isso a telemetria nunca segura uma chamada. Graylog fora do ar, DNS
+# falhando, socket cheio: o gateway continua servindo, e o evento que nao
+# cabe na fila e DESCARTADO e CONTADO. A recuperacao de uma lacuna nao e um
+# spool em disco, e o proprio trail:
+#
+#     mcp-gateway audit --since 2026-01-01T03:11:07Z
+#
+# O log de arranque diz para onde vai (ou que nao vai a lugar nenhum), e o
+# log de transicao imprime esse comando ja montado, com o horario de inicio
+# da lacuna dentro.
+#
+# ---------------------------------------------------------------------
+# A ARMADILHA DAS DUAS LINHAS, PELA TERCEIRA VEZ NESTE ARQUIVO.
+# ---------------------------------------------------------------------
+# Uma chamada que falha produz `_outcome:allowed` em T e `_outcome:failed`
+# em T+n (ADR-0012). Sao DUAS mensagens GELF para UMA chamada. Um widget do
+# Graylog que conte MENSAGENS super-conta as chamadas pelo numero exato de
+# falhas. **CONTE `_outcome:allowed`** para tentativas, e leia
+# `_outcome:failed` como anotacao sobre a linha de cima.
+#
+# ---------------------------------------------------------------------
+# O QUE ATRAVESSA A REDE, E O QUE NUNCA ATRAVESSA.
+# ---------------------------------------------------------------------
+# Vao os sete campos do registro e nada mais: `_analyst_identity` (o `sub`
+# do IdP), `_tool`, `_target_upstream`, `_outcome`, `_reason`,
+# `_source_address` e o timestamp do registro -- mais `host` e
+# `_cliente_soc` desta secao. Os nomes dos campos sao identicos aos do
+# `mcp-gateway audit -json`, para que a query do Graylog e o comando no host
+# nao precisem de traducao no meio de um incidente.
+#
+# NAO vao, por construcao: valor de credencial nenhum, o token apresentado
+# numa falha de autenticacao (nem truncado), o texto de erro do upstream, os
+# `args` da chamada e o conteudo do resultado. O sink so recebe
+# `audit.Record`, que tem sete campos fechados -- ampliar o que sai exige
+# mudar o trail primeiro. Esta secao tambem nao aceita credencial nenhuma:
+# `tls_ca_file` e caminho de material publico, e o sink nao se autentica em
+# nada.
+
+[telemetry]
+
+# Endereco do input GELF, `host:port`. **E o interruptor**: sem ele, nada e
+# enviado a lugar nenhum. Nao ha porta padrao para adivinhar (12201 e a
+# convencao do Graylog para GELF, nao uma garantia), e o nome NAO e
+# resolvido na carga nem no arranque -- um SIEM que resolve as 03h e nao
+# resolve as 04h nao pode decidir se este gateway sobe.
+#
+# Se errar: um `host:port` que nao existe nao derruba nada e nao avisa em
+# voz alta -- o gateway sobe, serve, e os contadores marcam `dropped_write`
+# enquanto o Graylog nao ve mensagem nenhuma. O sintoma e uma lacuna
+# silenciosa no stream, indistinguivel de um periodo sem trafego (o sink
+# manda uma mensagem `_event_kind=telemetry_gap` na recuperacao justamente
+# para isso). Confira o input no Graylog antes de escrever a linha.
+# address = "192.0.2.11:12201"
+
+# "udp" ou "tcp". **Obrigatorio, sem padrao**, e a ausencia de padrao e
+# deliberada: a escolha muda o que este gateway consegue te CONTAR. Sob
+# `udp`, "escrito" significa que o datagrama saiu do socket e nada mais --
+# perda no caminho e invisivel para o contador. Sob `tcp`, significa que os
+# bytes foram aceitos pela conexao, o que ainda nao diz que o Graylog
+# indexou. Nenhum dos dois e entrega confirmada; um dos dois pelo menos
+# percebe o destino morto.
+#
+# Se errar: escrever `udp` porque "e mais leve" contra um input TCP nao da
+# erro nenhum na inicializacao e nao entrega nada. O contador vai marcar
+# tudo como escrito.
+# transport = "tcp"
+
+# TLS na conexao TCP. So com `transport = "tcp"` -- nao existe GELF UDP
+# sobre TLS, e o arquivo recusa a combinacao em vez de mandar em claro
+# achando que mandou cifrado. Nao existe chave que desligue a verificacao de
+# certificado, e isso nao e esquecimento.
+# tls = true
+
+# Caminho do PEM com a CA que assinou o certificado do input. Vazio = pool
+# do sistema. **Caminho, nunca valor** (ADR-0009 §3) -- e um certificado de
+# CA e material publico, entao esta linha nao e segredo.
+#
+# Se errar: arquivo inexistente ou sem certificado dentro DERRUBA o arranque.
+# E de proposito: erro local derruba, indisponibilidade remota nunca derruba.
+# Escrito junto com `tls = false` tambem e recusado, porque as duas linhas se
+# contradizem.
+# tls_ca_file = "/usr/local/etc/mcp-gateway/graylog-ca.pem"
+
+# O campo `host` do GELF. **Obrigatorio**, e sem cair para o hostname do
+# processo: num processo containerizado `os.Hostname()` devolve um id que
+# muda a cada restart, e todo dashboard do Graylog agrupa por este campo --
+# o agrupamento se estilhacaria sem avisar ninguem. Escreva um nome estavel,
+# que sobreviva a um redeploy.
+# host = "mcp-gateway-01"
+
+# O campo `_cliente_soc` do GELF: e por ele que o Graylog do SOC roteia a
+# mensagem para o stream do cliente. **Obrigatorio.**
+#
+# O que muda como esta linha deve ser lida: num input AMQP por cliente, `cliente_soc` e STATIC FIELD DO INPUT, nao campo do
+# remetente. Como o Graylog nao sobrescreve campo que a mensagem ja traga,
+# **um `cliente_soc` errado aqui vence um input corretamente configurado**.
+# A autoridade se inverte, e o preco vale porque um input compartilhado nao
+# distingue de qual gateway veio a mensagem -- mas confira o valor contra a
+# stream rule antes de reiniciar.
+#
+# Se errar: espaco no inicio ou no fim e recusado na carga, porque uma stream
+# rule que casa "example-client" nao casa "example-client " -- as mensagens chegariam e
+# ficariam invisiveis, que e o pior dos dois mundos. Um nome de cliente
+# simplesmente trocado nao da erro nenhum: os eventos deste gateway caem no
+# stream de outro cliente.
+# cliente_soc = "example-client"
+
+# Quantos eventos podem esperar na fila enquanto o destino esta fora do ar.
+# Padrao quando omitido: 4096. Minimo aceito: 64.
+#
+# Um `audit.Record` ocupa cerca de 200 bytes, entao 4096 sao ~1 MiB no pior
+# caso -- irrelevante ao lado do teto de 1 MiB de UM resultado de tool. O que
+# o numero compra e a JANELA: minutos de trafego, tempo suficiente para o
+# Graylog reiniciar sem que nada seja descartado. Muito maior nao compra
+# mais nada, porque indisponibilidade que dura mais que minutos e o caso que
+# `mcp-gateway audit --since` resolve, e nao o caso que memoria resolve.
+#
+# Fila cheia descarta o evento MAIS NOVO, nunca o mais antigo, para que a
+# lacuna fique CONTIGUA e com comeco nomeavel -- que e exatamente o que o
+# `--since` recupera.
+#
+# Se errar: `buffer = 0` e recusado (seria envio sincrono, e o caminho de
+# request nunca espera pela telemetria); qualquer coisa abaixo de 64 tambem,
+# porque uma fila desse tamanho descarta em qualquer rajada normal e o
+# contador de descarte vira ruido em vez de sinal. Para desligar a
+# telemetria nao se diminui o buffer: apaga-se a secao.
+# buffer = 4096
+
+# Nao ha campo de duracao nesta secao, e a ausencia e deliberada.
+# `dial_timeout`, `write_timeout`, backoff e o orcamento de fechamento sao
+# constantes no adaptador. Paga-se nao poder ajusta-los sem recompilar;
+# compra-se nenhum operador escrevendo `write_timeout = 5` as 3h -- numero
+# pelado no TOML e lido como NANOSSEGUNDOS -- e transformando o sink num
+# descartador de 100%.
+
+
 # ===========================================================================
 # A esquerda, o valor exato como ele aparece no claim configurado em
 # `oidc.groups_claim`. A direita, o nome de um `[[role]]` definido acima.

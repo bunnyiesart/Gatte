@@ -1439,3 +1439,475 @@ func TestCallTimeoutRejectsABareIntegerMeantAsSeconds(t *testing.T) {
 		}
 	}
 }
+
+// telemetryBlock builds a [telemetry] section from the lines given, so
+// every refusal below can break exactly one field and leave the rest
+// correct. Same shape, and for the same reason, as quotaBlock.
+func telemetryBlock(fields ...string) string {
+	block := "\n[telemetry]\n"
+	for _, f := range fields {
+		block += f + "\n"
+	}
+	return block
+}
+
+const (
+	telemetryAddress    = `address     = "192.0.2.11:12201"`
+	telemetryTransportL = `transport   = "tcp"`
+	telemetryTLSOn      = `tls         = true`
+	telemetryCAFile     = `tls_ca_file = "/usr/local/etc/mcp-gateway/graylog-ca.pem"`
+	telemetryHost       = `host        = "mcp-gateway-01"`
+	telemetryClienteSOC = `cliente_soc = "example-client"`
+	telemetryBufferL    = `buffer      = 4096`
+)
+
+// wellFormedTelemetry is the positive control every refusal below is
+// measured against. Without it each negative test would pass just as
+// happily against a rule that refuses everything.
+func wellFormedTelemetry() string {
+	return telemetryBlock(
+		telemetryAddress,
+		telemetryTransportL,
+		telemetryTLSOn,
+		telemetryCAFile,
+		telemetryHost,
+		telemetryClienteSOC,
+		telemetryBufferL,
+	)
+}
+
+// TestTelemetryLoads is the positive control, and also pins that the
+// file's fields land where the composition root reads them.
+func TestTelemetryLoads(t *testing.T) {
+	c := mustLoad(t, minimalConfig+wellFormedTelemetry())
+
+	tel := c.Telemetry
+	if !tel.Enabled() {
+		t.Fatal("a section with an address is not Enabled()")
+	}
+	if tel.Address != "192.0.2.11:12201" {
+		t.Errorf("address = %q", tel.Address)
+	}
+	if tel.Transport != "tcp" {
+		t.Errorf("transport = %q", tel.Transport)
+	}
+	if !tel.TLS {
+		t.Error("tls = true did not reach the struct")
+	}
+	if tel.TLSCAFile != "/usr/local/etc/mcp-gateway/graylog-ca.pem" {
+		t.Errorf("tls_ca_file = %q", tel.TLSCAFile)
+	}
+	if tel.Host != "mcp-gateway-01" {
+		t.Errorf("host = %q", tel.Host)
+	}
+	if tel.ClienteSOC != "example-client" {
+		t.Errorf("cliente_soc = %q", tel.ClienteSOC)
+	}
+	if tel.Buffer == nil || *tel.Buffer != 4096 {
+		t.Errorf("buffer = %v, want a written 4096", tel.Buffer)
+	}
+	if got := tel.BufferSize(); got != 4096 {
+		t.Errorf("BufferSize() = %d, want 4096", got)
+	}
+}
+
+// TestTelemetryBufferDefaultsWhenUnset keeps "not written" distinguishable
+// from a written value, which is the whole reason the field is a pointer.
+func TestTelemetryBufferDefaultsWhenUnset(t *testing.T) {
+	c := mustLoad(t, minimalConfig+telemetryBlock(
+		telemetryAddress, telemetryTransportL, telemetryHost, telemetryClienteSOC))
+
+	if c.Telemetry.Buffer != nil {
+		t.Errorf("Buffer = %v, want nil when the file is silent", c.Telemetry.Buffer)
+	}
+	if got := c.Telemetry.BufferSize(); got != DefaultTelemetryBuffer {
+		t.Errorf("BufferSize() = %d, want the default %d", got, DefaultTelemetryBuffer)
+	}
+}
+
+// TestTelemetryAddressIsRequiredOnceAnythingElseIsWritten is the rule that
+// makes "no [telemetry] section" the only spelling of off.
+//
+// A block with a host, a transport and a buffer but no destination is not
+// a disabled sink, it is an operator who believes they enabled one -- and
+// nothing else in the file or the log would contradict them, because a
+// disabled sink is a legitimate, silent state.
+func TestTelemetryAddressIsRequiredOnceAnythingElseIsWritten(t *testing.T) {
+	cases := map[string]string{
+		"transport":   telemetryBlock(telemetryTransportL),
+		"tls":         telemetryBlock(telemetryTLSOn),
+		"tls_ca_file": telemetryBlock(telemetryCAFile),
+		"host":        telemetryBlock(telemetryHost),
+		"cliente_soc": telemetryBlock(telemetryClienteSOC),
+		"buffer":      telemetryBlock(telemetryBufferL),
+		"everything but the address": telemetryBlock(
+			telemetryTransportL, telemetryTLSOn, telemetryCAFile,
+			telemetryHost, telemetryClienteSOC, telemetryBufferL),
+	}
+	for name, block := range cases {
+		t.Run(name, func(t *testing.T) {
+			err := loadErr(t, minimalConfig+block)
+			if !errors.Is(err, ErrInvalid) {
+				t.Fatalf("Load = %v, want ErrInvalid", err)
+			}
+			for _, want := range []string{"telemetry.address", "apague a secao"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error does not mention %q: %v", want, err)
+				}
+			}
+		})
+	}
+
+	// The positive control for the rule: a bare header, every key
+	// commented out or absent, is the shipped state and must load.
+	t.Run("an empty section is not an error", func(t *testing.T) {
+		c := mustLoad(t, minimalConfig+telemetryBlock())
+		if c.Telemetry.Enabled() {
+			t.Error("an empty [telemetry] section came back Enabled()")
+		}
+	})
+
+	// And the limitation, written down rather than left to be rediscovered:
+	// `tls = false` is the one key whose written form cannot be told apart
+	// from its absence, so a section holding nothing else is a section that
+	// says nothing. It sends no event either way, which is why this is a
+	// gap worth naming and not a hole worth closing with a *bool.
+	t.Run("tls = false alone is indistinguishable from an empty section", func(t *testing.T) {
+		c := mustLoad(t, minimalConfig+telemetryBlock(`tls         = false`))
+		if c.Telemetry.Enabled() {
+			t.Error("a section with only tls = false came back Enabled()")
+		}
+	})
+}
+
+// TestTelemetryAddressMustBeHostPort: a GELF input is a port, not a name,
+// and there is no default port to guess -- 12201 is a Graylog convention,
+// not a guarantee. The leading-space case is here because SplitHostPort
+// accepts it happily and the host it yields resolves to nothing.
+func TestTelemetryAddressMustBeHostPort(t *testing.T) {
+	cases := map[string]string{
+		"no port":       `address     = "graylog.example.internal"`,
+		"empty port":    `address     = "192.0.2.11:"`,
+		"no host":       `address     = ":12201"`,
+		"leading space": `address     = " 192.0.2.11:12201"`,
+		"a URL":         `address     = "gelf://192.0.2.11:12201"`,
+	}
+	for name, line := range cases {
+		t.Run(name, func(t *testing.T) {
+			err := loadErr(t, minimalConfig+telemetryBlock(
+				line, telemetryTransportL, telemetryHost, telemetryClienteSOC))
+			if !errors.Is(err, ErrInvalid) {
+				t.Fatalf("Load = %v, want ErrInvalid", err)
+			}
+			for _, want := range []string{"telemetry.address", "host:port"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error does not mention %q: %v", want, err)
+				}
+			}
+		})
+	}
+}
+
+// TestTelemetryTransportIsRequiredAndClosed. Absent is the case worth
+// having a test for: a block with an address, a host and a cliente_soc
+// reads like a complete declaration, and there is deliberately no default
+// to fill the gap -- the choice changes what the sink can afterwards
+// report about its own losses.
+func TestTelemetryTransportIsRequiredAndClosed(t *testing.T) {
+	cases := map[string]string{
+		"absent": telemetryBlock(telemetryAddress, telemetryHost, telemetryClienteSOC),
+		"empty":  telemetryBlock(telemetryAddress, `transport   = ""`, telemetryHost, telemetryClienteSOC),
+		"amqp":   telemetryBlock(telemetryAddress, `transport   = "amqp"`, telemetryHost, telemetryClienteSOC),
+		"http":   telemetryBlock(telemetryAddress, `transport   = "http"`, telemetryHost, telemetryClienteSOC),
+		"upper":  telemetryBlock(telemetryAddress, `transport   = "TCP"`, telemetryHost, telemetryClienteSOC),
+	}
+	for name, block := range cases {
+		t.Run(name, func(t *testing.T) {
+			err := loadErr(t, minimalConfig+block)
+			if !errors.Is(err, ErrInvalid) {
+				t.Fatalf("Load = %v, want ErrInvalid", err)
+			}
+			for _, want := range []string{"telemetry.transport", "nao ha default"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error does not mention %q: %v", want, err)
+				}
+			}
+		})
+	}
+}
+
+// TestTelemetryTLSRequiresTCP: there is no GELF UDP over TLS. Refusing the
+// pair is the difference between an operator finding out at startup and a
+// gateway sending audit events in the clear from a file that says tls =
+// true.
+func TestTelemetryTLSRequiresTCP(t *testing.T) {
+	err := loadErr(t, minimalConfig+telemetryBlock(
+		telemetryAddress, `transport   = "udp"`, telemetryTLSOn,
+		telemetryHost, telemetryClienteSOC))
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("Load = %v, want ErrInvalid", err)
+	}
+	for _, want := range []string{"telemetry.tls", "GELF UDP sobre TLS"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error does not mention %q: %v", want, err)
+		}
+	}
+
+	// Positive control: the same TLS line over tcp is exactly what the
+	// well-formed block ships, so the rule refuses the pair and not the
+	// key.
+	if c := mustLoad(t, minimalConfig+wellFormedTelemetry()); !c.Telemetry.TLS {
+		t.Error("tls = true over tcp did not survive validation")
+	}
+}
+
+// TestTelemetryCAFileContradictsTLSFalse: a trust anchor for a cleartext
+// connection is used by nothing, so the two lines cannot both be what the
+// operator meant. Refused rather than ignored, because the ignored reading
+// is the one where somebody believes the connection is verified.
+func TestTelemetryCAFileContradictsTLSFalse(t *testing.T) {
+	err := loadErr(t, minimalConfig+telemetryBlock(
+		telemetryAddress, telemetryTransportL, `tls         = false`,
+		telemetryCAFile, telemetryHost, telemetryClienteSOC))
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("Load = %v, want ErrInvalid", err)
+	}
+	for _, want := range []string{"telemetry.tls_ca_file", "se contradizem"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error does not mention %q: %v", want, err)
+		}
+	}
+}
+
+// TestTelemetryHostIsRequired. os.Hostname() was the obvious fallback and
+// is refused: containerised, it returns an id that changes at every
+// restart, and every Graylog dashboard groups by this field.
+func TestTelemetryHostIsRequired(t *testing.T) {
+	cases := map[string]string{
+		"absent": telemetryBlock(telemetryAddress, telemetryTransportL, telemetryClienteSOC),
+		"empty":  telemetryBlock(telemetryAddress, telemetryTransportL, `host        = ""`, telemetryClienteSOC),
+		"blank":  telemetryBlock(telemetryAddress, telemetryTransportL, `host        = "   "`, telemetryClienteSOC),
+	}
+	for name, block := range cases {
+		t.Run(name, func(t *testing.T) {
+			err := loadErr(t, minimalConfig+block)
+			if !errors.Is(err, ErrInvalid) {
+				t.Fatalf("Load = %v, want ErrInvalid", err)
+			}
+			for _, want := range []string{"telemetry.host", "obrigatorio"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error does not mention %q: %v", want, err)
+				}
+			}
+		})
+	}
+}
+
+// TestTelemetryClienteSOCIsRequired: without it the events reach Graylog
+// and land in no stream, which is worse than not sending them, because it
+// looks like it worked.
+func TestTelemetryClienteSOCIsRequired(t *testing.T) {
+	cases := map[string]string{
+		"absent": telemetryBlock(telemetryAddress, telemetryTransportL, telemetryHost),
+		"empty":  telemetryBlock(telemetryAddress, telemetryTransportL, telemetryHost, `cliente_soc = ""`),
+		"blank":  telemetryBlock(telemetryAddress, telemetryTransportL, telemetryHost, `cliente_soc = "  "`),
+	}
+	for name, block := range cases {
+		t.Run(name, func(t *testing.T) {
+			err := loadErr(t, minimalConfig+block)
+			if !errors.Is(err, ErrInvalid) {
+				t.Fatalf("Load = %v, want ErrInvalid", err)
+			}
+			for _, want := range []string{"telemetry.cliente_soc", "stream do cliente"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error does not mention %q: %v", want, err)
+				}
+			}
+		})
+	}
+}
+
+// TestTelemetryClienteSOCRefusesEdgeWhitespace is GAB-30's class found
+// again, one component over. `name = "analyst "` lived in the difference
+// between a rule that trimmed and a rule that did not; here the second
+// reader is not another Go package, it is a Graylog stream rule, and a
+// rule matching "example-client" does not match "example-client ". The messages would
+// arrive and be invisible, which is the failure mode this whole section is
+// least able to notice from the inside.
+func TestTelemetryClienteSOCRefusesEdgeWhitespace(t *testing.T) {
+	cases := map[string]string{
+		"trailing": `cliente_soc = "example-client "`,
+		"leading":  `cliente_soc = " example-client"`,
+		"tab":      `cliente_soc = "example-client\t"`,
+	}
+	for name, line := range cases {
+		t.Run(name, func(t *testing.T) {
+			err := loadErr(t, minimalConfig+telemetryBlock(
+				telemetryAddress, telemetryTransportL, telemetryHost, line))
+			if !errors.Is(err, ErrInvalid) {
+				t.Fatalf("Load = %v, want ErrInvalid", err)
+			}
+			for _, want := range []string{"telemetry.cliente_soc", "espaco no inicio ou no fim"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error does not mention %q: %v", want, err)
+				}
+			}
+		})
+	}
+
+	// Positive control: the trimmed name is not refused, so the rule is
+	// about the whitespace and not about the value.
+	if c := mustLoad(t, minimalConfig+wellFormedTelemetry()); c.Telemetry.ClienteSOC != "example-client" {
+		t.Errorf("cliente_soc = %q after a clean load", c.Telemetry.ClienteSOC)
+	}
+}
+
+// TestTelemetryBufferCannotBeZeroOrTiny. Zero is not "no queue", it would
+// be a synchronous send, and the request path never waits on telemetry --
+// so the message points at deleting the section, which is the real way to
+// ask for nothing.
+func TestTelemetryBufferCannotBeZeroOrTiny(t *testing.T) {
+	for name, tc := range map[string]struct{ line, want string }{
+		"zero":       {`buffer      = 0`, "precisa ser positivo"},
+		"negative":   {`buffer      = -1`, "precisa ser positivo"},
+		"below min":  {`buffer      = 32`, "abaixo do minimo"},
+		"one":        {`buffer      = 1`, "abaixo do minimo"},
+		"just below": {`buffer      = 63`, "abaixo do minimo"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := loadErr(t, minimalConfig+telemetryBlock(
+				telemetryAddress, telemetryTransportL, telemetryHost, telemetryClienteSOC, tc.line))
+			if !errors.Is(err, ErrInvalid) {
+				t.Fatalf("Load = %v, want ErrInvalid", err)
+			}
+			for _, want := range []string{"telemetry.buffer", tc.want} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error does not mention %q: %v", want, err)
+				}
+			}
+		})
+	}
+
+	// Positive control on the boundary itself, so the minimum is a
+	// minimum and not an exclusive bound nobody checked.
+	t.Run("the minimum itself is accepted", func(t *testing.T) {
+		c := mustLoad(t, minimalConfig+telemetryBlock(
+			telemetryAddress, telemetryTransportL, telemetryHost, telemetryClienteSOC,
+			`buffer      = 64`))
+		if got := c.Telemetry.BufferSize(); got != MinTelemetryBuffer {
+			t.Errorf("BufferSize() = %d, want %d", got, MinTelemetryBuffer)
+		}
+	})
+}
+
+// TestTelemetryUnknownKeyIsRefused: the loader's rule applies inside this
+// section too, and it matters more here than most. `bufer = 512` would
+// otherwise be dropped in silence, leave the default in place, and load a
+// file that reads as though somebody had tuned the queue.
+func TestTelemetryUnknownKeyIsRefused(t *testing.T) {
+	err := loadErr(t, minimalConfig+telemetryBlock(
+		telemetryAddress, telemetryTransportL, telemetryHost, telemetryClienteSOC,
+		`bufer       = 512`))
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("Load = %v, want ErrInvalid", err)
+	}
+	if !strings.Contains(err.Error(), "bufer") {
+		t.Errorf("error does not name the unknown key: %v", err)
+	}
+}
+
+// TestTelemetryReportsEveryProblemAtOnce: an operator fixing this section
+// sees the whole list in one run, as the rest of Validate already gives
+// them. Four distinct mistakes, one load.
+func TestTelemetryReportsEveryProblemAtOnce(t *testing.T) {
+	err := loadErr(t, minimalConfig+telemetryBlock(
+		`address     = "graylog.example.internal"`,
+		`transport   = "amqp"`,
+		`host        = ""`,
+		`cliente_soc = "example-client "`,
+		`buffer      = 0`,
+	))
+	for _, want := range []string{
+		"telemetry.address",
+		"telemetry.transport",
+		"telemetry.host",
+		"telemetry.cliente_soc",
+		"telemetry.buffer",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error does not mention %q -- the problems are not being accumulated: %v", want, err)
+		}
+	}
+}
+
+// TestNoTelemetrySectionIsNotConfiguredAndNotAnError is the twin of
+// TestNoQuotaSectionIsAnEmptyPlanAndNotAMissingOne, and lands on the
+// opposite answer on purpose: an absent [quota] section still wires a plan
+// that charges nothing, while an absent [telemetry] section means no audit
+// event is sent anywhere at all.
+//
+// The difference is that the quota is a security control and this is a
+// copy of a trail that keeps being written either way (ADR-0012). The
+// composition root reads Enabled() and wires telemetry.Discard, which is
+// non-nil and says out loud that nobody configured it.
+func TestNoTelemetrySectionIsNotConfiguredAndNotAnError(t *testing.T) {
+	c := mustLoad(t, minimalConfig)
+
+	if c.Telemetry.Enabled() {
+		t.Fatal("a file with no [telemetry] section came back Enabled()")
+	}
+	if want := (Telemetry{}); c.Telemetry != want {
+		t.Errorf("Telemetry = %+v, want the zero value", c.Telemetry)
+	}
+	// BufferSize still answers, because the accessor resolves the unset
+	// pointer whether or not a destination was written. Harmless, and
+	// asserted so that a future reader does not take a non-zero answer
+	// here for a configured sink: Enabled() is the only question that
+	// decides whether anything is sent.
+	if got := c.Telemetry.BufferSize(); got != DefaultTelemetryBuffer {
+		t.Errorf("BufferSize() = %d, want the default %d", got, DefaultTelemetryBuffer)
+	}
+}
+
+// TestExampleConfigDocumentsTheTelemetry is TestExampleConfigDocumentsTheQuota
+// for the other optional section, and the argument is the same one:
+// the example is where an operator finds out the section exists.
+//
+// What it must NOT do is ship a destination. Verified against the SOC's
+// Graylog on 14 set 2026: of 18 configured inputs, 16 are GELFAMQPInput,
+// one is a SyslogUDPInput on 5514 and one a NetFlowUdpInput on 2055 --
+// there is no GELF UDP/TCP/HTTP input at all, so there is no correct
+// address to write, and an invented one is an address somebody copies into
+// production where it looks like telemetry and is a socket writing into
+// nothing.
+func TestExampleConfigDocumentsTheTelemetry(t *testing.T) {
+	raw, err := os.ReadFile(exampleConfigPath(t))
+	if err != nil {
+		t.Fatalf("reading the example: %v", err)
+	}
+	text := string(raw)
+
+	for _, want := range []string{
+		"[telemetry]",
+		"address",
+		"cliente_soc",
+		// The two-line rule, which the ADR requires in three places: a
+		// widget counting MESSAGES over-counts calls by exactly the number
+		// of failures.
+		"_outcome:allowed",
+		// And the reason the section ships without a destination.
+		"GELFAMQPInput",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("config.example.toml never mentions %q -- an operator reading it would not learn that the GELF sink exists, what it sends, or why it ships without a destination", want)
+		}
+	}
+
+	c, err := Load(exampleConfigPath(t))
+	if err != nil {
+		t.Fatalf("the example no longer loads: %v", err)
+	}
+	if c.Telemetry.Enabled() {
+		t.Errorf("the example ships a telemetry destination (%q); there is no GELF UDP/TCP input on the SOC's Graylog to send to, and an invented address is one somebody copies into production", c.Telemetry.Address)
+	}
+}

@@ -290,6 +290,22 @@ func buildServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) (
 	stack.siem = siem
 	stack.closers = append(stack.closers, closeAudit)
 
+	// The GELF copy of the trail (design/adr/0029), outermost, so it only
+	// ever sees a record the trail accepted. Its closer is registered on
+	// the next line and, the list being LIFO, runs after the HTTP drain and
+	// gateway.Close -- the sink is still alive to ship what those produce.
+	sink, err := newTelemetrySink(cfg, logger)
+	if err != nil {
+		return fail(fmt.Errorf("telemetry: %w", err))
+	}
+	stack.closers = append(stack.closers, func() {
+		if err := sink.Close(); err != nil {
+			logger.Warn("mcp-gateway: telemetry close", slog.String("detail", err.Error()))
+		}
+	})
+	aud = telemetryRecorder{Recorder: aud, sink: sink}
+	logTelemetry(logger, cfg, sink.Stats())
+
 	// Credential Vault. sopsage deliberately discards sops's stderr and
 	// never wraps the decrypted bytes into an error, because both can echo
 	// fragments of the plaintext; the error is passed through here

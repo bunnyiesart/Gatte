@@ -289,7 +289,11 @@ func (v *Verifier) Verify(ctx context.Context, rawToken string) (access.Identity
 		return access.Identity{}, v.reject(ctx, "token payload is not a JSON object", err, rawToken)
 	}
 
-	if idToken.Subject == "" {
+	// A `sub` of only whitespace attributes the call to nobody just as an
+	// absent one does, so it is refused here too rather than left for the
+	// caller to notice: httpapi.authenticate re-checks it, but every other
+	// caller of Verify would have inherited the gap.
+	if strings.TrimSpace(idToken.Subject) == "" {
 		return access.Identity{}, v.reject(ctx, "token has no sub claim", nil, rawToken)
 	}
 

@@ -51,6 +51,14 @@ filho. É composição: o ambiente do filho construído do zero, a detecção de
 upstream morto (`0024`) e o prazo por chamada (`0025`) são o mesmo código
 nos dois transportes.
 
+> **CORREÇÃO — 28 set 2026.** O invólucro acima está incompleto desde o
+> `0034`. Todo `run` também leva `--cap-drop=all
+> --security-opt=no-new-privileges` (fixas, no invólucro) e `--user=UID:GID
+> --pids-limit=N --memory=M --cpus=C` (valores de `[oci]`, nunca 0 nem
+> desligáveis), logo antes de `--name`. O `Args` da entrada pode repetir as
+> duas fixas, mas não as quatro configuráveis. O usuário não-root do §B item
+> 2 deixa de ser só promessa da imagem: o gateway impõe o uid.
+
 O segredo nunca aparece em argv: `--env NOME` **sem** `=valor` faz o podman
 ler o valor do próprio ambiente, e esse ambiente é o que o adaptador `stdio`
 já constrói só com a lista mínima herdada mais os valores que o cofre

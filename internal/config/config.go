@@ -21,7 +21,10 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"math"
 	"net"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -56,6 +59,8 @@ type Config struct {
 	Audit      Audit      `toml:"audit"`
 	Quota      Quota      `toml:"quota"`
 	Telemetry  Telemetry  `toml:"telemetry"`
+	OCI        OCI        `toml:"oci"`
+	Upstreams  Upstreams  `toml:"upstreams"`
 
 	// Roles defines what each role may call. Order is irrelevant.
 	Roles []Role `toml:"role"`
@@ -1175,10 +1180,102 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	errs = append(errs, c.OCI.validate()...)
+
 	if len(errs) == 0 {
 		return nil
 	}
 	return errors.Join(append([]error{ErrInvalid}, errs...)...)
+}
+
+// OCI is the uid and resource policy every oci container runs under
+// (design/adr/0034). Every key is optional; an absent key is the adapter's
+// default (user 65534:65534, pids_limit 256, memory "512m", cpus 1.0). No
+// value of any key switches its flag off.
+type OCI struct {
+	// User is the numeric "UID:GID" passed as --user, whatever USER the
+	// image declares. Neither half may be 0, and a name is refused: it
+	// would be resolved by the image's own /etc/passwd.
+	User string `toml:"user"`
+	// PidsLimit is --pids-limit. Must be positive.
+	PidsLimit *int `toml:"pids_limit"`
+	// Memory is --memory: a whole number and one unit of b, k, m or g, at
+	// least 6m.
+	Memory string `toml:"memory"`
+	// CPUs is --cpus, in cores. Must be positive.
+	CPUs *float64 `toml:"cpus"`
+}
+
+// ociUser, ociMemory and the bounds below restate the oci adapter's rule
+// (oci.ValidateLimits), which this package may not import
+// (internal/fitness). cmd/mcp-gateway TestOCIConfigRuleIsTheDialRule is
+// what keeps the two identical; change them together.
+var (
+	ociUser   = regexp.MustCompile(`^([1-9][0-9]{0,9}):([1-9][0-9]{0,9})$`)
+	ociMemory = regexp.MustCompile(`^([1-9][0-9]{0,12})([bkmg])$`)
+)
+
+const (
+	ociMaxID     = 1<<32 - 2
+	ociMinMemory = 6 << 20
+)
+
+// Validate reports every problem with the section. Exported for the
+// cross-check against the adapter's rule.
+func (o OCI) Validate() error {
+	if errs := o.validate(); len(errs) > 0 {
+		return errors.Join(errs...)
+	}
+	return nil
+}
+
+func (o OCI) validate() []error {
+	var errs []error
+	if o.User != "" {
+		ok := false
+		if m := ociUser.FindStringSubmatch(o.User); m != nil {
+			ok = true
+			for _, id := range m[1:] {
+				if n, err := strconv.ParseUint(id, 10, 64); err != nil || n > ociMaxID {
+					ok = false
+				}
+			}
+		}
+		if !ok {
+			errs = append(errs, fmt.Errorf("oci.user: %q must be a numeric \"UID:GID\" with neither half 0 -- a name "+
+				"is resolved by the image's own /etc/passwd, and 0 is root", o.User))
+		}
+	}
+	if o.PidsLimit != nil && *o.PidsLimit <= 0 {
+		errs = append(errs, fmt.Errorf("oci.pids_limit: %d must be positive; there is no value that means unlimited", *o.PidsLimit))
+	}
+	if o.Memory != "" {
+		ok := false
+		if m := ociMemory.FindStringSubmatch(o.Memory); m != nil {
+			n, err := strconv.ParseUint(m[1], 10, 64)
+			shift := map[string]uint{"b": 0, "k": 10, "m": 20, "g": 30}[m[2]]
+			ok = err == nil && n <= math.MaxUint64>>shift && n<<shift >= ociMinMemory
+		}
+		if !ok {
+			errs = append(errs, fmt.Errorf("oci.memory: %q must be a whole number with one unit of b, k, m or g, at least 6m", o.Memory))
+		}
+	}
+	if o.CPUs != nil && (math.IsNaN(*o.CPUs) || math.IsInf(*o.CPUs, 0) || *o.CPUs <= 0) {
+		errs = append(errs, fmt.Errorf("oci.cpus: %v must be a positive number of cores", *o.CPUs))
+	}
+	return errs
+}
+
+// Upstreams holds registry-wide policy that is not a property of one
+// entry.
+type Upstreams struct {
+	// AllowCredentialedStdio lets a stdio entry that declares credential
+	// variables be registered, signed and dialled. Off by default: a stdio
+	// backend runs as the gateway's own uid, where open() on the age key is
+	// the whole vault, so an entry that needs a credential is meant to run
+	// as -transport oci (design/adr/0034 item 4). For a host without
+	// podman, or the lab's mocks. Every boot with it on logs a WARN.
+	AllowCredentialedStdio bool `toml:"allow_credentialed_stdio"`
 }
 
 // Quota holds the per-analyst limits (design/adr/0030-quota-por-analista.md).

@@ -51,6 +51,14 @@ refresh_interval = "5m"
 max_bytes    = 1048576
 call_timeout = "2m"
 
+# The examples register their tools as local processes (-transport stdio)
+# with -env credentials. Such a process runs as the gateway's own user and
+# can read the whole vault, so this is refused unless opted into here, and
+# every boot with it on logs a WARN (design/adr/0034). Where podman exists,
+# register the tool as -transport oci instead and delete these two lines.
+[upstreams]
+allow_credentialed_stdio = true
+
 # Optional second copy of the audit trail as JSONL, for a log shipper to
 # forward to your SIEM. Both keys are required together.
 [audit.siem]

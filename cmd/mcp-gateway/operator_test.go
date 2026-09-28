@@ -74,7 +74,11 @@ func newOpTestEnv(t *testing.T) opTestEnv {
 	out, errBuf := &bytes.Buffer{}, &bytes.Buffer{}
 	return opTestEnv{
 		opEnv: &opEnv{
-			cfg:    &config.Config{Database: ":memory:"},
+			// The opt-in is on because most console tests use a
+			// credentialed stdio row as their ordinary entry; the policy
+			// itself is tested with it off (hardening_test.go).
+			cfg: &config.Config{Database: ":memory:",
+				Upstreams: config.Upstreams{AllowCredentialedStdio: true}},
 			db:     db,
 			stdout: out,
 			stderr: errBuf,

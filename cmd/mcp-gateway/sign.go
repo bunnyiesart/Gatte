@@ -283,6 +283,10 @@ Create the key with, for example:
 		fmt.Fprintf(e.stderr, "refusing to sign %q: the dialer for its transport would refuse it at every start:\n    %v\n", name, err)
 		return exitProblem
 	}
+	if err := credentialedStdioRefusal(entry, e.cfg); err != nil {
+		fmt.Fprintf(e.stderr, "refusing to sign %q: the gateway would refuse it at every start:\n    %v\n", name, err)
+		return exitProblem
+	}
 
 	sig := s.Sign(entry)
 	if err := sigs.Put(e.ctx(), name, sig); err != nil {

@@ -391,6 +391,14 @@ func buildServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) (
 		return fail(fmt.Errorf("signer: %w", err))
 	}
 
+	// design/adr/0034 item 4. Loud at every boot, so the opt-in cannot
+	// become the quiet default of a deployment that has podman.
+	if cfg.Upstreams.AllowCredentialedStdio {
+		logger.Warn("[upstreams] allow_credentialed_stdio = true: stdio upstreams receive credentials and run as this "+
+			"gateway's own user, where they can read the whole vault; run them as -transport oci instead where podman exists",
+			"adr", "design/adr/0034")
+	}
+
 	gw, err := gateway.New(gateway.Config{
 		Registry:   reg,
 		Vault:      credentials,
@@ -398,7 +406,7 @@ func buildServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) (
 		Audit:      aud,
 		Policy:     policy,
 		Quota:      quotaGate,
-		Dialer:     newTransportDialer(),
+		Dialer:     newTransportDialer(cfg),
 		// Wiring these is GAB-18 plus ADR-0010, and they are the reason
 		// gateway.verifyEntry exists: without a Store the gateway checks no
 		// entry's integrity at all, and without a Verifier it would check

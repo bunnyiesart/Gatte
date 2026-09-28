@@ -143,6 +143,12 @@ func run(args []string) int {
 			// know: their effect is in the kernel's mount table, not in
 			// anything a Go fixture can observe, so what is asserted here is
 			// only that the adapter emits them (design/adr/0017 item 3).
+		case arg == "--cap-drop=all", arg == "--security-opt=no-new-privileges",
+			strings.HasPrefix(arg, "--user="), strings.HasPrefix(arg, "--pids-limit="),
+			strings.HasPrefix(arg, "--memory="), strings.HasPrefix(arg, "--cpus="):
+			// design/adr/0034. Inert here for the same reason: capabilities,
+			// uid and cgroup limits are kernel state, so what is asserted is
+			// that the adapter emits them.
 		case arg == "--name":
 			i++
 			if i >= len(args) {

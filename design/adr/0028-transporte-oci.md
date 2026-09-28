@@ -79,6 +79,11 @@ e seria um segundo caminho, menos revisado, para uma credencial trafegar.
    direto continua aberto. Isso não é pior que um processo `stdio`, que tem a
    rede do host inteira, mas não pode ser contado como controle ativo.
 
+> **Decidido no 0033 (28 set 2026).** Além de `none`, só `slirp4netns`,
+> `pasta` e redes podman nomeadas; `host`, `private`, `container:*`, `ns:*`
+> e valores com opções são recusados. Os destinos ficam com o firewall do
+> host.
+
 ### 4. `--rm`, e o cold start
 
 Nada do container sobrevive à conexão. O dial acontece no `Connect` e na

@@ -1295,14 +1295,17 @@ func TestToCallToolResult(t *testing.T) {
 
 // ------------------------------------------------- auditing refused probes
 
-// auditRows reads the whole trail the Gateway under this harness writes to.
+// auditRows reads the trail the Gateway under this harness writes to, less
+// the rows the gateway writes about itself (design/adr/0032): every tool's
+// first sighting at Connect is one, and what these tests count is what a
+// request produced.
 func (h *harness) auditRows() []audit.Record {
 	h.t.Helper()
 	rows, err := auditsql.New(h.db).List(context.Background())
 	if err != nil {
 		h.t.Fatalf("audit List: %v", err)
 	}
-	return rows
+	return slices.DeleteFunc(rows, func(r audit.Record) bool { return r.AnalystIdentity == "(gateway)" })
 }
 
 // denialsFor returns the denied rows naming one tool.

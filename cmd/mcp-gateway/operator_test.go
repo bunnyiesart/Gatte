@@ -112,7 +112,7 @@ func mustObserve(t *testing.T, e opTestEnv, server string, id quarantine.ToolIde
 	if err != nil {
 		t.Fatalf("observing %s.%s: %v", server, id.Name, err)
 	}
-	return tool
+	return tool.Tool
 }
 
 // mustApprove approves a quarantined tool through the port, for tests that
@@ -258,7 +258,7 @@ func TestOperatorCommands_NeverPrintASecretValue(t *testing.T) {
 		{"upstream list -json", func() int { return runUpstreamList(e.opEnv, true) }},
 		{"tool list", func() int { return runToolList(e.opEnv, "", false) }},
 		{"tool list -json", func() int { return runToolList(e.opEnv, "", true) }},
-		{"tool approve", func() int { return runToolApprove(e.opEnv, "casemgmt", "list_cases") }},
+		{"tool approve", func() int { return runToolApproveReviewed(e.opEnv, "casemgmt", "list_cases") }},
 		{"sign", func() int { return runSign(e.opEnv, "casemgmt") }},
 		{"audit", func() int { return runAudit(e.opEnv, auditFilter{Limit: 10}, false) }},
 		{"audit -json", func() int { return runAudit(e.opEnv, auditFilter{Limit: 10}, true) }},
@@ -452,7 +452,7 @@ func TestTableFlushFailureIsAProblemNotAFailureToRun(t *testing.T) {
 	commands := map[string]func(e opTestEnv) int{
 		"upstream list": func(e opTestEnv) int { return runUpstreamList(e.opEnv, false) },
 		"tool list":     func(e opTestEnv) int { return runToolList(e.opEnv, "", false) },
-		"tool approve":  func(e opTestEnv) int { return runToolApprove(e.opEnv, "casemgmt", "list_cases") },
+		"tool approve":  func(e opTestEnv) int { return runToolApproveReviewed(e.opEnv, "casemgmt", "list_cases") },
 		"audit":         func(e opTestEnv) int { return runAudit(e.opEnv, auditFilter{Limit: 10}, false) },
 		"sign":          func(e opTestEnv) int { return runSign(e.opEnv, "casemgmt") },
 	}
@@ -501,7 +501,7 @@ func TestToolApprove_ChangedToolIsNotApprovedIfTheWarningWasNotPrinted(t *testin
 	}
 
 	e.opEnv.stdout = failingWriter{}
-	requireExit(t, runToolApprove(e.opEnv, "casemgmt", "list_cases"), exitProblem, "approve changed")
+	requireExit(t, runToolApproveReviewed(e.opEnv, "casemgmt", "list_cases"), exitProblem, "approve changed")
 	requireContains(t, e.stderrText(), "NOT approved", "approve changed")
 
 	after, err := e.tools().Get(context.Background(), "casemgmt", "list_cases")

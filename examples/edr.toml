@@ -23,10 +23,11 @@
 # 3. Approve after reviewing each definition:
 #
 #      mcp-gateway tool list    -config "$CFG" -server edr
-#      mcp-gateway tool approve -config "$CFG" edr get_host
-#      mcp-gateway tool approve -config "$CFG" edr list_detections
-#      mcp-gateway tool approve -config "$CFG" edr isolate_host
-#      mcp-gateway tool approve -config "$CFG" edr release_host
+#      mcp-gateway tool show    -config "$CFG" SERVER TOOL   # the definition and its SHA256
+#      mcp-gateway tool approve -config "$CFG" -fingerprint SHA256 edr get_host
+#      mcp-gateway tool approve -config "$CFG" -fingerprint SHA256 edr list_detections
+#      mcp-gateway tool approve -config "$CFG" -fingerprint SHA256 edr isolate_host
+#      mcp-gateway tool approve -config "$CFG" -fingerprint SHA256 edr release_host
 #
 #    `tool approve` prints which roles the approval serves. For a tool that
 #    changes state on an endpoint, read that list before confirming.

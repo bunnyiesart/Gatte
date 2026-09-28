@@ -49,7 +49,49 @@ CREATE TABLE IF NOT EXISTS quarantined_tools (
 	if _, err := db.Exec(stmt); err != nil {
 		return fmt.Errorf("quarantine/sqlite: migrate: %w", err)
 	}
+	for _, stmt := range definitionsSchema {
+		if _, err := db.Exec(stmt); err != nil {
+			return fmt.Errorf("quarantine/sqlite: migrate tool_definitions: %w", err)
+		}
+	}
 	return nil
+}
+
+// definitionsSchema is the table of every tool definition ever observed,
+// keyed by its fingerprint (design/adr/0032 item 1).
+//
+// Content-addressed: the key is quarantine.Hash of the row, so the same
+// definition advertised by two upstreams is one row, and a row whose
+// content no longer hashes to its key is detectably edited (Definition
+// refuses it). Nothing is keyed by server, because nothing about a
+// definition depends on who advertised it -- the quarantined_tools row is
+// what ties a (server, tool) to a hash.
+//
+// Append-only, and the triggers say so to anything going through SQL. They
+// are not a defence against whoever holds the file (DROP TRIGGER is one
+// statement); they stop this code, or a later version of it, from
+// rewriting evidence by mistake. The hash check on read is what catches a
+// deliberate edit.
+//
+// Growth is bounded by distinct definitions, not by observations: an
+// unchanged tool re-observed every interval adds nothing. A backend that
+// rewrites a tool every interval adds one row per interval, and that row
+// is exactly what an operator would want kept.
+var definitionsSchema = []string{
+	`CREATE TABLE IF NOT EXISTS tool_definitions (
+	hash          TEXT NOT NULL PRIMARY KEY,
+	name          TEXT NOT NULL,
+	description   TEXT NOT NULL,
+	input_schema  BLOB NOT NULL,
+	output_schema BLOB NOT NULL,
+	first_seen_at TEXT NOT NULL
+)`,
+	`CREATE TRIGGER IF NOT EXISTS tool_definitions_no_update
+BEFORE UPDATE ON tool_definitions
+BEGIN SELECT RAISE(ABORT, 'tool_definitions is append-only'); END`,
+	`CREATE TRIGGER IF NOT EXISTS tool_definitions_no_delete
+BEFORE DELETE ON tool_definitions
+BEGIN SELECT RAISE(ABORT, 'tool_definitions is append-only'); END`,
 }
 
 // Store is the SQLite-backed implementation of quarantine.Store.
@@ -67,51 +109,111 @@ func New(db *sql.DB) *Store {
 
 // Observe implements quarantine.Store.
 //
-// The read of the existing row and the write of its successor run in one
-// transaction: two concurrent discovery cycles observing the same tool
-// must not interleave into a state neither of them computed, and in
-// particular must not let a "changed" verdict be overwritten by a
-// concurrent "still approved" one.
-func (s *Store) Observe(ctx context.Context, serverName string, t quarantine.ToolIdentity) (quarantine.Tool, error) {
+// The read of the existing row, the write of its successor and the write
+// of the definition run in one transaction: two concurrent discovery
+// cycles observing the same tool must not interleave into a state neither
+// of them computed, and in particular must not let a "changed" verdict be
+// overwritten by a concurrent "still approved" one -- or both report the
+// same transition. A fingerprint stored with no definition behind it
+// would be the pre-ADR-0032 blind spot again, so the two commit together
+// or not at all.
+func (s *Store) Observe(ctx context.Context, serverName string, t quarantine.ToolIdentity) (quarantine.Observation, error) {
 	observedHash := quarantine.Hash(t)
 	now := time.Now().UTC()
+	fail := func(err error) (quarantine.Observation, error) {
+		return quarantine.Observation{}, fmt.Errorf("quarantine/sqlite: observe %q/%q: %w", serverName, t.Name, err)
+	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return quarantine.Tool{}, fmt.Errorf("quarantine/sqlite: observe %q/%q: %w", serverName, t.Name, err)
+		return fail(err)
 	}
 	defer tx.Rollback() //nolint:errcheck // no-op once Commit succeeded
 
+	if err := keepDefinition(ctx, tx, observedHash, t, now); err != nil {
+		return fail(err)
+	}
+
+	var obs quarantine.Observation
 	prev, err := get(ctx, tx, serverName, t.Name)
 	switch {
 	case err == nil:
 		// Known tool: let the domain decide the next state.
 		next, err := prev.Observed(observedHash, now)
 		if err != nil {
-			return quarantine.Tool{}, fmt.Errorf("quarantine/sqlite: observe %q/%q: %w", serverName, t.Name, err)
+			return fail(err)
 		}
 		if err := update(ctx, tx, next); err != nil {
-			return quarantine.Tool{}, fmt.Errorf("quarantine/sqlite: observe %q/%q: %w", serverName, t.Name, err)
+			return fail(err)
 		}
-		if err := tx.Commit(); err != nil {
-			return quarantine.Tool{}, fmt.Errorf("quarantine/sqlite: observe %q/%q: commit: %w", serverName, t.Name, err)
-		}
-		return next, nil
+		obs = quarantine.Observation{Tool: next, Event: quarantine.EventOf(prev, next)}
 
 	case errors.Is(err, quarantine.ErrNotFound):
 		// First sighting: born pending, never usable until approved.
 		next := quarantine.NewTool(serverName, t.Name, observedHash, now)
 		if err := insert(ctx, tx, next); err != nil {
-			return quarantine.Tool{}, fmt.Errorf("quarantine/sqlite: observe %q/%q: %w", serverName, t.Name, err)
+			return fail(err)
 		}
-		if err := tx.Commit(); err != nil {
-			return quarantine.Tool{}, fmt.Errorf("quarantine/sqlite: observe %q/%q: commit: %w", serverName, t.Name, err)
-		}
-		return next, nil
+		obs = quarantine.Observation{Tool: next, Event: quarantine.EventFirstSeen}
 
 	default:
-		return quarantine.Tool{}, fmt.Errorf("quarantine/sqlite: observe %q/%q: %w", serverName, t.Name, err)
+		return fail(err)
 	}
+
+	if err := tx.Commit(); err != nil {
+		return fail(fmt.Errorf("commit: %w", err))
+	}
+	return obs, nil
+}
+
+// keepDefinition stores t under hash unless a definition is already stored
+// there. INSERT OR IGNORE, not an upsert: the table is append-only, and a
+// row that is already there is by construction the same content.
+func keepDefinition(ctx context.Context, q querier, hash string, t quarantine.ToolIdentity, now time.Time) error {
+	const stmt = `
+INSERT OR IGNORE INTO tool_definitions
+	(hash, name, description, input_schema, output_schema, first_seen_at)
+VALUES (?, ?, ?, ?, ?, ?)
+`
+	// Nil and empty hash the same (quarantine.Hash); store both as an
+	// empty blob so NOT NULL holds and the read-back hashes identically.
+	in, out := t.InputSchema, t.OutputSchema
+	if in == nil {
+		in = []byte{}
+	}
+	if out == nil {
+		out = []byte{}
+	}
+	if _, err := q.ExecContext(ctx, stmt, hash, t.Name, t.Description, in, out, now.Format(timeLayout)); err != nil {
+		return fmt.Errorf("keep definition: %w", err)
+	}
+	return nil
+}
+
+// Definition implements quarantine.Store.
+//
+// The row is re-hashed on the way out. The triggers stop an UPDATE made
+// through SQL by this code; they do not stop whoever holds the file, and
+// the one thing worse than "the approved definition was not kept" is an
+// edited text presented as the approved one.
+func (s *Store) Definition(ctx context.Context, hash string) (quarantine.ToolIdentity, error) {
+	const stmt = `
+SELECT name, description, input_schema, output_schema
+FROM tool_definitions
+WHERE hash = ?
+`
+	var t quarantine.ToolIdentity
+	err := s.db.QueryRowContext(ctx, stmt, hash).Scan(&t.Name, &t.Description, &t.InputSchema, &t.OutputSchema)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return quarantine.ToolIdentity{}, fmt.Errorf("quarantine/sqlite: definition %s: %w", hash, quarantine.ErrDefinitionNotKept)
+	case err != nil:
+		return quarantine.ToolIdentity{}, fmt.Errorf("quarantine/sqlite: definition %s: %w", hash, err)
+	}
+	if got := quarantine.Hash(t); got != hash {
+		return quarantine.ToolIdentity{}, fmt.Errorf("quarantine/sqlite: definition %s hashes to %s: %w", hash, got, quarantine.ErrDefinitionMismatch)
+	}
+	return t, nil
 }
 
 // Approve implements quarantine.Store.
@@ -203,10 +305,14 @@ func (s *Store) Revoke(ctx context.Context, serverName, toolName string) (quaran
 // read whose result something else could invalidate underneath it.
 //
 // No schema change was needed for this, or for Revoke. Both work the
-// existing quarantined_tools table -- a DELETE by server_name and an UPDATE
+// quarantined_tools table -- a DELETE by server_name and an UPDATE
 // the domain computed -- so a gateway upgraded in place keeps running
 // against the database it already has, with Migrate doing exactly what it
 // did before.
+//
+// It deliberately leaves tool_definitions alone: those rows are keyed by
+// content, not by server, and they are the record of what was advertised
+// (design/adr/0032).
 func (s *Store) Forget(ctx context.Context, serverName string) (int, error) {
 	const stmt = `DELETE FROM quarantined_tools WHERE server_name = ?`
 

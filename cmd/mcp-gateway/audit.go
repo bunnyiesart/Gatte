@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/bunnyiesart/Gatte/internal/audit"
+	"github.com/bunnyiesart/Gatte/internal/visible"
 )
 
 // auditDefaultLimit is how many records "mcp-gateway audit" shows when
@@ -300,10 +301,16 @@ func runAudit(e *opEnv, filter auditFilter, asJSON bool) int {
 
 	tw := opTable(e.stdout)
 	fmt.Fprintln(tw, "TIME\tANALYST\tSOURCE\tTOOL\tUPSTREAM\tOUTCOME\tREASON")
+	// Every field but the time and the outcome is someone else's text: a
+	// probe name is whatever a caller typed, a subject is the IdP's, a
+	// reason can quote either. Escaped, so no row can drive the operator's
+	// terminal or hide part of itself (design/adr/0032). -json carries the
+	// raw values.
+	esc := visible.Escape
 	for _, r := range newestFirst {
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			opTime(r.Timestamp), r.AnalystIdentity, opDash(r.SourceAddress), r.Tool,
-			r.TargetUpstream, r.Outcome, opDash(r.Reason))
+			opTime(r.Timestamp), esc(r.AnalystIdentity), esc(opDash(r.SourceAddress)), esc(r.Tool),
+			esc(r.TargetUpstream), esc(string(r.Outcome)), esc(opDash(r.Reason)))
 	}
 	if !opFlushTable(tw, e.stderr) {
 		return exitProblem
@@ -357,8 +364,8 @@ func runAuditVerify(e *opEnv, expectHead string) int {
 		fmt.Fprintf(e.stderr, "TAMPERED: the audit trail does not verify.\n\n")
 		fmt.Fprintf(e.stderr, "  first break at record %d of %d\n", b.Position, check.Count)
 		fmt.Fprintf(e.stderr, "  record now reads  %s  %s  %s -> %s  (%s)\n",
-			b.Record.Timestamp.Format(time.RFC3339), b.Record.AnalystIdentity,
-			b.Record.Tool, b.Record.TargetUpstream, b.Record.Outcome)
+			b.Record.Timestamp.Format(time.RFC3339), visible.Escape(b.Record.AnalystIdentity),
+			visible.Escape(b.Record.Tool), visible.Escape(b.Record.TargetUpstream), visible.Escape(string(b.Record.Outcome)))
 		fmt.Fprintf(e.stderr, "  hash expected     %s\n", b.Want)
 		fmt.Fprintf(e.stderr, "  hash stored       %s\n\n", b.Got)
 		fmt.Fprintf(e.stderr, "A record at or before this position was edited or removed. Records after\n")

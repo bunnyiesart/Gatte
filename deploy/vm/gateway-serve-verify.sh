@@ -286,10 +286,19 @@ for pair in "casemgmt list_cases" "casemgmt get_case" \
 	"logsearch search_relative" "logsearch search_keyword" \
 	"docsearch docsearch_search" "docsearch docsearch_list_indices" \
 	"threatintel lookup_ip" "threatintel enrich"; do
+	# An approval names the fingerprint of the definition that was shown
+	# (ADR-0032): read it, show the definition, approve exactly that one.
+	srv=${pair% *} tool=${pair#* }
+	fp=$(ju "$GW tool list -config $CONFIG -server $srv -json" \
+		| jq -r --arg t "$tool" '.[]|select(.tool==$t)|.observed_hash')
+	[ -n "$fp" ] || fail "no observed fingerprint for $pair"
 	# shellcheck disable=SC2086
-	ju "$GW tool approve -config $CONFIG $pair" >/dev/null \
+	ju "$GW tool show -config $CONFIG $pair" >/dev/null \
+		|| fail "could not show $pair"
+	# shellcheck disable=SC2086
+	ju "$GW tool approve -config $CONFIG -fingerprint $fp $pair" >/dev/null \
 		|| fail "could not approve $pair"
-	echo "    approved $pair"
+	echo "    approved $pair at sha256:$fp"
 done
 
 head2 "8. Tool Quarantine -- AFTER approval"

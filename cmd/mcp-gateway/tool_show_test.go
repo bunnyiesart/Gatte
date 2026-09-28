@@ -52,6 +52,23 @@ func TestRunToolShow_EscapesHiddenCodePoints(t *testing.T) {
 	}
 }
 
+// TestRunToolShow_WarnsAboutHiddenCodePointsWrittenAsJSONEscapes: a schema
+// is JSON, and JSON can carry a hidden code point as the ASCII text
+// \u202e. The reviewer then reads six harmless characters while a model
+// that decodes the schema gets the real override, so the warning counts the
+// decoded strings, not only the bytes on screen.
+func TestRunToolShow_WarnsAboutHiddenCodePointsWrittenAsJSONEscapes(t *testing.T) {
+	e := newOpTestEnv(t)
+	mustObserve(t, e, "casemgmt", quarantine.ToolIdentity{
+		Name:        "list_cases",
+		Description: "List cases.",
+		InputSchema: []byte(`{"type":"object","properties":{"q":{"type":"string","description":"query\u202e\u2028"}}}`),
+	})
+
+	requireExit(t, runToolShow(e.opEnv, "casemgmt", "list_cases"), exitOK, "tool show")
+	requireContains(t, e.stdoutText(), "WARNING: the observed definition carries 2 hidden", "tool show")
+}
+
 // TestRunToolShow_DiffsApprovedAgainstObserved: after a rug pull, the
 // approved definition is still on disk and the two are shown side by side
 // as a line diff -- the "cannot show you a diff" of the old console is gone.

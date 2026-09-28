@@ -189,6 +189,53 @@ func TestConnect_RefusesAToolNameOutsideTheCharset(t *testing.T) {
 	}
 }
 
+// TestConnect_ServesAToolNameAtTheLengthLimit pins the other side of the
+// charset's boundary: 64 characters is still a name, so an off-by-one in
+// validToolName would refuse legitimate tools silently.
+func TestConnect_ServesAToolNameAtTheLengthLimit(t *testing.T) {
+	long := strings.Repeat("x", 64)
+	h := newHarness(t, "casemgmt."+long)
+	h.register("casemgmt")
+	h.serve("casemgmt", def(long, "the longest name the charset allows"))
+	h.mustConnect()
+
+	if _, err := h.quarantine.Get(context.Background(), "casemgmt", long); err != nil {
+		t.Fatalf("a 64-character name did not reach the quarantine: %v", err)
+	}
+	h.approve("casemgmt", long)
+	if got := h.listNames(analyst); len(got) != 1 || got[0] != "casemgmt."+long {
+		t.Errorf("ListTools = %v, want the 64-character tool served", got)
+	}
+}
+
+// TestConnect_RefusesAnOversizedDefinition: every observed definition is
+// stored (design/adr/0032 item 1) on a small VM whose disk also holds the
+// audit trail, and nothing else bounds what a backend sends. A definition
+// over maxToolDefinitionBytes is refused at discovery like a bad name --
+// never observed, never stored, never routed -- and the error names the
+// upstream and the size.
+func TestConnect_RefusesAnOversizedDefinition(t *testing.T) {
+	h := newHarness(t, "casemgmt.list_cases")
+	h.register("casemgmt")
+	h.serve("casemgmt",
+		def("list_cases", "list cases"),
+		def("get_case", strings.Repeat("A", maxToolDefinitionBytes)))
+
+	err := h.connect()
+	if !errors.Is(err, ErrUpstreamUnavailable) {
+		t.Fatalf("Connect = %v, want ErrUpstreamUnavailable for the oversized definition", err)
+	}
+	if msg := err.Error(); !strings.Contains(msg, `"casemgmt"`) || !strings.Contains(msg, "get_case") || !strings.Contains(msg, "bytes") {
+		t.Errorf("error does not name the upstream, the tool and the size: %s", msg)
+	}
+	if _, err := h.quarantine.Get(context.Background(), "casemgmt", "get_case"); !errors.Is(err, quarantine.ErrNotFound) {
+		t.Errorf("oversized definition reached the quarantine: %v", err)
+	}
+	if _, err := h.quarantine.Get(context.Background(), "casemgmt", "list_cases"); err != nil {
+		t.Errorf("the well-sized tool beside it was not observed: %v", err)
+	}
+}
+
 // TestBacklog_CountsPendingAndChanged is what the heartbeat carries since
 // ADR-0032: how many tools are waiting for a human, and how many of those
 // are rug pulls.

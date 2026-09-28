@@ -210,7 +210,7 @@ rough order of likelihood: fluent-bit stopped or lost its offset DB, the
 gateway is down or in a restart loop under `daemon -r`, the jail is not
 running, or the disk holding the sink is full.
 
-Two fields on the heartbeat are worth a second alert each, and both are
+Three fields on the heartbeat are worth a second alert each, and all are
 cheap because the line arrives anyway:
 
 - `suspended:true` — the gateway is up, answering, and serving nothing
@@ -220,6 +220,15 @@ cheap because the line arrives anyway:
 - `boot` changing — the process restarted. Expected after a deploy or a
   credential rotation, and worth a question at 03:00 when neither
   happened.
+- `changed` above 0 — an approved tool was rewritten on its backend and
+  nobody has answered it yet (ADR-0032): the rug pull the quarantine
+  exists to catch. `-1` in `pending` or `changed` means the quarantine
+  could not be read, never "all clear".
+
+The `denied` counter, and a search for `outcome:denied`, include the rows
+the gateway writes about itself (first sight, change, refused signature),
+attributed to `caller:"(gateway)"`. Filter that caller out when counting
+analyst refusals.
 
 **What this alert does not prove.** The lines are unsigned, so an attacker
 who controls this host can emit heartbeats for a gateway that is doing

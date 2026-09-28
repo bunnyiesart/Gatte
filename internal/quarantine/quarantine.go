@@ -458,10 +458,12 @@ type Store interface {
 	//     Approve does that.
 	//
 	//   - The definition t itself is kept, keyed by Hash(t), in the same
-	//     transaction (design/adr/0032). Kept definitions are append-only:
-	//     one already stored is left as it is, and nothing here removes one
-	//     -- not even Forget -- so an approved baseline can always be shown
-	//     next to what replaced it.
+	//     transaction (design/adr/0032). A kept definition is never
+	//     rewritten, and it stays for as long as some entry names it as its
+	//     approved or observed fingerprint -- so an approved baseline can
+	//     always be shown next to what replaced it -- and is dropped in the
+	//     transaction that moves the last reference away. That bounds the
+	//     store at two definitions per (server, tool).
 	//   - The returned Observation carries the transition, per EventOf:
 	//     EventFirstSeen for an insert, EventChanged for approved becoming
 	//     changed, EventNone otherwise. It is decided on the row read inside

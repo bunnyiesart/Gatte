@@ -295,6 +295,17 @@ const (
 // from the other side.
 const maxToolNameLen = 64
 
+// maxToolDefinitionBytes bounds one advertised definition -- name,
+// description, input and output schema together -- before the quarantine
+// stores it (design/adr/0032 item 1). The store keeps at most two
+// definitions per tool; this bounds how large each of those is. 64 KiB is
+// far past any real tool definition, and caps one tool at 128 KiB stored.
+const maxToolDefinitionBytes = 64 << 10
+
+func definitionSize(def ToolDef) int {
+	return len(def.Name) + len(def.Description) + len(def.InputSchema) + len(def.OutputSchema)
+}
+
 func validToolName(name string) bool {
 	if name == "" || len(name) > maxToolNameLen {
 		return false
@@ -1528,6 +1539,12 @@ func (g *Gateway) routesFor(ctx context.Context, upstream string, defs []ToolDef
 		// A measurement, like the schema checks below.
 		if !validToolName(def.Name) {
 			out.failures = append(out.failures, fmt.Errorf("%w: %q: tool name %s is refused: a tool name must match ^[A-Za-z0-9_-]{1,64}$", ErrUpstreamUnavailable, upstream, shownName(def.Name)))
+			continue
+		}
+		// Same place, same reason: every observed definition is stored, so
+		// its size is bounded before the store sees it. A measurement.
+		if n := definitionSize(def); n > maxToolDefinitionBytes {
+			out.failures = append(out.failures, fmt.Errorf("%w: %q: tool %q is refused: its definition is %d bytes, over the %d-byte limit", ErrUpstreamUnavailable, upstream, def.Name, n, maxToolDefinitionBytes))
 			continue
 		}
 		if err := validateSchema(def.InputSchema); err != nil {

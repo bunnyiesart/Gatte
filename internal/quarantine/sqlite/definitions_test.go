@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/bunnyiesart/Gatte/internal/quarantine"
@@ -45,7 +46,7 @@ func TestObserve_KeepsTheDefinitionItFingerprinted(t *testing.T) {
 		{first.ObservedHash, honest},
 		{second.ObservedHash, poisoned},
 		// The approved baseline of the changed tool still resolves to what
-		// the operator approved: the definition is append-only, so the
+		// the operator approved: a referenced definition is kept, so the
 		// rewrite did not replace it.
 		{second.ApprovedHash, honest},
 	} {
@@ -77,10 +78,11 @@ func TestDefinition_UnknownHashIsNotKept(t *testing.T) {
 	}
 }
 
-// TestDefinitions_AreAppendOnly: the table is evidence, so the adapter
-// refuses to rewrite or delete a row, and a row edited behind its back no
-// longer hashes to its key and is refused on the way out.
-func TestDefinitions_AreAppendOnly(t *testing.T) {
+// TestDefinitions_ReferencedRowsAreImmutable: a definition some tool's
+// state points at is evidence, so the adapter refuses to rewrite it or
+// delete it, and a row edited behind its back no longer hashes to its key
+// and is refused on the way out.
+func TestDefinitions_ReferencedRowsAreImmutable(t *testing.T) {
 	s, db := newTestStore(t)
 	ctx := context.Background()
 
@@ -89,18 +91,13 @@ func TestDefinitions_AreAppendOnly(t *testing.T) {
 		t.Fatalf("Observe: %v", err)
 	}
 	if _, err := db.Exec(`UPDATE tool_definitions SET description = 'rewritten'`); err == nil {
-		t.Error("UPDATE on tool_definitions succeeded; the table must be append-only")
+		t.Error("UPDATE on tool_definitions succeeded; a stored definition must never be rewritten")
 	}
 	if _, err := db.Exec(`DELETE FROM tool_definitions`); err == nil {
-		t.Error("DELETE on tool_definitions succeeded; the table must be append-only")
-	}
-	// Forgetting an upstream drops its quarantine rows, not the evidence of
-	// what it advertised.
-	if _, err := s.Forget(ctx, "casemgmt"); err != nil {
-		t.Fatalf("Forget: %v", err)
+		t.Error("DELETE of a definition the quarantine still references succeeded")
 	}
 	if _, err := s.Definition(ctx, obs.ObservedHash); err != nil {
-		t.Fatalf("Definition after Forget: %v", err)
+		t.Fatalf("Definition after refused DELETE: %v", err)
 	}
 
 	// Past the triggers, the way someone holding the file would do it.
@@ -112,6 +109,75 @@ func TestDefinitions_AreAppendOnly(t *testing.T) {
 	}
 	if _, err := s.Definition(ctx, obs.ObservedHash); !errors.Is(err, quarantine.ErrDefinitionMismatch) {
 		t.Fatalf("Definition(edited row) = %v, want ErrDefinitionMismatch", err)
+	}
+}
+
+// TestDefinitions_ARotatingBackendStaysWithinTheCap: a backend that puts a
+// nonce in a description every refresh -- hostile, or a benign build stamp
+// -- must not grow the table without limit on a single small VM. Only what
+// the quarantine state references is kept: the approved baseline and the
+// latest observation, at most two rows per (server, tool). Forget releases
+// what only that server referenced.
+func TestDefinitions_ARotatingBackendStaysWithinTheCap(t *testing.T) {
+	s, db := newTestStore(t)
+	ctx := context.Background()
+	count := func() int {
+		t.Helper()
+		var n int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM tool_definitions`).Scan(&n); err != nil {
+			t.Fatalf("count: %v", err)
+		}
+		return n
+	}
+
+	approved, err := s.Observe(ctx, "casemgmt", identity("list_cases", "List cases."))
+	if err != nil {
+		t.Fatalf("Observe: %v", err)
+	}
+	if _, err := s.Approve(ctx, "casemgmt", "list_cases"); err != nil {
+		t.Fatalf("Approve: %v", err)
+	}
+	var last quarantine.Observation
+	for i := 0; i < 300; i++ {
+		last, err = s.Observe(ctx, "casemgmt", identity("list_cases", fmt.Sprintf("List cases. build %d", i)))
+		if err != nil {
+			t.Fatalf("Observe #%d: %v", i, err)
+		}
+		if n := count(); n > 2 {
+			t.Fatalf("after %d rotations tool_definitions holds %d rows, want at most 2 (baseline + latest)", i+1, n)
+		}
+	}
+	// The two that matter are both still there.
+	if _, err := s.Definition(ctx, approved.ObservedHash); err != nil {
+		t.Errorf("approved baseline was pruned: %v", err)
+	}
+	if _, err := s.Definition(ctx, last.ObservedHash); err != nil {
+		t.Errorf("latest observation was pruned: %v", err)
+	}
+
+	// Re-approving at the latest drops the old baseline.
+	if _, err := s.ApproveFingerprint(ctx, "casemgmt", "list_cases", last.ObservedHash); err != nil {
+		t.Fatalf("ApproveFingerprint: %v", err)
+	}
+	if n := count(); n != 1 {
+		t.Errorf("after re-approval tool_definitions holds %d rows, want 1", n)
+	}
+
+	// A definition another upstream still references survives Forget.
+	if _, err := s.Observe(ctx, "docsearch", identity("list_cases", fmt.Sprintf("List cases. build %d", 299))); err != nil {
+		t.Fatalf("Observe docsearch: %v", err)
+	}
+	if _, err := s.Forget(ctx, "casemgmt"); err != nil {
+		t.Fatalf("Forget: %v", err)
+	}
+	if _, err := s.Definition(ctx, last.ObservedHash); err != nil {
+		t.Errorf("definition still referenced by docsearch was pruned by Forget(casemgmt): %v", err)
+	}
+	if _, err := s.Forget(ctx, "docsearch"); err != nil {
+		t.Fatalf("Forget: %v", err)
+	}
+	if n := count(); n != 0 {
+		t.Errorf("after forgetting every server tool_definitions holds %d rows, want 0", n)
 	}
 }
 

@@ -390,14 +390,20 @@ ok "analyst calling threatintel.enrich by name is refused, not merely hidden fro
 head2 "13. the Audit Trail recorded it"
 ju "$GW audit -config $CONFIG -limit 15" | sed 's/^/  /'
 ju "$GW audit -config $CONFIG -json" >"$WORK/audit.json"
-jq -e '[.[]|select(.tool=="casemgmt.list_cases" and .outcome=="allowed")]|length > 0' \
+# The gateway writes rows about itself too (ADR-0032: first sight, change,
+# refused signature), caller "(gateway)", outcome denied, on the same tool
+# names. Every check below is about a CALL, so those rows are left out --
+# otherwise the first-seen row for threatintel.enrich, written at step 7,
+# would satisfy the denied check whether or not step 12 was audited.
+CALLS='[.[]|select(.analyst_identity!="(gateway)")]'
+jq -e "$CALLS"' | [.[]|select(.tool=="casemgmt.list_cases" and .outcome=="allowed")]|length > 0' \
 	"$WORK/audit.json" >/dev/null || fail "no allowed record for casemgmt.list_cases"
 ok "an 'allowed' record exists for casemgmt.list_cases"
-jq -e '[.[]|select(.tool=="threatintel.enrich" and .outcome=="denied")]|length > 0' \
+jq -e "$CALLS"' | [.[]|select(.tool=="threatintel.enrich" and .outcome=="denied")]|length > 0' \
 	"$WORK/audit.json" >/dev/null || fail "no denied record for the analyst's threatintel.enrich attempt"
-ok "a 'denied' record exists for threatintel.enrich"
+ok "a 'denied' record exists for the analyst's threatintel.enrich call"
 echo "  the analyst identity the trail recorded:"
-jq -r '[.[]|select(.tool=="threatintel.enrich")][0] | "    analyst=\(.analyst_identity) tool=\(.tool) outcome=\(.outcome) reason=\(.reason)"' \
+jq -r "$CALLS"' | [.[]|select(.tool=="threatintel.enrich" and .outcome=="denied")][0] | "    analyst=\(.analyst_identity) tool=\(.tool) outcome=\(.outcome) reason=\(.reason)"' \
 	"$WORK/audit.json"
 
 # ---------------------------------------------------------------------------

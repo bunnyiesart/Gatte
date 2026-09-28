@@ -178,14 +178,54 @@ func definitionLines(t quarantine.ToolIdentity) ([]string, int) {
 		lines = append(lines, s.label)
 		body := string(s.raw)
 		var buf bytes.Buffer
-		if json.Indent(&buf, s.raw, "", "  ") == nil {
-			body = buf.String()
+		if json.Indent(&buf, s.raw, "", "  ") != nil {
+			// Not JSON: shown and counted as it is.
+			for _, l := range strings.Split(body, "\n") {
+				add(l)
+			}
+			continue
 		}
-		for _, l := range strings.Split(body, "\n") {
-			add(l)
+		// JSON: shown as it is, counted as a model reads it. A string can
+		// carry a hidden code point as the ASCII escape \u202e, which the
+		// screen shows as six plain characters and the model decodes into
+		// the override itself. Counting the decoded strings covers both
+		// spellings, once each.
+		hidden += hiddenInJSON(s.raw)
+		for _, l := range strings.Split(buf.String(), "\n") {
+			lines = append(lines, "  "+visible.Escape(l))
 		}
 	}
 	return lines, hidden
+}
+
+// hiddenInJSON counts the hidden code points in every decoded string --
+// keys and values -- of a valid JSON document.
+func hiddenInJSON(raw []byte) int {
+	var v any
+	if json.Unmarshal(raw, &v) != nil {
+		return visible.Hidden(string(raw))
+	}
+	var walk func(any) int
+	walk = func(v any) int {
+		switch x := v.(type) {
+		case string:
+			return visible.Hidden(x)
+		case []any:
+			n := 0
+			for _, e := range x {
+				n += walk(e)
+			}
+			return n
+		case map[string]any:
+			n := 0
+			for k, e := range x {
+				n += visible.Hidden(k) + walk(e)
+			}
+			return n
+		}
+		return 0
+	}
+	return walk(v)
 }
 
 // maxDiffCells bounds the line diff's table. Definitions are small; one

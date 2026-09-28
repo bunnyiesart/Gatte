@@ -4,8 +4,10 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"math"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/bunnyiesart/Gatte/internal/gateway"
@@ -108,6 +110,19 @@ var safeContainerName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*$`)
 //     run against a real image. With the flag: /tmp writable, /var/tmp and
 //     /run read-only. The paragraph above had the reasoning right and the
 //     implementation short -- it disabled nothing, it just also named /tmp.
+//   - --cap-drop=all and --security-opt=no-new-privileges, which are
+//     design/adr/0034 item 1. A backend speaks MCP over a pipe; it needs no
+//     capability at all, and podman's default set (CHOWN, SETUID,
+//     NET_BIND_SERVICE, ...) is a set of things a compromised backend could
+//     do that it has no reason to. no-new-privileges makes a setuid binary
+//     left in an image inert. Neither is configurable: there is no backend
+//     for which the answer differs.
+//
+// The uid and the resource limits are NOT in this list, because their
+// values are the operator's ([oci] in the configuration); they are
+// emitted by buildPlan from [Limits], on every dial, right after it. An
+// entry may not restate them: a restatement that could disagree with the
+// configuration would be two sources for one value.
 //
 // The single-token spelling --tmpfs=/tmp is not cosmetic. wrapperNetwork
 // lets an entry restate the wrapper, and it compares whole tokens; a
@@ -120,7 +135,144 @@ var safeContainerName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*$`)
 // present when someone remembered to write it down is a control that will
 // eventually be missing from one of four rows, with a valid signature over
 // its absence.
-var mandatoryWrapper = []string{"--rm", "-i", "--log-driver=none", "--pull=never", "--read-only", "--read-only-tmpfs=false", "--tmpfs=/tmp"}
+var mandatoryWrapper = []string{"--rm", "-i", "--log-driver=none", "--pull=never", "--read-only", "--read-only-tmpfs=false", "--tmpfs=/tmp",
+	"--cap-drop=all", "--security-opt=no-new-privileges"}
+
+// Limits is the part of the container policy whose values an operator
+// sets, in the [oci] section of the configuration (design/adr/0034). Every
+// field is emitted on every dial; none of them has a value that means
+// "off".
+type Limits struct {
+	// User is the numeric UID:GID the backend runs as, passed as --user.
+	// Always emitted, whatever USER the image declares, so the uid is a
+	// fact of this command line rather than a property of the image: an
+	// image outside the contract of design/adr/0028 §B item 2 -- USER root,
+	// or no USER at all -- still does not run as root. Numeric only: a
+	// name is resolved through the image's own /etc/passwd, which the
+	// image controls. Neither half may be 0.
+	User string
+	// PidsLimit is --pids-limit: a fork bomb stops at this many tasks.
+	PidsLimit int
+	// Memory is --memory, in podman's size syntax: digits and one unit of
+	// b, k, m or g, at least 6m (podman's own floor).
+	Memory string
+	// CPUs is --cpus: the share of CPU time, in cores.
+	CPUs float64
+}
+
+// DefaultLimits returns the limits a deployment gets when its [oci]
+// section says nothing: nobody's uid, and a ceiling one backend cannot
+// reach on a small VM without the others noticing. Conservative on
+// purpose -- the four lab backends each run in well under half of it.
+//
+// 65534:65534 is "nobody" everywhere. An image whose files are readable
+// only by its own USER (the deployment's images run as 10001) needs
+// [oci] user set to that uid; the dial then fails loudly at the first
+// open(), which is the direction a wrong uid should fail in.
+func DefaultLimits() Limits {
+	return Limits{User: "65534:65534", PidsLimit: 256, Memory: "512m", CPUs: 1.0}
+}
+
+// withDefaults fills every unset (zero) field of l from [DefaultLimits].
+// Only zero is filled: an explicit bad value is left for ValidateLimits to
+// refuse, never silently replaced.
+func (l Limits) withDefaults() Limits {
+	d := DefaultLimits()
+	if l.User == "" {
+		l.User = d.User
+	}
+	if l.PidsLimit == 0 {
+		l.PidsLimit = d.PidsLimit
+	}
+	if l.Memory == "" {
+		l.Memory = d.Memory
+	}
+	if l.CPUs == 0 {
+		l.CPUs = d.CPUs
+	}
+	return l
+}
+
+// numericUser is UID:GID, both decimal without a leading zero, neither 0.
+// The range check is in ValidateLimits.
+var numericUser = regexp.MustCompile(`^([1-9][0-9]{0,9}):([1-9][0-9]{0,9})$`)
+
+// podmanSize is podman's --memory syntax, narrowed to whole numbers and
+// one lowercase unit.
+var podmanSize = regexp.MustCompile(`^([1-9][0-9]{0,12})([bkmg])$`)
+
+// maxID is the largest uid/gid this accepts: 2^32-2, since 2^32-1 is
+// (uid_t)-1, "no change", to every setresuid(2).
+const maxID = 1<<32 - 2
+
+// minMemory is podman's own floor for --memory.
+const minMemory = 6 << 20
+
+// minCPUs is podman's floor for --cpus: 0.01 core is a CFS quota of
+// 1000us per 100000us period, the kernel's minimum. Below it podman refuses
+// the run, and below 0.00001 the quota rounds to 0, which is no limit.
+// There is no ceiling here: podman refuses a value above the host's CPU
+// count, and the host is not known where the configuration is loaded.
+const minCPUs = 0.01
+
+// maxPids is the kernel's PID_MAX_LIMIT on 64-bit Linux (2^22). A larger
+// --pids-limit is not a limit.
+const maxPids = 1 << 22
+
+// ValidateLimits reports whether l is a container policy this adapter will
+// run under. It is the rule buildPlan applies, exported so the
+// composition root can refuse to start on it instead of refusing every oci
+// dial afterwards.
+func ValidateLimits(l Limits) error {
+	m := numericUser.FindStringSubmatch(l.User)
+	if m == nil {
+		return fmt.Errorf("%w: user %q is not a numeric UID:GID with neither half 0 -- a name is resolved by the image's own "+
+			"/etc/passwd, and 0 is root (design/adr/0034)", ErrInvalidLimits, l.User)
+	}
+	for _, id := range m[1:] {
+		if n, err := strconv.ParseUint(id, 10, 64); err != nil || n > maxID {
+			return fmt.Errorf("%w: user %q is out of range", ErrInvalidLimits, l.User)
+		}
+	}
+	if l.PidsLimit <= 0 || l.PidsLimit > maxPids {
+		return fmt.Errorf("%w: pids limit %d must be between 1 and %d; there is no value that means unlimited",
+			ErrInvalidLimits, l.PidsLimit, maxPids)
+	}
+	if bytes, ok := memoryBytes(l.Memory); !ok || bytes < minMemory {
+		return fmt.Errorf("%w: memory %q must be a whole number with one unit of b, k, m or g, at least 6m", ErrInvalidLimits, l.Memory)
+	}
+	if math.IsNaN(l.CPUs) || math.IsInf(l.CPUs, 0) || l.CPUs < minCPUs {
+		return fmt.Errorf("%w: cpus %v must be a number of cores of at least 0.01", ErrInvalidLimits, l.CPUs)
+	}
+	return nil
+}
+
+// memoryBytes parses podmanSize into bytes.
+func memoryBytes(size string) (uint64, bool) {
+	m := podmanSize.FindStringSubmatch(size)
+	if m == nil {
+		return 0, false
+	}
+	n, err := strconv.ParseUint(m[1], 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	shift := map[string]uint{"b": 0, "k": 10, "m": 20, "g": 30}[m[2]]
+	if n > math.MaxUint64>>shift {
+		return 0, false
+	}
+	return n << shift, true
+}
+
+// limitArgs renders l as the flags buildPlan emits after mandatoryWrapper.
+func limitArgs(l Limits) []string {
+	return []string{
+		"--user=" + l.User,
+		"--pids-limit=" + strconv.Itoa(l.PidsLimit),
+		"--memory=" + l.Memory,
+		"--cpus=" + strconv.FormatFloat(l.CPUs, 'f', -1, 64),
+	}
+}
 
 // plan is one fully-assembled, not-yet-executed container invocation.
 //
@@ -152,6 +304,9 @@ type planOptions struct {
 	// assembling an invocation stays a pure function of its arguments and
 	// can be asserted byte for byte in a test.
 	ContainerName string
+	// Limits is the uid and resource policy. Taken as given: the zero
+	// value is refused, not defaulted -- defaults are filled once, by New.
+	Limits Limits
 }
 
 // buildPlan assembles the exact container invocation for one dial. It is
@@ -189,6 +344,12 @@ func buildPlan(spec gateway.UpstreamSpec, env map[string]string, opts planOption
 	if err := validateImage(spec.Image); err != nil {
 		return plan{}, err
 	}
+	// Checked here as well as at boot, for the reason digestPinned is: this
+	// is the instant that decides what runs, and a uid of 0 is not a thing
+	// to trust a caller about.
+	if err := ValidateLimits(opts.Limits); err != nil {
+		return plan{}, err
+	}
 	network, err := wrapperNetwork(spec.Args)
 	if err != nil {
 		return plan{}, err
@@ -198,9 +359,11 @@ func buildPlan(spec gateway.UpstreamSpec, env map[string]string, opts planOption
 		return plan{}, err
 	}
 
-	args := make([]string, 0, 8+len(mandatoryWrapper)+2*len(names))
+	limits := limitArgs(opts.Limits)
+	args := make([]string, 0, 8+len(mandatoryWrapper)+len(limits)+2*len(names))
 	args = append(args, "run")
 	args = append(args, mandatoryWrapper...)
+	args = append(args, limits...)
 	args = append(args, "--name", opts.ContainerName)
 	args = append(args, "--network="+network)
 	for _, name := range names {
@@ -470,19 +633,15 @@ var (
 	runtimeDirectingEnvPrefixes = []string{"XDG_", "CONTAINERS_", "_CONTAINERS_", "CONTAINER_", "PODMAN_", "STORAGE_"}
 )
 
-// loaderEnvNames and loaderEnvPrefixes are the variables the dynamic
-// loader (glibc ld.so, and dyld for completeness) or iconv honour at exec
-// time. The entry's resolved map becomes the environment of the podman
-// process itself (stdio childEnv), which holds every credential of the
-// entry, so a name here would turn a vault value into a library loaded
-// into that process. Like the runtime knobs, they configure the process
-// that starts the backend rather than the backend, which is why they are
-// refused under the same sentinel (2026-09-24).
-var (
-	loaderEnvNames = []string{"GCONV_PATH"}
-
-	loaderEnvPrefixes = []string{"LD_", "DYLD_"}
-)
+// The variables the dynamic loader, iconv or an interpreter read as code
+// (LD_*, DYLD_*, GCONV_PATH, NODE_OPTIONS, PYTHONSTARTUP, ...) are refused
+// too, through [gateway.IsCodeLoadingEnvName]. The entry's resolved map
+// becomes the environment of the podman process itself (stdio childEnv)
+// and, through --env, of the backend, and both hold every credential of the
+// entry; a name on that list would turn an unsigned vault value into code
+// in either. The list lived here until 28 Sep 2026 and moved to the port
+// package so the stdio adapter applies the same one (design/adr/0034 item
+// 3). It keeps this package's sentinel, ErrRuntimeDirectingEnvName.
 
 // ValidateEnvVarNames reports whether every name an entry declares can be
 // carried into a container by this adapter. It is the dial-time rule,
@@ -548,9 +707,10 @@ func validateEnvName(name string) error {
 		return fmt.Errorf("%w: environment variable name %q contains \"*\", which the container runtime reads as "+
 			"a prefix match over its own environment rather than as one variable", ErrInvalidEnvName, name)
 	}
-	if hasNameOrPrefix(name, loaderEnvNames, loaderEnvPrefixes) {
-		return fmt.Errorf("%w: %q is read by the dynamic loader of the container runtime process, not by the "+
-			"upstream; an entry that sets it would load code into the process that holds every credential of the entry",
+	if gateway.IsCodeLoadingEnvName(name) {
+		return fmt.Errorf("%w: %q is read as code by the dynamic loader or an interpreter, in the container runtime "+
+			"process and in the upstream; an entry that sets it would run an unsigned vault value beside every "+
+			"credential of the entry (design/adr/0034)",
 			ErrRuntimeDirectingEnvName, name)
 	}
 	if isRuntimeDirecting(name) {

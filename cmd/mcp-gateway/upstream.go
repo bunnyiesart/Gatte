@@ -297,6 +297,12 @@ func upstreamRegister(args []string, stdout, stderr io.Writer) int {
 }
 
 func runUpstreamRegister(e *opEnv, entry registry.UpstreamServer) int {
+	// Needs the configuration, so it is here and not beside
+	// dialTimeRefusal in cmdUpstream (design/adr/0034 item 4).
+	if err := credentialedStdioRefusal(entry, e.cfg); err != nil {
+		fmt.Fprintf(e.stderr, "refusing to register %q: %v\n", entry.Name, err)
+		return exitCannotRun
+	}
 	err := e.upstreams().Register(e.ctx(), entry)
 	switch {
 	case errors.Is(err, registry.ErrAlreadyExists):

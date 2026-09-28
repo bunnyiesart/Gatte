@@ -405,13 +405,14 @@ func TestEmptyInheritedEnvGivesChildOnlyInjectedValues(t *testing.T) {
 // childEnv: what the Credential Vault resolved wins over whatever the
 // gateway's own process happens to have under the same name.
 func TestInjectedEnvOverridesInheritedEnv(t *testing.T) {
-	t.Setenv("HOME", "/gateway-home-should-not-win")
+	// LANG, not HOME: HOME is refused as an entry variable (design/adr/0034).
+	t.Setenv("LANG", "gateway-lang-should-not-win")
 
-	up := dial(t, New(WithInheritedEnv("HOME")), gateway.UpstreamSpec{
+	up := dial(t, New(WithInheritedEnv("LANG")), gateway.UpstreamSpec{
 		Name:      "envfixture",
 		Transport: "stdio",
 		Command:   fixtureBinaries.envfixture,
-	}, map[string]string{"HOME": "/injected-home"})
+	}, map[string]string{"LANG": "injected-lang"})
 
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 	defer cancel()
@@ -427,16 +428,16 @@ func TestInjectedEnvOverridesInheritedEnv(t *testing.T) {
 		t.Fatalf("decode env_names result: %v", err)
 	}
 	// The fixture reports names only, so the check available here is that
-	// HOME arrived exactly once -- os/exec de-duplicates keeping the last
+	// LANG arrived exactly once -- os/exec de-duplicates keeping the last
 	// entry, which is the injected one.
 	var count int
 	for _, name := range reported.Names {
-		if name == "HOME" {
+		if name == "LANG" {
 			count++
 		}
 	}
 	if count != 1 {
-		t.Errorf("child saw HOME %d times, want exactly 1 (os/exec should have de-duplicated)", count)
+		t.Errorf("child saw LANG %d times, want exactly 1 (os/exec should have de-duplicated)", count)
 	}
 }
 

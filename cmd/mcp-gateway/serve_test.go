@@ -1269,6 +1269,8 @@ func TestBuildServer_DeliversAVaultSecretToARealBackend(t *testing.T) {
 	fmt.Fprintf(&body, "[oidc]\nissuer = %q\naudience = %q\n", issuer.url, audience)
 	fmt.Fprintf(&body, "[vault]\nsecrets_file = %q\nage_key_file = %q\n", secretsFile, ageKeyFile)
 	fmt.Fprintf(&body, "[signer]\nrequire_signed = false\n")
+	// The lab mock is a credentialed stdio backend (design/adr/0034).
+	fmt.Fprintf(&body, "[upstreams]\nallow_credentialed_stdio = true\n")
 	fmt.Fprintf(&body, "[[role]]\nname = %q\ntools = [%q]\n", "lab", tool)
 	fmt.Fprintf(&body, "[group_to_role]\n%q = %q\n", "soc-lab", "lab")
 	configPath := filepath.Join(dir, "mcp-gateway.toml")

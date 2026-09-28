@@ -45,7 +45,7 @@ func ociSpec() gateway.UpstreamSpec {
 }
 
 func testOptions() planOptions {
-	return planOptions{Podman: "podman", ContainerName: testContainerName}
+	return planOptions{Podman: "podman", ContainerName: testContainerName, Limits: DefaultLimits()}
 }
 
 func TestBuildPlanAssemblesTheWrapperInOrder(t *testing.T) {
@@ -66,6 +66,14 @@ func TestBuildPlanAssemblesTheWrapperInOrder(t *testing.T) {
 		// the root is read-only except for three paths, which the contract
 		// verifier caught on all four real images on 18 Sep 2026.
 		"--read-only", "--read-only-tmpfs=false", "--tmpfs=/tmp",
+		// design/adr/0034 item 1: no capability, no privilege gained
+		// through setuid, and a numeric uid that is never 0 whatever USER
+		// the image declares.
+		"--cap-drop=all", "--security-opt=no-new-privileges",
+		"--user=65534:65534",
+		// design/adr/0034 item 2: one backend cannot starve the host it
+		// shares with the gateway, the proxy and the IdP.
+		"--pids-limit=256", "--memory=512m", "--cpus=1",
 		"--name", testContainerName,
 		"--network=none",
 		// Sorted, not in map order: the same entry has to produce the same
@@ -238,6 +246,9 @@ func TestBuildPlanRefusesEnvNamesThatSteerTheContainerRuntime(t *testing.T) {
 		"CONTAINER_HOST", "PODMAN_CONNECTIONS_CONF", "STORAGE_DRIVER",
 		"_CONTAINERS_ROOTLESS_UID", "_CONTAINERS_USERNS_CONFIGURED",
 		"LD_PRELOAD", "LD_LIBRARY_PATH", "GCONV_PATH", "DYLD_INSERT_LIBRARIES",
+		// design/adr/0034 item 3: the interpreter knobs, whose value is code.
+		"NODE_OPTIONS", "PYTHONPATH", "PYTHONSTARTUP", "PERL5OPT", "BASH_ENV", "JAVA_TOOL_OPTIONS",
+		"BASH_FUNC_python%%", "PYTHONWARNINGS", "PERL5DB",
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := buildPlan(ociSpec(), map[string]string{name: secret}, testOptions())
@@ -472,7 +483,8 @@ func TestBuildPlanAcceptsTheWrapperRestatedByTheEntry(t *testing.T) {
 	}
 
 	restated := ociSpec()
-	restated.Args = []string{"--rm", "-i", "--log-driver=none", "--pull=never", "--read-only", "--read-only-tmpfs=false", "--tmpfs=/tmp", "--network=none"}
+	restated.Args = []string{"--rm", "-i", "--log-driver=none", "--pull=never", "--read-only", "--read-only-tmpfs=false", "--tmpfs=/tmp",
+		"--cap-drop=all", "--security-opt=no-new-privileges", "--network=none"}
 	full, err := buildPlan(restated, nil, testOptions())
 	if err != nil {
 		t.Fatalf("buildPlan(wrapper restated): %v", err)

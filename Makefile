@@ -1,4 +1,4 @@
-.PHONY: build test test-race vet lint fmt-check check lab-build lab-probe devtools
+.PHONY: require-devtools race-noskip ci build test test-race vet lint fmt-check check lab-build lab-probe devtools
 
 build:
 	go build -o bin/mcp-gateway ./cmd/mcp-gateway
@@ -76,7 +76,8 @@ test:
 		echo "#     client. WORKFLOW.md Phase 2: the single most important"; \
 		echo "#     test in this project."; \
 		echo "#"; \
-		echo "#   cmd/mcp-gateway (serve_test.go + wiring_test.go, 11 tests)"; \
+		echo "#   cmd/mcp-gateway (serve_test.go, wiring_test.go and more;"; \
+		echo "#     make ci counts them and fails instead of skipping)"; \
 		echo "#     buildServer drops from 90.1% to 0.0% coverage. Lost:"; \
 		echo "#     TestBuildServer_AuthSeamIsWired (the only test that"; \
 		echo "#     authentication is wired at all), and"; \
@@ -241,3 +242,41 @@ fmt-check:
 # `test` still runs too, and deliberately: -race changes scheduling, so a
 # plain run is the one that matches how the binary actually executes.
 check: fmt-check vet lint test test-race build
+
+# require-devtools refuses to run when the tools the vault proofs shell out
+# to are missing (CLOSEOUT.md Track 4, closed 28 Sep 2026: "fail loudly").
+# Without them those tests SKIP and the suite still says ok -- the vault
+# leak proof and the only test that authentication is wired at all among
+# them.
+require-devtools: export PATH := $(GOPATH_BIN):$(PATH)
+require-devtools:
+	@missing=""; \
+	for tool in sops age age-keygen; do \
+		command -v $$tool >/dev/null 2>&1 || missing="$$missing $$tool"; \
+	done; \
+	if [ -n "$$missing" ]; then \
+		echo "ERROR: required tools not on PATH:$$missing (already searched $(GOPATH_BIN))"; \
+		echo "Refusing to run: without them the vault proofs SKIP and the suite reports ok."; \
+		echo "Fix with:  make devtools"; \
+		exit 1; \
+	fi
+
+# race-noskip is test-race that also fails on any skipped test, and names
+# them. The count comes from the run, never from a document.
+race-noskip: export PATH := $(GOPATH_BIN):$(PATH)
+race-noskip:
+	@log="$$(mktemp "$${TMPDIR:-/tmp}/gatte-race.XXXXXX")"; \
+	go test -race -count=1 -v ./... >"$$log" 2>&1; rc=$$?; \
+	grep -E '^(FAIL|panic:)|^--- FAIL|WARNING: DATA RACE' "$$log"; \
+	if [ $$rc -ne 0 ]; then echo "race-noskip: go test failed (log: $$log)"; exit $$rc; fi; \
+	skips="$$(grep -E -- '--- SKIP' "$$log")"; \
+	if [ -n "$$skips" ]; then \
+		echo "race-noskip: $$(printf '%s\n' "$$skips" | wc -l | tr -d ' ') test(s) SKIPPED (log: $$log):"; \
+		echo "$$skips"; exit 1; \
+	fi; \
+	rm -f "$$log"; echo "race-noskip: all packages ok, no data race, no skipped test"
+
+# ci is check with skips turned into failures. Use it in a pipeline; use
+# check at a desk.
+ci: require-devtools fmt-check vet lint build race-noskip
+	@echo "ci: fmt, vet, lint, build and the full suite under -race passed, with no test skipped."

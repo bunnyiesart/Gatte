@@ -105,3 +105,52 @@ func TestForgedTokensDoNotTurnIntoJWKSFetches(t *testing.T) {
 		t.Errorf("fetches for a cached key = %d, want 2", got)
 	}
 }
+
+// TestARedirectingJWKSEndpointStillLoadsKeys: the limiter counts fetches,
+// not round trips. http.Client follows a redirect by calling the transport
+// again, and a limiter that refused that second hop left the key cache
+// empty for good -- every token refused -- for any IdP whose jwks_uri
+// answers 3xx (http to https, a trailing slash).
+func TestARedirectingJWKSEndpointStillLoadsKeys(t *testing.T) {
+	idp, attacker := testKeys(t)
+
+	var fetches atomic.Int32
+	mux := http.NewServeMux()
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"issuer":                 server.URL,
+			"authorization_endpoint": server.URL + "/authorize",
+			"token_endpoint":         server.URL + "/token",
+			"jwks_uri":               server.URL + "/jwks",
+		})
+	})
+	mux.HandleFunc("/jwks", func(w http.ResponseWriter, r *http.Request) {
+		fetches.Add(1)
+		http.Redirect(w, r, "/jwks/", http.StatusMovedPermanently)
+	})
+	mux.HandleFunc("/jwks/", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(jose.JSONWebKeySet{Keys: []jose.JSONWebKey{
+			{Key: idp.Public(), KeyID: testKeyID, Algorithm: string(jose.RS256), Use: "sig"},
+		}})
+	})
+
+	h := &harness{t: t, server: server, issuer: server.URL, key: idp, logs: nil}
+	cfg := oidcadapter.Config{Issuer: server.URL, Audience: testAudience, HTTPClient: server.Client()}
+	v, err := oidcadapter.New(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, err := v.Verify(context.Background(), h.mint(h.claims())); err != nil {
+		t.Fatalf("a genuine token behind a redirecting jwks_uri: %v", err)
+	}
+	// The redirected fetch is still one fetch for the limiter: a forged
+	// token right after it does not reach the IdP.
+	if _, err := v.Verify(context.Background(), sign(t, jose.RS256, attacker, attackerKID, h.claims())); err == nil {
+		t.Fatal("a token with an unknown kid was accepted")
+	}
+	if got := fetches.Load(); got != 1 {
+		t.Errorf("fetches = %d, want 1", got)
+	}
+}

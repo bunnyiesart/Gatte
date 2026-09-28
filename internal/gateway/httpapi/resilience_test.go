@@ -12,6 +12,7 @@ import (
 	"github.com/bunnyiesart/Gatte/internal/audit"
 	"github.com/bunnyiesart/Gatte/internal/gateway"
 	"github.com/bunnyiesart/Gatte/internal/quarantine"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // Call-path resilience at the HTTP boundary
@@ -173,5 +174,84 @@ func TestConcurrencyLimitedIsItsOwnClass(t *testing.T) {
 	}
 	if errors.Is(gateway.ErrInternal, gateway.ErrConcurrencyLimited) || classify(gateway.ErrInternal) != classInternal {
 		t.Error("an internal error must stay the generic internal class")
+	}
+}
+
+// panickingAudit panics on Record once armed: an audit store with a bug.
+type panickingAudit struct {
+	audit.Recorder
+	armed atomic.Bool
+}
+
+func (a *panickingAudit) Record(ctx context.Context, r audit.Record) error {
+	if a.armed.Load() {
+		panic(panicCanary)
+	}
+	return a.Recorder.Record(ctx, r)
+}
+
+// TestAPanicOnTheUnservedCallPathIsContained: a tools/call naming a tool
+// this caller was not served never reaches dispatchTool. The receiving
+// middleware writes its row, in the SDK's handler goroutine, which has no
+// recover. A store that panics there, and again when the panic itself is
+// recorded, must still cost one call and not the process.
+func TestAPanicOnTheUnservedCallPathIsContained(t *testing.T) {
+	var pa *panickingAudit
+	h := newHarnessWith(t, harnessOptions{wrapAudit: func(r audit.Recorder) audit.Recorder {
+		pa = &panickingAudit{Recorder: r}
+		return pa
+	}})
+	pa.armed.Store(true)
+
+	status, got := h.rawCall(toolDeleteCase)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200 carrying a JSON-RPC error", status)
+	}
+	if !strings.Contains(got, `"error"`) || !strings.Contains(got, msgInternal) {
+		t.Errorf("body = %q, want a JSON-RPC error with the constant %q", got, msgInternal)
+	}
+	if strings.Contains(got, panicCanary) || strings.Contains(h.logs.String(), panicCanary) {
+		t.Errorf("the panic value escaped:\nbody: %s\nlog: %s", got, h.logs.String())
+	}
+
+	pa.armed.Store(false)
+	if status, got := h.rawCall(toolSearch); status != http.StatusOK || strings.Contains(got, `"error"`) {
+		t.Errorf("a healthy call after the panic = %d %q, want a result", status, got)
+	}
+}
+
+// TestAPanicAfterDispatchReturnedAnnotatesTheAllowedRow covers the recover
+// in dispatchTool itself: a panic in the code that runs once Dispatch has
+// returned -- converting the result -- is not Dispatch's to contain.
+func TestAPanicAfterDispatchReturnedAnnotatesTheAllowedRow(t *testing.T) {
+	h := newHarness(t)
+	convertResult = func(gateway.Result) (*mcp.CallToolResult, error) { panic(panicCanary) }
+	t.Cleanup(func() { convertResult = toCallToolResult })
+
+	status, got := h.rawCall(toolListCases)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200 carrying a JSON-RPC error", status)
+	}
+	if !strings.Contains(got, `"error"`) || !strings.Contains(got, msgInternal) {
+		t.Errorf("body = %q, want a JSON-RPC error with the constant %q", got, msgInternal)
+	}
+	if strings.Contains(got, panicCanary) || strings.Contains(h.logs.String(), panicCanary) {
+		t.Errorf("the panic value escaped:\nbody: %s\nlog: %s", got, h.logs.String())
+	}
+
+	var outcomes []string
+	for _, r := range h.auditRows() {
+		if r.Tool == toolListCases {
+			outcomes = append(outcomes, string(r.Outcome)+"/"+r.Reason)
+		}
+	}
+	want := []string{string(audit.OutcomeAllowed) + "/", string(audit.OutcomeFailed) + "/internal error"}
+	if fmt.Sprint(outcomes) != fmt.Sprint(want) {
+		t.Errorf("trail for the call = %v, want %v", outcomes, want)
+	}
+
+	convertResult = toCallToolResult
+	if status, got := h.rawCall(toolSearch); status != http.StatusOK || strings.Contains(got, `"error"`) {
+		t.Errorf("a healthy call after the panic = %d %q, want a result", status, got)
 	}
 }

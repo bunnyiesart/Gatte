@@ -318,8 +318,9 @@ co-located reverse proxy and your network controls (`design/adr/0011`).
 **It is a single point of failure, knowingly** (`design/adr/0001`): one
 binary, one process, one SQLite file. A per-call ceiling bounds how long one
 call may hold a backend (`design/adr/0025`), and a per-analyst cap how many
-it may hold at once (`design/adr/0035`); there is no global or per-backend
-cap. A panic is audited and refused for that call only; request bodies over
+calls it may have in flight (`design/adr/0035`); there is no global or
+per-backend cap. A panic is refused for that call only and audited (only
+logged, when the audit store is what panicked); request bodies over
 1 MiB get 413; the JWKS is refetched at most once per 30s, however many
 forged tokens arrive. Audit writes for failed authentication are
 rate-limited (`design/adr/0027`) because, measured, an unauthenticated flood

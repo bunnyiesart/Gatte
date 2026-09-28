@@ -26,6 +26,11 @@ var errRefetchLimited = errors.New("oidc: jwks refetch limited; retry after the 
 // refetchLimiter is the RoundTripper of the key set's HTTP client, and of
 // nothing else: discovery goes through the unwrapped client. Attempts are
 // counted, not successes, so a failing IdP is not hammered either.
+//
+// What is counted is a fetch, not a round trip. http.Client follows a
+// redirect by calling RoundTrip again with r.Response set to the 3xx that
+// led there; those hops belong to a fetch already admitted and pass. The
+// client's own redirect cap (ten) bounds them.
 type refetchLimiter struct {
 	next     http.RoundTripper
 	now      func() time.Time
@@ -36,6 +41,9 @@ type refetchLimiter struct {
 }
 
 func (l *refetchLimiter) RoundTrip(r *http.Request) (*http.Response, error) {
+	if r.Response != nil {
+		return l.next.RoundTrip(r)
+	}
 	l.mu.Lock()
 	t := l.now()
 	if !l.last.IsZero() && t.Sub(l.last) < l.interval {

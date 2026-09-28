@@ -119,7 +119,7 @@ This is the "what won't be useful" half of your question, and it's bigger than y
 2. **stdio → HTTP.** stdio means one process per client, local only. HTTP means one shared deployment, remote analysts, and non-Claude-Code clients.
 3. **Per-analyst audit.** For a SOC this is arguably the biggest win: a log of which analyst ran which VT lookup against which IOC. You currently have no such record.
 4. **Per-role tool views.** An N1 triage analyst gets 12 tools; a DFIR lead gets all 65. Fixes context bloat *and* least-privilege in one move.
-5. **One more genuinely useful REST→MCP target.** `fortigate_report.py`, `patrus_report.py`, `kerberos_report.py` are sitting there as scripts. ContextForge/Unla could expose those as tools via config instead of you writing three more MCP servers.
+5. **One more genuinely useful REST→MCP target.** `fortigate_report.py`, `client_report.py`, `kerberos_report.py` are sitting there as scripts. ContextForge/Unla could expose those as tools via config instead of you writing three more MCP servers.
 
 ## The category to rule out immediately
 

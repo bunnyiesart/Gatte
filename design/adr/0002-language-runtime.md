@@ -18,7 +18,7 @@ neutra de gosto.
 | Prós | Contras |
 |---|---|
 | Todos os quatro servidores MCP atuais (`casemgmt`, `logsearch`, `docsearch`, `threatintel`) já rodam Python dentro de seus containers Docker — **manutenibilidade** | Menos comum que Go para binários-únicos-fáceis-de-distribuir (mas containerizar remove boa parte dessa desvantagem) |
-| `fortigate_report.py`, `patrus_report.py`, `kerberos_report.py` — os três scripts candidatos a virar tools (**extensibilidade**) já são Python; zero fricção de linguagem para incorporá-los | Assinatura Ed25519 e hashing SHA-256 (padrões que vamos copiar do Wirken/mcpproxy-go) são mais idiomáticos em Go nos projetos de referência, mas ambos têm bibliotecas Python maduras (`cryptography`, `hashlib`) |
+| `fortigate_report.py`, `client_report.py`, `kerberos_report.py` — os três scripts candidatos a virar tools (**extensibilidade**) já são Python; zero fricção de linguagem para incorporá-los | Assinatura Ed25519 e hashing SHA-256 (padrões que vamos copiar do Wirken/mcpproxy-go) são mais idiomáticos em Go nos projetos de referência, mas ambos têm bibliotecas Python maduras (`cryptography`, `hashlib`) |
 | `sops` tem binding Python confirmado (§9.3 do `DEVELOPMENT-LOG.md`) | — |
 | A equipe (SOC, não plataforma) já escreve e mantém Python — **simplicidade & deployability**: nenhuma linguagem nova para o único operador aprender | — |
 
@@ -45,7 +45,7 @@ linguagem. Binário único estaticamente linkado simplifica o deploy do
 
 **Justificativa de negócio:** nenhum dos quatro servidores atuais
 (`casemgmt`, `logsearch`, `docsearch`, `threatintel`) nem os três scripts candidatos a
-tool (`fortigate_report.py`, `patrus_report.py`, `kerberos_report.py`) são
+tool (`fortigate_report.py`, `client_report.py`, `kerberos_report.py`) são
 Go — isso introduz uma segunda linguagem no stack que a equipe de SOC
 mantém. Essa é exatamente a troca que a Opção A deste ADR (abaixo) já
 sinalizava como custo; foi pesada e aceita conscientemente, não ignorada.
@@ -61,7 +61,7 @@ runtime interpretado facilita o deploy do processo único do `Gateway
 Endpoint`.
 
 **Impactos negativos aceitos:** os três scripts de relatório
-(`fortigate_report.py`, `patrus_report.py`, `kerberos_report.py`) e os
+(`fortigate_report.py`, `client_report.py`, `kerberos_report.py`) e os
 quatro servidores MCP atuais continuam em Python — não há reuso direto de
 código entre eles e o gateway; qualquer integração futura passa por
 processo separado (stdio/HTTP), não por biblioteca compartilhada. A equipe

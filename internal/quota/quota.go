@@ -702,9 +702,10 @@ type Store interface {
 	//
 	//   - The debit and the check are one atomic operation, not a read
 	//     followed by a write. Dispatch does not serialise calls -- N
-	//     goroutines for N analysts call concurrently over one session,
-	//     with no queue, no semaphore and no pool -- so a read-then-write
-	//     would let N callers all read limit-1 and all pass.
+	//     goroutines call concurrently over one session, with no queue and
+	//     no pool, several per analyst under ADR-0035's cap -- so a
+	//     read-then-write would let N callers all read limit-1 and all
+	//     pass.
 	//
 	//   - It returns ErrInvalidReservation if r.Validate() fails, and
 	//     nothing is written.

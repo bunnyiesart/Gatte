@@ -247,6 +247,26 @@ type Response struct {
 	// gives: zero cannot be told from unset, and a timeout that can be
 	// switched off during an incident is one that stays off.
 	CallTimeout *time.Duration `toml:"call_timeout"`
+
+	// MaxConcurrentCallsPerAnalyst is how many calls one analyst (one IdP
+	// subject) may have in flight at once (design/adr/0035). A call over it
+	// is refused at once -- no queue -- before the quota is debited, and
+	// audited as `concurrency limited`.
+	//
+	// A pointer with no off switch, for the reasons MaxBytes gives: zero
+	// cannot be told from unset, and a cap that can be switched off during
+	// an incident is one that stays off.
+	MaxConcurrentCallsPerAnalyst *int `toml:"max_concurrent_calls_per_analyst"`
+}
+
+// MaxConcurrentCallsOrDefault reports the per-analyst concurrency cap,
+// resolving the unset case to gateway.DefaultMaxConcurrentCallsPerAnalyst.
+// Validate has already refused zero and negative.
+func (r Response) MaxConcurrentCallsOrDefault() int {
+	if r.MaxConcurrentCallsPerAnalyst == nil {
+		return gateway.DefaultMaxConcurrentCallsPerAnalyst
+	}
+	return *r.MaxConcurrentCallsPerAnalyst
 }
 
 // MinCallTimeout is the shortest ceiling the file may ask for.
@@ -859,6 +879,15 @@ func (c *Config) Validate() error {
 				d, MinCallTimeout,
 			))
 		}
+	}
+
+	if n := c.Response.MaxConcurrentCallsPerAnalyst; n != nil && *n <= 0 {
+		errs = append(errs, errors.New(
+			"response.max_concurrent_calls_per_analyst: must be positive -- there is deliberately no value "+
+				"that disables the per-analyst concurrency cap (design/adr/0035). Without it one looping agent "+
+				"or stolen token holds the shared backends for every other analyst. If real work needs more "+
+				"parallel calls, raise it (response.max_concurrent_calls_per_analyst = 8)",
+		))
 	}
 
 	errs = append(errs, c.Audit.SIEM.validate()...)

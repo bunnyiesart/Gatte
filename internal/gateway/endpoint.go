@@ -469,6 +469,12 @@ type Config struct {
 	// the configuration file, where a reviewer sees it.
 	CallTimeout time.Duration
 
+	// MaxConcurrentCallsPerAnalyst is how many calls one subject may have
+	// in flight at once (design/adr/0035). Optional; zero or negative
+	// selects DefaultMaxConcurrentCallsPerAnalyst, so like the two ceilings
+	// above it cannot be switched off from here.
+	MaxConcurrentCallsPerAnalyst int
+
 	// Now supplies the timestamp for audit records and quarantine
 	// observations. Optional; defaults to time.Now. Injected rather than
 	// called directly so tests need no clock dependency, matching how
@@ -512,8 +518,11 @@ type Gateway struct {
 	// callTimeout is the per-call ceiling, always positive by the same rule
 	// and for the same reason (ADR-0025).
 	callTimeout time.Duration
-	now         func() time.Time
-	log         *slog.Logger
+	// slots is the per-subject concurrency cap (ADR-0035), always
+	// positive by the same rule.
+	slots *callSlots
+	now   func() time.Time
+	log   *slog.Logger
 
 	// refreshMu serializes Connect against Refresh. It is not the same lock
 	// as mu, and it guards a different thing: mu protects the table for the
@@ -748,6 +757,10 @@ func New(cfg Config) (*Gateway, error) {
 	if callTimeout <= 0 {
 		callTimeout = DefaultCallTimeout
 	}
+	maxConcurrent := cfg.MaxConcurrentCallsPerAnalyst
+	if maxConcurrent <= 0 {
+		maxConcurrent = DefaultMaxConcurrentCallsPerAnalyst
+	}
 
 	// The key for the credential digests (see the credKey field). Read
 	// from crypto/rand and never stored: a failure here is fatal to
@@ -776,6 +789,7 @@ func New(cfg Config) (*Gateway, error) {
 		requireSig:     cfg.RequireSigned,
 		maxResultBytes: maxResultBytes,
 		callTimeout:    callTimeout,
+		slots:          newCallSlots(maxConcurrent),
 		now:            now,
 		log:            logger,
 		conns:          map[string]Upstream{},
@@ -1971,8 +1985,15 @@ func (g *Gateway) ListTools(ctx context.Context, id access.Identity) ([]ToolDef,
 // operator-authored list of names, not secrets, whereas which tool is
 // currently under suspicion is -- and that is the fact the opaque error
 // protects.
-func (g *Gateway) Dispatch(ctx context.Context, c Caller, namespacedTool string, args json.RawMessage) (Result, error) {
-	// The kill switch first (ADR-0031), ahead of every answer below: a
+func (g *Gateway) Dispatch(ctx context.Context, c Caller, namespacedTool string, args json.RawMessage) (res Result, err error) {
+	// First, so it covers everything below (ADR-0035): a panic anywhere in
+	// this call -- an adapter, the scrub, a store -- becomes one audited
+	// row and ErrInternal, instead of the SDK's handler goroutine taking
+	// the process down for every analyst. dispatched says which row.
+	dispatched := false
+	defer g.containPanic(ctx, c, namespacedTool, &dispatched, &res, &err)
+
+	// The kill switch next (ADR-0031), ahead of every answer below: a
 	// blocked subject is told "forbidden" whatever they named, so the
 	// refusal cannot be used to tell a real tool from an invented one. The
 	// serving adapter already asked at AdmitCaller, and on the context it
@@ -2014,6 +2035,21 @@ func (g *Gateway) Dispatch(ctx context.Context, c Caller, namespacedTool string,
 		g.auditRefusal(ctx, c, namespacedTool, rt.route.upstream, reasonQuarantineUnavailable)
 		return Result{}, err
 	}
+
+	// The per-analyst concurrency cap (design/adr/0035), fail-fast.
+	//
+	// After admit, for the reason the quota is: a quarantined tool must
+	// stay indistinguishable from one that does not exist. Before the
+	// quota, because the debit is never reversed -- a call refused here
+	// would otherwise have spent budget for a call that never left. Before
+	// the allowed row, because that row means the call was dispatched.
+	// Held until the call, the result check and the scrub are done.
+	release, ok := g.slots.acquire(c.Identity.Subject)
+	if !ok {
+		g.auditRefusal(ctx, c, namespacedTool, rt.route.upstream, reasonConcurrencyLimited)
+		return Result{}, fmt.Errorf("%w (limit %d)", ErrConcurrencyLimited, g.slots.max)
+	}
+	defer release()
 
 	// The per-analyst quota, and this is the only place it can go
 	// (design/adr/0030-quota-por-analista.md decision 5).
@@ -2063,6 +2099,7 @@ func (g *Gateway) Dispatch(ctx context.Context, c Caller, namespacedTool string,
 			slog.String("tool", namespacedTool), slog.String("detail", err.Error()))
 		return Result{}, err
 	}
+	dispatched = true
 
 	// The gateway's own ceiling on one call (ADR-0025), derived from the
 	// caller's context so a client that disconnects still cuts its call
@@ -2073,7 +2110,7 @@ func (g *Gateway) Dispatch(ctx context.Context, c Caller, namespacedTool string,
 	callCtx, cancelCall := context.WithTimeout(ctx, g.callTimeout)
 	defer cancelCall()
 
-	res, err := up.CallTool(callCtx, rt.route.originalName, args)
+	res, err = up.CallTool(callCtx, rt.route.originalName, args)
 	if err != nil {
 		// An analyst's call is usually where a dead backend is noticed
 		// first: Refresh runs on a tick, and this runs whenever somebody
@@ -2265,13 +2302,14 @@ func scrubJSON(raw json.RawMessage, env map[string]string, hit *[]string) (json.
 // given the token in the first place, which is the only reliable way to
 // guarantee that.
 //
-// # The pending debt, stated rather than buried
+// # What bounds it
 //
-// Nothing rate-limits this. Somebody hammering tokens writes one row per
-// attempt, and under a sustained grind the trail becomes mostly this. It
-// is still better than today's silence -- a burst of these rows *is* the
-// detection -- but it is a real gap and design/adr/0012 records it as
-// one, not as a detail.
+// Rows are capped per source (design/adr/0027, the authLimit below): past
+// the ceiling one `auth failures rate-limited` row marks the window and the
+// rest reach only the log. A forged token no longer costs the IdP anything
+// either: the verifier refetches the JWKS at most once per 30s
+// (design/adr/0035). What neither bounds is the TLS and HTTP work of the
+// request itself; that belongs to the reverse proxy in front.
 //
 // Like auditRefusal, it returns nothing: the 401 stands whether or not
 // the row could be written, and a failure is loud in the log instead.
@@ -3134,6 +3172,8 @@ func classifyFailure(err error) string {
 		return reasonResultSchemaViolation
 	case errors.Is(err, ErrUpstreamGone):
 		return reasonUpstreamGone
+	case errors.Is(err, ErrInternal):
+		return reasonInternalError
 	default:
 		return reasonUpstreamFailed
 	}

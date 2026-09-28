@@ -1912,3 +1912,37 @@ func TestExampleConfigDocumentsTheTelemetry(t *testing.T) {
 		t.Errorf("the example ships a telemetry destination (%q); there is no GELF UDP/TCP input on the SOC's Graylog to send to, and an invented address is one somebody copies into production", c.Telemetry.Address)
 	}
 }
+
+// -----------------------------------------------------------------------
+// response.max_concurrent_calls_per_analyst (ADR-0035)
+// -----------------------------------------------------------------------
+
+func TestMaxConcurrentCallsDefaultsWhenUnset(t *testing.T) {
+	c := mustLoad(t, minimalConfig)
+	if got := c.Response.MaxConcurrentCallsOrDefault(); got != gateway.DefaultMaxConcurrentCallsPerAnalyst {
+		t.Errorf("MaxConcurrentCallsOrDefault() = %d, want the default %d", got, gateway.DefaultMaxConcurrentCallsPerAnalyst)
+	}
+}
+
+func TestMaxConcurrentCallsIsRead(t *testing.T) {
+	c := mustLoad(t, minimalConfig+"\n[response]\nmax_concurrent_calls_per_analyst = 9\n")
+	if got := c.Response.MaxConcurrentCallsOrDefault(); got != 9 {
+		t.Errorf("MaxConcurrentCallsOrDefault() = %d, want 9", got)
+	}
+}
+
+// TestMaxConcurrentCallsCannotDisableTheCap: the same no-off-switch rule as
+// max_bytes and call_timeout, for the same reason.
+func TestMaxConcurrentCallsCannotDisableTheCap(t *testing.T) {
+	for _, value := range []string{"0", "-1"} {
+		t.Run(value, func(t *testing.T) {
+			err := loadErr(t, minimalConfig+"\n[response]\nmax_concurrent_calls_per_analyst = "+value+"\n")
+			if !errors.Is(err, ErrInvalid) {
+				t.Fatalf("Load = %v, want ErrInvalid", err)
+			}
+			if !strings.Contains(err.Error(), "must be positive") {
+				t.Errorf("error does not say the value must be positive: %v", err)
+			}
+		})
+	}
+}

@@ -600,6 +600,17 @@ max_bytes = 1048576
 # inicializacao: nao ha valor que desligue, pelo mesmo motivo do max_bytes.
 call_timeout = "2m"
 
+# Quantas chamadas um analista (um `sub` do IdP) pode ter em voo ao mesmo
+# tempo (ADR-0035). A excedente e recusada na hora, sem fila, antes de gastar
+# quota, e vai para a trilha como `denied` / `concurrency limited`; o cliente
+# recebe o erro constante `concurrency limited`.
+#
+# Padrao 4: um agente que dispara algumas consultas em paralelo cabe; um loop
+# ou um token roubado abrindo dezenas nao cabe, e cada chamada dessas pode
+# segurar o processo compartilhado de um backend por ate call_timeout.
+# Zero ou negativo e recusado: nao ha valor que desligue.
+max_concurrent_calls_per_analyst = 4
+
 
 # ===========================================================================
 # Papeis

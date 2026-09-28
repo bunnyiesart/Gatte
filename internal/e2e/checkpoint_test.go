@@ -41,6 +41,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -52,6 +53,8 @@ import (
 	gwstdio "github.com/bunnyiesart/Gatte/internal/gateway/stdio"
 	"github.com/bunnyiesart/Gatte/internal/quarantine"
 	quarantinesqlite "github.com/bunnyiesart/Gatte/internal/quarantine/sqlite"
+	"github.com/bunnyiesart/Gatte/internal/quota"
+	quotasqlite "github.com/bunnyiesart/Gatte/internal/quota/sqlite"
 	"github.com/bunnyiesart/Gatte/internal/registry"
 	registrysqlite "github.com/bunnyiesart/Gatte/internal/registry/sqlite"
 	"github.com/bunnyiesart/Gatte/internal/store"
@@ -173,6 +176,11 @@ type stack struct {
 	// which is the whole of ADR-0020 and could not be exercised here while
 	// the registry was a local variable.
 	reg registry.Repository
+	// counters is the quota's READ port -- the Operator Console's half.
+	// The Gateway in this stack holds the other one and cannot read a
+	// counter; a test asserting on consumption is standing in for
+	// `mcp-gateway quota usage`.
+	counters quota.Reader
 }
 
 // newStack builds the whole system: four registered upstreams, each with
@@ -190,6 +198,35 @@ func newStack(t *testing.T, policy *access.Policy, tokens map[string]access.Iden
 // it without asking a mock to produce a megabyte.
 func newLimitedStack(t *testing.T, policy *access.Policy, tokens map[string]access.Identity, maxResultBytes int64) *stack {
 	t.Helper()
+	return buildStack(t, policy, tokens, maxResultBytes, nil, nil)
+}
+
+// newQuotaStack is newStack with declared quota accounts, for the one
+// checkpoint that is about spending rather than about secrets.
+//
+// It registers ONLY the upstreams named, and the reason is a control this
+// harness would otherwise have to lie about. Every lab mock reads the same
+// MOCK_SECRET/MOCK_EXPECT (see the comment in buildStack), so all four
+// registry entries declare the same credential. gateway.CheckQuotaCoverage
+// refuses to start on exactly that shape: one upstream budgeted, a
+// neighbour carrying the same credential and not budgeted. In this fixture
+// that is an artefact -- the secret is fabricated and there is no third
+// party behind it -- but the check cannot know that, and weakening it to
+// let a test pass would be removing the control to protect the fixture.
+func newQuotaStack(t *testing.T, policy *access.Policy, tokens map[string]access.Identity, providers []quota.Provider, freeTools []string, register ...string) *stack {
+	t.Helper()
+	return buildStack(t, policy, tokens, 0, providers, freeTools, register...)
+}
+
+// buildStack is the whole system, with the quota plan and the registered
+// upstreams as parameters. No providers is the ordinary case: an empty plan,
+// which charges nothing. No register list means all four lab mocks.
+func buildStack(t *testing.T, policy *access.Policy, tokens map[string]access.Identity, maxResultBytes int64, providers []quota.Provider, freeTools []string, register ...string) *stack {
+	t.Helper()
+
+	if len(register) == 0 {
+		register = upstreams
+	}
 
 	db, err := store.Open(":memory:")
 	if err != nil {
@@ -205,6 +242,9 @@ func newLimitedStack(t *testing.T, policy *access.Policy, tokens map[string]acce
 	}
 	if err := quarantinesqlite.Migrate(db); err != nil {
 		t.Fatalf("migrate quarantine: %v", err)
+	}
+	if err := quotasqlite.Migrate(db); err != nil {
+		t.Fatalf("migrate quota: %v", err)
 	}
 
 	reg := registrysqlite.New(db)
@@ -239,7 +279,7 @@ func newLimitedStack(t *testing.T, policy *access.Policy, tokens map[string]acce
 		"MOCK_SECRET": shared,
 		"MOCK_EXPECT": shared,
 	}
-	for _, name := range upstreams {
+	for _, name := range register {
 		secrets[name] = shared
 		if err := reg.Register(context.Background(), registry.UpstreamServer{
 			Name:      name,
@@ -256,12 +296,27 @@ func newLimitedStack(t *testing.T, policy *access.Policy, tokens map[string]acce
 	logs := &bytes.Buffer{}
 	logger := slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
+	// Most of these tests declare no account: the mock upstreams carry a
+	// fabricated secret against a fabricated backend, and there is no
+	// third party's budget to protect. The port is wired all the same --
+	// an empty plan is how "nothing is charged" is said.
+	quotaPlan, err := quota.NewPlan(providers, freeTools)
+	if err != nil {
+		t.Fatalf("quota.NewPlan: %v", err)
+	}
+	counters := quotasqlite.New(db)
+	quotaGate, err := quota.NewGate(quotaPlan, counters)
+	if err != nil {
+		t.Fatalf("quota.NewGate: %v", err)
+	}
+
 	gw, err := gateway.New(gateway.Config{
 		Registry:       reg,
 		Vault:          memVault{secrets: vaultValues},
 		Quarantine:     quar,
 		Audit:          aud,
 		Policy:         policy,
+		Quota:          quotaGate,
 		Dialer:         gwstdio.New(),
 		MaxResultBytes: maxResultBytes,
 		Logger:         logger,
@@ -308,6 +363,7 @@ func newLimitedStack(t *testing.T, policy *access.Policy, tokens map[string]acce
 		t: t, gw: gw, server: srv,
 		tap:     &wireTap{rt: http.DefaultTransport, seen: &bytes.Buffer{}},
 		secrets: secrets, audit: aud, quar: quar, logs: logs, reg: reg,
+		counters: counters,
 	}
 }
 
@@ -836,4 +892,118 @@ func (s *stack) approveAll() {
 			s.t.Fatalf("approve %s/%s: %v", tool.ServerName, tool.ToolName, err)
 		}
 	}
+}
+
+// TestCheckpoint_QuotaStopsOneAnalystWithoutStoppingTheTeam is the
+// end-to-end proof of what design/adr/0030-quota-por-analista.md exists for, over the whole
+// stack: a real MCP client, real HTTP, the real routing table, the real
+// quarantine, the real audit trail, real subprocess upstreams, and the
+// real SQLite counter.
+//
+// The motivating incident is one analyst in a loop burning the team's
+// VirusTotal allowance, with the gateway unable to see it happening -- the
+// provider's 429 answers the shared key, arrives inside the upstream's
+// process, and does not say who spent it. So the two halves asserted here
+// are inseparable: the analyst in the loop is stopped, AND the colleague
+// who has spent nothing is not. A pooled ceiling would pass the first half
+// and fail the second, which is exactly the defect being removed.
+func TestCheckpoint_QuotaStopsOneAnalystWithoutStoppingTheTeam(t *testing.T) {
+	policy, err := access.NewPolicy(
+		[]access.Role{{Name: "n1-triage", Tools: []string{"threatintel.threatintel_credcheck"}}},
+		map[string]string{"soc-n1": "n1-triage"},
+	)
+	if err != nil {
+		t.Fatalf("NewPolicy: %v", err)
+	}
+
+	// An allowance of two, so the third call is the interesting one. The
+	// number is small because it is a test, and no number in this project
+	// has been measured against a real provider budget.
+	s := newQuotaStack(t, policy, map[string]access.Identity{
+		"ana-token": {Subject: "sub-ana", Groups: []string{"soc-n1"}},
+		"bo-token":  {Subject: "sub-bo", Groups: []string{"soc-n1"}},
+	}, []quota.Provider{{
+		Name:     "virustotal",
+		Upstream: "threatintel",
+		Limit:    2,
+		Window:   24 * time.Hour,
+		Tools:    []string{"threatintel.threatintel_credcheck"},
+	}}, []string{"threatintel.enrich", "threatintel.lookup_ip"}, "threatintel")
+
+	ana := s.connect("ana-token")
+	for i := range 2 {
+		if _, err := ana.CallTool(context.Background(), &mcp.CallToolParams{Name: "threatintel.threatintel_credcheck"}); err != nil {
+			t.Fatalf("ana's call %d of an allowance of 2: %v", i+1, err)
+		}
+	}
+
+	_, err = ana.CallTool(context.Background(), &mcp.CallToolParams{Name: "threatintel.threatintel_credcheck"})
+	if err == nil {
+		t.Fatal("ana's third call was allowed; the allowance was two")
+	}
+	// The wire message is the class's constant string and nothing else:
+	// the analyst learns it is their own limit, never which account was
+	// charged, what the limit is, or when it resets. Those are in the
+	// trail and the operator's log.
+	if !strings.Contains(err.Error(), "quota exhausted") {
+		t.Errorf("the refusal does not say it is a quota: %v", err)
+	}
+	for _, leak := range []string{"virustotal", "resets at", "per analyst per"} {
+		if strings.Contains(err.Error(), leak) {
+			t.Errorf("the refusal carries %q, which belongs to the operator's trail and not the wire: %v", leak, err)
+		}
+	}
+
+	// The half that makes this a per-analyst quota and not a rate limit on
+	// the fleet: Bo has spent nothing and is unaffected.
+	bo := s.connect("bo-token")
+	if _, err := bo.CallTool(context.Background(), &mcp.CallToolParams{Name: "threatintel.threatintel_credcheck"}); err != nil {
+		t.Fatalf("bo's first call was refused because ana spent her allowance: %v", err)
+	}
+
+	// The counters, read through the port the Operator Console holds.
+	counters, err := s.counters.Usage(context.Background())
+	if err != nil {
+		t.Fatalf("reading counters: %v", err)
+	}
+	got := map[string]int{}
+	for _, c := range counters {
+		if c.Provider != "virustotal" {
+			t.Errorf("a counter was written for an account nothing declares: %+v", c)
+		}
+		got[c.Analyst] = c.Used
+	}
+	// Two, not three: a refused call debits nothing.
+	if got["sub-ana"] != 2 {
+		t.Errorf("ana's counter = %d, want 2 -- a call refused for quota must spend none of it", got["sub-ana"])
+	}
+	if got["sub-bo"] != 1 {
+		t.Errorf("bo's counter = %d, want 1", got["sub-bo"])
+	}
+
+	// And the trail, which is the only per-analyst attribution this system
+	// has: the refusal is a denial with the reason an operator greps for,
+	// attributed to the analyst who hit it.
+	records, err := s.audit.List(context.Background())
+	if err != nil {
+		t.Fatalf("reading the audit trail: %v", err)
+	}
+	var denials int
+	for _, r := range records {
+		if r.Outcome != audit.OutcomeDenied || r.Reason != "quota exhausted" {
+			continue
+		}
+		denials++
+		if r.AnalystIdentity != "sub-ana" {
+			t.Errorf("the quota denial is attributed to %q, want sub-ana", r.AnalystIdentity)
+		}
+		if r.TargetUpstream != "threatintel" {
+			t.Errorf("the quota denial names upstream %q, want threatintel", r.TargetUpstream)
+		}
+	}
+	if denials != 1 {
+		t.Errorf("the trail holds %d quota denials, want exactly 1", denials)
+	}
+
+	s.assertNoSecretLeaked()
 }

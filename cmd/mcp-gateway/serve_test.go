@@ -390,6 +390,34 @@ func TestBuildServer_UnreadableRegistryIsFatal(t *testing.T) {
 	}
 }
 
+// TestBuildServer_QuotaPolicyThatDisagreesWithTheRegistryIsFatal is the
+// second fatal Connect failure (design/adr/0030-quota-por-analista.md
+// decision 4): a [[quota.provider]] naming an upstream nobody registered is
+// a third party's budget the operator believes is protected, and the
+// process refuses to start rather than serve with it unprotected.
+func TestBuildServer_QuotaPolicyThatDisagreesWithTheRegistryIsFatal(t *testing.T) {
+	fx := newServeFixture(t, func(b *strings.Builder) {
+		b.WriteString("[[quota.provider]]\nname = \"virustotal\"\nupstream = \"threatintel\"\n" +
+			"limit = 10\nwindow = \"24h\"\ntools = [\"threatintel.virustotal\"]\n")
+	})
+
+	logger, _ := serveTestLogger()
+	stack, err := buildServer(context.Background(), fx.cfg, logger)
+	if err == nil {
+		stack.close()
+		t.Fatal("buildServer succeeded with a quota account over an unregistered upstream; it must refuse to start")
+	}
+	if stack != nil {
+		t.Error("buildServer returned both an error and a stack; the caller has no way to know it must clean up")
+	}
+	if !errors.Is(err, gateway.ErrQuotaMisconfigured) {
+		t.Errorf("error = %v, want one wrapping gateway.ErrQuotaMisconfigured", err)
+	}
+	if !strings.Contains(err.Error(), "threatintel") {
+		t.Errorf("error does not name the upstream the account points at: %v", err)
+	}
+}
+
 // TestBuildServer_OneUnavailableUpstreamIsNotFatal is the other side of
 // that coin, and the distinction gateway.ErrUpstreamUnavailable exists to
 // draw: a backend that will not come up must not take the whole SOC's

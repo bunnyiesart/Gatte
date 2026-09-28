@@ -20,6 +20,7 @@ import (
 	"github.com/bunnyiesart/Gatte/internal/access"
 	"github.com/bunnyiesart/Gatte/internal/audit"
 	"github.com/bunnyiesart/Gatte/internal/quarantine"
+	"github.com/bunnyiesart/Gatte/internal/quota"
 	"github.com/bunnyiesart/Gatte/internal/registry"
 	"github.com/bunnyiesart/Gatte/internal/signer"
 	"github.com/bunnyiesart/Gatte/internal/vault"
@@ -51,6 +52,46 @@ var (
 	// admission decision made without the state that governs it is exactly
 	// the decision an attacker wants us to make.
 	ErrQuarantineUnavailable = errors.New("gateway: quarantine unavailable")
+
+	// ErrQuotaMisconfigured means the declared quota accounts and the
+	// Upstream Registry disagree: a [[quota.provider]] names an upstream
+	// that is not registered, or a budgeted entry shares an environment
+	// variable -- which is to say a credential -- with an entry no account
+	// budgets. See CheckQuotaCoverage.
+	//
+	// At Connect it is fatal, and it is the second error in this package
+	// that is -- ErrRegistryUnavailable being the first. The reasoning is
+	// ADR-0004's: a limit written against an account nobody serves is a
+	// control the operator believes is on and that cannot fire, and the
+	// process that keeps running is the one nobody investigates.
+	//
+	// At Reconcile it cannot be fatal -- the process is already serving --
+	// and it freezes the fleet instead: nothing is dialled or re-dialled
+	// while the two disagree, and a live entry spending a budgeted
+	// credential uncounted is closed (design/adr/0030-quota-por-analista.md).
+	// A registry that changed under a running gateway is exactly how the
+	// disagreement arises there, and serving a backend registered in that
+	// state would be serving it past the check Connect makes at boot.
+	//
+	// Cross-checked here rather than in config.Validate because this is the
+	// only place both sides are in hand: the file is parsed long before the
+	// registry is read, and inventing a second place to ask the question
+	// would be inventing a second answer.
+	ErrQuotaMisconfigured = errors.New("gateway: quota misconfigured")
+
+	// ErrQuotaUndeclaredTool reports that a budgeted upstream serves one or
+	// more tools no account charges and quota.free_tools does not excuse.
+	// Those tools are NOT routed; everything else about that upstream is
+	// served normally.
+	//
+	// Deliberately NOT ErrQuotaMisconfigured, and the difference is the
+	// whole design. The account-level check has no safe partial state
+	// available to it. This one has one -- withhold the tool -- and choosing
+	// it keeps a backend that grew a tool from taking the SOC's gateway down
+	// at the next restart, which is the self-inflicted outage serve.go
+	// declines everywhere else. The hole is still closed: an uncounted call
+	// against the budget cannot be made, because the call cannot be routed.
+	ErrQuotaUndeclaredTool = errors.New("gateway: tool of a budgeted upstream is not declared")
 
 	// errSignatureUnmeasured marks the one verifyEntry failure that is the
 	// ABSENCE of a measurement rather than a measurement: the signature
@@ -209,6 +250,36 @@ const (
 	reasonRegistryUnavailable = "registry unavailable"
 )
 
+// Reasons for a call the per-analyst quota turned down
+// (design/adr/0030-quota-por-analista.md decision 7). Declared interface
+// strings like the ones above, for the same reason.
+const (
+	// reasonQuotaExhausted means the analyst has spent this window's
+	// allowance for one of the accounts the call would have consumed.
+	// Nothing was debited: a reservation is all or nothing, so a refused
+	// call costs no quota.
+	//
+	// It is deliberately distinct from "forbidden". Forbidden is a fact
+	// about the analyst's role and does not change on its own; this one
+	// resolves by itself when the window rolls over, and an operator
+	// triaging "I cannot call this tool any more" needs to know which of
+	// the two they are looking at before deciding whether to edit a file.
+	reasonQuotaExhausted = "quota exhausted"
+
+	// reasonQuotaUnavailable means the counter could not be established --
+	// unreadable, unwritable, or a reservation this gateway built wrong.
+	// The call is refused, because a quota that turned into a free pass
+	// when its counter broke would be the one control here with the
+	// inverse failure mode, and whoever wanted the team's budget would
+	// only have to break the counter (ADR-0030 decision 6).
+	//
+	// Read failures and write failures share this one reason on purpose.
+	// The distinction is not one an operator can act on differently, and
+	// naming it in the trail would invite somebody to treat half of it as
+	// infrastructure noise.
+	reasonQuotaUnavailable = "quota unavailable"
+)
+
 // redacted replaces a resolved credential value wherever one is found in
 // text that is about to leave this package.
 const redacted = "[redacted]"
@@ -230,6 +301,27 @@ type Config struct {
 	Audit audit.Recorder
 	// Policy decides which namespaced tools an identity may see and call.
 	Policy *access.Policy
+	// Quota is the per-analyst quota, consulted on every dispatch between
+	// Tool Quarantine's admission and the audit record that says the call
+	// was allowed (design/adr/0030-quota-por-analista.md).
+	//
+	// Required, like every other port here: a nil one would have to mean
+	// "then nothing is counted", and a security control switched off by an
+	// unset field is the failure mode require_signed and
+	// quarantine.refresh_interval were both shaped to avoid. An
+	// installation with no account to protect says so out loud, by wiring a
+	// Gate built over an empty plan (quota.NewPlan(nil, nil)) -- which
+	// charges nothing, admits every call without touching the counter, and
+	// leaves the gateway behaving exactly as it did before the quota
+	// existed.
+	//
+	// It is a *quota.Gate rather than an interface because the Gate is the
+	// domain's own decision procedure, not infrastructure: the port it
+	// hides behind is quota.Store, which the Gate holds. Note which half
+	// arrives here -- the Gate can reserve and cannot read, so nothing in
+	// this package can ask what an analyst has spent (quota.Reader is the
+	// Operator Console's, and a fitness function keeps it out of here).
+	Quota *quota.Gate
 	// Dialer opens a connection to one backend.
 	Dialer Dialer
 
@@ -307,6 +399,7 @@ type Gateway struct {
 	quarantine quarantine.Store
 	audit      audit.Recorder
 	policy     *access.Policy
+	quota      *quota.Gate
 	dialer     Dialer
 	signatures signer.Store
 	verifier   *signer.Verifier
@@ -497,6 +590,9 @@ func New(cfg Config) (*Gateway, error) {
 	if cfg.Policy == nil {
 		missing = append(missing, "Policy")
 	}
+	if cfg.Quota == nil {
+		missing = append(missing, "Quota")
+	}
 	if cfg.Dialer == nil {
 		missing = append(missing, "Dialer")
 	}
@@ -561,6 +657,7 @@ func New(cfg Config) (*Gateway, error) {
 		quarantine:     cfg.Quarantine,
 		audit:          cfg.Audit,
 		policy:         cfg.Policy,
+		quota:          cfg.Quota,
 		dialer:         cfg.Dialer,
 		signatures:     cfg.Signatures,
 		verifier:       cfg.Verifier,
@@ -631,6 +728,18 @@ func (g *Gateway) Connect(ctx context.Context) error {
 		g.suspend()
 		g.log.ErrorContext(ctx, "gateway: registry unreadable, serving nothing", slog.String("detail", err.Error()))
 		return fmt.Errorf("%w: %w", ErrRegistryUnavailable, err)
+	}
+
+	// Before anything is dialed: the declared quota accounts and the
+	// registry have to agree. This is fatal and the swap is what makes it
+	// honest -- nothing is served, rather than served with a budget nobody
+	// is counting. See ErrQuotaMisconfigured. With no [[quota.provider]]
+	// block the plan is empty and this is a no-op.
+	if err := CheckQuotaCoverage(g.quota.Plan(), entries); err != nil {
+		g.swap(nil, nil, nil)
+		g.log.ErrorContext(ctx, "gateway: quota policy and upstream registry disagree, serving nothing",
+			slog.String("detail", err.Error()))
+		return err
 	}
 
 	conns := make(map[string]Upstream, len(entries))
@@ -738,6 +847,14 @@ func (g *Gateway) Connect(ctx context.Context) error {
 	routes, conflicts := mergeRoutes(candidates)
 	failures = append(failures, conflicts...)
 
+	// The second quota cross-check, and it has to be here rather than
+	// beside the first one: the first compares the plan against the
+	// REGISTRY, which is readable before anything is dialed, while this one
+	// compares it against what the gateway will actually serve, which is
+	// not known until every upstream has been asked for its tools and
+	// quarantine has had its say. See withholdUndeclaredQuotaTools.
+	failures = append(failures, g.withholdUndeclaredQuotaTools(ctx, routes)...)
+
 	// The registry was read AND this call builds the table itself, so both
 	// halves are true at once -- which is what makes Connect the one place
 	// that can end a suspension on its own. Set before the swap installs
@@ -816,6 +933,15 @@ func (g *Gateway) bringUpAndList(ctx context.Context, entry registry.UpstreamSer
 // A dial that fails leaves that upstream out and is retried next round, as
 // at boot. One backend refusing to come up is not a reason to suspend the
 // others.
+//
+// The quota's registry cross-check (CheckQuotaCoverage) runs first, every
+// round, and the boot rule it enforces is kept after boot: while the
+// declared accounts and the registry disagree, nothing is dialled -- the
+// live set only shrinks -- and an entry spending a budgeted credential
+// without being budgeted is closed. So an upstream registered after boot
+// is served only if the plan and the registry agree with it in place, and
+// its tools then reach the table through Refresh, which withholds the
+// undeclared ones exactly as Connect does (design/adr/0030).
 //
 // # What it deliberately does not do
 //
@@ -900,11 +1026,40 @@ func (g *Gateway) Reconcile(ctx context.Context) error {
 
 	live, dialed := g.fleetSnapshot()
 
+	var failures []error
+
+	// The quota's cross-check against the registry, every round and not
+	// only at boot (design/adr/0030-quota-por-analista.md, "Reconcile").
+	// Connect refuses to serve anything when the two disagree; this is the
+	// same function applied to a registry that changed under a running
+	// gateway, which is the only way they come to disagree once the process
+	// is up -- an upstream registered, removed or renamed since boot.
+	//
+	// It cannot refuse to start, so it freezes instead. While frozen,
+	// nothing is dialled: not an upstream registered since the last round,
+	// not one whose entry changed, not one found dead. The live set can
+	// only shrink. That is what makes the boot check hold after boot -- a
+	// backend registered in a state CheckQuotaCoverage refuses is never
+	// brought up, and so never reaches the Refresh that would route it --
+	// and it is cheaper than it sounds: every connection already serving
+	// was brought up while the two agreed, and keeps serving.
+	//
+	// uncounted is the exception to "keeps serving": an entry no account
+	// budgets that declares one of a budgeted entry's variables is spending
+	// that account's credential without a counter, so it is taken out of
+	// the wanted set below, which closes it if it is live.
+	uncounted, coverageErr := quotaCoverage(g.quota.Plan(), entries)
+	frozen := coverageErr != nil
+	if frozen {
+		failures = append(failures, coverageErr)
+		g.log.ErrorContext(ctx, "gateway: quota policy and upstream registry disagree; no upstream will be brought up until they agree",
+			slog.String("detail", coverageErr.Error()))
+	}
+
 	want := make(map[string]registry.UpstreamServer, len(entries))
 	// unmeasured holds the entries whose signature could not be CHECKED
 	// this round, as opposed to refused. See errSignatureUnmeasured.
 	unmeasured := map[string]bool{}
-	var failures []error
 	for _, entry := range entries {
 		// Same two gates as Connect, and re-run every round on purpose:
 		// this is what makes an entry tampered with IN THE DATABASE -- or
@@ -920,6 +1075,15 @@ func (g *Gateway) Reconcile(ctx context.Context) error {
 			failures = append(failures, fmt.Errorf("%w: %q: registry entry is not servable: %w", ErrUpstreamUnavailable, entry.Name, err))
 			g.log.ErrorContext(ctx, "gateway: upstream refused by the registry's own entry contract",
 				slog.String("upstream", entry.Name), slog.String("detail", err.Error()))
+			continue
+		}
+		// Before the signature, so that an unreadable signature store --
+		// which leaves a live connection alone -- cannot keep serving an
+		// entry that is spending a budgeted credential uncounted. Already
+		// reported, with the variable it shares, in coverageErr.
+		if uncounted[entry.Name] {
+			g.log.ErrorContext(ctx, "gateway: upstream carries a budgeted credential without being budgeted and is not served",
+				slog.String("upstream", entry.Name))
 			continue
 		}
 		if err := g.verifyEntry(ctx, entry); err != nil {
@@ -998,6 +1162,14 @@ func (g *Gateway) Reconcile(ctx context.Context) error {
 			continue
 		}
 		toDial = append(toDial, name)
+	}
+	if frozen && len(toDial) > 0 {
+		// Named, so the operator reading the log knows what the freeze is
+		// costing and not only that it is on. Already in the returned
+		// error as coverageErr.
+		g.log.ErrorContext(ctx, "gateway: upstreams held back while the quota policy and the registry disagree",
+			slog.String("upstreams", strings.Join(toDial, ", ")))
+		toDial = nil
 	}
 
 	// Dialed concurrently, each under the round's whole ctx, for the reason
@@ -1240,6 +1412,11 @@ func (g *Gateway) Refresh(ctx context.Context) error {
 
 	routes, conflicts := mergeRoutes(candidates)
 	failures = append(failures, conflicts...)
+	// The same check Connect makes, over the table this round built. It is
+	// the one that matters most here: a tool a budgeted upstream grew after
+	// boot, or every tool of a budgeted upstream Reconcile brought up after
+	// boot, reaches the routing table through this line and no other.
+	failures = append(failures, g.withholdUndeclaredQuotaTools(ctx, routes)...)
 
 	if closedDuringRefresh := g.swapRoutes(routes); closedDuringRefresh {
 		return ErrClosed
@@ -1548,20 +1725,29 @@ func (g *Gateway) ListTools(ctx context.Context, id access.Identity) ([]ToolDef,
 //     client's call -- issued against a list that was true a second ago --
 //     would still land. quarantine.Tool.Usable is the single gate here and
 //     in ListTools (ADR-0007 rule 3).
-//  4. Write the audit record.
-//  5. Forward to the upstream.
-//  6. Check what came back: its size, always, and its structured content
+//  4. Reserve the per-analyst quota for every third-party account this
+//     tool spends (design/adr/0030-quota-por-analista.md). After step 3 so
+//     that a quarantined tool cannot be told apart from an absent one by
+//     the answer it gets; before step 5 because that record means the call
+//     went out. The debit is taken here and is never reversed. A tool no
+//     account names -- every tool, when no [quota] section exists -- is
+//     admitted without touching the counter.
+//  5. Write the audit record.
+//  6. Forward to the upstream.
+//  7. Check what came back: its size, always, and its structured content
 //     against the tool's own output schema when the tool declared one
 //     (design/adr/0014). A result that fails either is refused whole --
 //     never truncated, never partly forwarded.
-//  7. If the upstream did not complete the call, or step 6 refused what it
+//  8. If the upstream did not complete the call, or step 7 refused what it
 //     answered with, APPEND a second record.
 //
 // # Why the audit record is written before the call, and on refusals too
 //
-// The record goes in immediately before step 5 because step 5 is the only
-// step that leaves this process. Steps 1-3 are in-memory decisions that
-// cannot hang; a call in flight to a backend can hang, be cancelled, or
+// The record goes in immediately before step 6 because step 6 is the only
+// step that leaves this process. Steps 1-4 are decided here -- the quota's
+// reservation is the only one of them that touches a disk, and it is the
+// same disk this record is about to be written to a line later; a call in
+// flight to a backend can hang, be cancelled, or
 // die with the process. Recording afterwards would mean the attempts most
 // worth investigating -- the ones that never returned -- are the ones with
 // no record. Writing first can over-record (a record for a call whose
@@ -1593,7 +1779,7 @@ func (g *Gateway) ListTools(ctx context.Context, id access.Identity) ([]ToolDef,
 // backend, and recording it as a gateway-visible failure would put a
 // wrong query and a dead SIEM in the same bucket.
 //
-// A result refused at step 6 IS a failure and does get one. The
+// A result refused at step 7 IS a failure and does get one. The
 // difference from the paragraph above is who decided: there the tool
 // answered and its answer was "no", here the gateway looked at the answer
 // and would not pass it on. The second is a fact about this gateway's own
@@ -1622,7 +1808,16 @@ func (g *Gateway) ListTools(ctx context.Context, id access.Identity) ([]ToolDef,
 // security posture, tool by tool, from outside.
 //
 // An unauthorized call is the deliberate exception: it returns the
-// Policy's own error, wrapping access.ErrForbidden. Collapsing that into
+// Policy's own error, wrapping access.ErrForbidden. A call refused for
+// quota is the second exception, on the same reasoning and with the same
+// bound: it returns the quota's own error, wrapping quota.ErrExhausted,
+// because what that discloses is the operator's published limit and the
+// caller's own consumption of it -- a fact about the caller, told to the
+// caller -- and never which tools exist or which are under suspicion. A
+// quota that could not be ESTABLISHED is not that exception: it returns
+// quota.ErrUnavailable, which the serving adapter reports as an internal
+// error, because which of this gateway's stores is unwell is none of the
+// caller's business. Collapsing the forbidden case into
 // ErrUnknownTool would break the distinction access.Policy exists to draw
 // (CONCEPTS.md §3.3) and would tell an analyst who simply lacks a role
 // that the tool does not exist, sending them to debug the wrong thing. The
@@ -1663,6 +1858,49 @@ func (g *Gateway) Dispatch(ctx context.Context, c Caller, namespacedTool string,
 		return Result{}, err
 	}
 
+	// The per-analyst quota, and this is the only place it can go
+	// (design/adr/0030-quota-por-analista.md decision 5).
+	//
+	// After admit, because a quarantined tool must stay indistinguishable
+	// from one that does not exist: answering "you are over your limit"
+	// for it would confirm it exists, and would do it through the newest
+	// path rather than the one ADR-0007 hardened.
+	//
+	// Before the OutcomeAllowed record, because that row means the call
+	// was dispatched (ADR-0012 §1). A refusal written after it would leave
+	// the trail asserting something that did not happen, and the trail is
+	// the only attribution this system has.
+	//
+	// The debit happens here, before the call, and is never reversed. A
+	// debit taken on the answer would leave free exactly the case this
+	// control exists for -- the loop whose calls never come back -- and
+	// the gateway cannot learn whether the third party charged anyway: the
+	// fan-out happens inside the upstream's process, so a call that fails
+	// at the backend may well have already spent the provider's quota. The
+	// error is conservative in the right direction. Over-counting protects
+	// the budget; under-counting burns it.
+	if err := g.quota.Admit(ctx, c.Identity.Subject, namespacedTool, g.now()); err != nil {
+		if errors.Is(err, quota.ErrExhausted) {
+			g.auditRefusal(ctx, c, namespacedTool, rt.route.upstream, reasonQuotaExhausted)
+			// Returned rather than collapsed into ErrUnknownTool, which is
+			// the same deliberate exception to opacity access.ErrForbidden
+			// already is, on the same test: what leaks is the operator's
+			// own published policy, not the SOC's security posture. The
+			// serving adapter reduces it to one constant message for its
+			// own class -- see internal/gateway/httpapi/errors.go, where
+			// the forbidden error's text does not reach a client either.
+			return Result{}, err
+		}
+		// Unreadable, unwritable, or a reservation built wrong: refuse.
+		// Fail-closed, with no distinction between not being able to read
+		// the counter and not being able to write it, because whoever
+		// wants free quota has no preference between the two.
+		g.log.ErrorContext(ctx, "gateway: refusing call whose quota could not be established",
+			slog.String("tool", namespacedTool), slog.String("detail", err.Error()))
+		g.auditRefusal(ctx, c, namespacedTool, rt.route.upstream, reasonQuotaUnavailable)
+		return Result{}, err
+	}
+
 	if err := g.record(ctx, c, namespacedTool, rt.route.upstream, audit.OutcomeAllowed, ""); err != nil {
 		g.log.ErrorContext(ctx, "gateway: refusing unauditable call",
 			slog.String("tool", namespacedTool), slog.String("detail", err.Error()))
@@ -1690,7 +1928,7 @@ func (g *Gateway) Dispatch(ctx context.Context, c Caller, namespacedTool string,
 		g.auditFailure(ctx, c, namespacedTool, rt.route.upstream, err)
 		return Result{}, fmt.Errorf("gateway: call %q: %w", namespacedTool, err)
 	}
-	// Step 6, added by design/adr/0014: the backend answered, and what it
+	// Step 7, added by design/adr/0014: the backend answered, and what it
 	// answered with is checked before it is handed on. A result over the
 	// size ceiling, or one diverging from an output schema the tool itself
 	// declared, is refused whole -- never truncated, never partially
@@ -1701,7 +1939,7 @@ func (g *Gateway) Dispatch(ctx context.Context, c Caller, namespacedTool string,
 		g.auditFailure(ctx, c, namespacedTool, rt.route.upstream, err)
 		return Result{}, fmt.Errorf("gateway: call %q: %w", namespacedTool, err)
 	}
-	// Step 7 (24 set 2026): the credential this upstream was spawned with
+	// Step 7b (24 set 2026): the credential this upstream was spawned with
 	// is taken out of what it answered. auditFailure already drops an
 	// upstream's error TEXT because "401: token=... rejected" is an
 	// ordinary thing for an API client to say -- and an MCP SDK server
@@ -2084,6 +2322,242 @@ func (g *Gateway) verifyEntry(ctx context.Context, entry registry.UpstreamServer
 		return fmt.Errorf("%w: %q: %w", ErrUpstreamUnavailable, entry.Name, err)
 	}
 	return nil
+}
+
+// withholdUndeclaredQuotaTools deletes from routes every tool of a
+// budgeted upstream that no quota account charges and quota.free_tools
+// does not excuse, and returns the error saying so (none if there were
+// none).
+//
+// Connect and Refresh call it on every table they build, immediately
+// before installing it, and those are the only two places a routing table
+// is built: Reconcile only ever removes routes (retire) and never adds
+// one. That is what makes "an undeclared tool of a budgeted upstream is
+// not routed" hold for every path a tool can take into the table -- at
+// boot, as a tool a backend grew and an operator approved, and as every
+// tool of a budgeted upstream Reconcile brought up after boot.
+//
+// Fatal to the route, by the same argument as ErrQuotaMisconfigured
+// everywhere else: a budgeted upstream serving a tool nobody costed is a
+// budget this gateway reports as protected and is not. Refusing to serve is
+// louder than serving with a hole, and the operator's fix is one line in
+// the config file (ADR-0030 decision 11).
+func (g *Gateway) withholdUndeclaredQuotaTools(ctx context.Context, routes map[string]routedTool) []error {
+	undeclared := UndeclaredQuotaTools(g.quota.Plan(), slices.Collect(maps.Keys(routes)))
+	if len(undeclared) == 0 {
+		return nil
+	}
+	for _, tool := range undeclared {
+		delete(routes, tool)
+	}
+	g.log.ErrorContext(ctx, "gateway: tools of a budgeted upstream are not declared and are not being routed",
+		slog.Int("tools", len(undeclared)), slog.String("detail", strings.Join(undeclared, ", ")))
+	// One error naming all of them, not one per tool: an operator fixing a
+	// config file should see the whole list in one round.
+	return []error{fmt.Errorf(
+		"%w: %d tool(s) of a budgeted upstream are not routed because no account charges them and "+
+			"quota.free_tools does not excuse them: %s. "+
+			"Each would have been a permanent uncounted path against a budget this gateway reports as "+
+			"protected. Add each to the tools of the account it spends, or to quota.free_tools to state "+
+			"that it spends nothing, and it will be served again",
+		ErrQuotaUndeclaredTool, len(undeclared), strings.Join(undeclared, ", "))}
+}
+
+// CheckQuotaCoverage reports whether every account in plan names an
+// upstream that is in entries, and whether any entry carries a budgeted
+// credential without being budgeted itself.
+//
+// Exported because it has two callers and must not become two rules. The
+// Gateway applies it at Connect, where a disagreement stops the process
+// from serving, and at every Reconcile, where it stops the fleet from
+// growing; `mcp-gateway quota list` applies the same function to say so
+// before the operator restarts anything. A predicate restated for a second
+// caller eventually answers differently, and the operator fixes what the
+// console listed only to meet a different error from the same file.
+//
+// config.Validate cannot make this check: the file is parsed before any
+// database is opened, so it has no registry to compare against.
+//
+// Two ways to fail, and both mean the same thing -- an operator believes a
+// third party's budget is protected and it is not:
+//
+//   - The named upstream is not registered. Nothing routes to it, so the
+//     limit governs no call. Usually a rename on one side of the pair, or
+//     a deregistered backend somebody expected to come back -- and a
+//     rename is the dangerous one, because the backend under its new name
+//     spends the account with no account naming it.
+//   - A budgeted entry and an entry no account names declare the same
+//     environment variable. One variable name is one credential, so calls
+//     through the second spend the account uncounted (ADR-0030 decision
+//     12).
+//
+// There is no credential-mode clause. Every entry in this gateway's
+// registry shares its credential among all analysts; that is the only mode
+// there is, and it is the premise a per-analyst count rests on.
+//
+// Every disagreement is reported, not just the first, so an operator
+// fixing a config file sees the whole list at once.
+//
+// The reverse direction is deliberately NOT an error: an upstream that no
+// quota account names is the ordinary case (casemgmt, logsearch and
+// docsearch have no external budget), and requiring a block per upstream
+// would be requiring a limit where there is nothing to limit.
+func CheckQuotaCoverage(plan *quota.Plan, entries []registry.UpstreamServer) error {
+	_, err := quotaCoverage(plan, entries)
+	return err
+}
+
+// quotaCoverage is CheckQuotaCoverage, plus the names of the entries the
+// shared-credential clause implicates: the ones no account budgets that
+// declare a budgeted entry's variable. Reconcile needs those names to stop
+// serving exactly them; every other caller needs only the verdict.
+func quotaCoverage(plan *quota.Plan, entries []registry.UpstreamServer) (map[string]bool, error) {
+	if plan == nil {
+		// A nil plan is not "no accounts": it is a caller that has not
+		// built one. quota.NewGate refuses a nil plan for the same reason,
+		// and answering "everything is fine" here would be the one way to
+		// get a pass out of this function without declaring anything.
+		return nil, fmt.Errorf("%w: no quota plan was built; pass the result of quota.NewPlan", ErrQuotaMisconfigured)
+	}
+	providers := plan.Providers()
+	if len(providers) == 0 {
+		return nil, nil
+	}
+
+	registered := make(map[string]bool, len(entries))
+	// Which registered entries carry which environment variable names. An
+	// account's budget is a THIRD-PARTY account, and what reaches it is the
+	// key -- so two entries holding the same variable name hold the same
+	// key, and a limit declared over one of them governs half the traffic
+	// that spends it.
+	//
+	// Measured on 14 set 2026: two entries `threatintel` and
+	// `threatintel2`, both carrying THREATINTEL_VIRUSTOTAL_API_KEY, with an
+	// account declared over `threatintel`. A thousand calls through
+	// `threatintel2` cost zero reservations, the one control call through
+	// `threatintel` cost one, and this function returned nil. The realistic
+	// path there is not an attacker -- registering an entry needs operator
+	// access and a signature -- it is a `threatintel-v2` somebody stood up
+	// to try a new image and forgot to mention in [[quota.provider]]. In
+	// this gateway that entry would be dialled by the next Reconcile,
+	// without a restart, which is why Reconcile runs this too.
+	byEnvVar := map[string][]string{}
+	for _, entry := range entries {
+		registered[entry.Name] = true
+		for _, name := range entry.EnvVarNames {
+			byEnvVar[name] = append(byEnvVar[name], entry.Name)
+		}
+	}
+	budgeted := make(map[string]struct{}, len(providers))
+	for _, p := range providers {
+		budgeted[p.Upstream] = struct{}{}
+	}
+
+	var problems []error
+	for _, p := range providers {
+		if !registered[p.Upstream] {
+			problems = append(problems, fmt.Errorf(
+				"quota account %q charges tools of upstream %q, which is not registered: "+
+					"the limit would govern no call, so the account's budget is unprotected -- "+
+					"register the upstream, or remove the [[quota.provider]] block",
+				p.Name, p.Upstream))
+		}
+	}
+
+	// The second direction, over the credential rather than the name.
+	uncounted := map[string]bool{}
+	for _, entry := range entries {
+		if _, counted := budgeted[entry.Name]; !counted {
+			continue
+		}
+		for _, envVar := range entry.EnvVarNames {
+			for _, other := range byEnvVar[envVar] {
+				if other == entry.Name {
+					continue
+				}
+				if _, alsoCounted := budgeted[other]; alsoCounted {
+					continue
+				}
+				uncounted[other] = true
+				problems = append(problems, fmt.Errorf(
+					"upstream %q is budgeted and upstream %q is not, and both declare %s: "+
+						"one environment variable name is one credential, so calls through %q spend the same "+
+						"third-party account without being counted -- budget %q too, or stop it carrying that credential",
+					entry.Name, other, envVar, other, other))
+			}
+		}
+	}
+
+	if len(problems) == 0 {
+		return nil, nil
+	}
+	return uncounted, errors.Join(append([]error{ErrQuotaMisconfigured}, problems...)...)
+}
+
+// UndeclaredQuotaTools returns, sorted, every tool in served that belongs
+// to a budgeted upstream and that the plan neither charges nor lists as
+// free.
+//
+// It is the other half of CheckQuotaCoverage, and it exists because that
+// function checks the direction that cannot hurt you. "This account names
+// an upstream that is not registered" is a limit governing nothing, which
+// is visible the moment anybody calls the tool. "This upstream is budgeted
+// and serves a tool no account mentions" is the opposite: everything
+// works, `quota list` exits 0, the counter moves for the tools that were
+// listed, and the account is spent through the ones that were not until
+// the provider starts answering 429 inside the backend process, where the
+// gateway cannot see it.
+//
+// Why it runs over ROUTES and not over the account's declared tool list:
+// routes are what the backend actually advertises and the gateway would
+// dispatch once Tool Quarantine allows it. A tool the backend has just
+// added is in the table as pending -- admit refuses it per call -- and is
+// withheld here all the same, so the operator hears that it is uncosted in
+// the round that first sees it, before anybody approves it. Approval alone
+// never routes it: approving a tool of a budgeted upstream IS a budget
+// decision, and the budget half is a line in the config file.
+//
+// An upstream no account names is not checked at all; requiring a
+// declaration per tool there would be paperwork with no control behind it.
+//
+// # Why this does not stop the gateway, when the account-level check does
+//
+// CheckQuotaCoverage has no safe partial behaviour available to it: an
+// account naming an absent upstream governs nothing, and no subset of the
+// fleet can be served with that fixed. Here there is one -- do not route
+// the tool -- and it closes the hole at exactly the granularity of the
+// hole, which is ADR-0004's per-entry rule one level down. A backend that
+// grows a tool would otherwise take the gateway down at the next restart,
+// an outage caused by somebody else shipping a feature.
+func UndeclaredQuotaTools(plan *quota.Plan, served []string) []string {
+	if plan == nil {
+		return nil
+	}
+	providers := plan.Providers()
+	if len(providers) == 0 {
+		return nil
+	}
+	budgeted := make(map[string]struct{}, len(providers))
+	for _, p := range providers {
+		budgeted[p.Upstream] = struct{}{}
+	}
+
+	var undeclared []string
+	for _, tool := range served {
+		upstream, _, ok := SplitNamespaced(tool)
+		if !ok {
+			continue
+		}
+		if _, counted := budgeted[upstream]; !counted {
+			continue
+		}
+		if plan.IsDeclared(tool) {
+			continue
+		}
+		undeclared = append(undeclared, tool)
+	}
+	slices.Sort(undeclared)
+	return undeclared
 }
 
 // record writes one audit record for an attempted call and returns any

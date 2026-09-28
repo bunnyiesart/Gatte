@@ -758,7 +758,152 @@ tools = []
 
 
 # ===========================================================================
-# Grupo do IdP -> papel
+# [[quota.provider]] -- quota por analista, por conta de terceiro (ADR-0030)
+# ===========================================================================
+# **Esta secao vem inteira comentada de proposito.** Nenhum numero aqui foi
+# medido contra uma conta real, e um limite inventado que alguem copia para
+# producao e pior do que nenhum: ele parece um controle e nao e. Descomente
+# o bloco, escolha o numero, e escreva a conta que voce fez no comentario ao
+# lado. Sem nenhum bloco, nada e cobrado e o gateway se comporta como se a
+# secao nao existisse.
+#
+# ---------------------------------------------------------------------
+# A UNIDADE CONTADA E A **CONTA NO PROVEDOR**. NAO E O UPSTREAM E NAO E A
+# FERRAMENTA.
+# ---------------------------------------------------------------------
+# Um teto por upstream nao protege nada: boa parte das ferramentas de um
+# backend de threat intel nao consome conta de terceiro nenhuma -- `decode`,
+# `lookup_cve`, `lookup_kev`, `lookup_technique`, `resolve_domain` falam com
+# MITRE, CISA, DNS ou biblioteca local. Um limite sobre "threatintel" segura
+# quem faz duzentos `decode` e nao segura quem faz vinte `lookup_ip`.
+#
+# Um contador por ferramenta erra pelo mesmo motivo, com fator de 0 a N: um
+# unico `lookup_ip` pode disparar varias contas em paralelo, VirusTotal e
+# Shodan entre elas.
+#
+# E um contador por nome de variavel de ambiente abre tres orcamentos contra
+# uma conta so: `THREATINTEL_MALWAREBAZAAR_API_KEY`,
+# `THREATINTEL_THREATFOX_API_KEY` e `THREATINTEL_URLHAUS_API_KEY` podem
+# guardar o mesmo valor -- uma conta `abuse.ch`.
+#
+# Entao: um bloco por CONTA, listando as ferramentas que a gastam. Uma
+# ferramenta pode aparecer em varias contas; uma conta pode ser gasta por
+# varias ferramentas. Toda ferramenta tem de ser do `upstream` da conta.
+#
+# ---------------------------------------------------------------------
+# O LIMITE E POR ANALISTA. O GATEWAY NAO LIMITA O TIME.
+# ---------------------------------------------------------------------
+# A janela e FIXA e alinhada por truncamento em UTC, nao deslizante: duas
+# janelas vizinhas sao dois contadores independentes, e quem gasta o limite
+# inteiro logo antes da virada e o limite inteiro logo depois fez 2 x L
+# chamadas no comprimento de uma janela. Com N analistas e limite L, o pior
+# caso contra o provedor e 2 x N x L. Dimensione L como orcamento dividido
+# por DUAS vezes o numero de cabecas, com margem. Um teto de pool foi
+# recusado de proposito: o primeiro analista em laco esgotaria todo mundo.
+#
+# `limit` ausente, zero ou negativo e RECUSADO no arranque -- nunca lido
+# como "sem limite". Mesma regra de `quarantine.refresh_interval`: um
+# controle desligado "por um minuto" nao pode existir sem o arquivo
+# admitir. Quem nao quer cobrar de uma conta simplesmente nao escreve o
+# bloco dela.
+#
+# Cuidado com a armadilha de unidade do TOML, a mesma do refresh_interval:
+# numero pelado em `window` e lido como NANOSEGUNDOS, entao `window = 3600`
+# sao 3,6 microssegundos e nao uma hora. Escreva a unidade.
+#
+# ---------------------------------------------------------------------
+# O QUE ISTO **NAO** FAZ.
+# ---------------------------------------------------------------------
+# Nao mede o consumo real no terceiro. O gateway conta CHAMADAS que ele
+# despachou; o fan-out acontece dentro do processo do upstream e o `429` do
+# provedor chega la, nao aqui, e nao diz quem foi. Uma chamada que falha no
+# backend debita assim mesmo -- contar a mais protege o orcamento, contar a
+# menos queima. E uma chamada recusada por quota nao debita nada.
+#
+# Nao cria atribuicao no backend: ele continua vendo uma credencial
+# compartilhada. A trilha de auditoria deste gateway e a unica atribuicao
+# por analista que existe, e ela so vale enquanto o gateway for o unico
+# caminho ate os backends.
+#
+# Nao existe comando que zere contador. Devolver 120 unidades a um analista
+# nao cria 120 consultas no provedor, tira do resto do time, sem diff e sem
+# revisao. Alargar limite e commit, revisao e restart -- o mesmo preco que o
+# ADR-0009 ja aceitou para papel. Leia o consumo com
+# `mcp-gateway quota usage`.
+#
+# O `upstream` nomeado aqui precisa estar registrado, e nenhuma OUTRA
+# entrada do registro pode declarar uma das variaveis de ambiente dele sem
+# tambem ser orcada (uma variavel e uma credencial). Se isso nao valer no
+# arranque, o gateway RECUSA SUBIR; se deixar de valer com ele no ar (um
+# upstream registrado, removido ou renomeado depois do boot), a
+# reconciliacao periodica para de trazer qualquer backend novo e fecha o que
+# gasta a credencial sem contar, ate os dois concordarem de novo. Confira
+# antes de reiniciar com `mcp-gateway quota list`.
+#
+# [[quota.provider]]
+# name     = "virustotal"
+# upstream = "threatintel"
+# # N analistas. Orcamento diario da conta / (2 x N), com margem. MEDIR ANTES.
+# limit    = 0
+# window   = "24h"
+# tools    = ["threatintel.virustotal", "threatintel.lookup_ip", "threatintel.lookup_hash",
+#             "threatintel.lookup_domain", "threatintel.lookup_url", "threatintel.enrich"]
+#
+# [[quota.provider]]
+# name     = "shodan"
+# upstream = "threatintel"
+# # Shodan cobra por credito mensal, nao por dia: janela e limite mudam
+# # juntos. MEDIR ANTES.
+# limit    = 0
+# window   = "24h"
+# tools    = ["threatintel.shodan", "threatintel.lookup_ip", "threatintel.recon"]
+#
+# [[quota.provider]]
+# # UMA conta `abuse.ch` atende MalwareBazaar, ThreatFox e URLhaus: um bloco
+# # so, nao tres. Tres blocos seriam tres orcamentos contra a mesma chave.
+# name     = "abusech"
+# upstream = "threatintel"
+# limit    = 0
+# window   = "24h"
+# tools    = ["threatintel.malwarebazaar", "threatintel.lookup_hash", "threatintel.lookup_url"]
+#
+# --------------------------------------------------------------------------
+# quota.free_tools -- as ferramentas que NAO gastam nada, ditas em voz alta
+# --------------------------------------------------------------------------
+#
+# Toda ferramenta que um upstream COM conta declarada serve precisa estar
+# ou nos `tools` de alguma conta acima, ou nesta lista. Uma que nao esteja
+# em nenhuma das duas NAO E ROTEADA: some da superficie servida, e o
+# arranque (ou a rodada de re-observacao que a trouxe) diz quais e por que.
+#
+# Por que isso e obrigatorio: com uma conta declarada so sobre
+# `threatintel.virustotal`, 5000 chamadas a `threatintel.lookup_ip`,
+# `threatintel.lookup_hash`, `threatintel.lookup_domain`,
+# `threatintel.lookup_url` e `threatintel.enrich` -- todas gastando a MESMA
+# conta pelo fan-out do servidor -- foram admitidas sem uma unica consulta ao
+# contador, com o arranque em silencio e `quota list` saindo 0. "Esta
+# ferramenta nao gasta nada" e "ninguem lembrou desta ferramenta" eram o
+# mesmo estado no arquivo, e para o provedor nao sao: ele cobra a chamada de
+# qualquer jeito.
+#
+# Custa uma linha por ferramenta e nao custa nada em tempo de chamada -- uma
+# ferramenta listada aqui custa exatamente o que custa uma que ninguem
+# mencionou, que e zero. O que ela compra e o arquivo admitir onde o
+# controle esta desligado, que e a mesma exigencia que o `limit = 0` acima.
+#
+# Upstream que nenhuma conta nomeia nao precisa de nada aqui: casemgmt,
+# logsearch e docsearch falam com sistema interno, e nao ha orcamento de
+# terceiro a proteger.
+#
+# Uma ferramenta nao pode estar nos dois lugares: `tools` de uma conta E
+# aqui. As duas frases se contradizem e o arquivo nao carrega.
+#
+# [quota]
+# free_tools = [
+#   "threatintel.decode", "threatintel.lookup_cve", "threatintel.lookup_kev",
+#   "threatintel.lookup_technique", "threatintel.resolve_domain",
+# ]
+
 
 # ===========================================================================
 # [telemetry] -- copia dos eventos de auditoria para o SIEM, em GELF (ADR-0029)
@@ -924,6 +1069,8 @@ tools = []
 # descartador de 100%.
 
 
+# ===========================================================================
+# Grupo do IdP -> papel
 # ===========================================================================
 # A esquerda, o valor exato como ele aparece no claim configurado em
 # `oidc.groups_claim`. A direita, o nome de um `[[role]]` definido acima.

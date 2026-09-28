@@ -75,6 +75,7 @@ func TestRefute3_ConnectBurnsWholeBudget(t *testing.T) {
 		Quarantine: quarantinesql.New(db),
 		Audit:      auditsql.New(db),
 		Policy:     policy,
+		Quota:      emptyQuotaGate(t),
 		Dialer:     mixedDialer{hang: "logsearch"},
 		Logger:     slog.New(slog.NewTextHandler(&connLogs, nil)),
 	})

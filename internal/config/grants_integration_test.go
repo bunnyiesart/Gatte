@@ -158,6 +158,7 @@ func newStack(t *testing.T, roles, mapping string) *stack {
 		Quarantine: quar,
 		Audit:      auditsqlite.New(db),
 		Policy:     policy,
+		Quota:      noQuota(t),
 		Dialer:     fakeDialer{},
 		Logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})

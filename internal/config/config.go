@@ -24,9 +24,11 @@ import (
 	"net"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/bunnyiesart/Gatte/internal/access"
 	"github.com/bunnyiesart/Gatte/internal/gateway"
+	"github.com/bunnyiesart/Gatte/internal/quota"
 )
 
 // ErrInvalid is returned for a configuration that parses but cannot be
@@ -42,8 +44,8 @@ type Config struct {
 	Listen string `toml:"listen"`
 
 	// Database is the path to the embedded SQLite file holding the
-	// Upstream Registry, Tool Quarantine, Audit Trail and entry
-	// signatures. Never holds a secret (design/adr/0001).
+	// Upstream Registry, Tool Quarantine, Audit Trail, entry signatures
+	// and quota counters. Never holds a secret (design/adr/0001).
 	Database string `toml:"database"`
 
 	OIDC       OIDC       `toml:"oidc"`
@@ -52,6 +54,7 @@ type Config struct {
 	Quarantine Quarantine `toml:"quarantine"`
 	Response   Response   `toml:"response"`
 	Audit      Audit      `toml:"audit"`
+	Quota      Quota      `toml:"quota"`
 	Telemetry  Telemetry  `toml:"telemetry"`
 
 	// Roles defines what each role may call. Order is irrelevant.
@@ -935,6 +938,131 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	// Quota accounts. The rules the domain owns are delegated to it, in
+	// the shape the role loop above uses for access.ValidateRole and for
+	// the reason recorded there (GAB-30): a rule restated in two places
+	// eventually says two things, and the file that loads is then not the
+	// file that serves.
+	//
+	// What is added here is what the domain cannot see. quota.Provider
+	// deliberately does not know how a tool name is spelled -- the
+	// namespacing rule has one owner, gateway.SplitNamespaced, the routing
+	// table's own splitter -- and it does not know that this file may
+	// declare the same account twice.
+	//
+	// What is NOT checked here, and cannot be: that the named upstream
+	// exists. No database is open at this point. That cross-check is
+	// gateway.CheckQuotaCoverage's (see gateway.ErrQuotaMisconfigured), and
+	// inventing a second home for it would eventually mean a second answer.
+	accounts := map[string]bool{}
+	for i, p := range c.Quota.Providers {
+		if err := (quota.Provider{
+			Name:     p.Name,
+			Upstream: p.Upstream,
+			Limit:    p.Limit,
+			Window:   p.Window,
+			Tools:    p.Tools,
+		}).Validate(); err != nil {
+			errs = append(errs, fmt.Errorf("quota.provider[%d]: %w", i, err))
+		}
+		if strings.TrimSpace(p.Name) == "" {
+			// Nothing below says anything useful about an account with no
+			// usable name, and every message would print the empty string.
+			continue
+		}
+		if accounts[p.Name] {
+			// Two blocks with one name are two budgets against one
+			// account, which is the abuse.ch counting mistake in another
+			// hat -- and the counter is keyed by name, so whichever block
+			// wins would be decided by iteration order.
+			errs = append(errs, fmt.Errorf("quota.provider %q: declared more than once", p.Name))
+		}
+		accounts[p.Name] = true
+
+		for _, tool := range p.Tools {
+			if strings.TrimSpace(tool) == "" {
+				continue // Already reported by quota.Provider.Validate.
+			}
+			if containsSpace(tool) {
+				errs = append(errs, fmt.Errorf(
+					"quota.provider %q: tool %q contains whitespace -- an account is spent by the dispatched name, matched exactly, so this name matches no call and the limit would never apply",
+					p.Name, tool))
+				continue
+			}
+			upstream, _, ok := gateway.SplitNamespaced(tool)
+			if !ok {
+				// The same quiet failure the role loop guards against: the
+				// charge table is matched against the namespaced names the
+				// Gateway Endpoint dispatches, exactly, so a bare
+				// "lookup_ip" matches nothing. The block would load, the
+				// limit would look enforced, and the account would be
+				// spent without a single unit ever being debited.
+				errs = append(errs, fmt.Errorf(
+					"quota.provider %q: tool %q is not namespaced -- an account is spent by UPSTREAM%sTOOL (e.g. %q), "+
+						"matched exactly, so this name matches no call and the limit would never apply",
+					p.Name, tool, gateway.NameSeparator, "threatintel"+gateway.NameSeparator+"lookup_ip"))
+				continue
+			}
+			if strings.TrimSpace(p.Upstream) != "" && upstream != p.Upstream {
+				// An account's key reaches exactly one backend, as one of
+				// that entry's EnvVarNames. A tool of a different upstream
+				// cannot spend it, so charging one to this account bills an
+				// analyst for a call that consumed nothing -- and, worse,
+				// leaves the calls that DO spend it uncounted while the
+				// file reads as though they were covered.
+				errs = append(errs, fmt.Errorf(
+					"quota.provider %q: tool %q belongs to upstream %q, but this account is declared on upstream %q -- "+
+						"an account's key is held by one backend, so a tool of another cannot spend it",
+					p.Name, tool, upstream, p.Upstream))
+			}
+		}
+	}
+
+	// The free list, checked for the same things as an account's tool list
+	// and for one more: it may not contradict an account. The domain refuses
+	// that too (quota.NewPlan), and it is restated here for the reason every
+	// other rule is restated here -- Validate reports every problem in the
+	// file at once, and a contradiction the operator only discovers on the
+	// eleventh restart is a rule that taught nothing.
+	charged := map[string]string{}
+	for _, p := range c.Quota.Providers {
+		for _, tool := range p.Tools {
+			charged[tool] = p.Name
+		}
+	}
+	declaredFree := map[string]bool{}
+	for i, tool := range c.Quota.FreeTools {
+		if strings.TrimSpace(tool) == "" {
+			errs = append(errs, fmt.Errorf("quota.free_tools[%d]: empty tool name", i))
+			continue
+		}
+		if containsSpace(tool) {
+			// quota.NewPlan happens to trim free names while account tools
+			// are matched as written; refusing the padding here keeps the
+			// two lists from disagreeing about what a name is.
+			errs = append(errs, fmt.Errorf("quota.free_tools[%d]: tool %q contains whitespace", i, tool))
+			continue
+		}
+		if _, _, ok := gateway.SplitNamespaced(tool); !ok {
+			errs = append(errs, fmt.Errorf(
+				"quota.free_tools[%d]: tool %q is not namespaced -- the coverage check compares against the "+
+					"names the Gateway Endpoint dispatches, exactly, so a bare %q matches nothing and the "+
+					"tool it was meant to excuse stays withheld from the routing table",
+				i, tool, tool))
+			continue
+		}
+		if declaredFree[tool] {
+			errs = append(errs, fmt.Errorf("quota.free_tools: tool %q is listed more than once", tool))
+		}
+		declaredFree[tool] = true
+		if account, both := charged[tool]; both {
+			errs = append(errs, fmt.Errorf(
+				"quota.free_tools: tool %q is also charged to account %q -- it cannot both spend that "+
+					"account and spend nothing; remove it from one of the two lists",
+				tool, account))
+		}
+	}
+
 	// [telemetry] (design/adr/0029). The section is optional and absent by
 	// default, so none of these rules is about a control somebody left off:
 	// what they refuse is a block that reads as though telemetry were on
@@ -1051,6 +1179,158 @@ func (c *Config) Validate() error {
 		return nil
 	}
 	return errors.Join(append([]error{ErrInvalid}, errs...)...)
+}
+
+// Quota holds the per-analyst limits (design/adr/0030-quota-por-analista.md).
+//
+// The LIMIT is here and the COUNTER is not, and the split is the same one
+// ADR-0009 §2 drew for roles: a limit decides what somebody may do, which
+// makes it policy and makes widening it a reviewed diff; a counter is how
+// much has been spent, which makes it operational state and puts it in the
+// database. A limit stored beside its counter would be policy raised by an
+// UPDATE, with no diff, no review, and no history outliving the file.
+//
+// The price is the one that ADR already accepted for roles: changing a
+// limit takes a commit and a restart. During an incident the way out is
+// another analyst with budget making the call, not a button.
+type Quota struct {
+	// Providers are the third-party accounts being budgeted, one
+	// [[quota.provider]] block each.
+	//
+	// Empty is valid and means no account is budgeted -- the honest state
+	// for a deployment whose upstreams all speak to internal systems.
+	// Note what it does NOT mean: the quota component is still wired and
+	// still consulted, it simply charges nothing. There is no key here
+	// that switches the control off, for the reason
+	// Quarantine.RefreshInterval has none.
+	Providers []QuotaProvider `toml:"provider"`
+
+	// FreeTools names tools that spend no budgeted account, as
+	// UPSTREAM<sep>TOOL, and is the operator saying so out loud.
+	//
+	// It buys nothing on the request path -- a tool listed here costs
+	// exactly what a tool nobody mentioned costs, which is nothing -- and
+	// that is the point. Before it existed, "this tool is free" and "nobody
+	// remembered this tool" were indistinguishable, and for a tool of an
+	// upstream whose third-party budget is being protected they are not the
+	// same fact at all: the provider bills the call regardless of whether
+	// this file mentioned it.
+	//
+	// Measured on 14 set 2026: an account declared over
+	// `threatintel.virustotal` alone admitted 5000 calls to
+	// `threatintel.lookup_ip`, `threatintel.lookup_hash`,
+	// `threatintel.lookup_domain`, `threatintel.lookup_url` and
+	// `threatintel.enrich` -- all of which spend the same VirusTotal account
+	// through the server's fan-out -- without one counter lookup, while
+	// startup reported no problem and `quota list` exited 0.
+	//
+	// So the gateway requires every SERVED tool of an upstream some account
+	// names to be either charged or listed here, and does not route one
+	// that is neither (gateway.ErrQuotaUndeclaredTool). That is
+	// deliberately the same posture ADR-0030 takes on `limit = 0`: a
+	// control that is off for a tool may not be off silently. Tools of an
+	// upstream no account names need no entry -- casemgmt, logsearch and
+	// docsearch have no external budget to protect.
+	FreeTools []string `toml:"free_tools"`
+}
+
+// QuotaProvider is one third-party account and what one analyst may spend
+// against it, mirroring quota.Provider the way Role mirrors access.Role --
+// so the file format is not hostage to the domain type, and so the file's
+// fields can carry documentation the domain type has no reason to.
+//
+// # One block is one ACCOUNT, and that is the whole design
+//
+// Not one upstream, not one tool, not one environment variable. The
+// investigation behind ADR-0030 found all three of those wrong:
+//
+//   - A threat-intel backend is one registry entry serving dozens of
+//     tools, many of which spend no third-party account at all (MITRE,
+//     CISA, Exploit-DB, DNS, local libraries). A ceiling on the upstream
+//     stops the analyst running `decode` in a loop and not the one running
+//     `lookup_ip`.
+//   - One `lookup_ip` can fan out to several accounts at once, VirusTotal
+//     and Shodan among them, while `decode` touches none -- a per-tool
+//     counter is wrong by a factor swinging from 0 to N.
+//   - THREATINTEL_MALWAREBAZAAR_API_KEY, THREATINTEL_THREATFOX_API_KEY and
+//     THREATINTEL_URLHAUS_API_KEY can hold the same value: one abuse.ch
+//     account. Three variables, three budgets, one account -- and so no
+//     protection at all.
+//
+// Hence: name the account, then list the tools that spend it. One tool may
+// appear under several accounts; one account may be spent by several
+// tools.
+type QuotaProvider struct {
+	// Name identifies the account. Operator-chosen, operator-facing, and
+	// the key the counter is stored under: renaming it starts a fresh
+	// counter, which is the same trap a renamed role is.
+	Name string `toml:"name"`
+
+	// Upstream is the registered backend whose credential carries this
+	// account's key, e.g. "threatintel".
+	//
+	// Checked against the registry by the gateway, not here -- this file
+	// is parsed before any database is opened. A block naming an upstream
+	// that is not registered stops the gateway from serving at startup,
+	// and stops a running one from bringing any backend up until the two
+	// agree again (see gateway.ErrQuotaMisconfigured).
+	Upstream string `toml:"upstream"`
+
+	// Limit is how many calls ONE analyst may make against this account
+	// per Window. Never a pool: a pooled ceiling would let the first
+	// analyst in a loop exhaust everybody, which is the defect the whole
+	// component exists to remove.
+	//
+	// So the arithmetic the operator has to do, and it is NOT the obvious
+	// one: the window is fixed and aligned by truncation, not sliding, so
+	// two adjacent windows are two independent counters. An analyst who
+	// spends the whole allowance just before a boundary and the whole
+	// allowance just after has made 2N calls inside one window's length.
+	// Measured on 14 set 2026: 200 calls in two seconds against a declared
+	// limit of 100 per 24h.
+	//
+	// The worst case against the provider is therefore 2N per analyst per
+	// window, and 2 x heads x N for the team -- so the limit is the
+	// provider's budget divided by TWICE the number of analysts, with
+	// margin, and that arithmetic belongs in a comment beside the line.
+	// The fixed window is still the right choice (ADR-0030 decision 4: a
+	// sliding window is a second accounting model on the request path); it
+	// is the sizing rule that has to know about it.
+	//
+	// Zero, negative and absent are refused at startup -- never read as
+	// "no limit". The precedent is quarantine.refresh_interval = 0,
+	// refused with a message telling the operator to raise it, so that a
+	// security control switched off "for a minute" cannot exist without
+	// the file admitting it.
+	Limit int `toml:"limit"`
+
+	// Window is the accounting period, e.g. "24h". Windows are fixed and
+	// aligned by truncation in UTC, never sliding: sliding would mean
+	// storing a timestamp per call, which is a second audit trail under
+	// another name.
+	//
+	// Note the unit trap TOML sets, the same one refresh_interval
+	// documents: a bare number is read as NANOSECONDS, so `window = 3600`
+	// is 3.6 microseconds and not an hour. Write the unit.
+	Window time.Duration `toml:"window"`
+
+	// Tools are the namespaced tools that spend this account, e.g.
+	// "threatintel.lookup_ip". A call to any of them debits one unit.
+	//
+	// This table is static and the fan-out it models lives in the
+	// upstream's own code, so it can drift. Nothing in this gateway
+	// observes a backend's outbound requests, and the honest mitigation is
+	// procedural rather than technical: a new or changed tool is invisible
+	// and uncallable until a human approves it (ADR-0007), and that
+	// approval is the moment to check this list against what the tool now
+	// does. The residual, stated because it is thin: a tool that starts
+	// calling a new account WITHOUT changing its name, description or
+	// schema is invisible to both controls.
+	//
+	// An empty list is refused. An account no tool spends is a limit that
+	// can never apply, which is a control that is off with the file
+	// implying it is on.
+	Tools []string `toml:"tools"`
 }
 
 // Telemetry sends one GELF message to a Graylog input per record the Audit
@@ -1208,4 +1488,11 @@ func (t Telemetry) BufferSize() int {
 		return DefaultTelemetryBuffer
 	}
 	return *t.Buffer
+}
+
+// containsSpace reports whether s holds any Unicode whitespace. A quota
+// tool name is matched exactly against the name Dispatch routes, so a name
+// with a space in it can never match a call.
+func containsSpace(s string) bool {
+	return strings.IndexFunc(s, unicode.IsSpace) >= 0
 }

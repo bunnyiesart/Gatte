@@ -50,6 +50,8 @@ refresh_interval = "5m"
 [response]
 max_bytes    = 1048576
 call_timeout = "2m"
+# Calls one analyst may have in flight at once; the next is refused.
+max_concurrent_calls_per_analyst = 4
 
 # The examples register their tools as local processes (-transport stdio)
 # with -env credentials. Such a process runs as the gateway's own user and

@@ -59,6 +59,9 @@ type fakeUpstream struct {
 	result  gateway.Result
 	callErr error
 	calls   []string
+	// panicWith makes CallTool panic -- a backend adapter with a bug
+	// (ADR-0035).
+	panicWith any
 }
 
 func (u *fakeUpstream) ListTools(context.Context) ([]gateway.ToolDef, error) {
@@ -71,6 +74,9 @@ func (u *fakeUpstream) CallTool(_ context.Context, tool string, _ json.RawMessag
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	u.calls = append(u.calls, tool)
+	if u.panicWith != nil {
+		panic(u.panicWith)
+	}
 	if u.callErr != nil {
 		return gateway.Result{}, u.callErr
 	}
@@ -144,6 +150,11 @@ type fakeVerifier struct {
 }
 
 func (v fakeVerifier) Verify(_ context.Context, raw string) (access.Identity, error) {
+	if raw == tokenThatPanics {
+		// A verifier with a bug, for the ServeHTTP containment test
+		// (ADR-0035).
+		panic("verifier bug")
+	}
 	if id, ok := v.tokens[raw]; ok {
 		return id, nil
 	}
@@ -214,6 +225,9 @@ type harnessOptions struct {
 	// blocklist replaces the real blocklist the Gateway reads, for a test
 	// that needs one which fails on command.
 	blocklist access.Blocklist
+	// wrapAudit decorates the audit store the Gateway writes to; the
+	// harness still reads the trail from the database directly.
+	wrapAudit func(audit.Recorder) audit.Recorder
 }
 
 func newHarness(t *testing.T) *harness {
@@ -290,11 +304,16 @@ func newHarnessWith(t *testing.T, opts harnessOptions) *harness {
 	logs := &lockedBuffer{}
 	logger := slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
+	var trail audit.Recorder = auditsql.New(db)
+	if opts.wrapAudit != nil {
+		trail = opts.wrapAudit(trail)
+	}
+
 	gw, err := gateway.New(gateway.Config{
 		Registry:   reg,
 		Vault:      fakeVault{},
 		Quarantine: served,
-		Audit:      auditsql.New(db),
+		Audit:      trail,
 		Policy:     policy,
 		Blocklist:  blocklist,
 		Quota:      noQuota(t),

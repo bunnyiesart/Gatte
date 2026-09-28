@@ -43,6 +43,9 @@ const (
 	// two spellings of one event is how the two halves of an incident stop
 	// being searchable together.
 	msgQuotaExhausted = "quota exhausted"
+	// msgConcurrencyLimited is the trail's reasonConcurrencyLimited, for
+	// the same reason (design/adr/0035).
+	msgConcurrencyLimited = "concurrency limited"
 	// msgUnknownToolNoName is used when there is no caller-supplied name to
 	// echo. It is never richer than this.
 	msgUnknownToolNoName = "unknown tool"
@@ -88,6 +91,12 @@ const (
 	// and note the bound it inherits: the class is distinguishable, the
 	// text is not.
 	classQuotaExhausted
+	// classConcurrencyLimited is the caller's own per-analyst concurrency
+	// cap, full at this moment (design/adr/0035). A class of its own on
+	// exactly classQuotaExhausted's argument: a fact about the caller,
+	// told to the caller, that resolves by itself -- here as soon as one
+	// of their own calls ends.
+	classConcurrencyLimited
 )
 
 // String names the class for the operator's log. It is never sent to a
@@ -104,6 +113,8 @@ func (c failureClass) String() string {
 		return "method-not-allowed"
 	case classQuotaExhausted:
 		return "quota-exhausted"
+	case classConcurrencyLimited:
+		return "concurrency-limited"
 	default:
 		return "internal"
 	}
@@ -125,6 +136,8 @@ func (c failureClass) status() int {
 		// resolves when the window rolls over, and every client library
 		// and proxy in existence already reads 429 that way.
 		return http.StatusTooManyRequests
+	case classConcurrencyLimited:
+		return http.StatusTooManyRequests
 	default:
 		return http.StatusInternalServerError
 	}
@@ -143,6 +156,8 @@ func (c failureClass) message() string {
 		return msgMethodNotAllowed
 	case classQuotaExhausted:
 		return msgQuotaExhausted
+	case classConcurrencyLimited:
+		return msgConcurrencyLimited
 	default:
 		return msgInternal
 	}
@@ -175,6 +190,8 @@ func classify(err error) failureClass {
 		return classUnknownTool
 	case errors.Is(err, quota.ErrExhausted):
 		return classQuotaExhausted
+	case errors.Is(err, gateway.ErrConcurrencyLimited):
+		return classConcurrencyLimited
 	default:
 		// Everything else -- ErrQuarantineUnavailable, ErrRegistryUnavailable,
 		// ErrClosed, an audit-store failure, a transport error, a Go runtime
@@ -231,7 +248,7 @@ func jsonRPCError(class failureClass, tool string) error {
 	}
 
 	code := jsonrpc.CodeInternalError
-	if class == classUnauthenticated || class == classForbidden || class == classQuotaExhausted {
+	if class == classUnauthenticated || class == classForbidden || class == classQuotaExhausted || class == classConcurrencyLimited {
 		// JSON-RPC 2.0 has no authorization code; the spec's registry stops
 		// at "invalid request". The code is not the signal here -- the
 		// constant message is -- so the nearest standard code is used rather

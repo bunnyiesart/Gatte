@@ -49,6 +49,80 @@ CREATE TABLE IF NOT EXISTS quarantined_tools (
 	if _, err := db.Exec(stmt); err != nil {
 		return fmt.Errorf("quarantine/sqlite: migrate: %w", err)
 	}
+	for _, stmt := range definitionsSchema {
+		if _, err := db.Exec(stmt); err != nil {
+			return fmt.Errorf("quarantine/sqlite: migrate tool_definitions: %w", err)
+		}
+	}
+	return nil
+}
+
+// definitionsSchema is the table of the tool definitions the quarantine
+// state refers to, keyed by fingerprint (design/adr/0032 item 1).
+//
+// Content-addressed: the key is quarantine.Hash of the row, so the same
+// definition advertised by two upstreams is one row, and a row whose
+// content no longer hashes to its key is detectably edited (Definition
+// refuses it). Nothing is keyed by server, because nothing about a
+// definition depends on who advertised it -- the quarantined_tools row is
+// what ties a (server, tool) to a hash.
+//
+// Kept while referenced, never rewritten. A row stays for as long as some
+// quarantined_tools row names it as approved_hash or observed_hash; when
+// the last reference moves on, the adapter deletes it in the same
+// transaction (pruneDefinitions). That bounds the table at two rows per
+// (server, tool) -- the baseline and the latest observation -- whatever a
+// backend rotating its description every interval does, which on a single
+// small VM sharing its disk with the audit trail is the point. The
+// intermediate definitions are not lost as facts: each transition's hashes
+// are on the audit trail.
+//
+// The triggers say so to anything going through SQL. They are not a
+// defence against whoever holds the file (DROP TRIGGER is one statement);
+// they stop this code, or a later version of it, from rewriting or
+// dropping evidence still in use by mistake. The hash check on read is
+// what catches a deliberate edit.
+var definitionsSchema = []string{
+	`CREATE TABLE IF NOT EXISTS tool_definitions (
+	hash          TEXT NOT NULL PRIMARY KEY,
+	name          TEXT NOT NULL,
+	description   TEXT NOT NULL,
+	input_schema  BLOB NOT NULL,
+	output_schema BLOB NOT NULL,
+	first_seen_at TEXT NOT NULL
+)`,
+	`CREATE TRIGGER IF NOT EXISTS tool_definitions_no_update
+BEFORE UPDATE ON tool_definitions
+BEGIN SELECT RAISE(ABORT, 'tool_definitions rows are never rewritten'); END`,
+	// The first form of this table refused every DELETE, which left a
+	// rotating backend free to fill the disk; it is replaced, not kept.
+	`DROP TRIGGER IF EXISTS tool_definitions_no_delete`,
+	`CREATE TRIGGER IF NOT EXISTS tool_definitions_no_delete_referenced
+BEFORE DELETE ON tool_definitions
+WHEN EXISTS (SELECT 1 FROM quarantined_tools
+             WHERE approved_hash = OLD.hash OR observed_hash = OLD.hash)
+BEGIN SELECT RAISE(ABORT, 'tool_definitions: a definition the quarantine references cannot be deleted'); END`,
+}
+
+// pruneDefinitions deletes the candidate definitions no quarantined_tools
+// row references any more. Called with the hashes a transition just moved
+// away from, inside that transition's transaction, so a definition leaves
+// exactly when its last reference does.
+func pruneDefinitions(ctx context.Context, q querier, candidates ...string) error {
+	const stmt = `
+DELETE FROM tool_definitions
+WHERE hash = ?
+  AND NOT EXISTS (SELECT 1 FROM quarantined_tools
+                  WHERE approved_hash = tool_definitions.hash OR observed_hash = tool_definitions.hash)
+`
+	for _, h := range candidates {
+		if h == "" {
+			continue
+		}
+		if _, err := q.ExecContext(ctx, stmt, h); err != nil {
+			return fmt.Errorf("prune definition %s: %w", h, err)
+		}
+	}
 	return nil
 }
 
@@ -67,51 +141,114 @@ func New(db *sql.DB) *Store {
 
 // Observe implements quarantine.Store.
 //
-// The read of the existing row and the write of its successor run in one
-// transaction: two concurrent discovery cycles observing the same tool
-// must not interleave into a state neither of them computed, and in
-// particular must not let a "changed" verdict be overwritten by a
-// concurrent "still approved" one.
-func (s *Store) Observe(ctx context.Context, serverName string, t quarantine.ToolIdentity) (quarantine.Tool, error) {
+// The read of the existing row, the write of its successor and the write
+// of the definition run in one transaction: two concurrent discovery
+// cycles observing the same tool must not interleave into a state neither
+// of them computed, and in particular must not let a "changed" verdict be
+// overwritten by a concurrent "still approved" one -- or both report the
+// same transition. A fingerprint stored with no definition behind it
+// would be the pre-ADR-0032 blind spot again, so the two commit together
+// or not at all.
+func (s *Store) Observe(ctx context.Context, serverName string, t quarantine.ToolIdentity) (quarantine.Observation, error) {
 	observedHash := quarantine.Hash(t)
 	now := time.Now().UTC()
+	fail := func(err error) (quarantine.Observation, error) {
+		return quarantine.Observation{}, fmt.Errorf("quarantine/sqlite: observe %q/%q: %w", serverName, t.Name, err)
+	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return quarantine.Tool{}, fmt.Errorf("quarantine/sqlite: observe %q/%q: %w", serverName, t.Name, err)
+		return fail(err)
 	}
 	defer tx.Rollback() //nolint:errcheck // no-op once Commit succeeded
 
+	if err := keepDefinition(ctx, tx, observedHash, t, now); err != nil {
+		return fail(err)
+	}
+
+	var obs quarantine.Observation
 	prev, err := get(ctx, tx, serverName, t.Name)
 	switch {
 	case err == nil:
 		// Known tool: let the domain decide the next state.
 		next, err := prev.Observed(observedHash, now)
 		if err != nil {
-			return quarantine.Tool{}, fmt.Errorf("quarantine/sqlite: observe %q/%q: %w", serverName, t.Name, err)
+			return fail(err)
 		}
 		if err := update(ctx, tx, next); err != nil {
-			return quarantine.Tool{}, fmt.Errorf("quarantine/sqlite: observe %q/%q: %w", serverName, t.Name, err)
+			return fail(err)
 		}
-		if err := tx.Commit(); err != nil {
-			return quarantine.Tool{}, fmt.Errorf("quarantine/sqlite: observe %q/%q: commit: %w", serverName, t.Name, err)
+		if err := pruneDefinitions(ctx, tx, prev.ObservedHash, prev.ApprovedHash); err != nil {
+			return fail(err)
 		}
-		return next, nil
+		obs = quarantine.Observation{Tool: next, Event: quarantine.EventOf(prev, next)}
 
 	case errors.Is(err, quarantine.ErrNotFound):
 		// First sighting: born pending, never usable until approved.
 		next := quarantine.NewTool(serverName, t.Name, observedHash, now)
 		if err := insert(ctx, tx, next); err != nil {
-			return quarantine.Tool{}, fmt.Errorf("quarantine/sqlite: observe %q/%q: %w", serverName, t.Name, err)
+			return fail(err)
 		}
-		if err := tx.Commit(); err != nil {
-			return quarantine.Tool{}, fmt.Errorf("quarantine/sqlite: observe %q/%q: commit: %w", serverName, t.Name, err)
-		}
-		return next, nil
+		obs = quarantine.Observation{Tool: next, Event: quarantine.EventFirstSeen}
 
 	default:
-		return quarantine.Tool{}, fmt.Errorf("quarantine/sqlite: observe %q/%q: %w", serverName, t.Name, err)
+		return fail(err)
 	}
+
+	if err := tx.Commit(); err != nil {
+		return fail(fmt.Errorf("commit: %w", err))
+	}
+	return obs, nil
+}
+
+// keepDefinition stores t under hash unless a definition is already stored
+// there. INSERT OR IGNORE, not an upsert: rows are never rewritten, and a
+// row that is already there is by construction the same content.
+func keepDefinition(ctx context.Context, q querier, hash string, t quarantine.ToolIdentity, now time.Time) error {
+	const stmt = `
+INSERT OR IGNORE INTO tool_definitions
+	(hash, name, description, input_schema, output_schema, first_seen_at)
+VALUES (?, ?, ?, ?, ?, ?)
+`
+	// Nil and empty hash the same (quarantine.Hash); store both as an
+	// empty blob so NOT NULL holds and the read-back hashes identically.
+	in, out := t.InputSchema, t.OutputSchema
+	if in == nil {
+		in = []byte{}
+	}
+	if out == nil {
+		out = []byte{}
+	}
+	if _, err := q.ExecContext(ctx, stmt, hash, t.Name, t.Description, in, out, now.Format(timeLayout)); err != nil {
+		return fmt.Errorf("keep definition: %w", err)
+	}
+	return nil
+}
+
+// Definition implements quarantine.Store.
+//
+// The row is re-hashed on the way out. The triggers stop an UPDATE made
+// through SQL by this code; they do not stop whoever holds the file, and
+// the one thing worse than "the approved definition was not kept" is an
+// edited text presented as the approved one.
+func (s *Store) Definition(ctx context.Context, hash string) (quarantine.ToolIdentity, error) {
+	const stmt = `
+SELECT name, description, input_schema, output_schema
+FROM tool_definitions
+WHERE hash = ?
+`
+	var t quarantine.ToolIdentity
+	err := s.db.QueryRowContext(ctx, stmt, hash).Scan(&t.Name, &t.Description, &t.InputSchema, &t.OutputSchema)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return quarantine.ToolIdentity{}, fmt.Errorf("quarantine/sqlite: definition %s: %w", hash, quarantine.ErrDefinitionNotKept)
+	case err != nil:
+		return quarantine.ToolIdentity{}, fmt.Errorf("quarantine/sqlite: definition %s: %w", hash, err)
+	}
+	if got := quarantine.Hash(t); got != hash {
+		return quarantine.ToolIdentity{}, fmt.Errorf("quarantine/sqlite: definition %s hashes to %s: %w", hash, got, quarantine.ErrDefinitionMismatch)
+	}
+	return t, nil
 }
 
 // Approve implements quarantine.Store.
@@ -154,6 +291,9 @@ func (s *Store) approve(ctx context.Context, serverName, toolName string, transi
 	if err := update(ctx, tx, next); err != nil {
 		return quarantine.Tool{}, fmt.Errorf("quarantine/sqlite: approve %q/%q: %w", serverName, toolName, err)
 	}
+	if err := pruneDefinitions(ctx, tx, prev.ApprovedHash, prev.ObservedHash); err != nil {
+		return quarantine.Tool{}, fmt.Errorf("quarantine/sqlite: approve %q/%q: %w", serverName, toolName, err)
+	}
 	if err := tx.Commit(); err != nil {
 		return quarantine.Tool{}, fmt.Errorf("quarantine/sqlite: approve %q/%q: commit: %w", serverName, toolName, err)
 	}
@@ -191,6 +331,9 @@ func (s *Store) Revoke(ctx context.Context, serverName, toolName string) (quaran
 	if err := update(ctx, tx, next); err != nil {
 		return quarantine.Tool{}, fmt.Errorf("quarantine/sqlite: revoke %q/%q: %w", serverName, toolName, err)
 	}
+	if err := pruneDefinitions(ctx, tx, prev.ApprovedHash, prev.ObservedHash); err != nil {
+		return quarantine.Tool{}, fmt.Errorf("quarantine/sqlite: revoke %q/%q: %w", serverName, toolName, err)
+	}
 	if err := tx.Commit(); err != nil {
 		return quarantine.Tool{}, fmt.Errorf("quarantine/sqlite: revoke %q/%q: commit: %w", serverName, toolName, err)
 	}
@@ -199,26 +342,43 @@ func (s *Store) Revoke(ctx context.Context, serverName, toolName string) (quaran
 
 // Forget implements quarantine.Store.
 //
-// One DELETE, no transaction: it is a single statement, and there is no
-// read whose result something else could invalidate underneath it.
+// No schema change was needed for this, or for Revoke, beyond the
+// definitions table: both work the quarantined_tools table -- a DELETE by
+// server_name and an UPDATE the domain computed.
 //
-// No schema change was needed for this, or for Revoke. Both work the
-// existing quarantined_tools table -- a DELETE by server_name and an UPDATE
-// the domain computed -- so a gateway upgraded in place keeps running
-// against the database it already has, with Migrate doing exactly what it
-// did before.
+// The definitions only this server referenced leave with its rows, in the
+// same transaction; one another upstream still references stays. This is
+// also the operator's way to reclaim what an upstream that invents new
+// tool names every interval has accumulated: `upstream deregister` ends in
+// here.
 func (s *Store) Forget(ctx context.Context, serverName string) (int, error) {
-	const stmt = `DELETE FROM quarantined_tools WHERE server_name = ?`
-
-	res, err := s.db.ExecContext(ctx, stmt, serverName)
-	if err != nil {
+	fail := func(err error) (int, error) {
 		return 0, fmt.Errorf("quarantine/sqlite: forget %q: %w", serverName, err)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fail(err)
+	}
+	defer tx.Rollback() //nolint:errcheck // no-op once Commit succeeded
+
+	res, err := tx.ExecContext(ctx, `DELETE FROM quarantined_tools WHERE server_name = ?`, serverName)
+	if err != nil {
+		return fail(err)
 	}
 	n, err := res.RowsAffected()
 	if err != nil {
-		// The rows are gone either way; only the count is unknown. Report
-		// the failure rather than returning a number that was never counted.
-		return 0, fmt.Errorf("quarantine/sqlite: forget %q: counting removed entries: %w", serverName, err)
+		return fail(fmt.Errorf("counting removed entries: %w", err))
+	}
+	const orphans = `
+DELETE FROM tool_definitions
+WHERE NOT EXISTS (SELECT 1 FROM quarantined_tools
+                  WHERE approved_hash = tool_definitions.hash OR observed_hash = tool_definitions.hash)
+`
+	if _, err := tx.ExecContext(ctx, orphans); err != nil {
+		return fail(fmt.Errorf("prune definitions: %w", err))
+	}
+	if err := tx.Commit(); err != nil {
+		return fail(fmt.Errorf("commit: %w", err))
 	}
 	return int(n), nil
 }

@@ -597,7 +597,25 @@ func (h *harness) listNames(id access.Identity) []string {
 	return names
 }
 
+// auditRows returns the rows about calls and requests, in trail order. The
+// rows the gateway writes about itself -- a tool first seen, an approved
+// tool changed, a signature refused (design/adr/0032) -- are left out: every
+// Connect in these tests writes a first-seen row per tool, and the
+// assertions here are about what a call produced. allAuditRows and
+// eventRows read those.
 func (h *harness) auditRows() []audit.Record {
+	h.t.Helper()
+	var calls []audit.Record
+	for _, r := range h.allAuditRows() {
+		if r.AnalystIdentity != gatewayActor {
+			calls = append(calls, r)
+		}
+	}
+	return calls
+}
+
+// allAuditRows is the whole trail, events included.
+func (h *harness) allAuditRows() []audit.Record {
 	h.t.Helper()
 	rows, err := h.audit.List(context.Background())
 	if err != nil {
@@ -715,19 +733,25 @@ func TestNamespaced_RoundTrips(t *testing.T) {
 	}
 }
 
-func TestDispatch_DottedToolNameRoutesToTheOriginalName(t *testing.T) {
+// TestConnect_ADottedToolNameIsRefused replaces
+// TestDispatch_DottedToolNameRoutesToTheOriginalName, which pinned the
+// opposite until 28 Sep 2026. A tool name is now held to
+// ^[A-Za-z0-9_-]{1,64}$ at discovery (design/adr/0032 item 6), and the dot is
+// the namespace separator, so "search.absolute" on logsearch is refused
+// rather than served as "logsearch.search.absolute".
+func TestConnect_ADottedToolNameIsRefused(t *testing.T) {
 	h := newHarness(t, "logsearch.search.absolute")
 	h.register("logsearch")
 	h.serve("logsearch", def("search.absolute", "absolute-range search"))
-	h.mustConnect()
-	h.approve("logsearch", "search.absolute")
 
-	if _, err := h.gw.Dispatch(context.Background(), fromAnalyst, "logsearch.search.absolute", json.RawMessage(`{"q":"x"}`)); err != nil {
-		t.Fatalf("Dispatch: %v", err)
+	if err := h.connect(); !errors.Is(err, ErrUpstreamUnavailable) {
+		t.Fatalf("Connect = %v, want ErrUpstreamUnavailable for a dotted tool name", err)
 	}
-	calls := h.dialer.upstream("logsearch").callLog()
-	if len(calls) != 1 || calls[0].tool != "search.absolute" {
-		t.Fatalf("upstream calls = %+v, want one call to %q", calls, "search.absolute")
+	if _, err := h.gw.Dispatch(context.Background(), fromAnalyst, "logsearch.search.absolute", json.RawMessage(`{"q":"x"}`)); err == nil {
+		t.Fatal("a dotted tool name was dispatched")
+	}
+	if calls := h.dialer.upstream("logsearch").callLog(); len(calls) != 0 {
+		t.Fatalf("upstream calls = %+v, want none", calls)
 	}
 }
 
@@ -804,26 +828,24 @@ func TestConnect_AmbiguousNamespacedNameServesNeither(t *testing.T) {
 		t.Error("an upstream whose name cannot be namespaced unambiguously was dialed; it must be refused before its command runs")
 	}
 
-	// Approve the one candidate that was discovered, so that what the name
-	// resolves to is decided by the routing table and not by quarantine.
-	h.approve("a", "b.c")
-
-	// With "a.b" refused, "a.b.c" has exactly one reading left, and it is the
-	// reading every consumer of the name already assumes: the tool "b.c" of
-	// the upstream "a". The call must land there and nowhere else -- this is
-	// the property the refusal buys, and asserting it is the difference
-	// between "the ambiguity is gone" and "the name is gone".
-	if _, err := h.gw.Dispatch(context.Background(), fromAnalyst, "a.b.c", nil); err != nil {
-		t.Fatalf("Dispatch(%q) = %v, want nil -- with the ambiguous upstream refused the name belongs to %q alone", "a.b.c", err, "a")
+	// Since design/adr/0032 the other half of the ambiguity is refused too:
+	// "b.c" is outside the tool-name charset, so upstream "a" advertises
+	// nothing routable either. The name "a.b.c" has no reading left, and
+	// nothing may be served under it.
+	if _, err := h.quarantine.Get(context.Background(), "a", "b.c"); !errors.Is(err, quarantine.ErrNotFound) {
+		t.Errorf("the dotted tool %q reached the quarantine: %v", "b.c", err)
 	}
-	if n := len(h.dialer.upstream("a").callLog()); n != 1 {
-		t.Errorf("upstream %q saw %d calls, want 1 -- the call went somewhere else", "a", n)
+	if _, err := h.gw.Dispatch(context.Background(), fromAnalyst, "a.b.c", nil); err == nil {
+		t.Fatalf("Dispatch(%q) succeeded, want it refused -- neither reading of the name is servable", "a.b.c")
+	}
+	if n := len(h.dialer.upstream("a").callLog()); n != 0 {
+		t.Errorf("upstream %q saw %d calls, want 0", "a", n)
 	}
 	if n := len(h.dialer.upstream("a.b").callLog()); n != 0 {
 		t.Errorf("upstream %q saw %d calls, want 0 -- it was never brought up", "a.b", n)
 	}
-	if names := h.listNames(analyst); !slices.Equal(names, []string{"a.b.c"}) {
-		t.Fatalf("ListTools = %v, want exactly %v", names, []string{"a.b.c"})
+	if names := h.listNames(analyst); len(names) != 0 {
+		t.Fatalf("ListTools = %v, want nothing", names)
 	}
 }
 

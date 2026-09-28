@@ -167,12 +167,15 @@ definition and approve the ones you intend to serve:
 
 ```sh
 mcp-gateway tool list    -config "$CFG" -server edr
-mcp-gateway tool approve -config "$CFG" edr isolate_host
+mcp-gateway tool show    -config "$CFG" edr isolate_host   # the definition and its SHA256
+mcp-gateway tool approve -config "$CFG" -fingerprint SHA256 edr isolate_host
 ```
 
-An approval pins the tool's name, description and input schema. If the
-upstream later changes any of them, the tool is marked **changed** and
-stops being served until someone approves the new definition. `tool approve`
+An approval pins the tool's name, description, input and output schema, at
+the SHA256 `tool show` printed; without `-fingerprint`, `tool approve`
+shows the definition and approves nothing. If the upstream later changes any
+of them, the tool is marked **changed** and stops being served until someone
+approves the new definition; `tool show` then prints the diff. `tool approve`
 prints which roles the approval serves; `tool revoke SERVER TOOL` returns a
 tool to pending. Both take effect on the next call, without a restart.
 

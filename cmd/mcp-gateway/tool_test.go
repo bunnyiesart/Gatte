@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/bunnyiesart/Gatte/internal/quarantine"
@@ -50,7 +51,8 @@ func TestRunToolList_ShowsTheWholeApprovalQueue(t *testing.T) {
 		"threatintel", string(quarantine.StatusChanged),
 		"1 tool is awaiting approval",
 		"1 CHANGED tool",
-		"mcp-gateway tool approve SERVER TOOL",
+		"mcp-gateway tool show SERVER TOOL",
+		"mcp-gateway tool approve -fingerprint SHA256 SERVER TOOL",
 	} {
 		requireContains(t, got, want, "tool list")
 	}
@@ -124,7 +126,7 @@ func TestRunToolApprove_PendingBecomesUsable(t *testing.T) {
 		t.Fatal("a newly observed tool must not be usable")
 	}
 
-	requireExit(t, runToolApprove(e.opEnv, "casemgmt", "list_cases"), exitOK, "tool approve")
+	requireExit(t, runToolApproveReviewed(e.opEnv, "casemgmt", "list_cases"), exitOK, "tool approve")
 	requireContains(t, e.stdoutText(), "Approved casemgmt.list_cases", "tool approve")
 	requireContains(t, e.stdoutText(), "pending (first seen", "tool approve")
 	requireContains(t, e.stdoutText(), before.ObservedHash, "tool approve")
@@ -146,8 +148,10 @@ func TestRunToolApprove_PendingBecomesUsable(t *testing.T) {
 
 // TestRunToolApprove_ChangedToolSaysItIsRebaselining is the rug-pull
 // decision point. Approving here does not restore what was vetted -- it
-// accepts something new -- and the output has to say so, name both
-// fingerprints, and admit that the old definition was never kept.
+// accepts something new -- and the output has to say so and name both
+// fingerprints. Until design/adr/0032 it also had to admit that the old
+// definition was never kept; now it shows the two and the lines that
+// differ.
 func TestRunToolApprove_ChangedToolSaysItIsRebaselining(t *testing.T) {
 	e := newOpTestEnv(t)
 	mustObserve(t, e, "casemgmt", irisListCases)
@@ -158,7 +162,7 @@ func TestRunToolApprove_ChangedToolSaysItIsRebaselining(t *testing.T) {
 		t.Fatalf("precondition: status = %q, want %q", changed.Status, quarantine.StatusChanged)
 	}
 
-	requireExit(t, runToolApprove(e.opEnv, "casemgmt", "list_cases"), exitOK, "tool approve (changed)")
+	requireExit(t, runToolApproveReviewed(e.opEnv, "casemgmt", "list_cases"), exitOK, "tool approve (changed)")
 	got := e.stdoutText()
 
 	for _, want := range []string{
@@ -166,7 +170,8 @@ func TestRunToolApprove_ChangedToolSaysItIsRebaselining(t *testing.T) {
 		"READ THIS BEFORE APPROVING",
 		approved.ApprovedHash, // what a human vetted
 		changed.ObservedHash,  // what is being accepted instead
-		"cannot show you a diff",
+		"-   " + irisListCases.Description,
+		"+   " + changedIrisListCases.Description,
 		"NEW definition, not restoring the old one",
 		"previous baseline",
 		"new baseline",
@@ -191,8 +196,23 @@ func TestRunToolApprove_AlreadyApprovedAtThisDefinitionIsANoop(t *testing.T) {
 	mustObserve(t, e, "casemgmt", irisListCases)
 	mustApprove(t, e, "casemgmt", "list_cases")
 
-	requireExit(t, runToolApprove(e.opEnv, "casemgmt", "list_cases"), exitOK, "re-approve")
+	requireExit(t, runToolApproveReviewed(e.opEnv, "casemgmt", "list_cases"), exitOK, "re-approve")
 	requireContains(t, e.stdoutText(), "already approved", "re-approve")
+}
+
+// TestRunToolApprove_AlreadyApprovedAtAnotherFingerprintIsAProblem: the
+// contract is "approve only at the fingerprint reviewed". A script that
+// reviewed H2 and runs approve -fingerprint H2 while H1 is what is approved
+// and served must not be told exit 0 -- it would record H2 as approved.
+func TestRunToolApprove_AlreadyApprovedAtAnotherFingerprintIsAProblem(t *testing.T) {
+	e := newOpTestEnv(t)
+	obs := mustObserve(t, e, "casemgmt", irisListCases)
+	mustApprove(t, e, "casemgmt", "list_cases")
+
+	wrong := strings.Repeat("0", len(obs.ObservedHash))
+	requireExit(t, runToolApproveFingerprint(e.opEnv, "casemgmt", "list_cases", wrong), exitProblem, "re-approve at another fingerprint")
+	requireContains(t, e.stderrText(), obs.ObservedHash, "re-approve at another fingerprint")
+	requireContains(t, e.stderrText(), wrong, "re-approve at another fingerprint")
 }
 
 func TestRunToolApprove_UnobservedToolIsAProblem(t *testing.T) {
@@ -218,7 +238,7 @@ func TestRunToolApprove_UnobservedToolIsAProblem(t *testing.T) {
 			e := newOpTestEnv(t)
 			tc.setup(e)
 
-			requireExit(t, runToolApprove(e.opEnv, tc.server, tc.tool), exitProblem, tc.name)
+			requireExit(t, runToolApproveReviewed(e.opEnv, tc.server, tc.tool), exitProblem, tc.name)
 			requireContains(t, e.stderrText(), "no quarantine entry", tc.name)
 			// An operator must never be able to approve a definition the
 			// gateway has not actually seen.
@@ -272,7 +292,8 @@ func TestRunToolRevoke_ApprovedBecomesPendingAgain(t *testing.T) {
 	for _, want := range []string{
 		"Revoked casemgmt.list_cases",
 		"no longer served",
-		"mcp-gateway tool approve casemgmt list_cases",
+		"mcp-gateway tool show casemgmt list_cases",
+		"mcp-gateway tool approve -fingerprint SHA256 casemgmt list_cases",
 	} {
 		requireContains(t, got, want, "tool revoke")
 	}
@@ -353,4 +374,16 @@ func TestRunToolApprove_FingerprintMustStillBeTheReviewedOne(t *testing.T) {
 	if after, _ := e.tools().Get(context.Background(), "casemgmt", "list_cases"); !after.Usable() || after.ApprovedHash != got.ObservedHash {
 		t.Fatalf("approving the current fingerprint: %+v", after)
 	}
+}
+
+// runToolApproveReviewed is the operator's two steps in one: read the
+// fingerprint the tool is advertising (what `tool show` prints) and approve
+// exactly that one. Since design/adr/0032 there is no approval without
+// -fingerprint, so tests whose subject is something else approve this way.
+func runToolApproveReviewed(e *opEnv, server, tool string) int {
+	fp := ""
+	if t, err := e.tools().Get(e.ctx(), server, tool); err == nil {
+		fp = t.ObservedHash
+	}
+	return runToolApproveFingerprint(e, server, tool, fp)
 }

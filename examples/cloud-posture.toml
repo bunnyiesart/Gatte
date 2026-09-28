@@ -24,8 +24,9 @@
 # 3. Approve after reviewing each definition:
 #
 #      mcp-gateway tool list    -config "$CFG" -server cloudposture
-#      mcp-gateway tool approve -config "$CFG" cloudposture list_findings
-#      mcp-gateway tool approve -config "$CFG" cloudposture get_resource
+#      mcp-gateway tool show    -config "$CFG" SERVER TOOL   # the definition and its SHA256
+#      mcp-gateway tool approve -config "$CFG" -fingerprint SHA256 cloudposture list_findings
+#      mcp-gateway tool approve -config "$CFG" -fingerprint SHA256 cloudposture get_resource
 
 [[role]]
 name  = "cloud-security"

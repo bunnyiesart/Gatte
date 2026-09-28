@@ -673,7 +673,7 @@ func TestRunToolApprove_NamesTheRolesItAuthorizes(t *testing.T) {
 		{Name: "unrelated", Grants: map[string][]string{"threatintel": {"*"}}},
 	})
 
-	if code := runToolApprove(e.opEnv, "casemgmt", "list_cases"); code != exitOK {
+	if code := runToolApproveReviewed(e.opEnv, "casemgmt", "list_cases"); code != exitOK {
 		t.Fatalf("exit code = %d, want %d\n%s", code, exitOK, e.bothText())
 	}
 
@@ -703,7 +703,7 @@ func TestRunToolApprove_SaysWhenNoRoleCoversIt(t *testing.T) {
 		{Name: "n1-triage", Tools: []string{"casemgmt.get_case"}},
 	})
 
-	if code := runToolApprove(e.opEnv, "casemgmt", "list_cases"); code != exitOK {
+	if code := runToolApproveReviewed(e.opEnv, "casemgmt", "list_cases"); code != exitOK {
 		t.Fatalf("exit code = %d, want %d\n%s", code, exitOK, e.bothText())
 	}
 
@@ -725,7 +725,7 @@ func TestRunToolApprove_NamesTheGrantThatCovers(t *testing.T) {
 		{Name: "named-grant", Grants: map[string][]string{"casemgmt": {"list_cases"}}},
 	})
 
-	if code := runToolApprove(e.opEnv, "casemgmt", "list_cases"); code != exitOK {
+	if code := runToolApproveReviewed(e.opEnv, "casemgmt", "list_cases"); code != exitOK {
 		t.Fatalf("exit code = %d, want %d\n%s", code, exitOK, e.bothText())
 	}
 	out := e.stdoutText()
@@ -747,7 +747,7 @@ func TestRunToolApprove_ChangedToolStillWarnsFirst(t *testing.T) {
 	mustApprove(t, e, "casemgmt", "list_cases")
 	mustObserve(t, e, "casemgmt", changedIrisListCases)
 
-	if code := runToolApprove(e.opEnv, "casemgmt", "list_cases"); code != exitOK {
+	if code := runToolApproveReviewed(e.opEnv, "casemgmt", "list_cases"); code != exitOK {
 		t.Fatalf("exit code = %d, want %d\n%s", code, exitOK, e.bothText())
 	}
 	out := e.stdoutText()
@@ -783,7 +783,7 @@ func TestRunToolApprove_StillApproves(t *testing.T) {
 	e := newOpTestEnv(t)
 	approveFixture(t, e, []config.Role{{Name: "dfir-lead", Grants: map[string][]string{"casemgmt": {"*"}}}})
 
-	if code := runToolApprove(e.opEnv, "casemgmt", "list_cases"); code != exitOK {
+	if code := runToolApproveReviewed(e.opEnv, "casemgmt", "list_cases"); code != exitOK {
 		t.Fatalf("exit code = %d, want %d\n%s", code, exitOK, e.bothText())
 	}
 	quarantineStatusIsApproved(t, e, "casemgmt", "list_cases")

@@ -26,9 +26,10 @@
 #    each definition, then approve the ones you intend to serve:
 #
 #      mcp-gateway tool list    -config "$CFG" -server siem
-#      mcp-gateway tool approve -config "$CFG" siem search_events
-#      mcp-gateway tool approve -config "$CFG" siem get_event
-#      mcp-gateway tool approve -config "$CFG" siem list_saved_searches
+#      mcp-gateway tool show    -config "$CFG" SERVER TOOL   # the definition and its SHA256
+#      mcp-gateway tool approve -config "$CFG" -fingerprint SHA256 siem search_events
+#      mcp-gateway tool approve -config "$CFG" -fingerprint SHA256 siem get_event
+#      mcp-gateway tool approve -config "$CFG" -fingerprint SHA256 siem list_saved_searches
 
 # Detection engineering writes and tests queries, so it gets search and the
 # saved-search catalogue. Tool ids under [role.grants] are the server's own

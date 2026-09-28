@@ -4,6 +4,7 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -15,6 +16,7 @@ import (
 	"github.com/bunnyiesart/Gatte/internal/config"
 	"github.com/bunnyiesart/Gatte/internal/gateway"
 	"github.com/bunnyiesart/Gatte/internal/quarantine"
+	"github.com/bunnyiesart/Gatte/internal/visible"
 )
 
 // cmdTool implements "mcp-gateway tool": list quarantined tools, or
@@ -29,6 +31,8 @@ func cmdTool(args []string, stdout, stderr io.Writer) int {
 	switch sub {
 	case "list":
 		return toolList(rest, stdout, stderr)
+	case "show":
+		return toolShow(rest, stdout, stderr)
 	case "approve":
 		return toolApprove(rest, stdout, stderr)
 	case "revoke":
@@ -46,7 +50,8 @@ func cmdTool(args []string, stdout, stderr io.Writer) int {
 func toolUsage(w io.Writer) {
 	fmt.Fprint(w, `Usage:
   mcp-gateway tool list [-config FILE] [-server NAME] [-json]
-  mcp-gateway tool approve [-config FILE] [-fingerprint SHA256] SERVER TOOL
+  mcp-gateway tool show [-config FILE] SERVER TOOL
+  mcp-gateway tool approve [-config FILE] -fingerprint SHA256 SERVER TOOL
   mcp-gateway tool revoke [-config FILE] SERVER TOOL
 
 "list" is the approval queue: it shows every tool the gateway has observed,
@@ -54,10 +59,15 @@ including the pending and changed ones, which are precisely the ones that
 need a human. A tool is usable only when an operator approved it AND the
 definition being advertised now still matches what was approved.
 
-"approve" baselines the fingerprint the tool is advertising when the command
-reads it, and refuses if that moves before the approval is written. Pass
--fingerprint with the full hash you reviewed (tool list -json) to refuse
-also when the tool changed between your review and this command.
+"show" prints the definition the tool is advertising and, when it differs,
+the approved one and a line diff between them. Code points a terminal would
+not show -- controls, zero-width, bidi overrides, tag characters -- are
+printed as \u{XXXX}.
+
+"approve" prints the same, then baselines the tool at -fingerprint, the full
+hash of the definition you reviewed. Without -fingerprint it approves
+nothing and prints the command to run; if the tool is advertising another
+fingerprint by then, it refuses.
 
 "revoke" is the way back: it withdraws an approval and returns the tool to
 pending, so a running gateway stops serving it on the very next call. It
@@ -146,14 +156,17 @@ func runToolList(e *opEnv, server string, asJSON bool) int {
 		if t.Usable() {
 			usable = "yes"
 		}
+		// Names come from the store, and a row can predate the tool-name
+		// charset or be written past it by hand: escaped, like everything
+		// untrusted this console prints (design/adr/0032).
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
-			t.ServerName, t.ToolName, t.Status, usable, opShortHash(t.ObservedHash), opTime(t.UpdatedAt))
+			visible.Escape(t.ServerName), visible.Escape(t.ToolName), t.Status, usable, opShortHash(t.ObservedHash), opTime(t.UpdatedAt))
 
 		switch t.Status {
 		case quarantine.StatusPending:
-			pending = append(pending, t.ServerName+"."+t.ToolName)
+			pending = append(pending, visible.Escape(t.ServerName+"."+t.ToolName))
 		case quarantine.StatusChanged:
-			changed = append(changed, t.ServerName+"."+t.ToolName)
+			changed = append(changed, visible.Escape(t.ServerName+"."+t.ToolName))
 		}
 	}
 	if !opFlushTable(tw, e.stderr) {
@@ -180,10 +193,10 @@ func runToolList(e *opEnv, server string, asJSON bool) int {
 		for _, name := range changed {
 			fmt.Fprintf(e.stdout, "    %s\n", name)
 		}
-		fmt.Fprint(e.stdout, "A change to an approved tool's description or schema is how a poisoned tool\ngets past an approval that already happened. Read the new definition on the\nupstream server before approving it.\n")
+		fmt.Fprint(e.stdout, "A change to an approved tool's description or schema is how a poisoned tool\ngets past an approval that already happened. `tool show` prints what changed.\n")
 	}
 	if len(pending) > 0 || len(changed) > 0 {
-		fmt.Fprintf(e.stdout, "\nApprove with:\n\n    %s SERVER TOOL\n", e.cmd("tool approve"))
+		fmt.Fprintf(e.stdout, "\nReview, then approve the fingerprint you reviewed:\n\n    %s SERVER TOOL\n    %s -fingerprint SHA256 SERVER TOOL\n", e.cmd("tool show"), e.cmd("tool approve"))
 	}
 	return exitOK
 }
@@ -207,21 +220,19 @@ func toolApprove(args []string, stdout, stderr io.Writer) int {
 	})
 }
 
-func runToolApprove(e *opEnv, server, tool string) int {
-	return runToolApproveFingerprint(e, server, tool, "")
-}
-
-// runToolApproveFingerprint approves server.tool. reviewed, when not empty,
-// is the full fingerprint the operator reviewed (with or without the
-// "sha256:" prefix); the approval is refused if the tool is no longer
-// advertising it.
+// runToolApproveFingerprint approves server.tool at the fingerprint
+// reviewed (with or without the "sha256:" prefix), and only at that one.
 //
-// Either way the approval itself is compare-and-approve against the
-// fingerprint read by the Get below -- the one this command prints -- so a
-// discovery cycle landing between that read and the write can no longer
-// get a definition baselined that nobody was shown. Without -fingerprint
-// the window that remains is between the operator's own review and running
-// this command; -fingerprint closes that one too.
+// Since design/adr/0032 it first prints what is being approved -- the
+// observed definition, or for a changed tool the approved one next to it
+// and the line diff -- with hidden code points escaped, and an empty
+// reviewed is refused with the fingerprint and the command to run. An
+// approval is a statement about one definition; "whatever is advertised
+// when the command runs" was a stamp on a hash nobody had been shown.
+//
+// The write itself stays compare-and-approve against the fingerprint read
+// by the Get below, so a discovery cycle landing between that read and the
+// write cannot get a definition baselined that nobody was shown.
 func runToolApproveFingerprint(e *opEnv, server, tool, reviewed string) int {
 	q := e.tools()
 	reviewed = strings.TrimPrefix(strings.TrimSpace(reviewed), "sha256:")
@@ -230,46 +241,61 @@ func runToolApproveFingerprint(e *opEnv, server, tool, reviewed string) int {
 	// transition, and what an operator most needs to be told -- that they
 	// are re-baselining a tool that changed under them -- is only visible
 	// in the state before it.
-	before, err := q.Get(e.ctx(), server, tool)
-	switch {
-	case errors.Is(err, quarantine.ErrNotFound):
-		fmt.Fprintf(e.stderr, "no quarantine entry for tool %q on server %q.\n\nA tool can only be approved after the gateway has actually observed it, so\nan operator never approves a definition typed from memory. See what has\nbeen observed:\n\n    %s -server %s\n", tool, server, e.cmd("tool list"), server)
-		return exitProblem
-	case errors.Is(err, quarantine.ErrInvalidStatus):
-		fmt.Fprintf(e.stderr, "the stored quarantine entry for %s.%s has an unrecognised status: %v\nThat row is corrupt or was hand-edited. Refusing to approve it.\n", server, tool, err)
-		return exitProblem
-	case err != nil:
-		fmt.Fprintf(e.stderr, "quarantine: %v\n", err)
-		return exitCannotRun
+	before, code, ok := getForConsole(e, server, tool, "approve")
+	if !ok {
+		return code
 	}
 
-	name := server + "." + tool
+	name := visible.Escape(server + "." + tool)
 
-	if reviewed != "" && reviewed != before.ObservedHash {
-		fmt.Fprintf(e.stderr, "NOT approved: %s is now advertising sha256:%s, not the sha256:%s you reviewed.\nThe upstream's definition changed since you looked at it. Read the current\ndefinition on the upstream server, then approve that fingerprint if it is sound.\n", name, before.ObservedHash, reviewed)
-		return exitProblem
+	if before.Status == quarantine.StatusApproved && before.Usable() {
+		// Nothing to write, but the fingerprint named is still checked:
+		// exit 0 would tell a script that the definition it reviewed is
+		// the approved one when a different one is.
+		if reviewed != "" && reviewed != before.ObservedHash {
+			fmt.Fprintf(e.stderr, "NOT approved: %s is already approved and served at sha256:%s, not the\nsha256:%s you named. Nothing changed. Run `%s` to see the definition\nthat is approved.\n",
+				name, before.ObservedHash, visible.Escape(reviewed), e.cmd("tool show"))
+			return exitProblem
+		}
+		fmt.Fprintf(e.stdout, "%s was already approved at exactly this definition (sha256:%s).\nNothing to do; it is usable.\n", name, before.ObservedHash)
+		return exitOK
 	}
 
 	// Everything that makes this a decision rather than a keystroke is
-	// printed before the change, not after it.
-	switch before.Status {
-	case quarantine.StatusChanged:
+	// printed before the change, not after it -- and composed first, so
+	// whether it reached the operator is one write's answer.
+	changed := before.Status == quarantine.StatusChanged
+	var b bytes.Buffer
+	if changed {
+		writeChangedWarning(&b)
+	}
+	shown := writeReview(e, &b, before)
+	if changed {
+		b.WriteString(changedConsequence)
+	}
+	_, werr := e.stdout.Write(b.Bytes())
+	switch {
+	case !shown:
+		fmt.Fprintf(e.stderr, "\nNOT approved: an approval is of a definition, and the one %s is advertising\ncannot be shown.\n", name)
+		return exitProblem
+	case werr != nil && changed:
 		// The approval does not happen if the warning did not. This is the
 		// rug-pull decision point: approving here re-baselines a definition
-		// somebody rewrote after a human vetted it, and the only thing
-		// standing between the operator and that is the block below. An
-		// approval recorded after the explanation was lost to a full disk
-		// or a closed pipe is an approval nobody was actually shown the
-		// case for.
-		if !printChangedWarning(e.stdout, e.stderr, name, before) {
-			fmt.Fprintf(e.stderr, "\nNOT approved: %s is a CHANGED tool and the warning explaining what approving\nit would do could not be printed in full. Re-run this command somewhere the\noutput survives.\n", name)
-			return exitProblem
-		}
-	case quarantine.StatusApproved:
-		if before.Usable() {
-			fmt.Fprintf(e.stdout, "%s was already approved at exactly this definition (sha256:%s).\nNothing to do; it is usable.\n", name, before.ObservedHash)
-			return exitOK
-		}
+		// somebody rewrote after a human vetted it. An approval recorded
+		// after the explanation was lost to a full disk or a closed pipe is
+		// an approval nobody was actually shown the case for.
+		fmt.Fprintf(e.stderr, "\nNOT approved: %s is a CHANGED tool and the definition and warning above\ncould not be printed in full (%v). Re-run this command somewhere the output\nsurvives.\n", name, werr)
+		return exitProblem
+	}
+
+	if reviewed == "" {
+		fmt.Fprintf(e.stderr, "\nNOT approved: approving needs -fingerprint, the fingerprint of the definition\nyou reviewed. The definition above is sha256:%s. If it is sound, run:\n\n    %s -fingerprint %s %s %s\n",
+			before.ObservedHash, e.cmd("tool approve"), before.ObservedHash, opShellQuote(server), opShellQuote(tool))
+		return exitProblem
+	}
+	if reviewed != before.ObservedHash {
+		fmt.Fprintf(e.stderr, "NOT approved: %s is now advertising sha256:%s, not the sha256:%s you reviewed.\nThe upstream's definition changed since you looked at it. Review the definition\nshown above, then approve that fingerprint if it is sound.\n", name, before.ObservedHash, visible.Escape(reviewed))
+		return exitProblem
 	}
 
 	// Printed before the transition, with everything else that makes this a
@@ -278,7 +304,7 @@ func runToolApproveFingerprint(e *opEnv, server, tool, reviewed string) int {
 
 	after, err := q.ApproveFingerprint(e.ctx(), server, tool, before.ObservedHash)
 	if errors.Is(err, quarantine.ErrFingerprintMoved) {
-		fmt.Fprintf(e.stderr, "NOT approved: %s changed while this command ran -- it is no longer advertising\nsha256:%s. Run `mcp-gateway tool list` and review it again.\n", name, before.ObservedHash)
+		fmt.Fprintf(e.stderr, "NOT approved: %s changed while this command ran -- it is no longer advertising\nsha256:%s. Run `mcp-gateway tool show` and review it again.\n", name, before.ObservedHash)
 		return exitProblem
 	}
 	if err != nil {
@@ -407,11 +433,12 @@ the server from advertising the tool, and did not delete what the gateway
 has seen -- the observed fingerprint above is kept. Revoking withdraws a
 human judgement; it does not un-see a tool.
 
-Approving it again is the way back, and it re-baselines to whatever the
-upstream is advertising at that moment:
+Approving it again is the way back: review what the upstream is advertising
+then, and approve that fingerprint:
 
     %s %s %s
-`, e.cmd("tool approve"), server, tool)
+    %s -fingerprint SHA256 %s %s
+`, e.cmd("tool show"), server, tool, e.cmd("tool approve"), server, tool)
 
 	if after.Usable() {
 		// Should not happen: Revoked() returns a pending tool and pending is
@@ -423,49 +450,28 @@ upstream is advertising at that moment:
 	return exitOK
 }
 
-// printChangedWarning explains, before the approval happens, what
-// approving a changed tool actually does.
-//
-// The quarantine stores fingerprints, not definitions, so there is no diff
-// to show and this function does not pretend otherwise: it says what is
-// known (which fingerprint was vetted, which one is being accepted, when
-// the change was noticed), says plainly that the old definition was never
-// kept, and says that approving moves the baseline forward. This is the
-// rug-pull decision point, and "approved" on its own would be too quiet
-// for it.
-//
-// It reports whether the whole warning reached w. The Flush used to be
-// ignored here, which meant a half-printed warning was indistinguishable
-// from a warning nobody needed -- see the caller for why that decides
-// whether the approval happens at all.
-func printChangedWarning(w, stderr io.Writer, name string, before quarantine.Tool) bool {
-	fmt.Fprintf(w, "CHANGED TOOL -- READ THIS BEFORE APPROVING\n\n")
-	tw := opTable(w)
-	fmt.Fprintf(tw, "  tool\t%s\n", name)
-	fmt.Fprintf(tw, "  first seen\t%s\n", opTime(before.FirstSeenAt))
-	fmt.Fprintf(tw, "  change noticed\t%s\n", opTime(before.UpdatedAt))
-	fmt.Fprintf(tw, "  fingerprint approved before\tsha256:%s\n", before.ApprovedHash)
-	fmt.Fprintf(tw, "  fingerprint being approved now\tsha256:%s\n", before.ObservedHash)
-	if !opFlushTable(tw, stderr) {
-		return false
-	}
-	fmt.Fprint(w, `
-Something in this tool's name, description or input schema changed after an
-operator approved it. The quarantine stores fingerprints, not definitions,
-so it cannot show you a diff: the description you approved was never kept,
-only its hash. What it can tell you is that the two hashes above differ.
+// writeChangedWarning heads the rug-pull decision point: approving a
+// changed tool re-baselines a definition somebody rewrote after a human
+// vetted it, and "approved" on its own would be too quiet for it. The
+// definitions and the diff follow it (writeReview); changedConsequence
+// closes it.
+func writeChangedWarning(w io.Writer) {
+	fmt.Fprint(w, `CHANGED TOOL -- READ THIS BEFORE APPROVING
 
-That matters because a tool's description is handed to an LLM as
-instructions it acts on. Rewriting the description of an already-approved
-tool is the rug pull (OWASP MCP03) this quarantine exists to catch.
+Something in this tool's name, description, input schema or output schema
+changed after an operator approved it. A tool's description is handed to an
+LLM as instructions it acts on, and rewriting an approved one is the rug
+pull (OWASP MCP03) this quarantine exists to catch. The approved and the
+observed definitions follow, and the lines that differ between them.
 
-You are approving a NEW definition, not restoring the old one. Approving
-re-baselines this tool to whatever the server is advertising right now, and
-the previous definition does not come back. Read the tool's current
-description and input schema on the upstream server first, if you have not.
 `)
-	return true
 }
+
+const changedConsequence = `
+You are approving a NEW definition, not restoring the old one. Approving
+re-baselines this tool to the OBSERVED definition above, and the previous
+one is not served again.
+`
 
 // wildcardApprovalNotice is what a `["*"]` grant makes this approval mean.
 //

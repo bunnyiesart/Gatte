@@ -279,6 +279,13 @@ func (h *leakHarness) requireTwoLines() []map[string]any {
 		if err := json.Unmarshal([]byte(l), &m); err != nil {
 			h.t.Fatalf("line %d is not valid JSON (%v): %s", i, err, l)
 		}
+		// The quarantine's own events (design/adr/0032) share the sink: the
+		// tool's first sighting at Connect is one. They are still searched
+		// for leaks below -- h.sink() is the whole file -- but they are not
+		// the two lines this call wrote.
+		if m["caller"] == "(gateway)" {
+			continue
+		}
 		lines = append(lines, m)
 	}
 	if len(lines) != 2 {

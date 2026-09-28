@@ -286,10 +286,19 @@ for pair in "casemgmt list_cases" "casemgmt get_case" \
 	"logsearch search_relative" "logsearch search_keyword" \
 	"docsearch docsearch_search" "docsearch docsearch_list_indices" \
 	"threatintel lookup_ip" "threatintel enrich"; do
+	# An approval names the fingerprint of the definition that was shown
+	# (ADR-0032): read it, show the definition, approve exactly that one.
+	srv=${pair% *} tool=${pair#* }
+	fp=$(ju "$GW tool list -config $CONFIG -server $srv -json" \
+		| jq -r --arg t "$tool" '.[]|select(.tool==$t)|.observed_hash')
+	[ -n "$fp" ] || fail "no observed fingerprint for $pair"
 	# shellcheck disable=SC2086
-	ju "$GW tool approve -config $CONFIG $pair" >/dev/null \
+	ju "$GW tool show -config $CONFIG $pair" >/dev/null \
+		|| fail "could not show $pair"
+	# shellcheck disable=SC2086
+	ju "$GW tool approve -config $CONFIG -fingerprint $fp $pair" >/dev/null \
 		|| fail "could not approve $pair"
-	echo "    approved $pair"
+	echo "    approved $pair at sha256:$fp"
 done
 
 head2 "8. Tool Quarantine -- AFTER approval"
@@ -381,14 +390,20 @@ ok "analyst calling threatintel.enrich by name is refused, not merely hidden fro
 head2 "13. the Audit Trail recorded it"
 ju "$GW audit -config $CONFIG -limit 15" | sed 's/^/  /'
 ju "$GW audit -config $CONFIG -json" >"$WORK/audit.json"
-jq -e '[.[]|select(.tool=="casemgmt.list_cases" and .outcome=="allowed")]|length > 0' \
+# The gateway writes rows about itself too (ADR-0032: first sight, change,
+# refused signature), caller "(gateway)", outcome denied, on the same tool
+# names. Every check below is about a CALL, so those rows are left out --
+# otherwise the first-seen row for threatintel.enrich, written at step 7,
+# would satisfy the denied check whether or not step 12 was audited.
+CALLS='[.[]|select(.analyst_identity!="(gateway)")]'
+jq -e "$CALLS"' | [.[]|select(.tool=="casemgmt.list_cases" and .outcome=="allowed")]|length > 0' \
 	"$WORK/audit.json" >/dev/null || fail "no allowed record for casemgmt.list_cases"
 ok "an 'allowed' record exists for casemgmt.list_cases"
-jq -e '[.[]|select(.tool=="threatintel.enrich" and .outcome=="denied")]|length > 0' \
+jq -e "$CALLS"' | [.[]|select(.tool=="threatintel.enrich" and .outcome=="denied")]|length > 0' \
 	"$WORK/audit.json" >/dev/null || fail "no denied record for the analyst's threatintel.enrich attempt"
-ok "a 'denied' record exists for threatintel.enrich"
+ok "a 'denied' record exists for the analyst's threatintel.enrich call"
 echo "  the analyst identity the trail recorded:"
-jq -r '[.[]|select(.tool=="threatintel.enrich")][0] | "    analyst=\(.analyst_identity) tool=\(.tool) outcome=\(.outcome) reason=\(.reason)"' \
+jq -r "$CALLS"' | [.[]|select(.tool=="threatintel.enrich" and .outcome=="denied")][0] | "    analyst=\(.analyst_identity) tool=\(.tool) outcome=\(.outcome) reason=\(.reason)"' \
 	"$WORK/audit.json"
 
 # ---------------------------------------------------------------------------

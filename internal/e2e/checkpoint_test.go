@@ -516,6 +516,7 @@ func TestCheckpoint_CredentialInjectionAndNoLeak(t *testing.T) {
 	if err != nil {
 		t.Fatalf("audit list: %v", err)
 	}
+	rows = callRows(rows)
 	if len(rows) != len(upstreams) {
 		t.Fatalf("audit rows = %d, want %d (one per call)", len(rows), len(upstreams))
 	}
@@ -633,6 +634,7 @@ func TestCheckpoint_RoleLimitsWhatIsReachable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("audit list: %v", err)
 	}
+	rows = callRows(rows)
 	var denials []audit.Record
 	for _, r := range rows {
 		if r.Outcome == audit.OutcomeDenied {
@@ -704,6 +706,7 @@ func TestCheckpoint_OversizedResultNeverReachesTheClient(t *testing.T) {
 	if err != nil {
 		t.Fatalf("audit list: %v", err)
 	}
+	rows = callRows(rows)
 	if len(rows) != 2 {
 		t.Fatalf("audit rows = %d, want 2 (allowed, then failed): %+v", len(rows), rows)
 	}
@@ -1011,4 +1014,17 @@ func TestCheckpoint_QuotaStopsOneAnalystWithoutStoppingTheTeam(t *testing.T) {
 	}
 
 	s.assertNoSecretLeaked()
+}
+
+// callRows drops the rows the gateway writes about itself -- a tool's first
+// sighting, a rug pull, a refused signature (design/adr/0032) -- leaving the
+// rows about calls, which is what these checkpoints count.
+func callRows(rows []audit.Record) []audit.Record {
+	var out []audit.Record
+	for _, r := range rows {
+		if r.AnalystIdentity != "(gateway)" {
+			out = append(out, r)
+		}
+	}
+	return out
 }

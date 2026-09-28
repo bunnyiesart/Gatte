@@ -32,7 +32,7 @@ func TestOperatorHints_CarryTheConfigActuallyLoaded(t *testing.T) {
 		e.configPath = cfgPath
 		mustObserve(t, e, "casemgmt", irisListCases)
 		requireExit(t, runToolList(e.opEnv, "", false), exitOK, "tool list")
-		requireContains(t, e.stdoutText(), "mcp-gateway tool approve "+quoted+" SERVER TOOL", "tool list")
+		requireContains(t, e.stdoutText(), "mcp-gateway tool approve "+quoted+" -fingerprint SHA256 SERVER TOOL", "tool list")
 	})
 
 	t.Run("no path known: the bare form, unchanged", func(t *testing.T) {

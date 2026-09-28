@@ -20,9 +20,10 @@
 # 3. Approve after reviewing each definition:
 #
 #      mcp-gateway tool list    -config "$CFG" -server intel
-#      mcp-gateway tool approve -config "$CFG" intel lookup_ip
-#      mcp-gateway tool approve -config "$CFG" intel lookup_domain
-#      mcp-gateway tool approve -config "$CFG" intel lookup_hash
+#      mcp-gateway tool show    -config "$CFG" SERVER TOOL   # the definition and its SHA256
+#      mcp-gateway tool approve -config "$CFG" -fingerprint SHA256 intel lookup_ip
+#      mcp-gateway tool approve -config "$CFG" -fingerprint SHA256 intel lookup_domain
+#      mcp-gateway tool approve -config "$CFG" -fingerprint SHA256 intel lookup_hash
 #
 # This is the one example that uses the per-backend wildcard. "*" grants
 # every tool this upstream advertises, now and later, but it does NOT bypass

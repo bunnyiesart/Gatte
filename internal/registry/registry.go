@@ -245,7 +245,7 @@ var digestPinned = regexp.MustCompile(`^[^@\s]+@sha256:[0-9a-f]{64}$`)
 
 func validateImage(image string) error {
 	if strings.TrimSpace(image) == "" {
-		return fmt.Errorf("%w: image must not be empty for oci transport; pin it by digest, as in \"mcp-iris@sha256:<64 hex chars>\"", ErrInvalid)
+		return fmt.Errorf("%w: image must not be empty for oci transport; pin it by digest, as in \"mcp-casemgmt@sha256:<64 hex chars>\"", ErrInvalid)
 	}
 	if !digestPinned.MatchString(image) {
 		return fmt.Errorf("%w: image %q is not pinned by digest; a tag can be repointed at other bytes without changing this entry, so the signature would attest a name instead of the code that runs. Use \"NAME@sha256:<64 hex chars>\" -- podman inspect --format '{{index .RepoDigests 0}}' NAME:TAG prints the digest", ErrInvalid, image)

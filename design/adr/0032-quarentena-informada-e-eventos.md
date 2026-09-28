@@ -25,11 +25,26 @@ caracteres de tag.
 1. **Toda definição observada é guardada**, em `tool_definitions(hash PK,
    name, description, input_schema, output_schema, first_seen_at)`, na mesma
    transação de `Observe`. A chave é `quarantine.Hash` da própria linha;
-   `INSERT OR IGNORE`, e triggers recusam `UPDATE` e `DELETE`. `Forget` não
-   apaga. `Store.Definition` refaz o hash na leitura e recusa com
-   `ErrDefinitionMismatch` uma linha editada por fora — os triggers não
-   impedem quem tem o arquivo, a checagem pega. Cresce por definição
-   distinta, não por observação.
+   `INSERT OR IGNORE`, e um trigger recusa `UPDATE`. `Store.Definition`
+   refaz o hash na leitura e recusa com `ErrDefinitionMismatch` uma linha
+   editada por fora — os triggers não impedem quem tem o arquivo, a
+   checagem pega.
+
+   **Guardada enquanto referenciada.** Uma linha fica enquanto algum
+   `quarantined_tools` a nomeia como `approved_hash` ou `observed_hash`; a
+   transação que move a última referência (observação, aprovação, revoke,
+   `Forget`) a apaga, e um trigger recusa `DELETE` de linha referenciada.
+   Um backend que troca a descrição a cada intervalo — hostil ou só um
+   carimbo de build — faria 288 linhas por dia por ferramenta no intervalo
+   padrão, no mesmo disco da trilha; assim são no máximo duas por (servidor,
+   ferramenta): a baseline e a última observação. As intermediárias somem;
+   os hashes de cada transição ficam na trilha. E uma definição acima de
+   64 KiB (nome, descrição e esquemas somados) é recusada na descoberta,
+   como um nome fora do charset, então uma ferramenta ocupa no máximo
+   128 KiB. Resta crescer por nome: um backend que inventa nomes novos a
+   cada intervalo deixa, por nome, uma linha pendente, uma definição e uma
+   linha `tool first seen`. Isso não tem teto automático; `upstream
+   deregister` recupera tudo daquele upstream.
 
 2. **`tool show SERVER TOOL`** imprime o estado, a definição observada e,
    quando difere, a aprovada e um diff de linhas (LCS) entre as duas. Uma
@@ -97,7 +112,12 @@ caracteres de tag.
 - Mudança incompatível do console: scripts que chamavam `tool approve
   SERVER TOOL` passam a sair com 1 sem aprovar. O caminho é ler
   `observed_hash` de `tool list -json` (ou do próprio erro) e passar
-  `-fingerprint` — `deploy/vm/gateway-serve-verify.sh` faz isso.
+  `-fingerprint` — `deploy/vm/gateway-serve-verify.sh` faz isso. Scripts de
+  implantação fora deste repositório que aprovam ferramentas precisam do
+  mesmo ajuste antes de receber este binário, e os que buscam na trilha a
+  recusa de uma chamada precisam excluir o caller `(gateway)`.
+- `tool approve -fingerprint H` numa ferramenta já aprovada em outro
+  fingerprint sai com 1: o contrato é aprovar só o que foi revisto.
 - Uma ferramenta com ponto no nome, antes servida como `up.a.b`, deixa de
   ser servida (`TestConnect_ADottedToolNameIsRefused`).
 - O contador `denied` do heartbeat e de `Status` inclui estas linhas;
@@ -110,7 +130,9 @@ caracteres de tag.
   texto pelo operador.
 
 Testes: `TestObserve_KeepsTheDefinitionItFingerprinted`,
-`TestDefinitions_AreAppendOnly`, `TestObserve_ReportsOnlyTheTransition`,
+`TestDefinitions_ReferencedRowsAreImmutable`,
+`TestDefinitions_ARotatingBackendStaysWithinTheCap`,
+`TestConnect_RefusesAnOversizedDefinition`, `TestObserve_ReportsOnlyTheTransition`,
 `TestEscape_ShowsEveryInvisibleCodePoint`,
 `TestRunToolShow_DiffsApprovedAgainstObserved`,
 `TestRunToolApprove_WithoutFingerprintRefusesAndSaysWhatToRun`,

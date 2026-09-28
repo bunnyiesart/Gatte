@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/bunnyiesart/Gatte/internal/quarantine"
@@ -197,6 +198,21 @@ func TestRunToolApprove_AlreadyApprovedAtThisDefinitionIsANoop(t *testing.T) {
 
 	requireExit(t, runToolApproveReviewed(e.opEnv, "casemgmt", "list_cases"), exitOK, "re-approve")
 	requireContains(t, e.stdoutText(), "already approved", "re-approve")
+}
+
+// TestRunToolApprove_AlreadyApprovedAtAnotherFingerprintIsAProblem: the
+// contract is "approve only at the fingerprint reviewed". A script that
+// reviewed H2 and runs approve -fingerprint H2 while H1 is what is approved
+// and served must not be told exit 0 -- it would record H2 as approved.
+func TestRunToolApprove_AlreadyApprovedAtAnotherFingerprintIsAProblem(t *testing.T) {
+	e := newOpTestEnv(t)
+	obs := mustObserve(t, e, "casemgmt", irisListCases)
+	mustApprove(t, e, "casemgmt", "list_cases")
+
+	wrong := strings.Repeat("0", len(obs.ObservedHash))
+	requireExit(t, runToolApproveFingerprint(e.opEnv, "casemgmt", "list_cases", wrong), exitProblem, "re-approve at another fingerprint")
+	requireContains(t, e.stderrText(), obs.ObservedHash, "re-approve at another fingerprint")
+	requireContains(t, e.stderrText(), wrong, "re-approve at another fingerprint")
 }
 
 func TestRunToolApprove_UnobservedToolIsAProblem(t *testing.T) {

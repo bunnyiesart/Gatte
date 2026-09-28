@@ -285,8 +285,9 @@ trail, and the JSONL copy gives the SIEM a record the gateway cannot
 rewrite once it has been shipped.
 
 **The quarantine is a human check, and it shows what it checks**
-(`design/adr/0032`). Every observed definition is kept, append-only, under
-its fingerprint; `tool show` prints it with invisible code points escaped
+(`design/adr/0032`). The approved and the latest observed definition of
+each tool are kept under their fingerprints, never rewritten, and a
+definition over 64 KiB is refused at discovery; `tool show` prints it with invisible code points escaped
 as `\u{XXXX}`, and a diff against the approved one; `tool approve` needs the
 `-fingerprint` of what was shown. A tool's first sighting, a change to an
 approved tool and a refused registry signature each write one `denied` row
@@ -396,7 +397,7 @@ and credential rotation need a restart.
 | `internal/access/` | OIDC token verification, roles and per-backend grants. |
 | `internal/registry/` | Registered upstreams (the stdio transport). |
 | `internal/signer/` | Ed25519 signing and verification of registry entries. |
-| `internal/quarantine/` | Tool quarantine: pending, approved, changed, and every observed definition. |
+| `internal/quarantine/` | Tool quarantine: pending, approved, changed, and the definitions they refer to. |
 | `internal/visible/` | Escapes invisible and control code points in untrusted text as `\u{XXXX}`. |
 | `internal/vault/` | Credential vault; `sopsage/` is the sops+age adapter. |
 | `internal/gateway/` | Routing, dispatch, the stdio dialer and the HTTP MCP endpoint. |

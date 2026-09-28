@@ -89,3 +89,51 @@ func TestServeStack_HeartbeatCarriesTheQuarantineBacklog(t *testing.T) {
 		t.Fatalf("heartbeat pending/changed = %v/%v, want 1/1", hb["pending"], hb["changed"])
 	}
 }
+
+// TestServeStack_HeartbeatSaysMinusOneWhenTheBacklogIsUnreadable: 0 is the
+// all-clear a SIEM stops looking at, so a quarantine that cannot be read
+// must not produce it. The beat still goes out -- its absence is the other
+// alert -- carrying -1 for both counts.
+func TestServeStack_HeartbeatSaysMinusOneWhenTheBacklogIsUnreadable(t *testing.T) {
+	sinkPath := t.TempDir() + "/audit.jsonl"
+	fx := newServeFixture(t, func(body *strings.Builder) {
+		fmt.Fprintf(body, "[audit.siem]\npath = %q\nchain = %q\n", sinkPath, "gatte-test-backlog-unreadable")
+	})
+	logger := slog.New(slog.NewTextHandler(&syncBuf{}, nil))
+
+	stack, err := buildServer(context.Background(), fx.cfg, logger)
+	if err != nil {
+		t.Fatalf("buildServer: %v", err)
+	}
+	defer stack.close()
+
+	// Take the quarantine's table away underneath the running stack, the
+	// way a corrupted or half-migrated file would.
+	db, err := store.Open(fx.dbPath)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`DROP TABLE quarantined_tools`); err != nil {
+		t.Fatalf("drop quarantined_tools: %v", err)
+	}
+
+	stack.heartbeat(context.Background(), logger)
+
+	var hb map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(readFileString(t, sinkPath)), "\n") {
+		var m map[string]any
+		if err := json.Unmarshal([]byte(line), &m); err != nil {
+			t.Fatalf("sink line is not JSON (%v): %s", err, line)
+		}
+		if m["type"] == "heartbeat" {
+			hb = m
+		}
+	}
+	if hb == nil {
+		t.Fatalf("no heartbeat line in %s", sinkPath)
+	}
+	if hb["pending"] != float64(-1) || hb["changed"] != float64(-1) {
+		t.Fatalf("heartbeat pending/changed = %v/%v with an unreadable quarantine, want -1/-1", hb["pending"], hb["changed"])
+	}
+}

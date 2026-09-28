@@ -249,6 +249,14 @@ func runToolApproveFingerprint(e *opEnv, server, tool, reviewed string) int {
 	name := visible.Escape(server + "." + tool)
 
 	if before.Status == quarantine.StatusApproved && before.Usable() {
+		// Nothing to write, but the fingerprint named is still checked:
+		// exit 0 would tell a script that the definition it reviewed is
+		// the approved one when a different one is.
+		if reviewed != "" && reviewed != before.ObservedHash {
+			fmt.Fprintf(e.stderr, "NOT approved: %s is already approved and served at sha256:%s, not the\nsha256:%s you named. Nothing changed. Run `%s` to see the definition\nthat is approved.\n",
+				name, before.ObservedHash, visible.Escape(reviewed), e.cmd("tool show"))
+			return exitProblem
+		}
 		fmt.Fprintf(e.stdout, "%s was already approved at exactly this definition (sha256:%s).\nNothing to do; it is usable.\n", name, before.ObservedHash)
 		return exitOK
 	}

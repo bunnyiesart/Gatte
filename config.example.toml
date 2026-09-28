@@ -471,10 +471,12 @@ max_bytes = 1048576
 #                 recusado: seria resolvido pelo /etc/passwd da propria
 #                 imagem. Padrao "65534:65534" (nobody). Uma imagem cujos
 #                 arquivos so o proprio USER le precisa do uid dela aqui.
-#   pids_limit -- `--pids-limit`. Padrao 256.
+#   pids_limit -- `--pids-limit`, de 1 a 4194304. Padrao 256.
 #   memory     -- `--memory`, inteiro com uma unidade b/k/m/g, minimo 6m.
 #                 Padrao "512m".
-#   cpus       -- `--cpus`, em nucleos. Padrao 1.0.
+#   cpus       -- `--cpus`, em nucleos, minimo 0.01 (piso do podman) e
+#                 no maximo os nucleos do host, que so o podman confere, no
+#                 run. Padrao 1.0.
 #
 # Os limites precisam de cgroup v2 com os controladores `memory`, `pids` e
 # `cpu` delegados ao usuario do gateway. Sem a delegacao o `run` falha e o

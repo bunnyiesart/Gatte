@@ -38,9 +38,13 @@ com a assinatura ainda válida.
    precisa do uid dela em `[oci] user`, e sem isso falha no primeiro
    `open()`, alto.
 3. **Limites de recurso.** `--pids-limit`, `--memory` e `--cpus` sempre, com
-   padrões 256, `512m` e `1.0`, ajustáveis em `[oci]`. Zero, negativo ou
-   ilegível é recusado na carga da configuração e de novo no dial
-   (`oci.ValidateLimits`). Nenhum valor desliga uma flag. Os limites valem
+   padrões 256, `512m` e `1.0`, ajustáveis em `[oci]`. Zero, negativo,
+   ilegível, `cpus` abaixo de 0,01 (piso do podman; abaixo de 0,00001 a
+   cota CFS arredonda para 0) e `pids_limit` acima de 4194304 (o
+   `PID_MAX_LIMIT` do kernel) são recusados na carga da configuração e de
+   novo no dial (`oci.ValidateLimits`). Nenhum valor desliga uma flag.
+   `cpus` acima dos núcleos do host não é conferido aqui: o podman o recusa
+   no `run`. Os limites valem
    onde o cgroup v2 delega `memory`, `pids` e `cpu` ao usuário do gateway.
    Sem delegação, o `run` falha. Em cgroup v1 rootless, o podman os ignora
    com um aviso no stderr, que o gateway descarta. Conferir no host é do
@@ -54,9 +58,12 @@ com a assinatura ainda válida.
 5. **Nome que é código, recusado nos dois transportes.** A lista saiu do
    adaptador `oci` para o pacote de porta (`gateway.IsCodeLoadingEnvName`).
    Ela ganhou os ajustes de interpretador (`NODE_OPTIONS`, `PYTHONPATH`,
-   `PYTHONSTARTUP`, `PERL5OPT`, `RUBYOPT`, `BASH_ENV`, `JAVA_TOOL_OPTIONS`…)
-   e é aplicada pelo adaptador `stdio` no dial e por `dialTimeRefusal` no
-   `upstream register` e no `sign`.
+   `PYTHONSTARTUP`, `PYTHONWARNINGS`, `PERL5OPT`, `PERL5DB`, `RUBYOPT`,
+   `BASH_ENV`, o prefixo `BASH_FUNC_`, `JAVA_TOOL_OPTIONS`…) e `PATH` e
+   `HOME`, que não são código mas escolhem de onde ele vem (o interpretador
+   de um shebang `#!/usr/bin/env`, o site-packages do usuário). É aplicada
+   pelo adaptador `stdio` no dial e por `dialTimeRefusal` no `upstream
+   register` e no `sign`.
 6. **`stdio` com credencial é recusado por padrão.** Uma entrada `stdio` que
    declara `-env` é recusada no `upstream register`, no `sign` e no dial,
    com uma mensagem que aponta `-transport oci`. A saída explícita é
@@ -69,9 +76,20 @@ com a assinatura ainda válida.
 
 - O invólucro de `0028` §A item 1 ganha seis flags; ver a correção lá.
 - Uma implantação cujas imagens rodam com um uid próprio põe esse uid em
-  `[oci] user`.
+  `[oci] user`. As quatro imagens da implantação declaram `USER 10001` e
+  não foram rodadas sob `65534:65534`; até isso ser medido, a configuração
+  delas leva `[oci] user = "10001:10001"`.
+- **Não medido:** nenhum `podman run` com este invólucro rodou no host
+  `oci` real. Lá, rootless com cgroup v2, o crun recusa um limite cujo
+  controlador não está delegado ao usuário (muitas vezes `cpu`), e o gateway
+  descarta o stderr, então a falha aparece só como todo upstream `oci` sem
+  dial. Antes do corte, rodar como o usuário do gateway
+  `cat /sys/fs/cgroup/user.slice/user-$(id -u).slice/user@$(id -u).service/cgroup.controllers`
+  (tem de listar `cpu memory pids`; senão, drop-in `Delegate=cpu memory
+  pids` em `user@.service`) e um `podman run` com as flags deste ADR para
+  cada imagem.
 - Uma configuração que registra `stdio` com `-env` e não tem a chave deixa
-  esses upstreams de pé no boot (os outros servem), e o log diz por quê.
+  esses upstreams fora no boot (os outros servem), e o log diz por quê.
 - Não resolve: perfil seccomp além do padrão do podman, egresso além de
   `--network`, e o runtime continua rodando como o usuário do gateway.
 

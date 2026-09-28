@@ -21,6 +21,13 @@ func TestDialRefusesAVariableWhoseValueIsCode(t *testing.T) {
 		"LD_PRELOAD", "LD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES", "GCONV_PATH",
 		"NODE_OPTIONS", "PYTHONPATH", "PYTHONSTARTUP", "PYTHONHOME",
 		"PERL5OPT", "PERL5LIB", "RUBYOPT", "BASH_ENV", "JAVA_TOOL_OPTIONS",
+		// Not code themselves, but they choose where the code comes from:
+		// PATH picks the interpreter a "#!/usr/bin/env python" shebang and
+		// every child exec run, HOME is where Python's user site-packages
+		// (.pth files run at start-up) and npm/node look. BASH_FUNC_x%% is
+		// a function bash imports at start-up; PYTHONWARNINGS can import a
+		// module by its category field; PERL5DB is code under -d.
+		"PATH", "HOME", "BASH_FUNC_python%%", "BASH_FUNC_ls%%", "PYTHONWARNINGS", "PERL5DB",
 	} {
 		t.Run(name, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), testTimeout)

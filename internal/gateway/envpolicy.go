@@ -24,6 +24,15 @@ import (
 // adapter's alone until 28 Sep 2026, which left the stdio child -- the same
 // exposure without a container around it -- unchecked.
 //
+// PATH and HOME are not code, but they choose where the code comes from:
+// PATH is how a "#!/usr/bin/env python" shebang and every child exec find
+// their interpreter, and HOME is where Python's user site-packages (whose
+// .pth files run at start-up), npm and most dotfile loaders look. The oci
+// adapter refused both already, as runtime state; the stdio child was
+// the one left open (28 Sep 2026). BASH_FUNC_<name>%% is a function bash
+// imports at start-up, PYTHONWARNINGS imports the module named in its
+// category field, and PERL5DB is code under -d.
+//
 // Matching is exact for names and by prefix for the loader families. The
 // interpreter names are exact on purpose: PYTHON_API_TOKEN is a credential
 // name, PYTHONPATH is not.
@@ -31,13 +40,14 @@ var (
 	codeLoadingEnvNames = []string{
 		"GCONV_PATH",
 		"NODE_OPTIONS", "NODE_PATH",
-		"PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "PYTHONUSERBASE", "PYTHONBREAKPOINT",
-		"PERL5LIB", "PERL5OPT", "PERLLIB",
+		"PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "PYTHONUSERBASE", "PYTHONBREAKPOINT", "PYTHONWARNINGS",
+		"PERL5LIB", "PERL5OPT", "PERLLIB", "PERL5DB",
 		"RUBYOPT", "RUBYLIB",
 		"BASH_ENV", "ENV",
 		"JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS", "JDK_JAVA_OPTIONS", "CLASSPATH",
+		"PATH", "HOME",
 	}
-	codeLoadingEnvPrefixes = []string{"LD_", "DYLD_"}
+	codeLoadingEnvPrefixes = []string{"LD_", "DYLD_", "BASH_FUNC_"}
 )
 
 // IsCodeLoadingEnvName reports whether name is a variable whose value the

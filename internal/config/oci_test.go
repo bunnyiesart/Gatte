@@ -52,6 +52,9 @@ func TestOCISectionRefusesWhatWouldBeNoLimitOrRoot(t *testing.T) {
 		{`memory = "5m"`, "oci.memory"},
 		{`cpus = 0.0`, "oci.cpus"},
 		{`cpus = -1.0`, "oci.cpus"},
+		{`cpus = 0.009`, "oci.cpus"},
+		{`cpus = 1e-9`, "oci.cpus"},
+		{`pids_limit = 4194305`, "oci.pids_limit"},
 	} {
 		err := loadErr(t, minimalConfig+"\n[oci]\n"+tc.line+"\n")
 		if !strings.Contains(err.Error(), tc.key) {

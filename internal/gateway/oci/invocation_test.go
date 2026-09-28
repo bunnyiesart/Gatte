@@ -248,6 +248,7 @@ func TestBuildPlanRefusesEnvNamesThatSteerTheContainerRuntime(t *testing.T) {
 		"LD_PRELOAD", "LD_LIBRARY_PATH", "GCONV_PATH", "DYLD_INSERT_LIBRARIES",
 		// design/adr/0034 item 3: the interpreter knobs, whose value is code.
 		"NODE_OPTIONS", "PYTHONPATH", "PYTHONSTARTUP", "PERL5OPT", "BASH_ENV", "JAVA_TOOL_OPTIONS",
+		"BASH_FUNC_python%%", "PYTHONWARNINGS", "PERL5DB",
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := buildPlan(ociSpec(), map[string]string{name: secret}, testOptions())

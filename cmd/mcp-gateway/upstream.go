@@ -64,6 +64,10 @@ characters -- because the signature covers the image, and a tag can be
 repointed at other bytes. Print the digest with:
     podman inspect --format '{{index .RepoDigests 0}}' NAME:TAG
 For oci, -arg carries podman flags the entry signs (e.g. -arg --network=none).
+--network takes none (the default), slirp4netns, pasta or a podman network
+name; host, private, container:*, ns:* and ":options" are refused. Which
+hosts a networked backend reaches is the host firewall's job; "upstream list
+-json" states each entry's network for it (design/adr/0033).
 
 Exit codes: 0 ok, 1 ran and found a problem, 2 could not run.
 `)
@@ -88,16 +92,22 @@ func upstreamList(args []string, stdout, stderr io.Writer) int {
 // var names, like the table does, and nothing else that could ever be a
 // secret -- there is no such field to carry.
 type upstreamJSON struct {
-	Name        string    `json:"name"`
-	Transport   string    `json:"transport"`
-	Command     string    `json:"command,omitempty"`
-	Args        []string  `json:"args,omitempty"`
-	URL         string    `json:"url,omitempty"`
-	Image       string    `json:"image,omitempty"`
-	EnvVarNames []string  `json:"env_var_names"`
-	Signature   string    `json:"signature"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	Name      string   `json:"name"`
+	Transport string   `json:"transport"`
+	Command   string   `json:"command,omitempty"`
+	Args      []string `json:"args,omitempty"`
+	URL       string   `json:"url,omitempty"`
+	Image     string   `json:"image,omitempty"`
+	// Network is the namespace the backend runs in (design/adr/0033):
+	// "host" for stdio, the resolved --network for oci ("none" when the
+	// entry declares none), or "" with NetworkError set when the oci
+	// adapter would refuse the entry's Args.
+	Network      string    `json:"network"`
+	NetworkError string    `json:"network_error,omitempty"`
+	EnvVarNames  []string  `json:"env_var_names"`
+	Signature    string    `json:"signature"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
 }
 
 func runUpstreamList(e *opEnv, asJSON bool) int {
@@ -123,7 +133,7 @@ func runUpstreamList(e *opEnv, asJSON bool) int {
 	if asJSON {
 		out := make([]upstreamJSON, 0, len(entries))
 		for i, entry := range entries {
-			out = append(out, upstreamJSON{
+			row := upstreamJSON{
 				Name:        entry.Name,
 				Transport:   string(entry.Transport),
 				Command:     entry.Command,
@@ -134,7 +144,13 @@ func runUpstreamList(e *opEnv, asJSON bool) int {
 				Signature:   string(states[i]),
 				CreatedAt:   entry.CreatedAt,
 				UpdatedAt:   entry.UpdatedAt,
-			})
+			}
+			if network, err := entryNetwork(entry); err != nil {
+				row.NetworkError = err.Error()
+			} else {
+				row.Network = network
+			}
+			out = append(out, row)
 		}
 		if err := opJSON(e.stdout, out); err != nil {
 			fmt.Fprintf(e.stderr, "writing json: %v\n", err)

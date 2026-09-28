@@ -294,6 +294,8 @@ func TestValidateWrapperArgsIsTheSameRuleTheDialApplies(t *testing.T) {
 		{"-v", "/run/user/1000/podman/podman.sock:/run/podman.sock"},
 		{"--privileged"},
 		{"--network=none", "--network=host"},
+		{"--network=host"},
+		{"--net=container:other"},
 	}
 	for _, args := range bad {
 		if err := ValidateWrapperArgs(args); err == nil {
@@ -305,7 +307,7 @@ func TestValidateWrapperArgsIsTheSameRuleTheDialApplies(t *testing.T) {
 			t.Errorf("buildPlan accepted %v", args)
 		}
 	}
-	for _, args := range [][]string{nil, {"--network=host"}, mandatoryWrapper} {
+	for _, args := range [][]string{nil, {"--network=slirp4netns"}, mandatoryWrapper} {
 		if err := ValidateWrapperArgs(args); err != nil {
 			t.Errorf("ValidateWrapperArgs refused %v: %v", args, err)
 		}
@@ -337,18 +339,17 @@ func TestBuildPlanDefaultsToNoNetwork(t *testing.T) {
 	}
 }
 
-// TestBuildPlanCarriesTheDeclaredNetworkPolicy: which non-none values are
-// legitimate is not this adapter's decision (design/adr/0028 §A decision 3,
-// item 3 leaves egress policy to an ADR that does not exist yet), so a
-// declared value passes through untouched rather than being checked
-// against a list this package invented.
+// TestBuildPlanCarriesTheDeclaredNetworkPolicy: a value inside the
+// allowlist of design/adr/0033 reaches argv exactly as declared and is
+// reported as the plan's policy.
 func TestBuildPlanCarriesTheDeclaredNetworkPolicy(t *testing.T) {
 	cases := map[string]string{
-		"--network=host":          "host",
-		"--net=host":              "host",
-		"--network=pasta":         "pasta",
-		"--network=soc-upstreams": "soc-upstreams",
 		"--network=none":          "none",
+		"--network=slirp4netns":   "slirp4netns",
+		"--network=pasta":         "pasta",
+		"--net=pasta":             "pasta",
+		"--network=upstreams-net": "upstreams-net",
+		"--network=lab_net.0":     "lab_net.0",
 	}
 
 	for arg, want := range cases {
@@ -365,6 +366,97 @@ func TestBuildPlanCarriesTheDeclaredNetworkPolicy(t *testing.T) {
 		if !slices.Contains(p.Args, "--network="+want) {
 			t.Errorf("buildPlan(args=[%s]) argv lacks --network=%s: %v", arg, want, p.Args)
 		}
+	}
+}
+
+// TestBuildPlanRefusesANetworkOutsideTheAllowlist: design/adr/0033. host
+// shares the gateway's own network namespace, loopback included; container:,
+// ns: and private join namespaces this adapter did not create; an option
+// after ':' (slirp4netns:allow_host_loopback=true, pasta:--map-gw) reopens
+// the host from inside the namespace; a '/' is a path, not a network name.
+func TestBuildPlanRefusesANetworkOutsideTheAllowlist(t *testing.T) {
+	for _, arg := range []string{
+		"--network=host",
+		"--net=host",
+		"--network=container:mcp-gw-other",
+		"--network=ns:/proc/1/ns/net",
+		"--network=private",
+		"--network=slirp4netns:allow_host_loopback=true",
+		"--network=pasta:--map-gw",
+		"--network=a/b",
+		"--network=Upstreams",
+		"--network=_net",
+		"--network=.",
+		"--network=" + strings.Repeat("a", 64),
+	} {
+		spec := ociSpec()
+		spec.Args = []string{arg}
+
+		_, err := buildPlan(spec, nil, testOptions())
+		if err == nil {
+			t.Errorf("buildPlan accepted %q", arg)
+			continue
+		}
+		if !errors.Is(err, ErrNetworkNotAllowed) {
+			t.Errorf("buildPlan(args=[%q]) error = %v, want ErrNetworkNotAllowed", arg, err)
+		}
+		if err := ValidateWrapperArgs(spec.Args); !errors.Is(err, ErrNetworkNotAllowed) {
+			t.Errorf("ValidateWrapperArgs(%q) = %v, want ErrNetworkNotAllowed", arg, err)
+		}
+	}
+	// 63 characters is the longest name the grammar admits.
+	spec := ociSpec()
+	spec.Args = []string{"--network=" + strings.Repeat("a", 63)}
+	if _, err := buildPlan(spec, nil, testOptions()); err != nil {
+		t.Errorf("buildPlan refused a 63-character network name: %v", err)
+	}
+}
+
+// TestNetworkRefusalQuotesOnlyTheRejectedHead: the wrapper never echoes
+// what comes after a flag's '='. A refused network is quoted only up to its
+// first ':', '/' or '=', which is the part the rule judges; the options or
+// path behind it are not the error's to republish (register, sign, the dial
+// log and network_error in `upstream list -json` all carry this text).
+func TestNetworkRefusalQuotesOnlyTheRejectedHead(t *testing.T) {
+	for arg, secret := range map[string]string{
+		"--network=slirp4netns:allow_host_loopback=true": "allow_host_loopback",
+		"--network=ns:/proc/1/ns/net":                    "/proc/1/ns/net",
+		"--network=container:mcp-gw-other":               "mcp-gw-other",
+		"--network=a/sekrit":                             "sekrit",
+		"--network=--opt=sekrit":                         "sekrit",
+	} {
+		_, err := ResolveNetwork([]string{arg})
+		if err == nil {
+			t.Errorf("ResolveNetwork accepted %q", arg)
+			continue
+		}
+		if strings.Contains(err.Error(), secret) {
+			t.Errorf("ResolveNetwork(%q) error republishes %q: %v", arg, secret, err)
+		}
+	}
+}
+
+// TestResolveNetworkIsThePolicyTheDialRuns: `upstream list -json` reports
+// an entry's network from this function, so it must be the value buildPlan
+// puts on argv, default included.
+func TestResolveNetworkIsThePolicyTheDialRuns(t *testing.T) {
+	for _, args := range [][]string{nil, {"--network=pasta"}, {"--rm", "--net=upstreams-net"}} {
+		spec := ociSpec()
+		spec.Args = args
+		p, err := buildPlan(spec, nil, testOptions())
+		if err != nil {
+			t.Fatalf("buildPlan(args=%v): %v", args, err)
+		}
+		got, err := ResolveNetwork(args)
+		if err != nil {
+			t.Fatalf("ResolveNetwork(%v): %v", args, err)
+		}
+		if got != p.Network {
+			t.Errorf("ResolveNetwork(%v) = %q, dial runs %q", args, got, p.Network)
+		}
+	}
+	if _, err := ResolveNetwork([]string{"--network=host"}); !errors.Is(err, ErrNetworkNotAllowed) {
+		t.Errorf("ResolveNetwork(host) = %v, want ErrNetworkNotAllowed", err)
 	}
 }
 

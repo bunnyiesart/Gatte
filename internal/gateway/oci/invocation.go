@@ -273,9 +273,19 @@ func ValidateWrapperArgs(args []string) error {
 	return err
 }
 
+// ResolveNetwork returns the network policy a dial of an entry with these
+// Args runs under, with the default applied, or the error the dial would
+// return. It is what `upstream list -json` reports, so the host firewall's
+// allowlist is derived from the same rule that builds argv
+// (design/adr/0033).
+func ResolveNetwork(args []string) (string, error) {
+	return wrapperNetwork(args)
+}
+
 // wrapperNetwork reads the one policy decision an oci entry is allowed to
 // make -- which network its container joins -- out of the entry's Args,
-// and defaults it to none.
+// defaults it to none, and refuses a value outside the allowlist of
+// design/adr/0033 (see allowedNetwork).
 //
 // # Why the policy lives in Args
 //
@@ -305,7 +315,8 @@ func ValidateWrapperArgs(args []string) error {
 // The error names the flag but never anything after its "=", for the same
 // reason the stdio adapter quotes a malformed variable name only up to the
 // offending byte: an operator who has put something in Args that does not
-// belong there may well have put a value in it.
+// belong there may well have put a value in it. A refused network value is
+// quoted the same way, only up to its first ':', '/' or '=' (networkHead).
 func wrapperNetwork(args []string) (string, error) {
 	network := ""
 	declared := false
@@ -346,15 +357,57 @@ func wrapperNetwork(args []string) (string, error) {
 			ErrInvalidNetwork, network[:i])
 	}
 	if strings.HasPrefix(network, "-") {
-		return "", fmt.Errorf("%w: network policy %q would be read as a flag, not a network", ErrInvalidNetwork, network)
+		return "", fmt.Errorf("%w: network policy %q would be read as a flag, not a network", ErrInvalidNetwork, networkHead(network))
 	}
-	// Which non-none values are legitimate is deliberately not decided
-	// here. design/adr/0028 §A decision 3, item 3 leaves egress policy to an
-	// ADR that does not exist yet, and until it does the four production
-	// backends run with a network because they call APIs. An adapter that
-	// picked the allowed values would be writing that policy in the wrong
-	// file, and writing it where nobody would think to look for it.
+	if err := allowedNetwork(network); err != nil {
+		return "", err
+	}
 	return network, nil
+}
+
+// networkName is the grammar of a podman network this adapter lets an
+// entry join by name: lowercase, an initial alphanumeric, at most 63
+// characters. It has no ':' and no '/', so it cannot carry a mode option
+// (slirp4netns:allow_host_loopback=true) or a namespace path (ns:/proc/...).
+var networkName = regexp.MustCompile(`^[a-z0-9][a-z0-9_.-]{0,62}$`)
+
+// refusedNetworkModes are podman network modes that match networkName but
+// do not mean "a network podman created for this container":
+//
+//   - host puts the backend in the gateway's own network namespace. It
+//     reaches every listener on the host's loopback -- the reverse proxy,
+//     an IdP, whatever else runs there -- which none, slirp4netns and pasta
+//     do not, and it would make the backend's traffic the gateway's.
+//   - private is podman's name for a mode, not a network; accepted by name
+//     it would mean whatever podman decides it means.
+//
+// container:NAME and ns:PATH are refused by networkName itself (the ':').
+var refusedNetworkModes = []string{"host", "private"}
+
+// allowedNetwork is the egress allowlist of design/adr/0033: none (the
+// default), slirp4netns, pasta, or a named podman network. It decides which
+// namespace the backend joins, and nothing else. Which destinations a
+// networked backend can reach is the host firewall's job, and that ADR
+// says how the deploy side derives it from `upstream list -json`.
+func allowedNetwork(network string) error {
+	if slices.Contains(refusedNetworkModes, network) || !networkName.MatchString(network) {
+		return fmt.Errorf("%w: %q; an oci entry may use none (the default), slirp4netns, pasta, or a podman network "+
+			"name matching %s -- never host, private, container:*, ns:*, or a value with options after ':' "+
+			"(design/adr/0033)", ErrNetworkNotAllowed, networkHead(network), networkName)
+	}
+	return nil
+}
+
+// networkHead is the part of a network value before its first ':', '/' or
+// '=': the mode or name the allowlist judges. What follows is options, a
+// namespace path or a value, and a refusal does not republish it -- the
+// error reaches stderr at register and sign, the dial log, and
+// network_error in `upstream list -json`.
+func networkHead(network string) string {
+	if i := strings.IndexAny(network, ":/="); i >= 0 {
+		return network[:i]
+	}
+	return network
 }
 
 // networkValue extracts the value of a --network / --net flag in its

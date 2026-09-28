@@ -83,7 +83,15 @@ mapa, ou quando o mapa lista uma entrada que não tem rede.
   assinada de distância; alargar a rede continua sendo diff assinado.
 - Sem a regra do host, um backend com rede alcança tudo o que a rede dele
   alcança. O README diz isso em "Security model".
-- Se o `pasta` do host remapeia o gateway do container para o loopback do
-  host depende da versão do podman; a implantação verifica com uma sonda
-  (de dentro de um container `pasta`, conectar a uma porta em loopback do
-  host tem de falhar) em vez de confiar no padrão.
+- A allowlist governa só o que a entrada escreve. O host ainda pode abrir
+  o próprio loopback a um modo aceito: `network_cmd_options` (slirp4netns)
+  e `pasta_options` no `containers.conf`, o padrão do `pasta` da versão
+  instalada, e a rootless-netns por trás de uma rede nomeada
+  (`host.containers.internal`). Isso é configuração do host, revisada com
+  ela, e a implantação verifica com uma sonda em vez de confiar no padrão:
+  para cada modo em uso — `slirp4netns`, `pasta` e cada rede nomeada que
+  aparece em `network` no `list -json` — conectar de dentro do container a
+  uma porta em loopback do host tem de falhar.
+- Uma recusa cita o valor só até o primeiro `:`, `/` ou `=`
+  (`TestNetworkRefusalQuotesOnlyTheRejectedHead`): opções e caminhos não
+  vão para o stderr, o log nem o `network_error`.

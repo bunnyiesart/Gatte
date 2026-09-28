@@ -290,10 +290,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// exactly one right answer and several plausible wrong ones.
 	source := sourceAddress(r)
 
-	id, ok := h.authenticate(w, r, source)
+	id, admitted, ok := h.authenticate(w, r, source)
 	if !ok {
 		return
 	}
+	// From here on the request runs on the context AdmitCaller returned,
+	// which carries its blocklist answer: the tool list and the dispatch
+	// below reuse it rather than read again (design/adr/0031 §2).
+	r = r.WithContext(admitted)
 	c := gateway.Caller{Identity: id, SourceAddress: source}
 
 	// The caller's tool list is resolved here, before delegating, for two
@@ -328,8 +332,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 //
 // source is passed in rather than derived here so that the address on the
 // 401's audit record is the same string the request would have carried
-// had it succeeded.
-func (h *Handler) authenticate(w http.ResponseWriter, r *http.Request, source string) (access.Identity, bool) {
+// had it succeeded. The context returned is the request's, carrying the
+// Gateway's admission of this subject.
+func (h *Handler) authenticate(w http.ResponseWriter, r *http.Request, source string) (access.Identity, context.Context, bool) {
 	// Warn -- loudly, and without ever touching the value -- when a client
 	// puts a credential in the URL. It is ignored either way (nothing below
 	// reads the query string), but a SOC wants to know that a token has
@@ -344,13 +349,13 @@ func (h *Handler) authenticate(w http.ResponseWriter, r *http.Request, source st
 	token, ok := bearerToken(r.Header)
 	if !ok {
 		h.rejectUnauthenticated(w, r, source, "no usable Authorization: Bearer credential", nil)
-		return access.Identity{}, false
+		return access.Identity{}, nil, false
 	}
 
 	id, err := h.verifier.Verify(r.Context(), token)
 	if err != nil {
 		h.rejectUnauthenticated(w, r, source, "token verification failed", err)
-		return access.Identity{}, false
+		return access.Identity{}, nil, false
 	}
 	if strings.TrimSpace(id.Subject) == "" {
 		// access.TokenVerifier's contract already requires a subject, and
@@ -358,7 +363,7 @@ func (h *Handler) authenticate(w http.ResponseWriter, r *http.Request, source st
 		// Identity with no Subject would produce audit records attributed to
 		// nobody, which is the one thing this gateway exists to prevent.
 		h.rejectUnauthenticated(w, r, source, "verifier returned an identity with no subject", nil)
-		return access.Identity{}, false
+		return access.Identity{}, nil, false
 	}
 
 	// The operator's kill switch (design/adr/0031), right after the token
@@ -368,7 +373,8 @@ func (h *Handler) authenticate(w http.ResponseWriter, r *http.Request, source st
 	// refusal; the caller gets the constant 403 of any forbidden answer --
 	// or the generic 500 when the blocklist cannot be read -- and never the
 	// word "blocked".
-	if err := h.gateway.AdmitCaller(r.Context(), gateway.Caller{Identity: id, SourceAddress: source}); err != nil {
+	admitted, err := h.gateway.AdmitCaller(r.Context(), gateway.Caller{Identity: id, SourceAddress: source})
+	if err != nil {
 		class := classify(err)
 		h.log.LogAttrs(r.Context(), slog.LevelWarn, "httpapi: caller refused after authentication",
 			slog.String("subject", id.Subject),
@@ -377,10 +383,10 @@ func (h *Handler) authenticate(w http.ResponseWriter, r *http.Request, source st
 			slog.String("detail", err.Error()),
 		)
 		writeGeneric(w, class)
-		return access.Identity{}, false
+		return access.Identity{}, nil, false
 	}
 
-	return id, true
+	return id, admitted, true
 }
 
 // bearerToken extracts the credential from `Authorization: Bearer <token>`.

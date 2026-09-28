@@ -438,3 +438,20 @@ ORDER BY id ASC
 	slices.SortStableFunc(records, func(a, b audit.Record) int { return a.Timestamp.Compare(b.Timestamp) })
 	return records, nil
 }
+
+// HasAnalyst reports whether any record on the trail carries identity as
+// its ANALYST. The Operator Console asks it after `access block`, so a
+// subject with a typo in it -- which would block nobody, since matching is
+// exact -- is flagged to the operator (design/adr/0031 §4). A console
+// question, not a request-path one: it scans the table.
+func (r *Recorder) HasAnalyst(ctx context.Context, identity string) (bool, error) {
+	var one int
+	err := r.db.QueryRowContext(ctx, `SELECT 1 FROM audit_records WHERE analyst_identity = ? LIMIT 1`, identity).Scan(&one)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("audit/sqlite: has analyst: %w", err)
+	}
+	return true, nil
+}

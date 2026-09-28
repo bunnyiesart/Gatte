@@ -238,6 +238,13 @@ func TestAccessBlock_ReachesTheSIEMCopySoTheShippedChainHasNoGap(t *testing.T) {
 // as the other process is running. Every append reads the head inside its
 // own BEGIN IMMEDIATE, so the file's write lock -- not either process's
 // memory -- orders them: the chain must verify, and nothing may be lost.
+//
+// The serve side is paced and bounded, like a real analyst load: four
+// writers each appending back to back with no pause starved the console
+// past busy_timeout on a loaded machine (SQLite's busy handler is not
+// fair), which made this proof flaky rather than wrong. What it proves is
+// the ordering; how long a starved writer waits is
+// TestAccessBlock_OutlastsAWriterThatHoldsTheLockPastBusyTimeout's.
 func TestAccessBlock_ConcurrentWithServeKeepsTheChainIntact(t *testing.T) {
 	sink := filepath.Join(t.TempDir(), "audit.jsonl")
 	cfgPath := accessConfig(t, "\n[audit.siem]\npath = \""+sink+"\"\nchain = \"gatte-test-01\"\n")
@@ -256,7 +263,11 @@ func TestAccessBlock_ConcurrentWithServeKeepsTheChainIntact(t *testing.T) {
 	}
 	defer closeRec()
 
-	const rounds = 15
+	const (
+		rounds         = 15
+		servePerWriter = 2000
+		servePace      = 2 * time.Millisecond
+	)
 	helper := exec.Command(os.Args[0], "-test.run=^$")
 	helper.Env = append(os.Environ(),
 		cliHelperEnv+"=1", cliHelperConfig+"="+cfgPath, cliHelperRounds+"="+strconv.Itoa(rounds),
@@ -279,7 +290,10 @@ func TestAccessBlock_ConcurrentWithServeKeepsTheChainIntact(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for i := 0; !stop.Load(); i++ {
+			for i := 0; !stop.Load() && i < servePerWriter; i++ {
+				if i > 0 {
+					time.Sleep(servePace)
+				}
 				err := rec.Record(context.Background(), audit.Record{
 					AnalystIdentity: "sub-analyst-1",
 					Tool:            "casemgmt.list_cases",
@@ -325,8 +339,25 @@ func TestAccessBlock_ConcurrentWithServeKeepsTheChainIntact(t *testing.T) {
 	if console != 2*rounds {
 		t.Fatalf("console rows = %d, want %d", console, 2*rounds)
 	}
-	if written.Load() == 0 {
-		t.Fatal("the serve side wrote nothing while the console ran, so nothing was concurrent")
+	// Concurrency, not two writers taking turns: some serve row landed
+	// between the console's first and last rows.
+	first, last, between := -1, -1, 0
+	for i, r := range rows {
+		if r.AnalystIdentity == "(operator:operator1)" {
+			if first < 0 {
+				first = i
+			}
+			last = i
+		}
+	}
+	for _, r := range rows[max(first, 0) : last+1] {
+		if r.AnalystIdentity == "sub-analyst-1" {
+			between++
+		}
+	}
+	t.Logf("serve rows %d, console rows %d, serve rows interleaved with the console's %d", written.Load(), console, between)
+	if between == 0 {
+		t.Fatal("no serve row landed between the console's rows, so nothing was concurrent")
 	}
 	// And the SIEM copy holds every record, in a file both processes
 	// appended to: one line per record, each parseable.
@@ -429,5 +460,102 @@ func TestBuildServer_AccessBlockReachesARunningGateway(t *testing.T) {
 	}
 	if !check.Intact() {
 		t.Fatalf("chain broken after serve and the console both wrote: %+v", check.FirstBreak)
+	}
+}
+
+// TestAccessBlock_OutlastsAWriterThatHoldsTheLockPastBusyTimeout: the kill
+// switch is an incident command, run while serve is busy writing. SQLite's
+// busy handler is not fair, so a second writer can wait out the whole
+// busy_timeout and get SQLITE_BUSY; `access block` retries rather than fail
+// the operator (ADR-0031 §5). Here another connection holds the write lock
+// for longer than busy_timeout, then lets go.
+func TestAccessBlock_OutlastsAWriterThatHoldsTheLockPastBusyTimeout(t *testing.T) {
+	cfgPath := accessConfig(t, "")
+	cfg, ok := loadConfig(cfgPath, io.Discard)
+	if !ok {
+		t.Fatal("loading config")
+	}
+	db, err := openStore(cfg)
+	if err != nil {
+		t.Fatalf("openStore: %v", err)
+	}
+	defer db.Close()
+	holder, err := openStore(cfg)
+	if err != nil {
+		t.Fatalf("openStore (holder): %v", err)
+	}
+	defer holder.Close()
+	conn, err := holder.Conn(context.Background())
+	if err != nil {
+		t.Fatalf("Conn: %v", err)
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(context.Background(), "BEGIN IMMEDIATE"); err != nil {
+		t.Fatalf("taking the write lock: %v", err)
+	}
+	released := make(chan struct{})
+	go func() {
+		defer close(released)
+		time.Sleep(5500 * time.Millisecond) // busy_timeout is 5000 ms
+		_, _ = conn.ExecContext(context.Background(), "ROLLBACK")
+	}()
+
+	var out, errBuf bytes.Buffer
+	e := &opEnv{cfg: cfg, db: db, stdout: &out, stderr: &errBuf}
+	code := runAccessBlock(e, "operator1", "sub-analyst-1", "laptop reported stolen")
+	<-released
+	if code != exitOK {
+		t.Fatalf("access block beside a writer holding the lock = %d, want %d\n%s%s", code, exitOK, out.String(), errBuf.String())
+	}
+	rows, check := trailOf(t, cfgPath)
+	if len(rows) != 1 || rows[0].Tool != accessBlockTool || !check.Intact() {
+		t.Fatalf("trail after a contended block: %+v intact=%v", rows, check.Intact())
+	}
+}
+
+// TestAccessBlock_WarnsWhenTheSubjectIsNotOnRecord: matching is exact, so
+// "sub-analyst-l" (letter l) for "sub-analyst-1" blocks nobody. The block
+// is still placed -- the command must fail closed -- but the operator is
+// told that no request from that subject is on the trail.
+func TestAccessBlock_WarnsWhenTheSubjectIsNotOnRecord(t *testing.T) {
+	cfgPath := accessConfig(t, "")
+	t.Setenv("SUDO_USER", "operator1")
+	cfg, ok := loadConfig(cfgPath, io.Discard)
+	if !ok {
+		t.Fatal("loading config")
+	}
+	db, err := openStore(cfg)
+	if err != nil {
+		t.Fatalf("openStore: %v", err)
+	}
+	if err := auditsqlite.New(db).Record(context.Background(), audit.Record{
+		AnalystIdentity: "sub-analyst-1", Tool: "casemgmt.list_cases", TargetUpstream: "casemgmt",
+		Timestamp: time.Now(), Outcome: audit.OutcomeAllowed, SourceAddress: "198.51.100.7",
+	}); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	db.Close()
+
+	code, out, errText := runCLI("access", "block", "-config", cfgPath, "sub-analyst-l")
+	requireExit(t, code, exitOK, "access block of a subject never seen: "+out+errText)
+	requireContains(t, errText, "no request from this subject is on record", "access block of a subject never seen")
+	code, out, _ = runCLI("access", "list", "-config", cfgPath)
+	requireExit(t, code, exitOK, "access list")
+	requireContains(t, out, "sub-analyst-l", "the block stays in force")
+
+	code, out, errText = runCLI("access", "block", "-config", cfgPath, "sub-analyst-1")
+	requireExit(t, code, exitOK, "access block of a known subject: "+out+errText)
+	if strings.Contains(errText+out, "no request from this subject") {
+		t.Errorf("warned about a subject the trail knows:\n%s%s", out, errText)
+	}
+}
+
+// TestAccessUsage_NamesEveryFlag: the usage text lists each flag the
+// access subcommands accept.
+func TestAccessUsage_NamesEveryFlag(t *testing.T) {
+	var buf bytes.Buffer
+	accessUsageText(&buf)
+	for _, want := range []string{"list    [-config FILE] [-json]", "[-reason TEXT] SUBJECT"} {
+		requireContains(t, buf.String(), want, "access usage")
 	}
 }

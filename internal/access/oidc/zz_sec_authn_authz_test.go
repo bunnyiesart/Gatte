@@ -24,3 +24,23 @@ func TestSecOIDCWhitespaceSubjectIsRejected(t *testing.T) {
 		h.assertRejected(err, tok)
 	}
 }
+
+// TestVerifyRefusesASubjectTheKillSwitchCouldNotBlock: `access block`
+// refuses a subject that access.ValidateSubject refuses, so a token whose
+// `sub` is one of those would be an identity the operator can never block
+// (design/adr/0031 §4). The verifier refuses the same set, so nothing gets
+// in that the kill switch cannot stop.
+func TestVerifyRefusesASubjectTheKillSwitchCouldNotBlock(t *testing.T) {
+	h := newHarness(t)
+	v := h.verifier()
+	for _, sub := range []string{" ana", "ana ", "ana\x07", "ana\u200b"} {
+		c := h.claims()
+		c["sub"] = sub
+		tok := h.mint(c)
+		id, err := v.Verify(context.Background(), tok)
+		if err == nil {
+			t.Fatalf("oidc.Verify accepted sub %q (got Subject=%q), which access block cannot name", sub, id.Subject)
+		}
+		h.assertRejected(err, tok)
+	}
+}

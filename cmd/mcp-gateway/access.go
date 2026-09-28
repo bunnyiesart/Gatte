@@ -15,6 +15,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -25,6 +26,8 @@ import (
 
 	"github.com/bunnyiesart/Gatte/internal/access"
 	"github.com/bunnyiesart/Gatte/internal/audit"
+	auditsqlite "github.com/bunnyiesart/Gatte/internal/audit/sqlite"
+	"github.com/bunnyiesart/Gatte/internal/store"
 )
 
 // The Tool and TargetUpstream of an operator action's audit row. In
@@ -64,10 +67,12 @@ func accessUsageText(w io.Writer) {
 	fmt.Fprint(w, `Usage:
   mcp-gateway access block   [-config FILE] [-reason TEXT] SUBJECT
   mcp-gateway access unblock [-config FILE] [-reason TEXT] SUBJECT
-  mcp-gateway access list    [-config FILE]
+  mcp-gateway access list    [-config FILE] [-json]
 
 SUBJECT is the analyst's IdP subject (the token's "sub"), exactly as the
 ANALYST column of "mcp-gateway audit" shows it. Flags go before it.
+Matching is exact: "block" warns when no request from SUBJECT is on the
+trail, which usually means a typo, and places the block anyway.
 
 "block" refuses that subject on its very next request to the running
 gateway, with no restart, whatever token they present: the caller gets a
@@ -76,9 +81,11 @@ restarts. A block does NOT revoke anything at the IdP: the token stays valid
 there until it expires, so revoke the session at the IdP too.
 
 Each block and unblock is recorded in the audit trail as an operator action,
-attributed to SUDO_USER, or USER when not run through sudo. That name is
-attribution, not authentication: whoever can run this command can write the
-database.
+attributed to SUDO_USER, else USER, else the account running the command.
+That is the login account, not necessarily the person: logged in as root
+(or as the service account) every row reads (operator:root), so put who did
+it in -reason. It is attribution, not authentication: whoever can run this
+command can write the database.
 
 Exit codes: 0 ok (including "already blocked" and an empty list), 1 ran and
 found a problem (unblocking a subject that is not blocked, or a block that
@@ -123,11 +130,14 @@ func accessChange(sub string, args []string, stdout, stderr io.Writer) int {
 
 // operatorName is who ran this command: SUDO_USER first, because the
 // console runs as the service account through sudo and USER is then that
-// account rather than the person, then USER, then the account database.
+// account rather than the person, then USER, then the account database
+// (user.Current) -- which is where a root-by-key login, or a script that
+// cleared the environment, ends up: the name is then the account, not the
+// person, and ADR-0031 §4 says -reason carries who.
 //
-// Refused rather than defaulted when there is no answer, or one with a
-// space or control character in it: an operator action attributed to
-// nobody, or to a name that breaks the ANALYST column, is not a record.
+// Refused when even the account database has no answer, or when the name
+// has a space or control character in it: an operator action attributed
+// to nobody, or to a name that breaks the ANALYST column, is not a record.
 func operatorName() (string, error) {
 	name := os.Getenv("SUDO_USER")
 	if name == "" {
@@ -177,7 +187,11 @@ func operatorRecord(tool, operator, subject, note string, at time.Time) audit.Re
 // trail does not have it.
 func runAccessBlock(e *opEnv, operator, subject, note string) int {
 	now := time.Now().UTC()
-	placed, err := e.blocks().Block(e.ctx(), access.Block{Subject: subject, Reason: note, By: operator, At: now})
+	var placed bool
+	err := retryBusy(e.ctx(), func() (err error) {
+		placed, err = e.blocks().Block(e.ctx(), access.Block{Subject: subject, Reason: note, By: operator, At: now})
+		return err
+	})
 	if err != nil {
 		fmt.Fprintf(e.stderr, "blocklist: %v\n", err)
 		return exitCannotRun
@@ -187,7 +201,9 @@ func runAccessBlock(e *opEnv, operator, subject, note string) int {
 			subject, e.cmd("access list"))
 		return exitOK
 	}
-	if err := e.recordOperatorAction(operatorRecord(accessBlockTool, operator, subject, note, now)); err != nil {
+	if err := retryBusy(e.ctx(), func() error {
+		return e.recordOperatorAction(operatorRecord(accessBlockTool, operator, subject, note, now))
+	}); err != nil {
 		fmt.Fprintf(e.stderr, "%s IS BLOCKED, but the audit trail could not record it: %v\n"+
 			"The block stays in force. Record it by hand before anything else.\n", subject, err)
 		return exitProblem
@@ -196,15 +212,61 @@ func runAccessBlock(e *opEnv, operator, subject, note string) int {
 		"token it carries; no restart is needed. This does not revoke anything at the\n"+
 		"IdP: revoke the session there too. Lift it with: %s %s\n",
 		subject, e.cmd("access unblock"), opShellQuote(subject))
+	warnIfNeverSeen(e, subject)
 	return exitOK
 }
+
+// warnIfNeverSeen tells the operator when the trail holds no row whose
+// ANALYST is subject. Matching is exact, so "sub-analyst-l" for
+// "sub-analyst-1" blocks nobody and the real analyst keeps being served.
+// Only a warning: the block stays and the exit code is still 0, because a
+// subject that has not called yet -- or whose rows were pruned -- is a
+// legitimate thing to block, and this command must fail closed.
+func warnIfNeverSeen(e *opEnv, subject string) {
+	seen, err := auditsqlite.New(e.db).HasAnalyst(e.ctx(), subject)
+	switch {
+	case err != nil:
+		fmt.Fprintf(e.stderr, "warning: could not check the trail for %s: %v\n", subject, err)
+	case !seen:
+		fmt.Fprintf(e.stderr, "warning: no request from this subject is on record; check the spelling against %s.\n"+
+			"The block is in force either way.\n", e.cmd("audit"))
+	}
+}
+
+// retryBusy runs fn again when it fails because another writer -- the
+// running serve, typically -- held the database's write lock for the whole
+// busy_timeout. SQLite's busy handler is not fair, so under sustained
+// writes that can happen, and an incident command must not give up on the
+// first try (ADR-0031 §5). A busy error means nothing was written, so the
+// retry cannot duplicate a row.
+func retryBusy(ctx context.Context, fn func() error) error {
+	backoff := 100 * time.Millisecond
+	var err error
+	for attempt := 0; attempt < busyAttempts; attempt++ {
+		if err = fn(); err == nil || !store.IsBusy(err) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return err
+		case <-time.After(backoff):
+		}
+		backoff *= 2
+	}
+	return err
+}
+
+// busyAttempts bounds retryBusy: with busy_timeout at five seconds, four
+// attempts wait at most about twenty-one seconds before the command says
+// so -- long enough to outlast a burst, short enough for an operator.
+const busyAttempts = 4
 
 // runAccessUnblock records FIRST and lifts second -- the reverse of block,
 // for the same reason: the subject stays blocked on every failure. An
 // unblock the trail cannot record is not performed.
 func runAccessUnblock(e *opEnv, operator, subject, note string) int {
-	store := e.blocks()
-	blocked, err := store.Blocked(e.ctx(), subject)
+	blocks := e.blocks()
+	blocked, err := blocks.Blocked(e.ctx(), subject)
 	if err != nil {
 		fmt.Fprintf(e.stderr, "blocklist: %v\n", err)
 		return exitCannotRun
@@ -213,11 +275,17 @@ func runAccessUnblock(e *opEnv, operator, subject, note string) int {
 		fmt.Fprintf(e.stdout, "%s is not blocked; nothing changed and nothing was recorded.\n", subject)
 		return exitProblem
 	}
-	if err := e.recordOperatorAction(operatorRecord(accessUnblockTool, operator, subject, note, time.Now().UTC())); err != nil {
+	now := time.Now().UTC()
+	if err := retryBusy(e.ctx(), func() error {
+		return e.recordOperatorAction(operatorRecord(accessUnblockTool, operator, subject, note, now))
+	}); err != nil {
 		fmt.Fprintf(e.stderr, "not unblocked: the audit trail could not record it: %v\n%s stays blocked.\n", err, subject)
 		return exitCannotRun
 	}
-	if _, err := store.Unblock(e.ctx(), subject); err != nil {
+	if err := retryBusy(e.ctx(), func() error {
+		_, err := blocks.Unblock(e.ctx(), subject)
+		return err
+	}); err != nil {
 		fmt.Fprintf(e.stderr, "blocklist: %v\nThe trail records an unblock that did not take effect: %s is STILL blocked.\n", err, subject)
 		return exitCannotRun
 	}

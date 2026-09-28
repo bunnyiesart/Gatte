@@ -311,7 +311,9 @@ only chooses the namespace (`none` by default; `host` and the
 namespace-joining modes are refused). Limiting destinations is the host
 firewall's job: an outbound rule on the service uid, with the allowlist
 derived from `upstream list -json` (`design/adr/0033`). Without that rule,
-nothing limits it.
+nothing limits it. The allowlist governs only what the entry writes: host
+podman configuration (`containers.conf` network options) can still open the
+host's loopback to an accepted mode, so the deploy probes every mode in use.
 
 **A backend that echoes its own credential does not hand it to the
 analyst.** Every result is scrubbed of the values the gateway injected into

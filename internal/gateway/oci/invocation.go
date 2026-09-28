@@ -315,7 +315,8 @@ func ResolveNetwork(args []string) (string, error) {
 // The error names the flag but never anything after its "=", for the same
 // reason the stdio adapter quotes a malformed variable name only up to the
 // offending byte: an operator who has put something in Args that does not
-// belong there may well have put a value in it.
+// belong there may well have put a value in it. A refused network value is
+// quoted the same way, only up to its first ':', '/' or '=' (networkHead).
 func wrapperNetwork(args []string) (string, error) {
 	network := ""
 	declared := false
@@ -356,7 +357,7 @@ func wrapperNetwork(args []string) (string, error) {
 			ErrInvalidNetwork, network[:i])
 	}
 	if strings.HasPrefix(network, "-") {
-		return "", fmt.Errorf("%w: network policy %q would be read as a flag, not a network", ErrInvalidNetwork, network)
+		return "", fmt.Errorf("%w: network policy %q would be read as a flag, not a network", ErrInvalidNetwork, networkHead(network))
 	}
 	if err := allowedNetwork(network); err != nil {
 		return "", err
@@ -392,9 +393,21 @@ func allowedNetwork(network string) error {
 	if slices.Contains(refusedNetworkModes, network) || !networkName.MatchString(network) {
 		return fmt.Errorf("%w: %q; an oci entry may use none (the default), slirp4netns, pasta, or a podman network "+
 			"name matching %s -- never host, private, container:*, ns:*, or a value with options after ':' "+
-			"(design/adr/0033)", ErrNetworkNotAllowed, network, networkName)
+			"(design/adr/0033)", ErrNetworkNotAllowed, networkHead(network), networkName)
 	}
 	return nil
+}
+
+// networkHead is the part of a network value before its first ':', '/' or
+// '=': the mode or name the allowlist judges. What follows is options, a
+// namespace path or a value, and a refusal does not republish it -- the
+// error reaches stderr at register and sign, the dial log, and
+// network_error in `upstream list -json`.
+func networkHead(network string) string {
+	if i := strings.IndexAny(network, ":/="); i >= 0 {
+		return network[:i]
+	}
+	return network
 }
 
 // networkValue extracts the value of a --network / --net flag in its

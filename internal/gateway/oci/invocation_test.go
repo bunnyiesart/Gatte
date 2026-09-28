@@ -412,6 +412,30 @@ func TestBuildPlanRefusesANetworkOutsideTheAllowlist(t *testing.T) {
 	}
 }
 
+// TestNetworkRefusalQuotesOnlyTheRejectedHead: the wrapper never echoes
+// what comes after a flag's '='. A refused network is quoted only up to its
+// first ':', '/' or '=', which is the part the rule judges; the options or
+// path behind it are not the error's to republish (register, sign, the dial
+// log and network_error in `upstream list -json` all carry this text).
+func TestNetworkRefusalQuotesOnlyTheRejectedHead(t *testing.T) {
+	for arg, secret := range map[string]string{
+		"--network=slirp4netns:allow_host_loopback=true": "allow_host_loopback",
+		"--network=ns:/proc/1/ns/net":                    "/proc/1/ns/net",
+		"--network=container:mcp-gw-other":               "mcp-gw-other",
+		"--network=a/sekrit":                             "sekrit",
+		"--network=--opt=sekrit":                         "sekrit",
+	} {
+		_, err := ResolveNetwork([]string{arg})
+		if err == nil {
+			t.Errorf("ResolveNetwork accepted %q", arg)
+			continue
+		}
+		if strings.Contains(err.Error(), secret) {
+			t.Errorf("ResolveNetwork(%q) error republishes %q: %v", arg, secret, err)
+		}
+	}
+}
+
 // TestResolveNetworkIsThePolicyTheDialRuns: `upstream list -json` reports
 // an entry's network from this function, so it must be the value buildPlan
 // puts on argv, default included.

@@ -1,7 +1,6 @@
 package gateway
 
 import (
-	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/rand"
@@ -1677,50 +1676,45 @@ func (g *Gateway) scrubResult(ctx context.Context, upstream string, res Result) 
 	return res, nil
 }
 
-// scrubJSON replaces each value of env found in raw with the redaction
+// scrubJSON masks every value of env found in raw with the redaction
 // placeholder, appending the variable's name to hit when it did.
 //
-// raw is JSON text, so a value can appear two ways: as itself, inside a
-// string literal, or JSON-escaped (encoding/json escapes <, > and & by
-// default, and any encoder escapes " and \). Both are replaced. The bare
-// form is replaced only when it contains nothing JSON must escape --
-// otherwise a match could straddle structure and the replacement would
-// corrupt the document rather than a string inside it.
+// raw is JSON text, so a value appears inside a string literal as a JSON
+// encoder wrote it -- itself when nothing needs escaping, escaped when it
+// holds <, >, &, " or \ -- and a backend that formatted it with %q or
+// embedded a JSON payload in its message puts that rendering in, escaped
+// once more. [jsonRenderingsOf] lists all of them, and [maskSpans] masks
+// the union of their matches in one pass, so a short value inside a longer
+// one cannot split it. The bare form of a value JSON must escape is never
+// matched -- it could straddle structure and corrupt the document rather
+// than a string inside it.
 func scrubJSON(raw json.RawMessage, env map[string]string, hit *[]string) (json.RawMessage, error) {
 	if len(raw) == 0 {
 		return raw, nil
 	}
-	out := []byte(raw)
-	changed := false
+	names := make([]string, 0, len(env))
 	for name, value := range env {
-		if value == "" {
-			continue
+		if value != "" {
+			names = append(names, name)
 		}
-		forms := make([]string, 0, 2)
-		if !strings.ContainsAny(value, "\"\\") && !strings.ContainsFunc(value, func(r rune) bool { return r < 0x20 }) {
-			forms = append(forms, value)
-		}
-		if enc, err := json.Marshal(value); err == nil {
-			if escaped := string(enc[1 : len(enc)-1]); !slices.Contains(forms, escaped) {
-				forms = append(forms, escaped)
-			}
-		}
-		found := false
-		for _, form := range forms {
-			if bytes.Contains(out, []byte(form)) {
-				out = bytes.ReplaceAll(out, []byte(form), []byte(redacted))
-				found = true
-			}
-		}
-		if found {
+	}
+	slices.Sort(names)
+	forms := make([][]string, len(names))
+	for i, name := range names {
+		forms[i] = jsonRenderingsOf(env[name])
+	}
+	out, matched := maskSpans(string(raw), forms)
+	changed := false
+	for i, m := range matched {
+		if m {
 			changed = true
-			*hit = append(*hit, name)
+			*hit = append(*hit, names[i])
 		}
 	}
 	if !changed {
 		return raw, nil
 	}
-	if !json.Valid(out) {
+	if !json.Valid([]byte(out)) {
 		// A value short or common enough to match JSON syntax itself. Fail
 		// closed: the one thing this must not do is forward the secret.
 		return nil, ErrResultUnscrubbable
@@ -2563,19 +2557,14 @@ func targetOf(namespacedTool string) string {
 // The Dialer and Provider contracts both already forbid a value in an
 // error. This is the belt to those braces, applied at the one boundary
 // where such a mistake would be turned into a returned error and a log
-// line by this package.
+// line by this package. The masking itself is [MaskCredentials]: the
+// union of every match span, raw and escaped, in one pass.
 func redact(err error, env map[string]string) error {
 	if err == nil {
 		return nil
 	}
-	msg := err.Error()
-	for _, value := range env {
-		if value == "" {
-			continue
-		}
-		msg = strings.ReplaceAll(msg, value, redacted)
-	}
-	if msg == err.Error() {
+	msg, masked := MaskCredentials(err.Error(), env)
+	if !masked {
 		return err
 	}
 	return redactedError{msg: msg, cause: err}

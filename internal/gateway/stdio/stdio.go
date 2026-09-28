@@ -281,14 +281,12 @@ func (d *Dialer) Dial(ctx context.Context, spec gateway.UpstreamSpec, env map[st
 // whole. When something does, the cause is NOT kept: only errors.Is is
 // preserved, through a method that answers yes/no and exposes no value,
 // so "was this a timeout" still works and the text cannot be dug out.
+//
+// The masking is [gateway.MaskCredentials], shared with the gateway's own
+// redact: overlapping values and %q/JSON renderings are covered too.
 func scrubDialError(err error, env map[string]string) error {
-	msg := err.Error()
-	for _, value := range env {
-		if value != "" {
-			msg = strings.ReplaceAll(msg, value, "[redacted]")
-		}
-	}
-	if msg == err.Error() {
+	msg, masked := gateway.MaskCredentials(err.Error(), env)
+	if !masked {
 		return err
 	}
 	return scrubbedError{msg: msg, is: err}

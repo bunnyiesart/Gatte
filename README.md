@@ -35,7 +35,11 @@ What it does, for any stdio MCP server you put behind it:
 - **Backends as containers, optionally.** `-transport oci` runs a backend
   as an ephemeral rootless `podman run --rm -i` from a digest-pinned image,
   read-only root, no network unless the signed entry grants it; the digest
-  is inside the signature (`design/adr/0028-transporte-oci.md`).
+  is inside the signature (`design/adr/0028-transporte-oci.md`). A grant is
+  `slirp4netns`, `pasta` or a named podman network; `host`, `private`,
+  `container:*`, `ns:*` and `:options` are refused. A granted network is
+  not a destination allowlist: which hosts the backend reaches is the host
+  firewall's job (`design/adr/0033-egresso-dos-backends.md`).
 - **Per-analyst quota, optionally.** `[[quota.provider]]` caps how many
   calls one analyst may spend against one third-party account per window,
   so a runaway agent loop cannot burn an API budget
@@ -298,6 +302,16 @@ backend has its own mount namespace with a read-only root and none of the
 gateway's files, so reading the vault takes a container escape rather than
 an `open()`; it is still the same host uid under rootless podman
 (`design/adr/0028-transporte-oci.md` §D).
+
+**It does not contain a backend's egress.** A stdio backend has the host's
+network, and an oci backend with a network grant reaches anything that
+network reaches -- a public API, the rest of RFC 1918, `169.254.169.254` --
+so a compromised backend can send its own credential anywhere. The gateway
+only chooses the namespace (`none` by default; `host` and the
+namespace-joining modes are refused). Limiting destinations is the host
+firewall's job: an outbound rule on the service uid, with the allowlist
+derived from `upstream list -json` (`design/adr/0033`). Without that rule,
+nothing limits it.
 
 **A backend that echoes its own credential does not hand it to the
 analyst.** Every result is scrubbed of the values the gateway injected into

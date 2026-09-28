@@ -93,6 +93,7 @@ var gatePaths = []string{
 	"design/adr/0026-fechamento-do-criterio-de-v1.md",
 	"design/adr/0027-limite-de-taxa-na-auditoria-de-falha-de-autenticacao.md",
 	"design/adr/0030-quota-por-analista.md",
+	"design/adr/0033-egresso-dos-backends.md",
 
 	// Deployment paths this repository's own documents send an operator to.
 	"config.example.toml",

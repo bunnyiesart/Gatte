@@ -17,9 +17,10 @@ What it does, for any stdio MCP server you put behind it:
   not inherited; secrets are never written back, logged or returned to a
   client, and the analyst's own token is never forwarded to a tool.
 - **Per-tool quarantine.** Every tool a server advertises starts out
-  invisible and uncallable until an operator approves its definition. If
-  the server later changes a tool's name, description or input schema, that
-  tool stops being served until someone looks again.
+  invisible and uncallable until an operator approves its definition, which
+  the console shows with hidden code points escaped. If the server later
+  changes a tool's name, description or schemas, that tool stops being
+  served until someone approves the new one against a diff of the old.
 - **Signed definitions.** A registered server (command, arguments,
   credential names) must carry an Ed25519 signature from a key listed in
   the configuration file, outside the database, before it is served.
@@ -161,7 +162,8 @@ sudo -u mcpgw mcp-gateway serve -config "$CFG"
 #    The console shares the SQLite file with the running server; an approval,
 #    like a revoke, takes effect on the next call, without a restart.
 sudo -u mcpgw mcp-gateway tool list    -config "$CFG" -server edr
-sudo -u mcpgw mcp-gateway tool approve -config "$CFG" edr get_host
+sudo -u mcpgw mcp-gateway tool show    -config "$CFG" edr get_host   # the definition and its SHA256
+sudo -u mcpgw mcp-gateway tool approve -config "$CFG" -fingerprint SHA256 edr get_host
 ```
 
 On this first run, with only `edr` registered, `serve` logs two `WARN`
@@ -291,6 +293,18 @@ the IdP's to set; revoking an analyst at the IdP does not shorten a token
 already issued. `mcp-gateway access block` is immediate, from the next
 request (`design/adr/0031`), so an incident needs both.
 
+**The quarantine is a human check, and it shows what it checks**
+(`design/adr/0032`). The approved and the latest observed definition of
+each tool are kept under their fingerprints, never rewritten, and a
+definition over 64 KiB is refused at discovery; `tool show` prints it with invisible code points escaped
+as `\u{XXXX}`, and a diff against the approved one; `tool approve` needs the
+`-fingerprint` of what was shown. A tool's first sighting, a change to an
+approved tool and a refused registry signature each write one `denied` row
+attributed to `(gateway)`, and the heartbeat carries the pending and
+changed counts. Tool names outside `[A-Za-z0-9_-]{1,64}` are not served.
+Not covered: who approved is not in the trail, and nothing judges the text
+for the operator.
+
 **Against someone with write access to the SQLite database**, registry
 entries are signed with Ed25519 and verified against public keys that live
 in the configuration file. That holds only while the private signing key is
@@ -392,7 +406,8 @@ and credential rotation need a restart.
 | `internal/access/` | OIDC token verification, roles and per-backend grants. |
 | `internal/registry/` | Registered upstreams (the stdio transport). |
 | `internal/signer/` | Ed25519 signing and verification of registry entries. |
-| `internal/quarantine/` | Tool quarantine: pending, approved, changed. |
+| `internal/quarantine/` | Tool quarantine: pending, approved, changed, and the definitions they refer to. |
+| `internal/visible/` | Escapes invisible and control code points in untrusted text as `\u{XXXX}`. |
 | `internal/vault/` | Credential vault; `sopsage/` is the sops+age adapter. |
 | `internal/gateway/` | Routing, dispatch, the stdio dialer and the HTTP MCP endpoint. |
 | `internal/audit/` | Hash-chained SQLite trail and the JSONL SIEM sink. |

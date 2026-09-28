@@ -41,7 +41,7 @@ func secMustObserve(t *testing.T, s *Store, server string, id quarantine.ToolIde
 	if err != nil {
 		t.Fatalf("Observe(%s,%s): %v", server, id.Name, err)
 	}
-	return got
+	return got.Tool
 }
 
 func secMustGet(t *testing.T, s *Store, server, tool string) quarantine.Tool {

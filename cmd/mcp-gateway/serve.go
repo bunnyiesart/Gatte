@@ -845,6 +845,19 @@ func (s *serveStack) heartbeat(ctx context.Context, logger *slog.Logger) {
 	}
 	s.lastBeat, s.beatSuspended = time.Now(), st.Suspended
 
+	// The quarantine's backlog rides the beat (design/adr/0032): a changed
+	// count above zero is a rug pull nobody has answered. Unreadable is -1,
+	// never 0, because 0 is the all-clear.
+	backlog := gateway.Backlog{Pending: -1, Changed: -1}
+	blCtx, blCancel := context.WithTimeout(ctx, refreshTimeout)
+	if b, err := s.gateway.Backlog(blCtx); err != nil {
+		logger.Error("mcp-gateway: heartbeat could not read the quarantine backlog; pending and changed are reported as -1",
+			slog.String("detail", err.Error()))
+	} else {
+		backlog = b
+	}
+	blCancel()
+
 	attrs := []any{
 		slog.Uint64("allowed", st.Allowed),
 		slog.Uint64("denied", st.Denied),
@@ -852,6 +865,8 @@ func (s *serveStack) heartbeat(ctx context.Context, logger *slog.Logger) {
 		slog.Int("upstreams", st.Upstreams),
 		slog.Int("tools", st.Tools),
 		slog.Bool("suspended", st.Suspended),
+		slog.Int("pending", backlog.Pending),
+		slog.Int("changed", backlog.Changed),
 		slog.Duration("uptime", time.Since(s.boot).Truncate(time.Second)),
 	}
 
@@ -872,6 +887,8 @@ func (s *serveStack) heartbeat(ctx context.Context, logger *slog.Logger) {
 		Upstreams: st.Upstreams,
 		Tools:     st.Tools,
 		Suspended: st.Suspended,
+		Pending:   backlog.Pending,
+		Changed:   backlog.Changed,
 	})
 	attrs = append(attrs,
 		slog.String("chain", hb.Chain),

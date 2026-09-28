@@ -1305,9 +1305,23 @@ func TestBuildServer_DeliversAVaultSecretToARealBackend(t *testing.T) {
 	// Discovered at boot, and pending: the quarantine has never seen this
 	// tool. Approving it is the operator's call, through the console, with
 	// the gateway already built.
+	//
+	// Since design/adr/0032 that is two steps: without -fingerprint the
+	// console shows the definition, approves nothing, and prints the
+	// command that approves exactly what it showed. The operator runs that.
 	out.Reset()
 	errOut.Reset()
-	if code := cmdTool([]string{"approve", "-config", configPath, "casemgmt", "casemgmt_credcheck"}, &out, &errOut); code != exitOK {
+	if code := cmdTool([]string{"approve", "-config", configPath, "casemgmt", "casemgmt_credcheck"}, &out, &errOut); code != exitProblem {
+		t.Fatalf("tool approve without -fingerprint exited %d, want %d\nstdout: %s\nstderr: %s", code, exitProblem, out.String(), errOut.String())
+	}
+	_, after, ok := strings.Cut(errOut.String(), " -fingerprint ")
+	if !ok {
+		t.Fatalf("tool approve without -fingerprint did not print the command to run:\n%s", errOut.String())
+	}
+	fingerprint, _, _ := strings.Cut(after, " ")
+	out.Reset()
+	errOut.Reset()
+	if code := cmdTool([]string{"approve", "-config", configPath, "-fingerprint", fingerprint, "casemgmt", "casemgmt_credcheck"}, &out, &errOut); code != exitOK {
 		t.Fatalf("tool approve exited %d\nstdout: %s\nstderr: %s", code, out.String(), errOut.String())
 	}
 

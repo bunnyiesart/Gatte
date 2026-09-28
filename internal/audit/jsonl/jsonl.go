@@ -110,7 +110,12 @@ import (
 // 2 (design/adr/0021, 15 Sep 2026): every line declares its `type`, and a
 // second shape -- [Heartbeat] -- joined the file. A consumer written
 // against 1 may assume every line has a `hash`, which is no longer true.
-const Version = 2
+//
+// 3 (design/adr/0032, 28 Sep 2026): the heartbeat carries `pending` and
+// `changed`, the quarantine's backlog. Record lines are unchanged in shape;
+// the quarantine and signature events they now also carry are ordinary
+// records (caller `(gateway)`, verdict `denied`).
+const Version = 3
 
 // Line and Heartbeat type discriminators, as they appear in the `type`
 // field. They are a declared interface: a SIEM query filters on them, so
@@ -287,6 +292,13 @@ type Heartbeat struct {
 	// shipping heartbeats, and serving nobody; this is the field that says
 	// so.
 	Suspended bool `json:"suspended"`
+	// Pending and Changed are how many tools the Tool Quarantine holds in
+	// each of those states right now, across every upstream it has seen
+	// (design/adr/0032). Changed above zero is a rug pull nobody has
+	// answered yet. -1 means the quarantine could not be read for this
+	// beat -- never 0, because 0 is the all-clear.
+	Pending int `json:"pending"`
+	Changed int `json:"changed"`
 }
 
 // Sink is where a Line goes.
@@ -493,6 +505,10 @@ type Stats struct {
 	// Suspended reports a fleet serving nothing because the registry
 	// cannot be read (design/adr/0020).
 	Suspended bool
+	// Pending and Changed are the quarantine's backlog, or -1 each when it
+	// could not be read. See Heartbeat.
+	Pending int
+	Changed int
 }
 
 var (
@@ -604,6 +620,8 @@ func (r *Recorder) Heartbeat(ctx context.Context, st Stats) (Heartbeat, error) {
 		Upstreams: st.Upstreams,
 		Tools:     st.Tools,
 		Suspended: st.Suspended,
+		Pending:   st.Pending,
+		Changed:   st.Changed,
 	}
 	if err := r.sink.EmitHeartbeat(ctx, hb); err != nil {
 		return hb, fmt.Errorf("audit/jsonl: emit heartbeat: %w", err)

@@ -40,6 +40,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"runtime/debug"
 	"slices"
 	"strings"
 
@@ -267,6 +268,10 @@ func New(cfg Config) (*Handler, error) {
 	h.mcpHandler = mcp.NewStreamableHTTPHandler(h.getServer, &mcp.StreamableHTTPOptions{
 		Stateless: true,
 		Logger:    logger,
+		// Explicit rather than the SDK's default (design/adr/0035): a limit
+		// this gateway states is one a reviewer can see, and one an SDK
+		// upgrade cannot move. The SDK answers 413 over it.
+		MaxRequestBodyBytes: MaxRequestBodyBytes,
 	})
 
 	return h, nil
@@ -279,6 +284,21 @@ func New(cfg Config) (*Handler, error) {
 // anything delegated to the MCP handler. Nothing below the authentication
 // step runs for a caller this handler could not identify.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Contains a panic in this request (design/adr/0035). net/http would
+	// recover it too, but by dropping the connection with nothing on the
+	// trail; here the caller gets the constant 500 and the trail a row.
+	// The tool handler runs in an SDK goroutine this does not cover --
+	// Dispatch and dispatchTool contain their own.
+	var who *gateway.Caller
+	defer func() {
+		if v := recover(); v != nil {
+			if v == http.ErrAbortHandler {
+				panic(v)
+			}
+			h.containRequestPanic(w, r, who, v)
+		}
+	}()
+
 	if slices.Contains(h.metadataPaths, r.URL.Path) {
 		h.serveMetadata(w, r)
 		return
@@ -295,6 +315,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	c := gateway.Caller{Identity: id, SourceAddress: source}
+	who = &c
 
 	// The caller's tool list is resolved here, before delegating, for two
 	// reasons. It makes getServer total -- it cannot fail, so it never has
@@ -319,6 +340,33 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	ctx := context.WithValue(r.Context(), callerContextKey{}, &caller{gwCaller: c, tools: tools})
 	h.mcpHandler.ServeHTTP(w, r.WithContext(ctx))
+}
+
+// MaxRequestBodyBytes is the largest request body the MCP endpoint reads
+// (design/adr/0035). One MiB: a tools/call is a name and a few query
+// arguments, so this is orders of magnitude above real traffic, and a
+// quarter of the SDK's own default.
+const MaxRequestBodyBytes int64 = 1 << 20
+
+// containRequestPanic answers and records a panic recovered in ServeHTTP.
+//
+// Only an authenticated request gets a trail row. Before authentication
+// there is no subject to attribute it to, and a panic an anonymous caller
+// can trigger at will would make an unbounded trail writer out of the
+// ceiling ADR-0027 put on that path; the log line is the record there.
+func (h *Handler) containRequestPanic(w http.ResponseWriter, r *http.Request, who *gateway.Caller, v any) {
+	if who == nil {
+		h.log.ErrorContext(r.Context(), "httpapi: recovered a panic before authentication; answered with the generic 500",
+			slog.String("source", sourceAddress(r)),
+			slog.String("panic_type", fmt.Sprintf("%T", v)),
+			slog.String("stack", string(debug.Stack())),
+		)
+	} else {
+		h.gateway.RecordPanic(r.Context(), *who, "", false, v)
+	}
+	// If the response had already started this cannot change it; net/http
+	// says so in its own log, and the trail row above still stands.
+	writeGeneric(w, classInternal)
 }
 
 // ---------------------------------------------------------- authentication
@@ -814,7 +862,20 @@ func (h *Handler) recordUnservedToolCalls(c gateway.Caller, served map[string]st
 // read from anywhere at call time, so a handler cannot be induced to
 // dispatch as somebody else.
 func (h *Handler) dispatchTool(c gateway.Caller, namespaced string) mcp.ToolHandler {
-	return func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return func(ctx context.Context, req *mcp.CallToolRequest) (out *mcp.CallToolResult, err error) {
+		// The SDK runs this in its own goroutine, with no recover (go-sdk
+		// internal/jsonrpc2), so a panic here would end the process for
+		// every analyst. Dispatch contains its own; this covers what runs
+		// after it returned, so the row annotates its allowed one
+		// (design/adr/0035).
+		dispatched := false
+		defer func() {
+			if v := recover(); v != nil {
+				h.gateway.RecordPanic(ctx, c, namespaced, dispatched, v)
+				out, err = nil, jsonRPCError(classInternal, namespaced)
+			}
+		}()
+
 		var args json.RawMessage
 		if req != nil && req.Params != nil {
 			// Forwarded as raw JSON, unexamined: json.RawMessage marshals to
@@ -828,8 +889,9 @@ func (h *Handler) dispatchTool(c gateway.Caller, namespaced string) mcp.ToolHand
 		if err != nil {
 			return nil, h.rejectCall(ctx, c.Identity, namespaced, err)
 		}
+		dispatched = true
 
-		out, err := toCallToolResult(res)
+		out, err = toCallToolResult(res)
 		if err != nil {
 			return nil, h.rejectCall(ctx, c.Identity, namespaced,
 				fmt.Errorf("upstream result is not representable: %w", err))

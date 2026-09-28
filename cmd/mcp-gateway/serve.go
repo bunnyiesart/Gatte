@@ -417,7 +417,10 @@ func buildServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) (
 		// default, and passing it here is what makes the configured number
 		// the one in effect rather than the one in the file.
 		CallTimeout: cfg.Response.CallTimeoutOrDefault(),
-		Logger:      logger,
+		// The per-analyst concurrency cap (ADR-0035), explicit for the same
+		// reason.
+		MaxConcurrentCallsPerAnalyst: cfg.Response.MaxConcurrentCallsOrDefault(),
+		Logger:                       logger,
 	})
 	if err != nil {
 		return fail(err)

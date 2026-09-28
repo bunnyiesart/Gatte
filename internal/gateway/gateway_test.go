@@ -72,6 +72,9 @@ type fakeUpstream struct {
 	// still alive when the failure is handled, and a test cannot reach the
 	// path where the audit write itself happens under a DEAD context.
 	waitForCtx bool
+	// panicWith makes CallTool panic with this value after recording the
+	// call -- a backend adapter with a bug, seen from here (ADR-0035).
+	panicWith any
 }
 
 type upstreamCall struct {
@@ -104,9 +107,12 @@ func (u *fakeUpstream) CallTool(ctx context.Context, tool string, args json.RawM
 	// no real upstream does and which would deadlock a concurrent test.
 	u.mu.Lock()
 	u.calls = append(u.calls, upstreamCall{tool: tool, args: string(args)})
-	wait, callErr, result := u.waitForCtx, u.callErr, u.result
+	wait, callErr, result, panicWith := u.waitForCtx, u.callErr, u.result, u.panicWith
 	u.mu.Unlock()
 
+	if panicWith != nil {
+		panic(panicWith)
+	}
 	if wait {
 		<-ctx.Done()
 		return Result{}, ctx.Err()
@@ -2628,6 +2634,9 @@ func TestDispatch_ResponseChecksAreSafeUnderConcurrentCalls(t *testing.T) {
 	})
 
 	const callers = 8
+	// Room for all of them: this is about the response checks, not the
+	// per-analyst concurrency cap (ADR-0035).
+	h.gw.slots = newCallSlots(callers)
 	errs := make(chan error, callers)
 	var start sync.WaitGroup
 	start.Add(1)

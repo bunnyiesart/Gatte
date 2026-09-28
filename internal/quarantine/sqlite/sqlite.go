@@ -116,6 +116,24 @@ func (s *Store) Observe(ctx context.Context, serverName string, t quarantine.Too
 
 // Approve implements quarantine.Store.
 func (s *Store) Approve(ctx context.Context, serverName, toolName string) (quarantine.Tool, error) {
+	return s.approve(ctx, serverName, toolName, func(prev quarantine.Tool, now time.Time) (quarantine.Tool, error) {
+		return prev.Approved(now), nil
+	})
+}
+
+// ApproveFingerprint implements quarantine.Store. The comparison runs on
+// the row read inside the write transaction, not on an earlier Get, which
+// is the whole point: a check made outside the transaction would only move
+// the race, not close it.
+func (s *Store) ApproveFingerprint(ctx context.Context, serverName, toolName, reviewedHash string) (quarantine.Tool, error) {
+	return s.approve(ctx, serverName, toolName, func(prev quarantine.Tool, now time.Time) (quarantine.Tool, error) {
+		return prev.ApprovedFingerprint(reviewedHash, now)
+	})
+}
+
+// approve is the shared read-transition-write of Approve and
+// ApproveFingerprint; the transition itself is the domain's.
+func (s *Store) approve(ctx context.Context, serverName, toolName string, transition func(quarantine.Tool, time.Time) (quarantine.Tool, error)) (quarantine.Tool, error) {
 	now := time.Now().UTC()
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -129,7 +147,10 @@ func (s *Store) Approve(ctx context.Context, serverName, toolName string) (quara
 		return quarantine.Tool{}, fmt.Errorf("quarantine/sqlite: approve %q/%q: %w", serverName, toolName, err)
 	}
 
-	next := prev.Approved(now)
+	next, err := transition(prev, now)
+	if err != nil {
+		return quarantine.Tool{}, fmt.Errorf("quarantine/sqlite: approve %q/%q: %w", serverName, toolName, err)
+	}
 	if err := update(ctx, tx, next); err != nil {
 		return quarantine.Tool{}, fmt.Errorf("quarantine/sqlite: approve %q/%q: %w", serverName, toolName, err)
 	}

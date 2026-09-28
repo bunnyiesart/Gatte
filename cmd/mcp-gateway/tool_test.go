@@ -328,3 +328,29 @@ func TestRunToolRevoke_UnobservedToolIsAProblem(t *testing.T) {
 	requireExit(t, runToolRevoke(e.opEnv, "casemgmt", "list_cases"), exitProblem, "revoke unobserved")
 	requireContains(t, e.stderrText(), "no quarantine entry", "revoke unobserved")
 }
+
+// TestRunToolApprove_FingerprintMustStillBeTheReviewedOne: the operator
+// reviewed a pending tool at one fingerprint, discovery then observed a
+// rewrite (a pending tool stays pending, only its fingerprint moves), and
+// `tool approve -fingerprint <reviewed>` must refuse rather than baseline
+// the definition nobody was shown.
+func TestRunToolApprove_FingerprintMustStillBeTheReviewedOne(t *testing.T) {
+	e := newOpTestEnv(t)
+	reviewed := mustObserve(t, e, "casemgmt", irisListCases).ObservedHash
+	mustObserve(t, e, "casemgmt", changedIrisListCases)
+
+	requireExit(t, runToolApproveFingerprint(e.opEnv, "casemgmt", "list_cases", "sha256:"+reviewed), exitProblem, "approve stale fingerprint")
+	requireContains(t, e.stderrText(), "NOT approved", "approve stale fingerprint")
+	got, err := e.tools().Get(context.Background(), "casemgmt", "list_cases")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != quarantine.StatusPending || got.Usable() {
+		t.Fatalf("a stale-fingerprint approval changed state: %+v", got)
+	}
+
+	requireExit(t, runToolApproveFingerprint(e.opEnv, "casemgmt", "list_cases", got.ObservedHash), exitOK, "approve current fingerprint")
+	if after, _ := e.tools().Get(context.Background(), "casemgmt", "list_cases"); !after.Usable() || after.ApprovedHash != got.ObservedHash {
+		t.Fatalf("approving the current fingerprint: %+v", after)
+	}
+}

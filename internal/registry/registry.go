@@ -14,6 +14,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -90,9 +91,24 @@ type UpstreamServer struct {
 	UpdatedAt   time.Time
 }
 
+// safeUpstreamName is the grammar of an upstream name.
+//
+// The name is the namespace prefix of every tool it serves ("NAME.tool"),
+// a signed field, a column in `upstream list` and an argument operators
+// paste into `sign NAME` and `deregister NAME`. Only non-blank and free of
+// the separator used to be checked, so a name could carry a newline or tab,
+// which printed a forged row -- "signed: valid" included -- in `upstream
+// list`; whitespace, control characters, terminal escapes, shell
+// metacharacters, '/', NUL, or a leading '-' that reads as a flag.
+// Ported from the internal tree (2026-09-24). The separator keeps its own
+// check and message below, which says why that character in particular is
+// a security control.
+var safeUpstreamName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]*$`)
+
 // Validate checks that s satisfies the registry's entry contract:
 //
-//   - Name must be non-empty and must not contain the namespace separator.
+//   - Name must be non-empty, must not contain the namespace separator,
+//     and must match safeUpstreamName.
 //   - Transport must be exactly TransportStdio. TransportHTTP is a
 //     recognised value with no dialer behind it, so it is refused here
 //     rather than accepted and failed at dial time -- see
@@ -130,6 +146,9 @@ func (s UpstreamServer) Validate() error {
 	if strings.Contains(s.Name, nameSeparator) {
 		return fmt.Errorf("%w: name %q must not contain %q -- it is the separator between an upstream's name and a tool's, so a name containing it would make this upstream's tools indistinguishable from another upstream's",
 			ErrInvalid, s.Name, nameSeparator)
+	}
+	if !safeUpstreamName.MatchString(s.Name) {
+		return fmt.Errorf("%w: name %q must be letters, digits, '_' and '-', starting with a letter or digit", ErrInvalid, s.Name)
 	}
 
 	switch s.Transport {

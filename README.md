@@ -32,8 +32,19 @@ What it does, for any stdio MCP server you put behind it:
   that a silent shipper is detectable.
 - **Per-call ceilings.** Each call has a time limit (`response.call_timeout`)
   and a result size limit (`response.max_bytes`).
+- **Backends as containers, optionally.** `-transport oci` runs a backend
+  as an ephemeral rootless `podman run --rm -i` from a digest-pinned image,
+  read-only root, no network unless the signed entry grants it; the digest
+  is inside the signature (`design/adr/0028-transporte-oci.md`).
+- **Per-analyst quota, optionally.** `[[quota.provider]]` caps how many
+  calls one analyst may spend against one third-party account per window,
+  so a runaway agent loop cannot burn an API budget
+  (`design/adr/0030-quota-por-analista.md`).
+- **GELF to Graylog, optionally.** `[telemetry]` sends a copy of every
+  accepted audit record straight to a GELF input, no shipper needed
+  (`design/adr/0029-telemetria-gelf.md`).
 
-There is **no per-analyst quota or concurrency limit**. See
+There is **no concurrency limit** per analyst. See
 [Security model](#security-model).
 
 Gatte was built for one SOC team fronting four existing stdio MCP servers
@@ -246,14 +257,17 @@ snippet that was loaded by the real binary.
 
 What an upstream must be, in this build:
 
-- **A local process speaking MCP over stdio.** That is the only transport
-  with a dialer. `http` is recognised and refused at registration, and
-  there is no container transport (`CLOSEOUT.md`, Track 1). A server
-  reachable only over HTTP cannot be registered directly.
+- **A process speaking MCP over stdio**, either spawned locally
+  (`-transport stdio`) or run from a digest-pinned container image
+  (`-transport oci`, which needs rootless podman for the gateway's user).
+  `http` is recognised and refused at registration; a server reachable only
+  over HTTP cannot be registered directly.
 - **Configured by arguments and environment variables.** It receives its
   signed arguments, `PATH` and `HOME`, and the variables it declared.
-- **Code you would trust with the gateway's service account**, because it
-  runs as that account (below).
+- **Code you would trust with the gateway's service account** if it is a
+  stdio upstream, because it runs as that account (below). An oci upstream
+  runs as the same host user too, but inside a container that has neither
+  the vault nor the signing key mounted.
 
 ## Security model
 
@@ -279,7 +293,16 @@ user.** That actor reads the decrypted vault and the signing key and writes
 the trail. The backends -- the least trusted code in the system -- run as
 that same user, with no separate uid, nested jail or Capsicum between them
 and the process holding every credential. Declared in `AGENTS.md` §2, not
-solved.
+solved. The oci transport narrows it without closing it: a containerised
+backend has its own mount namespace with a read-only root and none of the
+gateway's files, so reading the vault takes a container escape rather than
+an `open()`; it is still the same host uid under rootless podman
+(`design/adr/0028-transporte-oci.md` §D).
+
+**A backend that echoes its own credential does not hand it to the
+analyst.** Every result is scrubbed of the values the gateway injected into
+that backend, in raw and escaped forms, and a result that cannot be
+scrubbed is refused rather than forwarded.
 
 **It does not guarantee the trail's integrity against whoever controls the
 host.** Records are not individually signed. The chain head, compared

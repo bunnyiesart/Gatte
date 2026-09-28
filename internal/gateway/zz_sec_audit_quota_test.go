@@ -395,3 +395,26 @@ func TestSecQuota_SharedCredentialCountsPerSubjectNotPerSource(t *testing.T) {
 		t.Fatalf("per-source rows for analyst-1 = %v", sources)
 	}
 }
+
+// Dispatch is exported and documents that refusals are recorded on every
+// path, exactly once. RecordRefusedProbe substitutes unnamedTool for an
+// empty name so audit.Record.Validate cannot drop the row; Dispatch's
+// unknown-tool path must do the same.
+func TestSecDispatch_EmptyToolNameRefusalIsStillAudited(t *testing.T) {
+	h := newHarness(t, "casemgmt.list_cases")
+	h.register("casemgmt")
+	h.serve("casemgmt", def("list_cases", "list"))
+	h.mustConnect()
+	h.approve("casemgmt", "list_cases")
+
+	if err := secAQCall(h, fromAnalyst, ""); !errors.Is(err, ErrUnknownTool) {
+		t.Fatalf("Dispatch(\"\") err=%v, want ErrUnknownTool", err)
+	}
+	rows := h.auditRows()
+	if len(rows) != 1 {
+		t.Fatalf("audit holds %d rows after a refused empty-name Dispatch, want 1 -- the refusal escaped the trail", len(rows))
+	}
+	if rows[0].Outcome != audit.OutcomeDenied || rows[0].AnalystIdentity != analyst.Subject || rows[0].Tool == "" {
+		t.Fatalf("row = %+v", rows[0])
+	}
+}

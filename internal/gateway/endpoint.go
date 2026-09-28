@@ -1684,9 +1684,11 @@ func (g *Gateway) resolveEnv(ctx context.Context, entry registry.UpstreamServer)
 func (g *Gateway) ListTools(ctx context.Context, id access.Identity) ([]ToolDef, error) {
 	// First, before the suspension answer: a blocked subject learns nothing
 	// about the fleet, not even that it is suspended (ADR-0031). Not
-	// audited here -- ListTools has no Caller to attribute a row to, and
-	// the serving adapter's AdmitCaller has already written one for this
-	// request unless the block landed in between.
+	// audited here, because it never refuses a request the serving adapter
+	// admitted: on a context AdmitCaller returned for this same subject the
+	// check is that admission, with no second read. It reads -- and
+	// refuses -- only for a caller that skipped AdmitCaller, which no
+	// serving surface does.
 	if err := g.checkBlock(ctx, id.Subject); err != nil {
 		return nil, err
 	}
@@ -1862,15 +1864,11 @@ func (g *Gateway) Dispatch(ctx context.Context, c Caller, namespacedTool string,
 	// The kill switch first (ADR-0031), ahead of every answer below: a
 	// blocked subject is told "forbidden" whatever they named, so the
 	// refusal cannot be used to tell a real tool from an invented one. The
-	// serving adapter already refused them at AdmitCaller; this is the
-	// same check at the gate every surface shares, for a call that arrives
-	// after the list it was chosen from.
+	// serving adapter already asked at AdmitCaller, and on the context it
+	// returned this is that answer, not a second read; this is the same
+	// check at the gate every surface shares, for a caller that did not.
 	if err := g.checkBlock(ctx, c.Identity.Subject); err != nil {
-		reason := reasonSubjectBlocked
-		if !errors.Is(err, access.ErrSubjectBlocked) {
-			reason = reasonBlocklistUnavailable
-		}
-		g.auditRefusal(ctx, c, namespacedTool, targetOf(namespacedTool), reason)
+		g.refuseBlocked(ctx, c, namespacedTool, targetOf(namespacedTool), err)
 		return Result{}, err
 	}
 
@@ -2232,30 +2230,69 @@ func (g *Gateway) RecordAuthFailure(ctx context.Context, source string) {
 //
 // The table is read on every call, which is what makes a block reach a
 // token that is still valid on its very next request, with no restart and
-// no cache to go stale. It is one primary-key read.
-func (g *Gateway) AdmitCaller(ctx context.Context, c Caller) error {
-	err := g.checkBlock(ctx, c.Identity.Subject)
+// no cache to go stale. It is one primary-key read per request: the
+// returned context carries the admission, bound to this subject, and
+// ListTools and Dispatch on it reuse the answer instead of reading again.
+// So a block committed while a request is in flight takes effect on the
+// next request, and never refuses the admitted one half-way with no row on
+// the trail.
+//
+// A request whose context is already done -- the client hung up -- is
+// refused with the context's error and not recorded: nothing is served to
+// it, and writing "blocklist unavailable" would be a false alarm about the
+// kill switch's store that any caller could raise at will.
+func (g *Gateway) AdmitCaller(ctx context.Context, c Caller) (context.Context, error) {
+	if err := g.readBlock(ctx, c.Identity.Subject); err != nil {
+		g.refuseBlocked(ctx, c, authenticationTool, gatewayItself, err)
+		return ctx, err
+	}
+	return context.WithValue(ctx, admittedKey{}, c.Identity.Subject), nil
+}
+
+// admittedKey is the unexported, and so unforgeable from outside this
+// package, context key under which AdmitCaller records the subject it
+// found unblocked for this request.
+type admittedKey struct{}
+
+// refuseBlocked writes the one audit row for a request checkBlock refused,
+// with the reason that matches the error -- or none, when the error is the
+// caller's own context ending (see AdmitCaller).
+func (g *Gateway) refuseBlocked(ctx context.Context, c Caller, tool, target string, err error) {
 	switch {
-	case err == nil:
-		return nil
 	case errors.Is(err, access.ErrSubjectBlocked):
-		g.auditRefusal(ctx, c, authenticationTool, gatewayItself, reasonSubjectBlocked)
+		g.auditRefusal(ctx, c, tool, target, reasonSubjectBlocked)
+	case ctx.Err() != nil:
+		g.log.DebugContext(ctx, "gateway: request ended before its blocklist check",
+			slog.String("subject", c.Identity.Subject), slog.String("detail", err.Error()))
 	default:
 		g.log.ErrorContext(ctx, "gateway: refusing request whose blocklist could not be read",
 			slog.String("detail", err.Error()))
-		g.auditRefusal(ctx, c, authenticationTool, gatewayItself, reasonBlocklistUnavailable)
+		g.auditRefusal(ctx, c, tool, target, reasonBlocklistUnavailable)
 	}
-	return err
 }
 
-// checkBlock asks the blocklist about subject and reduces the answer to
-// nil, access.ErrSubjectBlocked, or an error wrapping
-// access.ErrBlocklistUnavailable. It is the one implementation behind
-// AdmitCaller, ListTools and Dispatch, so the three cannot disagree about
-// who is blocked.
+// checkBlock is the kill switch as ListTools and Dispatch apply it: the
+// admission AdmitCaller recorded on ctx for this very subject, else a
+// fresh read. It is the one implementation behind all three, so they
+// cannot disagree about who is blocked.
 func (g *Gateway) checkBlock(ctx context.Context, subject string) error {
+	if admitted, ok := ctx.Value(admittedKey{}).(string); ok && admitted == subject {
+		return nil
+	}
+	return g.readBlock(ctx, subject)
+}
+
+// readBlock asks the blocklist about subject and reduces the answer to
+// nil, access.ErrSubjectBlocked, the context's own error when the request
+// has already ended, or an error wrapping access.ErrBlocklistUnavailable.
+func (g *Gateway) readBlock(ctx context.Context, subject string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	blocked, err := g.blocklist.Blocked(ctx, subject)
 	switch {
+	case err != nil && ctx.Err() != nil:
+		return ctx.Err()
 	case err != nil && errors.Is(err, access.ErrBlocklistUnavailable):
 		return err
 	case err != nil:

@@ -15,6 +15,7 @@ package store
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 
 	_ "modernc.org/sqlite"
@@ -93,4 +94,21 @@ func Open(path string) (*sql.DB, error) {
 		}
 	}
 	return db, nil
+}
+
+// IsBusy reports whether err is SQLite refusing a lock another connection
+// holds -- SQLITE_BUSY or SQLITE_LOCKED, extended codes included -- after
+// busy_timeout ran out. SQLite's busy handler is not fair: under sustained
+// writes from one process a second writer can wait out the whole timeout.
+// Nothing was written when this is true, so the caller may simply try again.
+func IsBusy(err error) bool {
+	var coded interface{ Code() int }
+	if !errors.As(err, &coded) {
+		return false
+	}
+	switch coded.Code() & 0xff {
+	case 5, 6: // SQLITE_BUSY, SQLITE_LOCKED
+		return true
+	}
+	return false
 }

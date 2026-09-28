@@ -88,10 +88,14 @@ type BlockStore interface {
 // console table stay legible.
 const maxBlockText = 256
 
-// ValidateSubject checks a subject an operator typed.
+// ValidateSubject checks a subject an operator typed -- and, in the oidc
+// adapter, the `sub` of every verified token, so that no identity gets in
+// that `access block` could not name (design/adr/0031 §4).
 //
-// Whitespace at either end and control characters are refused rather than
-// trimmed: a block on "ana " would never match the token's "ana", and the
+// Whitespace at either end, control characters and invisible format
+// characters (Unicode Cf: U+200B, a BOM, bidi overrides) are refused rather
+// than trimmed: a block on "ana " or on "ana" plus a zero-width space
+// pasted from a chat window would never match the token's "ana", and the
 // operator would believe a subject blocked that is not. Control characters
 // would also reach the operator's terminal through `audit` and `access
 // list` verbatim.
@@ -105,6 +109,8 @@ func ValidateSubject(subject string) error {
 		return fmt.Errorf("%w: subject is longer than %d bytes", ErrInvalidBlock, maxBlockText)
 	case strings.IndexFunc(subject, unicode.IsControl) >= 0:
 		return fmt.Errorf("%w: subject %q contains a control character", ErrInvalidBlock, subject)
+	case strings.IndexFunc(subject, func(r rune) bool { return unicode.Is(unicode.Cf, r) }) >= 0:
+		return fmt.Errorf("%w: subject %q contains an invisible format character", ErrInvalidBlock, subject)
 	}
 	return nil
 }

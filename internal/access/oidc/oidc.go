@@ -296,6 +296,14 @@ func (v *Verifier) Verify(ctx context.Context, rawToken string) (access.Identity
 	if strings.TrimSpace(idToken.Subject) == "" {
 		return access.Identity{}, v.reject(ctx, "token has no sub claim", nil, rawToken)
 	}
+	// A `sub` the operator's kill switch refuses to name -- edge
+	// whitespace, a control or invisible format character, over 256
+	// bytes -- would be an identity `access block` can never stop
+	// (design/adr/0031 §4). Refused here, by the same rule, so the set of
+	// subjects that can be served and the set that can be blocked are one.
+	if err := access.ValidateSubject(idToken.Subject); err != nil {
+		return access.Identity{}, v.reject(ctx, "token sub cannot be named by the blocklist", err, rawToken)
+	}
 
 	return access.Identity{
 		Subject: idToken.Subject,

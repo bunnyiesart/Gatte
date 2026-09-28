@@ -3,6 +3,9 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
+	"fmt"
+	"path/filepath"
 	"sync"
 	"testing"
 )
@@ -160,5 +163,42 @@ func TestOpen_PragmasApplyToEveryPooledConnection(t *testing.T) {
 			t.Errorf("conn %d: busy_timeout = 0, want a wait -- a contended write returns "+
 				"SQLITE_BUSY immediately with this unset", i)
 		}
+	}
+}
+
+// TestIsBusy_RecognisesARealContendedLock: the error SQLite actually
+// returns when another connection holds the write lock is what IsBusy
+// answers true for, and an ordinary error is not.
+func TestIsBusy_RecognisesARealContendedLock(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "busy.db")
+	holder, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer holder.Close()
+	if _, err := holder.Exec("CREATE TABLE t (x INTEGER)"); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	conn, err := holder.Conn(context.Background())
+	if err != nil {
+		t.Fatalf("Conn: %v", err)
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(context.Background(), "BEGIN IMMEDIATE"); err != nil {
+		t.Fatalf("BEGIN IMMEDIATE: %v", err)
+	}
+	defer conn.ExecContext(context.Background(), "ROLLBACK")
+
+	impatient, err := sql.Open("sqlite", "file:"+path+"?_pragma=busy_timeout(0)")
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer impatient.Close()
+	_, err = impatient.Exec("INSERT INTO t VALUES (1)")
+	if err == nil || !IsBusy(err) || !IsBusy(fmt.Errorf("wrapped: %w", err)) {
+		t.Fatalf("insert beside a held write lock = %v; IsBusy = false", err)
+	}
+	if IsBusy(errors.New("database is locked")) || IsBusy(nil) {
+		t.Fatal("IsBusy answered true for something that is not a SQLite lock error")
 	}
 }

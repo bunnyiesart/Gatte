@@ -241,7 +241,7 @@ Www-Authenticate: Bearer resource_metadata="https://gatte.example.org/.well-know
 
 `mcp-gateway help` lists every command: `serve`, `upstream
 list|register|deregister`, `sign`, `tool list|approve|revoke`, `audit`,
-`version`. `serve` and the operator commands (all but `sign -generate-key`)
+`quota list|usage`, `access block|unblock|list`, `version`. `serve` and the operator commands (all but `sign -generate-key`)
 take `-config`, and load and validate the whole configuration file before doing anything,
 refusing unknown keys.
 

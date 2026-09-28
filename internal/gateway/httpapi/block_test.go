@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -104,5 +105,75 @@ func TestUnreadableBlocklistIsAnInternalErrorNotAForbidden(t *testing.T) {
 	got := body(t, res)
 	if res.StatusCode != http.StatusInternalServerError || got != msgInternal+"\n" {
 		t.Fatalf("unreadable blocklist: %d %q, want 500 %q", res.StatusCode, got, msgInternal+"\n")
+	}
+}
+
+// flippingBlocks counts reads and reports the subject blocked from read
+// number `after` on -- a block the operator commits in the middle of a
+// request, at exactly the point a test needs it.
+type flippingBlocks struct {
+	mu    sync.Mutex
+	reads int
+	after int // 0: never blocked
+}
+
+func (f *flippingBlocks) Blocked(context.Context, string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.reads++
+	return f.after > 0 && f.reads >= f.after, nil
+}
+
+func (f *flippingBlocks) count() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.reads
+}
+
+// TestOneBlocklistReadPerRequest: the blocklist is read once per HTTP
+// request, at admission, and the tool list and the dispatch of that same
+// request reuse the answer (design/adr/0031 §2). A tools/call used to read
+// it three times.
+func TestOneBlocklistReadPerRequest(t *testing.T) {
+	bl := &flippingBlocks{}
+	h := newHarnessWith(t, harnessOptions{blocklist: bl})
+	res := h.post("/mcp", "Bearer "+tokenAnalyst, toolsCallBody)
+	if got := body(t, res); res.StatusCode != http.StatusOK {
+		t.Fatalf("tools/call: %d %q", res.StatusCode, got)
+	}
+	if n := bl.count(); n != 1 {
+		t.Fatalf("blocklist reads for one tools/call = %d, want 1", n)
+	}
+}
+
+// TestABlockLandingMidRequestNeverRefusesUnaudited: a block committed after
+// this request was admitted takes effect on the NEXT request. The request
+// already admitted is finished, not refused half-way -- a refusal there
+// would be a 403 with no row on the trail, breaking "every refusal is
+// audited exactly once".
+func TestABlockLandingMidRequestNeverRefusesUnaudited(t *testing.T) {
+	bl := &flippingBlocks{after: 2}
+	h := newHarnessWith(t, harnessOptions{blocklist: bl})
+	bearer := "Bearer " + tokenAnalyst
+
+	res := h.post("/mcp", bearer, toolsCallBody)
+	if got := body(t, res); res.StatusCode != http.StatusOK {
+		t.Fatalf("request admitted before the block: %d %q, want 200 (the block applies from the next one)", res.StatusCode, got)
+	}
+	res = h.post("/mcp", bearer, toolsCallBody)
+	if got := body(t, res); res.StatusCode != http.StatusForbidden {
+		t.Fatalf("next request: %d %q, want 403", res.StatusCode, got)
+	}
+	refusals := 0
+	for _, r := range h.auditRows() {
+		if r.Outcome == audit.OutcomeDenied {
+			refusals++
+			if r.Reason != "subject blocked" {
+				t.Errorf("unexpected refusal row %+v", r)
+			}
+		}
+	}
+	if refusals != 1 {
+		t.Fatalf("denied rows = %d, want exactly 1 (one refused request): %+v", refusals, h.auditRows())
 	}
 }

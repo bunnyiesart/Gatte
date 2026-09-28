@@ -170,6 +170,10 @@ func TestSecQuota_ConcurrentDispatchNeverOverGrantsAndAuditsEveryAttempt(t *test
 	}, "threatintel.lookup_ip", "threatintel.lookup_hash")
 	h.gw.audit = rec
 	h.audit = rec
+	// Room for every caller at once: this test is about the quota's
+	// atomicity under contention, and the per-analyst concurrency cap
+	// (ADR-0035) would otherwise refuse most of them before the quota.
+	h.gw.slots = newCallSlots(callers)
 	h.register("threatintel")
 	h.serve("threatintel", def("lookup_ip", "ip"), def("lookup_hash", "hash"))
 	h.mustConnect()

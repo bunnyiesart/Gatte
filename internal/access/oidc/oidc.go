@@ -115,6 +115,9 @@ type Config struct {
 	// returned error deliberately withholds. Optional; defaults to
 	// slog.Default().
 	Logger *slog.Logger
+
+	// now is the JWKS refetch limiter's clock; tests set it (export_test.go).
+	now func() time.Time
 }
 
 // Verifier verifies bearer tokens against a single OIDC issuer and
@@ -146,6 +149,9 @@ type Config struct {
 //     verification keeps succeeding from cache with no network call at all.
 //     Signing keys rotate rarely; verifying against a cached key is safe
 //     until that key is revoked.
+//   - That re-fetch is limited to one per jwksRefetchInterval (ADR-0035),
+//     so forged tokens cannot turn this gateway into a load generator
+//     against the IdP.
 //
 // The consequence worth stating plainly: a *long* IdP outage that outlives
 // a key rotation does lock everyone out. That is the fail-closed side of
@@ -230,7 +236,12 @@ func New(ctx context.Context, cfg Config) (*Verifier, error) {
 	// anyone who can tamper with its metadata) widen what this gateway
 	// accepts. Setting it here means discovery can only ever be narrower in
 	// practice, never broader.
-	verifier := provider.VerifierContext(ctx, &goidc.Config{
+	//
+	// The key set gets its own client, rate-limited (design/adr/0035): at
+	// most one JWKS fetch per jwksRefetchInterval, however many unknown
+	// kids or bad signatures arrive. Discovery above used the plain one.
+	keysCtx := goidc.ClientContext(ctx, limitedClient(client, cfg.now))
+	verifier := provider.VerifierContext(keysCtx, &goidc.Config{
 		ClientID:             audience,
 		SupportedSigningAlgs: algs,
 		// Every check left at its default (enabled): signature, issuer,

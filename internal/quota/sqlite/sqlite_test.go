@@ -520,10 +520,10 @@ func TestReserve_TheNextWindowIsANewCounter(t *testing.T) {
 //
 // It is the reason Reserve increments first and asks afterwards. Dispatch
 // serialises nothing -- N goroutines call concurrently over one session,
-// with no queue, no semaphore and no pool -- so an implementation that
-// read the counter, compared it and wrote it back would let every caller
-// read limit-1 and every caller pass, on a control whose whole purpose is
-// to stop one analyst in a loop.
+// with no queue and no pool, several per analyst under ADR-0035's cap --
+// so an implementation that read the counter, compared it and wrote it
+// back would let every caller read limit-1 and every caller pass, on a
+// control whose whole purpose is to stop one analyst in a loop.
 //
 // The assertion is deliberately exact on both sides: the number of grants
 // AND the counter left in the table. Counting only the grants would miss

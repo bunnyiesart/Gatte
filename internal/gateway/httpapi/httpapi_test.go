@@ -58,6 +58,9 @@ type fakeUpstream struct {
 	result  gateway.Result
 	callErr error
 	calls   []string
+	// panicWith makes CallTool panic -- a backend adapter with a bug
+	// (ADR-0035).
+	panicWith any
 }
 
 func (u *fakeUpstream) ListTools(context.Context) ([]gateway.ToolDef, error) {
@@ -70,6 +73,9 @@ func (u *fakeUpstream) CallTool(_ context.Context, tool string, _ json.RawMessag
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	u.calls = append(u.calls, tool)
+	if u.panicWith != nil {
+		panic(u.panicWith)
+	}
 	if u.callErr != nil {
 		return gateway.Result{}, u.callErr
 	}
@@ -143,6 +149,11 @@ type fakeVerifier struct {
 }
 
 func (v fakeVerifier) Verify(_ context.Context, raw string) (access.Identity, error) {
+	if raw == tokenThatPanics {
+		// A verifier with a bug, for the ServeHTTP containment test
+		// (ADR-0035).
+		panic("verifier bug")
+	}
 	if id, ok := v.tokens[raw]; ok {
 		return id, nil
 	}

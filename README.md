@@ -31,7 +31,10 @@ What it does, for any stdio MCP server you put behind it:
   shipper can forward to whatever SIEM you run, plus a heartbeat line so
   that a silent shipper is detectable.
 - **Per-call ceilings.** Each call has a time limit (`response.call_timeout`)
-  and a result size limit (`response.max_bytes`).
+  and a result size limit (`response.max_bytes`); each analyst has at most
+  `response.max_concurrent_calls_per_analyst` calls in flight (default 4),
+  and a panic is contained to the call that hit it
+  (`design/adr/0035-resiliencia-do-caminho-de-chamada.md`).
 - **Backends as containers, optionally.** `-transport oci` runs a backend
   as an ephemeral rootless `podman run --rm -i` from a digest-pinned image,
   read-only root, no network unless the signed entry grants it; the digest
@@ -43,9 +46,6 @@ What it does, for any stdio MCP server you put behind it:
 - **GELF to Graylog, optionally.** `[telemetry]` sends a copy of every
   accepted audit record straight to a GELF input, no shipper needed
   (`design/adr/0029-telemetria-gelf.md`).
-
-There is **no concurrency limit** per analyst. See
-[Security model](#security-model).
 
 Gatte was built for one SOC team fronting four existing stdio MCP servers
 (`casemgmt`, `logsearch`, `docsearch`, `threatintel`). It is not an adoption
@@ -317,11 +317,15 @@ co-located reverse proxy and your network controls (`design/adr/0011`).
 
 **It is a single point of failure, knowingly** (`design/adr/0001`): one
 binary, one process, one SQLite file. A per-call ceiling bounds how long one
-call may hold a backend (`design/adr/0025`), but nothing bounds how many
-calls an authorised analyst may hold at once. Audit writes for failed
-authentication are rate-limited (`design/adr/0027`) because, measured, an
-unauthenticated flood could otherwise exhaust SQLite's busy timeout and get
-an analyst's call refused -- a call that cannot be audited is refused.
+call may hold a backend (`design/adr/0025`), and a per-analyst cap how many
+it may hold at once (`design/adr/0035`); there is no global or per-backend
+cap. A panic is audited and refused for that call only; request bodies over
+1 MiB get 413; the JWKS is refetched at most once per 30s, however many
+forged tokens arrive. Audit writes for failed authentication are
+rate-limited (`design/adr/0027`) because, measured, an unauthenticated flood
+could otherwise exhaust SQLite's busy timeout and get an analyst's call
+refused -- a call that cannot be audited is refused. Request-rate limiting
+belongs to the reverse proxy.
 
 **Prompt injection through a tool's result is not covered.** The response
 check is a size ceiling plus validation against a declared output schema

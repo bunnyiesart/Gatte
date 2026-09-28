@@ -119,8 +119,9 @@ func New(db *sql.DB) *Store {
 // new value in one statement, and only then is the domain asked whether
 // that value still fits. The obvious alternative -- read the counter,
 // compare, write it back -- is what this must not be. Dispatch does not
-// serialise calls: N goroutines for N analysts call concurrently over one
-// session with no queue, no semaphore and no pool, so a read-then-write
+// serialise calls: N goroutines call concurrently over one session with no
+// queue and no pool (the per-analyst cap of design/adr/0035 still admits
+// several per analyst, and analysts run in parallel), so a read-then-write
 // lets N callers all read limit-1 and all pass. Incrementing first makes
 // the reservation the same operation as the count.
 //

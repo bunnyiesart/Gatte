@@ -50,6 +50,8 @@ refresh_interval = "5m"
 [response]
 max_bytes    = 1048576
 call_timeout = "2m"
+# Calls one analyst may have in flight at once; the next is refused.
+max_concurrent_calls_per_analyst = 4
 
 # Optional second copy of the audit trail as JSONL, for a log shipper to
 # forward to your SIEM. Both keys are required together.

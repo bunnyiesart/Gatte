@@ -107,7 +107,9 @@ that only exists inside a closed section is an item nobody re-reads:
 
   **The window did not close, it started existing:** between two ticks a
   deregistered upstream is still served, for up to
-  `quarantine.refresh_interval`. Same trade as ADR-0013, same reasoning.
+  `quarantine.refresh_interval` plus the duration of one round (the timer
+  is reset after the work; ADR-0013's 28 Sep 2026 correction). Same trade
+  as ADR-0013, same reasoning.
 - **Per-backend role grants are wired (ADR-0016, 11 Sep 2026).**
   `[role.grants]` composes a role per backend and `["*"]` grants a whole
   backend. A grant naming an unregistered backend cannot be a load-time

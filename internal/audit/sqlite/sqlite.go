@@ -10,6 +10,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -389,11 +390,27 @@ FROM audit_records ORDER BY id ASC`)
 }
 
 // List implements audit.Recorder.
+//
+// The chronological order audit.Recorder promises is established here, in
+// Go, on the parsed instants -- not by SQL on the stored text. `ORDER BY
+// timestamp` compared RFC3339Nano strings byte by byte, and that is not
+// time order: trailing zeros are dropped, and '.' sorts before 'Z', so on a
+// UTC host "03:00:00.5Z" came back before "03:00:00Z"; and rows written
+// under different zone offsets sorted by wall-clock text rather than by
+// instant. `mcp-gateway audit -limit N` takes the newest N from the end of
+// this list, so it could show the wrong rows during an incident. Sorting
+// after parsing fixes rows already on disk too, which re-encoding new rows
+// would not. Rows are read in insertion (id) order and the sort is stable,
+// so id still breaks ties between equal instants.
+//
+// Only this presentation order changes. The hash chain is built (the
+// head is the highest id) and verified (VerifyChain) in id order, which
+// this does not touch.
 func (r *Recorder) List(ctx context.Context) ([]audit.Record, error) {
 	const stmt = `
 SELECT analyst_identity, tool, target_upstream, timestamp, outcome, reason, source_address
 FROM audit_records
-ORDER BY timestamp ASC, id ASC
+ORDER BY id ASC
 `
 	rows, err := r.db.QueryContext(ctx, stmt)
 	if err != nil {
@@ -418,5 +435,6 @@ ORDER BY timestamp ASC, id ASC
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("audit/sqlite: list: %w", err)
 	}
+	slices.SortStableFunc(records, func(a, b audit.Record) int { return a.Timestamp.Compare(b.Timestamp) })
 	return records, nil
 }

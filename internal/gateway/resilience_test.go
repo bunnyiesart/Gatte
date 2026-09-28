@@ -207,3 +207,45 @@ func (l *lockedLog) String() string {
 	defer l.mu.Unlock()
 	return l.buf.String()
 }
+
+// panickingRecorder panics on Record: an audit store with a bug.
+type panickingRecorder struct{ audit.Recorder }
+
+func (panickingRecorder) Record(context.Context, audit.Record) error {
+	panic("store bug: dsn=hunter2")
+}
+
+// TestDispatch_APanickingAuditStoreIsContained: when the store is what
+// panicked, recording that panic panics again. The second one must not
+// escape either: the call is refused with ErrInternal, nothing is written,
+// the log says why, and the process keeps serving.
+func TestDispatch_APanickingAuditStoreIsContained(t *testing.T) {
+	h := newHarness(t, "casemgmt.list_cases")
+	h.register("casemgmt")
+	h.serve("casemgmt", def("list_cases", "list cases"))
+	h.mustConnect()
+	h.approve("casemgmt", "list_cases")
+
+	var logged lockedLog
+	h.gw.log = slog.New(slog.NewTextHandler(&logged, nil))
+	healthy := h.gw.audit
+	h.gw.audit = panickingRecorder{healthy}
+
+	for i := range DefaultMaxConcurrentCallsPerAnalyst + 1 {
+		_, err := h.gw.Dispatch(t.Context(), fromAnalyst, "casemgmt.list_cases", nil)
+		if !errors.Is(err, ErrInternal) {
+			t.Fatalf("call %d with a panicking store = %v, want ErrInternal", i+1, err)
+		}
+	}
+	if strings.Contains(logged.String(), "hunter2") {
+		t.Errorf("the panic value reached the log:\n%s", logged.String())
+	}
+	if !strings.Contains(logged.String(), "could not be audited") {
+		t.Errorf("the unrecorded panic left no log line:\n%s", logged.String())
+	}
+
+	h.gw.audit = healthy
+	if _, err := h.gw.Dispatch(t.Context(), fromAnalyst, "casemgmt.list_cases", nil); err != nil {
+		t.Fatalf("a call after the store recovered = %v, want nil", err)
+	}
+}

@@ -839,12 +839,25 @@ const methodToolsCall = "tools/call"
 // produces exactly one record, from exactly one of the two paths.
 func (h *Handler) recordUnservedToolCalls(c gateway.Caller, served map[string]struct{}) mcp.Middleware {
 	return func(next mcp.MethodHandler) mcp.MethodHandler {
-		return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
+		return func(ctx context.Context, method string, req mcp.Request) (res mcp.Result, err error) {
+			// This runs in the SDK's handler goroutine, which has no recover,
+			// and it is outermost, so it covers the rest of the method
+			// handler too -- the unserved tools/call path above all, whose
+			// record write never reaches Dispatch's containment
+			// (design/adr/0035).
+			var name string
+			defer func() {
+				if v := recover(); v != nil {
+					h.gateway.RecordPanic(ctx, c, name, false, v)
+					res, err = nil, jsonRPCError(classInternal, name)
+				}
+			}()
 			if method == methodToolsCall {
 				// A tools/call whose params did not decode into the shape the
 				// SDK dispatches on is left to the SDK to reject; there is no
 				// name to attribute a record to.
 				if params, ok := req.GetParams().(*mcp.CallToolParamsRaw); ok && params != nil {
+					name = params.Name
 					if _, offered := served[params.Name]; !offered {
 						h.gateway.RecordRefusedProbe(ctx, c, params.Name)
 					}
@@ -891,7 +904,7 @@ func (h *Handler) dispatchTool(c gateway.Caller, namespaced string) mcp.ToolHand
 		}
 		dispatched = true
 
-		out, err = toCallToolResult(res)
+		out, err = convertResult(res)
 		if err != nil {
 			return nil, h.rejectCall(ctx, c.Identity, namespaced,
 				fmt.Errorf("upstream result is not representable: %w", err))
@@ -928,6 +941,10 @@ func (h *Handler) rejectCall(ctx context.Context, id access.Identity, tool strin
 	)
 	return jsonRPCError(class, tool)
 }
+
+// convertResult is the conversion dispatchTool applies; a variable only so
+// a test can make it panic after Dispatch returned (design/adr/0035).
+var convertResult = toCallToolResult
 
 // toCallToolResult converts an upstream result into the SDK's shape.
 //

@@ -218,6 +218,9 @@ type harnessOptions struct {
 	// given, so a test can make it misbehave in a way no real store would
 	// on demand.
 	wrapQuarantine func(quarantine.Store) quarantine.Store
+	// wrapAudit decorates the audit store the Gateway writes to; the
+	// harness still reads the trail from the database directly.
+	wrapAudit func(audit.Recorder) audit.Recorder
 }
 
 func newHarness(t *testing.T) *harness {
@@ -286,11 +289,16 @@ func newHarnessWith(t *testing.T, opts harnessOptions) *harness {
 	logs := &lockedBuffer{}
 	logger := slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
+	var trail audit.Recorder = auditsql.New(db)
+	if opts.wrapAudit != nil {
+		trail = opts.wrapAudit(trail)
+	}
+
 	gw, err := gateway.New(gateway.Config{
 		Registry:   reg,
 		Vault:      fakeVault{},
 		Quarantine: served,
-		Audit:      auditsql.New(db),
+		Audit:      trail,
 		Policy:     policy,
 		Quota:      noQuota(t),
 		Dialer:     dialer,

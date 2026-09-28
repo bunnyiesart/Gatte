@@ -86,7 +86,9 @@ func (s *callSlots) acquire(subject string) (release func(), ok bool) {
 
 // containPanic is deferred first in Dispatch. A panic anywhere in the call
 // -- an adapter, the scrub, a store -- ends that one call instead of the
-// process: it is audited, and the caller gets ErrInternal.
+// process: it is audited, and the caller gets ErrInternal. When the audit
+// store is what panicked, the row cannot be written; recordPanic logs that
+// instead of panicking a second time.
 //
 // The row follows the trail's own rule (ADR-0012): before the allowed row
 // was written nothing was dispatched, so it is a denial; after it, the
@@ -139,6 +141,19 @@ func (g *Gateway) recordPanic(ctx context.Context, c Caller, tool, upstream stri
 	if strings.TrimSpace(c.Identity.Subject) == "" {
 		c.Identity.Subject = unauthenticatedIdentity
 	}
+	// When the store is what panicked, writing this row panics again, in a
+	// deferred function nothing above recovers. That second panic is caught
+	// here and only logged: the call is still refused with ErrInternal, and
+	// the row it could not get is the one line below.
+	defer func() {
+		if v := recover(); v != nil {
+			g.log.ErrorContext(ctx, "gateway: a recovered panic could not be audited; the audit write panicked too",
+				slog.String("subject", c.Identity.Subject),
+				slog.String("tool", tool),
+				slog.String("panic_type", fmt.Sprintf("%T", v)),
+			)
+		}
+	}()
 	if !dispatched {
 		g.auditRefusal(ctx, c, tool, upstream, reasonInternalError)
 		return

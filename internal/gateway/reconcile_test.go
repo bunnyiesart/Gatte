@@ -642,7 +642,7 @@ func TestStatus_CountsWhatTheTrailRecords(t *testing.T) {
 	// expectations: if the gateway ever writes a row without counting it,
 	// or counts without writing, these disagree.
 	var allowed, denied, failed uint64
-	for _, row := range h.auditRows() {
+	for _, row := range h.allAuditRows() {
 		switch row.Outcome {
 		case audit.OutcomeAllowed:
 			allowed++

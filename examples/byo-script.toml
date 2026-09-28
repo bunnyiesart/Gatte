@@ -39,7 +39,8 @@
 # 4. With serve running, approve after reviewing the definition:
 #
 #      sudo -u mcpgw mcp-gateway tool list    -config "$CFG" -server ioc-sweep
-#      sudo -u mcpgw mcp-gateway tool approve -config "$CFG" ioc-sweep sweep_iocs
+#      sudo -u mcpgw mcp-gateway tool show    -config "$CFG" SERVER TOOL   # the definition and its SHA256
+#      sudo -u mcpgw mcp-gateway tool approve -config "$CFG" -fingerprint SHA256 ioc-sweep sweep_iocs
 #
 #    A tools/call to ioc-sweep.sweep_iocs then answers "swept N ioc(s): ...;
 #    key_present=true; env_names=HOME,IOC_SWEEP_API_KEY,LC_CTYPE,PATH".

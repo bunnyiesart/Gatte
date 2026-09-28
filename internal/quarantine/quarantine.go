@@ -59,6 +59,16 @@ var (
 	// Tool.ApprovedFingerprint when the observed fingerprint is no longer
 	// the one the operator reviewed. See Tool.ApprovedFingerprint.
 	ErrFingerprintMoved = errors.New("quarantine: the observed fingerprint changed since it was reviewed")
+	// ErrDefinitionNotKept is returned by Store.Definition for a
+	// fingerprint no stored definition answers to. The expected case is a
+	// baseline approved before definitions were kept (design/adr/0032):
+	// its hash survives, and what it stood for was never written down.
+	ErrDefinitionNotKept = errors.New("quarantine: definition not kept")
+	// ErrDefinitionMismatch is returned by Store.Definition when the stored
+	// definition does not hash to the fingerprint it is filed under: the
+	// row was edited after it was written. It is refused rather than shown,
+	// because showing it would present an edited text as the approved one.
+	ErrDefinitionMismatch = errors.New("quarantine: stored definition does not match its fingerprint")
 )
 
 // hashDomainTag is mixed into every Hash as its first length-prefixed
@@ -291,6 +301,48 @@ func (t Tool) Observed(observedHash string, now time.Time) (Tool, error) {
 	return next, nil
 }
 
+// Event names the transition one observation caused, for the audit trail
+// (design/adr/0032 item 4). It is what makes "a tool appeared" and "an
+// approved tool was rewritten" alertable, and it is reported only on the
+// transition: a refresh re-observes every tool every interval, and an
+// event per tick would bury the one that matters.
+type Event string
+
+const (
+	// EventNone is every observation that changed no status.
+	EventNone Event = ""
+	// EventFirstSeen is the first observation of (server, tool): it was
+	// born pending. After Forget the next observation is a first sight
+	// again, which is correct -- a deregistered upstream's approvals went
+	// with it.
+	EventFirstSeen Event = "first-seen"
+	// EventChanged is an approved tool becoming changed: the rug pull.
+	// The observation's ApprovedHash is the vetted fingerprint and its
+	// ObservedHash the new one. A changed tool that moves again stays
+	// changed and reports nothing, since nothing it is allowed to do
+	// changed.
+	EventChanged Event = "changed"
+)
+
+// EventOf returns the event of the transition from before to after, for a
+// tool that was already known. First sight has no before and is reported
+// by the adapter's insert path as EventFirstSeen.
+func EventOf(before, after Tool) Event {
+	if before.Status == StatusApproved && after.Status == StatusChanged {
+		return EventChanged
+	}
+	return EventNone
+}
+
+// Observation is what Store.Observe returns: the resulting state, and the
+// transition that produced it. Tool is embedded so the state reads exactly
+// as it did before the event was reported alongside it.
+type Observation struct {
+	Tool
+	// Event is the transition this observation caused, if any.
+	Event Event
+}
+
 // Approved returns the state t transitions to when an operator approves
 // it: status approved, with the currently-observed fingerprint recorded as
 // the new baseline. Re-approving a changed tool is the supported way to
@@ -311,8 +363,11 @@ func (t Tool) Approved(now time.Time) Tool {
 // It closes a review-then-approve race. Observed leaves a pending tool
 // pending while it replaces ObservedHash, so a discovery cycle landing
 // between the operator's review and the approval used to have the approval
-// baseline a definition no human saw -- and since the quarantine keeps
+// baseline a definition no human saw -- and since the quarantine kept
 // fingerprints, not definitions, nothing afterwards would show the switch.
+// (Since ADR-0032 it keeps the definitions too, and the console shows the
+// one being approved; the precondition is what ties that display to the
+// write.)
 // An upstream alternating a benign and a poisoned definition across
 // refreshes could aim for exactly that window.
 func (t Tool) ApprovedFingerprint(reviewedHash string, now time.Time) (Tool, error) {
@@ -402,9 +457,26 @@ type Store interface {
 	//     The only transition it can make into approved is none; only
 	//     Approve does that.
 	//
+	//   - The definition t itself is kept, keyed by Hash(t), in the same
+	//     transaction (design/adr/0032). Kept definitions are append-only:
+	//     one already stored is left as it is, and nothing here removes one
+	//     -- not even Forget -- so an approved baseline can always be shown
+	//     next to what replaced it.
+	//   - The returned Observation carries the transition, per EventOf:
+	//     EventFirstSeen for an insert, EventChanged for approved becoming
+	//     changed, EventNone otherwise. It is decided on the row read inside
+	//     the write transaction, so two concurrent observations cannot both
+	//     report the same transition.
+	//
 	// It returns ErrInvalidStatus if the stored entry's status is not one
 	// of the three defined states.
-	Observe(ctx context.Context, serverName string, t ToolIdentity) (Tool, error)
+	Observe(ctx context.Context, serverName string, t ToolIdentity) (Observation, error)
+
+	// Definition returns the definition that was observed with fingerprint
+	// hash. It returns ErrDefinitionNotKept when none is stored -- a
+	// baseline approved before definitions were kept -- and
+	// ErrDefinitionMismatch when the stored one no longer hashes to hash.
+	Definition(ctx context.Context, hash string) (ToolIdentity, error)
 
 	// Approve records the currently-observed fingerprint of
 	// (serverName, toolName) as its approved baseline and sets the status

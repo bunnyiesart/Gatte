@@ -20,10 +20,11 @@
 # 3. Approve after reviewing each definition:
 #
 #      mcp-gateway tool list    -config "$CFG" -server cases
-#      mcp-gateway tool approve -config "$CFG" cases list_cases
-#      mcp-gateway tool approve -config "$CFG" cases get_case
-#      mcp-gateway tool approve -config "$CFG" cases add_case_note
-#      mcp-gateway tool approve -config "$CFG" cases update_case_status
+#      mcp-gateway tool show    -config "$CFG" SERVER TOOL   # the definition and its SHA256
+#      mcp-gateway tool approve -config "$CFG" -fingerprint SHA256 cases list_cases
+#      mcp-gateway tool approve -config "$CFG" -fingerprint SHA256 cases get_case
+#      mcp-gateway tool approve -config "$CFG" -fingerprint SHA256 cases add_case_note
+#      mcp-gateway tool approve -config "$CFG" -fingerprint SHA256 cases update_case_status
 #
 # Every analyst acts through the gateway's one CASES_API_KEY, so the case
 # system sees a single account. Who actually asked is recorded in the

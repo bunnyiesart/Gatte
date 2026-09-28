@@ -24,6 +24,7 @@ import (
 	"github.com/bunnyiesart/Gatte/internal/registry"
 	"github.com/bunnyiesart/Gatte/internal/signer"
 	"github.com/bunnyiesart/Gatte/internal/vault"
+	"github.com/bunnyiesart/Gatte/internal/visible"
 	"github.com/google/jsonschema-go/jsonschema"
 )
 
@@ -250,6 +251,76 @@ const (
 	reasonRegistryUnavailable = "registry unavailable"
 )
 
+// The rows the gateway writes about itself rather than about a call
+// (design/adr/0032 item 4): a tool seen for the first time, an approved
+// tool whose definition changed, and a registry entry whose signature
+// started being refused. Each is written on the transition only.
+//
+// They are `denied` rows, not a fourth outcome. Every one of them is the
+// gateway refusing to serve something -- a pending tool, a changed tool, an
+// upstream -- which is what denied means, and audit.Outcome stays the closed
+// set of three that saved searches, `audit -outcome` and the heartbeat's
+// counters are written against. What tells them apart from a call refusal
+// is gatewayActor in the caller field and the reason.
+//
+// The reason is one of the three prefixes below followed by gateway-made
+// detail (fingerprints, "invalid" or "unsigned"), never backend text. A
+// SIEM query matches on the prefix.
+const (
+	// gatewayActor is the AnalystIdentity of these rows: nobody called
+	// anything, the gateway observed something. Parenthesised like
+	// unauthenticatedIdentity, so it cannot be read as an IdP subject.
+	gatewayActor = "(gateway)"
+	// registryEntryTool is the Tool of a signature row: the refusal is of
+	// an upstream's registry entry, before any tool of it was listed.
+	registryEntryTool = "(registry entry)"
+
+	// reasonToolFirstSeen: "tool first seen: sha256:OBSERVED".
+	reasonToolFirstSeen = "tool first seen"
+	// reasonToolChanged: "tool changed: sha256:APPROVED -> sha256:OBSERVED".
+	reasonToolChanged = "tool changed"
+	// reasonSignatureRefused: "signature refused: invalid" or
+	// "signature refused: unsigned".
+	reasonSignatureRefused = "signature refused"
+)
+
+// maxToolNameLen and validToolName are the tool-name charset of
+// design/adr/0032 item 6: ^[A-Za-z0-9_-]{1,64}$. A tool name reaches the
+// model, the operator's terminal, every log line and the audit trail, and it
+// is the backend's choice. Before this it was not checked at all.
+//
+// The dot is outside the set on purpose. It is NameSeparator, and a tool
+// named "b.c" on upstream "a" reads as the same client-facing name as tool
+// "c" on an upstream "a.b" -- the ambiguity the registry already refuses
+// from the other side.
+const maxToolNameLen = 64
+
+func validToolName(name string) bool {
+	if name == "" || len(name) > maxToolNameLen {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_' || c == '-') {
+			return false
+		}
+	}
+	return true
+}
+
+// shownName renders an untrusted name for an error or a log line: hidden
+// code points escaped, and cut short, since the name was refused precisely
+// because nothing bounds what a backend sends.
+func shownName(name string) string {
+	const limit = 96
+	if len(name) <= limit {
+		return `"` + visible.Escape(name) + `"`
+	}
+	// A code point cut in half shows as \x{..} bytes, which is visible
+	// and harmless.
+	return fmt.Sprintf(`"%s"... (%d bytes)`, visible.Escape(name[:limit]), len(name))
+}
+
 // Reasons for a call the per-analyst quota turned down
 // (design/adr/0030-quota-por-analista.md decision 7). Declared interface
 // strings like the ones above, for the same reason.
@@ -422,6 +493,12 @@ type Gateway struct {
 	// compute a table from the connections a concurrent Connect is in the
 	// middle of replacing, and install it over the newer one.
 	refreshMu sync.Mutex
+
+	// sigRefused is, per upstream name, the reason its entry's signature
+	// was last refused, so noteSignature writes an audit row on the
+	// transition and not on every round (design/adr/0032). Guarded by
+	// refreshMu: only Connect and Reconcile verify entries, and both hold it.
+	sigRefused map[string]string
 
 	// credKey keys the digests in creds. It is 32 random bytes generated
 	// once per process and never persisted, and that is deliberate: a
@@ -652,6 +729,7 @@ func New(cfg Config) (*Gateway, error) {
 	return &Gateway{
 		credKey:        credKey,
 		creds:          map[string]map[string]string{},
+		sigRefused:     map[string]string{},
 		registry:       cfg.Registry,
 		vault:          cfg.Vault,
 		quarantine:     cfg.Quarantine,
@@ -790,7 +868,9 @@ func (g *Gateway) Connect(ctx context.Context) error {
 			continue
 		}
 
-		if err := g.verifyEntry(ctx, entry); err != nil {
+		err := g.verifyEntry(ctx, entry)
+		g.noteSignature(ctx, entry.Name, err)
+		if err != nil {
 			failures = append(failures, err)
 			g.log.ErrorContext(ctx, "gateway: upstream refused by signature check",
 				slog.String("upstream", entry.Name), slog.String("detail", err.Error()))
@@ -799,6 +879,7 @@ func (g *Gateway) Connect(ctx context.Context) error {
 
 		ready = append(ready, entry)
 	}
+	g.forgetSignatures(entries)
 
 	// Each ready entry is brought up and listed in its own goroutine, all
 	// under ctx, and handed to the quarantine as soon as it answers. Done
@@ -1086,7 +1167,9 @@ func (g *Gateway) Reconcile(ctx context.Context) error {
 				slog.String("upstream", entry.Name))
 			continue
 		}
-		if err := g.verifyEntry(ctx, entry); err != nil {
+		err := g.verifyEntry(ctx, entry)
+		g.noteSignature(ctx, entry.Name, err)
+		if err != nil {
 			failures = append(failures, err)
 			if errors.Is(err, errSignatureUnmeasured) {
 				// Not refused: unreadable. The entry stays out of `want`,
@@ -1104,6 +1187,7 @@ func (g *Gateway) Reconcile(ctx context.Context) error {
 		}
 		want[entry.Name] = entry
 	}
+	g.forgetSignatures(entries)
 
 	// Sorted so a round's log reads in the same order every time, and so
 	// the dials below are deterministic under test.
@@ -1438,6 +1522,14 @@ func (g *Gateway) routesFor(ctx context.Context, upstream string, defs []ToolDef
 	dupes := map[string]bool{}
 
 	for _, def := range defs {
+		// First, and before the quarantine sees it: a name outside the
+		// charset never gets a quarantine row, an audit row or a route, so
+		// nothing downstream ever has to print it (design/adr/0032 item 6).
+		// A measurement, like the schema checks below.
+		if !validToolName(def.Name) {
+			out.failures = append(out.failures, fmt.Errorf("%w: %q: tool name %s is refused: a tool name must match ^[A-Za-z0-9_-]{1,64}$", ErrUpstreamUnavailable, upstream, shownName(def.Name)))
+			continue
+		}
 		if err := validateSchema(def.InputSchema); err != nil {
 			// Refused at discovery, deliberately, rather than guarded at
 			// each serving surface. mcp.Server.AddTool *panics* on a schema
@@ -1470,7 +1562,8 @@ func (g *Gateway) routesFor(ctx context.Context, upstream string, defs []ToolDef
 			out.failures = append(out.failures, fmt.Errorf("%w: %q: tool %q has an unusable output schema: %w", ErrUpstreamUnavailable, upstream, def.Name, err))
 			continue
 		}
-		if _, err := g.quarantine.Observe(ctx, upstream, identityOf(def)); err != nil {
+		obs, err := g.quarantine.Observe(ctx, upstream, identityOf(def))
+		if err != nil {
 			// A tool whose quarantine state could not be recorded is a tool
 			// whose approval we cannot check later. Do not route it -- and
 			// say that the failure was ours, not the backend's, so a refresh
@@ -1479,6 +1572,7 @@ func (g *Gateway) routesFor(ctx context.Context, upstream string, defs []ToolDef
 			out.unmeasured = true
 			continue
 		}
+		g.auditQuarantineEvent(ctx, upstream, obs)
 
 		name := Namespaced(upstream, def.Name)
 		if _, dup := out.routes[name]; dup {
@@ -2300,7 +2394,7 @@ func (g *Gateway) verifyEntry(ctx context.Context, entry registry.UpstreamServer
 	switch {
 	case errors.Is(err, signer.ErrNotFound):
 		if g.requireSig {
-			return fmt.Errorf("%w: %q: no signature, and unsigned entries are refused", ErrUpstreamUnavailable, entry.Name)
+			return signatureRefusal{error: fmt.Errorf("%w: %q: no signature, and unsigned entries are refused", ErrUpstreamUnavailable, entry.Name), unsigned: true}
 		}
 		g.log.WarnContext(ctx, "gateway: upstream entry is unsigned",
 			slog.String("upstream", entry.Name))
@@ -2319,7 +2413,7 @@ func (g *Gateway) verifyEntry(ctx context.Context, entry registry.UpstreamServer
 	}
 
 	if err := g.verifier.Verify(entry, sig); err != nil {
-		return fmt.Errorf("%w: %q: %w", ErrUpstreamUnavailable, entry.Name, err)
+		return signatureRefusal{error: fmt.Errorf("%w: %q: %w", ErrUpstreamUnavailable, entry.Name, err)}
 	}
 	return nil
 }
@@ -2679,6 +2773,146 @@ func (g *Gateway) auditFailure(ctx context.Context, c Caller, tool, upstream str
 		g.log.ErrorContext(ctx, "gateway: failed dispatch was not audited -- the trail shows this call as allowed and nothing else",
 			slog.String("tool", tool), slog.String("detail", err.Error()))
 	}
+}
+
+// auditQuarantineEvent writes the row for a quarantine transition, if obs
+// carries one (design/adr/0032 item 4).
+//
+// Before it, endpoint.go discarded what Observe returned: a tool appearing
+// and an approved tool being rewritten -- the two events this component
+// exists to catch -- produced no log line, no audit row and nothing the
+// SIEM could alert on. The gateway still failed closed; the operator just
+// found out from an analyst's "quarantined".
+//
+// The store decides the transition inside the transaction that recorded
+// it, so this runs once per transition whatever the refresh interval. The
+// row is written after the state it describes is committed; if the write
+// fails the state stands and the loss is logged, which is the same order
+// and the same trade as every other refusal row here.
+func (g *Gateway) auditQuarantineEvent(ctx context.Context, upstream string, obs quarantine.Observation) {
+	var reason string
+	switch obs.Event {
+	case quarantine.EventFirstSeen:
+		reason = fmt.Sprintf("%s: sha256:%s", reasonToolFirstSeen, obs.ObservedHash)
+		g.log.WarnContext(ctx, "gateway: new tool observed; it is pending and not served until an operator approves it",
+			slog.String("upstream", upstream), slog.String("tool", obs.ToolName),
+			slog.String("fingerprint", shortHash(obs.ObservedHash)))
+	case quarantine.EventChanged:
+		reason = fmt.Sprintf("%s: sha256:%s -> sha256:%s", reasonToolChanged, obs.ApprovedHash, obs.ObservedHash)
+		g.log.ErrorContext(ctx, "gateway: an APPROVED tool changed its definition; it is no longer served",
+			slog.String("upstream", upstream), slog.String("tool", obs.ToolName),
+			slog.String("approved", shortHash(obs.ApprovedHash)), slog.String("observed", shortHash(obs.ObservedHash)))
+	default:
+		return
+	}
+	g.auditEvent(ctx, Namespaced(upstream, obs.ToolName), upstream, reason)
+}
+
+// shortHash is the first twelve hex digits of a fingerprint, for log lines.
+// The full value is in the audit row the same event writes, which is where
+// an operator matches it against `tool show`; the log carries the prefix
+// only, so that no 64-hex run in it can be mistaken for -- or hide -- a
+// credential digest (TestCredentialDrift_TheKeyNeverLeaves).
+func shortHash(h string) string {
+	if len(h) <= 12 {
+		return h
+	}
+	return h[:12]
+}
+
+// signatureRefusal is what verifyEntry returns for an entry it refused on
+// the evidence -- as opposed to errSignatureUnmeasured, which is no
+// evidence at all. It only carries which of the two refusals it was, for
+// the audit reason.
+type signatureRefusal struct {
+	error
+	unsigned bool
+}
+
+func (e signatureRefusal) Unwrap() error { return e.error }
+
+// noteSignature records the outcome of verifying one entry, and writes an
+// audit row when the entry STARTS being refused (design/adr/0032 item 4).
+//
+// Reconcile re-verifies every entry every round, so a row per refusal
+// would be a row per interval for as long as the entry stays bad. The
+// state is in memory and guarded by refreshMu, which every caller holds:
+// a restart writes the refusal once more, which is a restart announcing
+// what it found.
+//
+// An unreadable signature store is neither refused nor accepted, and
+// changes nothing here.
+func (g *Gateway) noteSignature(ctx context.Context, name string, err error) {
+	var refused signatureRefusal
+	switch {
+	case err == nil:
+		delete(g.sigRefused, name)
+		return
+	case !errors.As(err, &refused):
+		return
+	}
+	reason := reasonSignatureRefused + ": invalid"
+	if refused.unsigned {
+		reason = reasonSignatureRefused + ": unsigned"
+	}
+	if g.sigRefused[name] == reason {
+		return
+	}
+	g.sigRefused[name] = reason
+	g.auditEvent(ctx, registryEntryTool, name, reason)
+}
+
+// forgetSignatures drops the refusal state of entries no longer in the
+// registry, so one re-registered later is reported afresh.
+func (g *Gateway) forgetSignatures(entries []registry.UpstreamServer) {
+	for name := range g.sigRefused {
+		if !slices.ContainsFunc(entries, func(e registry.UpstreamServer) bool { return e.Name == name }) {
+			delete(g.sigRefused, name)
+		}
+	}
+}
+
+// auditEvent writes one row the gateway records about itself: attributed
+// to gatewayActor, outcome denied, with no source address. Detached from
+// the caller's cancellation like every other audit write.
+func (g *Gateway) auditEvent(ctx context.Context, tool, upstream, reason string) {
+	writeCtx, cancel := auditWriteCtx(ctx)
+	defer cancel()
+	c := Caller{Identity: access.Identity{Subject: gatewayActor}}
+	if err := g.record(writeCtx, c, tool, upstream, audit.OutcomeDenied, reason); err != nil {
+		g.log.ErrorContext(ctx, "gateway: quarantine or signature event was not audited",
+			slog.String("tool", tool), slog.String("upstream", upstream),
+			slog.String("reason", reason), slog.String("detail", err.Error()))
+	}
+}
+
+// Backlog is the Tool Quarantine's approval queue in two numbers, for the
+// heartbeat (design/adr/0032 item 5).
+type Backlog struct {
+	// Pending is tools never approved; Changed is approved tools whose
+	// definition moved -- rug pulls nobody has answered yet.
+	Pending int
+	Changed int
+}
+
+// Backlog counts the quarantine's pending and changed tools across every
+// upstream it has seen, connected or not: it is the same set `mcp-gateway
+// tool list` shows, read from the store and not from the routing table.
+func (g *Gateway) Backlog(ctx context.Context) (Backlog, error) {
+	tools, err := g.quarantine.List(ctx, "")
+	if err != nil {
+		return Backlog{}, fmt.Errorf("%w: %w", ErrQuarantineUnavailable, err)
+	}
+	var b Backlog
+	for _, t := range tools {
+		switch t.Status {
+		case quarantine.StatusPending:
+			b.Pending++
+		case quarantine.StatusChanged:
+			b.Changed++
+		}
+	}
+	return b, nil
 }
 
 // auditWriteCtx returns the context an audit write runs under: the

@@ -180,9 +180,9 @@ The file carries a second shape of line since ADR-0021, and anything that
 parses it has to know that:
 
 ```json
-{"v":2,"type":"heartbeat","ts":"…","chain":"gatte-jail-01","boot":"…",
+{"v":3,"type":"heartbeat","ts":"…","chain":"gatte-jail-01","boot":"…",
  "head":"…","records":128,"allowed":94,"denied":31,"failed":3,
- "upstreams":4,"tools":57,"suspended":false}
+ "upstreams":4,"tools":57,"suspended":false,"pending":2,"changed":0}
 ```
 
 Audit lines carry `"type":"record"`; the heartbeat carries no `hash` and no

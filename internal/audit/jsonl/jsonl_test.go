@@ -52,6 +52,7 @@ var schemaKeys = []string{
 var heartbeatKeys = []string{
 	"v", "type", "ts", "chain", "boot", "head", "records",
 	"allowed", "denied", "failed", "upstreams", "tools", "suspended",
+	"pending", "changed",
 }
 
 const testChain = "gatte-jail-01"
@@ -692,6 +693,25 @@ func TestHeartbeatCarriesExactlyTheDeclaredSchema(t *testing.T) {
 	}
 	if got[0]["v"] != float64(jsonl.Version) {
 		t.Errorf("v = %v, want %d: the two shapes version together", got[0]["v"], jsonl.Version)
+	}
+}
+
+// TestHeartbeatCarriesTheQuarantineBacklog is design/adr/0032 item 5: how
+// many tools are waiting for a human, and how many of those are rug pulls,
+// ride the same line whose absence is already alerted on.
+func TestHeartbeatCarriesTheQuarantineBacklog(t *testing.T) {
+	h := newHarness(t)
+
+	hb, err := h.rec.Heartbeat(context.Background(), jsonl.Stats{Boot: time.Now(), Now: time.Now(), Pending: 3, Changed: 1})
+	if err != nil {
+		t.Fatalf("Heartbeat: %v", err)
+	}
+	if hb.Pending != 3 || hb.Changed != 1 {
+		t.Errorf("heartbeat pending/changed = %d/%d, want 3/1", hb.Pending, hb.Changed)
+	}
+	got := h.decoded()
+	if got[0]["pending"] != float64(3) || got[0]["changed"] != float64(1) {
+		t.Errorf("line pending/changed = %v/%v, want 3/1", got[0]["pending"], got[0]["changed"])
 	}
 }
 

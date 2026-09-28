@@ -284,6 +284,13 @@ func TestUpstreamRegister_InvalidEntryIsRejected(t *testing.T) {
 			want: "oci",
 		},
 		{
+			// design/adr/0033: host is the gateway's own network namespace,
+			// loopback included, and is outside the allowlist.
+			name: "oci with the host network",
+			args: []string{"register", "-name", "casemgmt", "-transport", "oci", "-image", ociTestImage, "-arg", "--network=host"},
+			want: "network policy outside the allowlist",
+		},
+		{
 			name: "env var name with whitespace",
 			args: []string{"register", "-name", "casemgmt", "-transport", "stdio", "-command", "docker", "-env", "CASEMGMT KEY"},
 			want: `env var name must not contain "=" or whitespace`,
@@ -602,5 +609,71 @@ func TestRunUpstreamRegister_OCIEntryRoundTrips(t *testing.T) {
 	}
 	if got.Image != ociTestImage || got.Transport != registry.TransportOCI {
 		t.Fatalf("stored entry = %+v, want transport oci and image %s", got, ociTestImage)
+	}
+}
+
+// TestRunSign_RefusesAnOCIEntryOnTheHostNetwork: a row written past
+// `upstream register` (or registered before design/adr/0033) with
+// --network=host is refused at the prompt, not signed and then refused at
+// every start.
+func TestRunSign_RefusesAnOCIEntryOnTheHostNetwork(t *testing.T) {
+	e := newOpTestEnv(t)
+	useSigningKey(t, e)
+	mustRegister(t, e, registry.UpstreamServer{
+		Name:      "threatintel",
+		Transport: registry.TransportOCI,
+		Image:     ociTestImage,
+		Args:      []string{"--network=host"},
+	})
+
+	requireExit(t, runSign(e.opEnv, "threatintel"), exitProblem, "sign host network")
+	requireContains(t, e.stderrText(), "network policy outside the allowlist", "sign host network")
+	if _, err := e.signatures().Get(context.Background(), "threatintel"); !errors.Is(err, signer.ErrNotFound) {
+		t.Errorf("a signature was stored for a refused entry: %v", err)
+	}
+}
+
+// TestRunUpstreamList_JSONStatesEachEntrysNetwork: the deploy side derives
+// the host firewall's allowlist from this field (design/adr/0033), so it
+// must say, per entry, the network the dial actually runs under: the
+// resolved oci policy with its default applied, "host" for a stdio child,
+// and nothing -- plus the reason -- for an entry the dialer would refuse.
+func TestRunUpstreamList_JSONStatesEachEntrysNetwork(t *testing.T) {
+	e := newOpTestEnv(t)
+	mustRegister(t, e, stdioEntry("casemgmt"))
+	mustRegister(t, e, registry.UpstreamServer{Name: "docsearch", Transport: registry.TransportOCI, Image: ociTestImage})
+	mustRegister(t, e, registry.UpstreamServer{Name: "logsearch", Transport: registry.TransportOCI, Image: ociTestImage,
+		Args: []string{"--rm", "--network=slirp4netns"}})
+	mustRegister(t, e, registry.UpstreamServer{Name: "threatintel", Transport: registry.TransportOCI, Image: ociTestImage,
+		Args: []string{"--network=host"}})
+
+	requireExit(t, runUpstreamList(e.opEnv, true), exitOK, "list -json")
+
+	var got []map[string]any
+	if err := json.Unmarshal(e.out.Bytes(), &got); err != nil {
+		t.Fatalf("output is not JSON: %v\n%s", err, e.stdoutText())
+	}
+	want := map[string]string{"casemgmt": "host", "docsearch": "none", "logsearch": "slirp4netns", "threatintel": ""}
+	for _, row := range got {
+		name, _ := row["name"].(string)
+		network, present := row["network"]
+		if !present {
+			t.Errorf("%s: no \"network\" field: %v", name, row)
+			continue
+		}
+		if network != want[name] {
+			t.Errorf("%s: network = %v, want %q", name, network, want[name])
+		}
+		refusal, _ := row["network_error"].(string)
+		if name == "threatintel" {
+			if !strings.Contains(refusal, "outside the allowlist") {
+				t.Errorf("threatintel: network_error = %q, want the dialer's refusal", refusal)
+			}
+		} else if refusal != "" {
+			t.Errorf("%s: network_error = %q, want none", name, refusal)
+		}
+	}
+	if len(got) != len(want) {
+		t.Errorf("got %d rows, want %d", len(got), len(want))
 	}
 }

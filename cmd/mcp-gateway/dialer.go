@@ -58,3 +58,20 @@ func dialTimeRefusal(entry registry.UpstreamServer) error {
 	}
 	return gwoci.ValidateEnvVarNames(entry.EnvVarNames)
 }
+
+// stdioNetwork is what `upstream list -json` reports for a stdio entry: the
+// child is a plain process in the gateway's own network namespace.
+const stdioNetwork = "host"
+
+// entryNetwork reports the network namespace a dial of entry runs in, or
+// the error the oci adapter would refuse its Args with. It is the per-entry
+// egress declaration the host firewall is derived from (design/adr/0033):
+// the value comes from the signed Args, through the same rule that builds
+// the podman argv, so the list cannot say one network while the dial joins
+// another.
+func entryNetwork(entry registry.UpstreamServer) (string, error) {
+	if entry.Transport != registry.TransportOCI {
+		return stdioNetwork, nil
+	}
+	return gwoci.ResolveNetwork(entry.Args)
+}

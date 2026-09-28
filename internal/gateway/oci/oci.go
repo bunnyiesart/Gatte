@@ -152,6 +152,10 @@ var (
 	// ErrInvalidNetwork means the declared network policy is not a single
 	// option token.
 	ErrInvalidNetwork = errors.New("oci: invalid network policy")
+	// ErrNetworkNotAllowed means the declared network policy is one token
+	// but not one of the values design/adr/0033 admits: none, slirp4netns,
+	// pasta, or a podman network name.
+	ErrNetworkNotAllowed = errors.New("oci: network policy outside the allowlist")
 	// ErrInvalidEnvName means a variable name could not be written to
 	// argv as one token naming one variable -- see validateEnvName.
 	ErrInvalidEnvName = errors.New("oci: invalid environment variable name")

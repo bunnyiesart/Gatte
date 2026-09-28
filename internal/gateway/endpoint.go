@@ -2612,6 +2612,14 @@ func (g *Gateway) record(ctx context.Context, c Caller, tool, upstream string, o
 // hand the caller a signal and change a "no" into a "maybe". The failure
 // is loud in the log instead.
 func (g *Gateway) auditRefusal(ctx context.Context, c Caller, tool, upstream, reason string) {
+	// Normalised here, for every refusal path, and not only in
+	// RecordRefusedProbe: audit.Record.Validate refuses an empty Tool, so
+	// Dispatch(ctx, c, "", ...) used to be refused with no row at all -- a
+	// denial that escaped the trail its doc says every refusal reaches
+	// exactly once (ported from the internal line, 28 Sep 2026).
+	if strings.TrimSpace(tool) == "" {
+		tool = unnamedTool
+	}
 	g.log.WarnContext(ctx, "gateway: refused dispatch",
 		slog.String("subject", c.Identity.Subject),
 		slog.String("source", c.SourceAddress),

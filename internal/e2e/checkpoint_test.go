@@ -46,6 +46,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/bunnyiesart/Gatte/internal/access"
+	accesssqlite "github.com/bunnyiesart/Gatte/internal/access/sqlite"
 	"github.com/bunnyiesart/Gatte/internal/audit"
 	auditsqlite "github.com/bunnyiesart/Gatte/internal/audit/sqlite"
 	"github.com/bunnyiesart/Gatte/internal/gateway"
@@ -243,6 +244,9 @@ func buildStack(t *testing.T, policy *access.Policy, tokens map[string]access.Id
 	if err := quarantinesqlite.Migrate(db); err != nil {
 		t.Fatalf("migrate quarantine: %v", err)
 	}
+	if err := accesssqlite.Migrate(db); err != nil {
+		t.Fatalf("migrate blocklist: %v", err)
+	}
 	if err := quotasqlite.Migrate(db); err != nil {
 		t.Fatalf("migrate quota: %v", err)
 	}
@@ -316,6 +320,7 @@ func buildStack(t *testing.T, policy *access.Policy, tokens map[string]access.Id
 		Quarantine:     quar,
 		Audit:          aud,
 		Policy:         policy,
+		Blocklist:      accesssqlite.New(db),
 		Quota:          quotaGate,
 		Dialer:         gwstdio.New(),
 		MaxResultBytes: maxResultBytes,

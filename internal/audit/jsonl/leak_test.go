@@ -202,6 +202,7 @@ func newLeakHarness(t *testing.T, secret string) *leakHarness {
 		Quarantine: quarantinesql.New(db),
 		Audit:      auditor,
 		Policy:     policy,
+		Blocklist:  noBlocks{},
 		Quota:      noQuota(t),
 		Dialer:     &oneDialer{up: up},
 		Now:        func() time.Time { return time.Date(2026, 9, 11, 12, 0, 0, 0, time.UTC) },

@@ -18,6 +18,7 @@ import (
 
 	"github.com/bunnyiesart/Gatte/internal/access"
 	"github.com/bunnyiesart/Gatte/internal/access/oidc"
+	accesssqlite "github.com/bunnyiesart/Gatte/internal/access/sqlite"
 	"github.com/bunnyiesart/Gatte/internal/audit"
 	auditjsonl "github.com/bunnyiesart/Gatte/internal/audit/jsonl"
 	auditsqlite "github.com/bunnyiesart/Gatte/internal/audit/sqlite"
@@ -397,8 +398,13 @@ func buildServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) (
 		Quarantine: quar,
 		Audit:      aud,
 		Policy:     policy,
-		Quota:      quotaGate,
-		Dialer:     newTransportDialer(),
+		// The kill switch (design/adr/0031). The Gateway is handed the
+		// read-only port; `mcp-gateway access` holds the one that writes,
+		// over the same file, so a block reaches this process on the next
+		// request with nothing to reload.
+		Blocklist: accesssqlite.New(db),
+		Quota:     quotaGate,
+		Dialer:    newTransportDialer(),
 		// Wiring these is GAB-18 plus ADR-0010, and they are the reason
 		// gateway.verifyEntry exists: without a Store the gateway checks no
 		// entry's integrity at all, and without a Verifier it would check

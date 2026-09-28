@@ -16,6 +16,7 @@
 //	sign                      sign a registry entry
 //	audit                     read the Audit Trail
 //	quota list|usage          per-analyst quota: the policy, and the counters
+//	access block|unblock|list per-analyst kill switch
 //	version
 //
 // Exit codes follow the convention the rest of this project's tooling
@@ -35,6 +36,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	accesssqlite "github.com/bunnyiesart/Gatte/internal/access/sqlite"
 	auditsqlite "github.com/bunnyiesart/Gatte/internal/audit/sqlite"
 	"github.com/bunnyiesart/Gatte/internal/config"
 	quarantinesqlite "github.com/bunnyiesart/Gatte/internal/quarantine/sqlite"
@@ -77,6 +79,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return cmdAudit(rest, stdout, stderr)
 	case "quota":
 		return cmdQuota(rest, stdout, stderr)
+	case "access":
+		return cmdAccess(rest, stdout, stderr)
 	case "version":
 		fmt.Fprintln(stdout, version())
 		return exitOK
@@ -103,6 +107,7 @@ Commands:
   sign         Sign a registry entry so the gateway will serve it.
   audit        Read the audit trail.
   quota        Show the declared limits and what each analyst has spent.
+  access       Block or unblock one analyst at once, or list who is blocked.
   version      Print the build version.
 
 Every command except sign -generate-key takes -config (default:
@@ -116,7 +121,7 @@ Exit codes: 0 ok, 1 ran and found a problem, 2 could not run.
 // openStore opens the SQLite file named by the config and migrates every
 // component's schema.
 //
-// All five migrations live here, together, deliberately: a component
+// All six migrations live here, together, deliberately: a component
 // whose table is missing fails at the first query, deep inside a request,
 // rather than at startup. Running them all from the composition root
 // means an operator learns about a broken database when they start the
@@ -135,6 +140,7 @@ func openStore(cfg *config.Config) (*sql.DB, error) {
 		"tool quarantine":   quarantinesqlite.Migrate,
 		"entry signatures":  signersqlite.Migrate,
 		"quota counters":    quotasqlite.Migrate,
+		"blocked subjects":  accesssqlite.Migrate,
 	} {
 		if err := migrate(db); err != nil {
 			db.Close()

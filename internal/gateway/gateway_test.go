@@ -41,6 +41,7 @@ import (
 	"time"
 
 	"github.com/bunnyiesart/Gatte/internal/access"
+	accesssql "github.com/bunnyiesart/Gatte/internal/access/sqlite"
 	"github.com/bunnyiesart/Gatte/internal/audit"
 	auditsql "github.com/bunnyiesart/Gatte/internal/audit/sqlite"
 	"github.com/bunnyiesart/Gatte/internal/quarantine"
@@ -373,6 +374,9 @@ type harness struct {
 	vault      *fakeVault
 	quarantine quarantine.Store
 	audit      audit.Recorder
+	// blocks is the Operator Console's side of the blocklist, over the same
+	// database the Gateway reads it from (design/adr/0031).
+	blocks access.BlockStore
 	// counters reads back what the quota spent, for the tests that assert
 	// a refusal debited nothing or that a failed call debited anyway. It
 	// is the read PORT, which the Gateway itself is never given -- these
@@ -449,6 +453,9 @@ func newFullHarness(t *testing.T, maxResultBytes int64, q quotaSetup, allowed ..
 	if err := quotasql.Migrate(db); err != nil {
 		t.Fatalf("quota migrate: %v", err)
 	}
+	if err := accesssql.Migrate(db); err != nil {
+		t.Fatalf("blocklist migrate: %v", err)
+	}
 
 	policy, err := access.NewPolicy(
 		[]access.Role{{Name: "n1-triage", Tools: allowed}},
@@ -484,6 +491,7 @@ func newFullHarness(t *testing.T, maxResultBytes int64, q quotaSetup, allowed ..
 		vault:      newFakeVault(),
 		quarantine: quarantinesql.New(db),
 		audit:      auditsql.New(db),
+		blocks:     accesssql.New(db),
 		counters:   counters,
 	}
 
@@ -493,6 +501,7 @@ func newFullHarness(t *testing.T, maxResultBytes int64, q quotaSetup, allowed ..
 		Quarantine:     h.quarantine,
 		Audit:          h.audit,
 		Policy:         policy,
+		Blocklist:      h.blocks,
 		Quota:          gate,
 		Dialer:         h.dialer,
 		MaxResultBytes: maxResultBytes,
@@ -1354,7 +1363,7 @@ func TestNew_RejectsMissingPorts(t *testing.T) {
 	if _, err := New(Config{}); err == nil {
 		t.Fatal("New with no ports: want an error")
 	}
-	for _, missing := range []string{"Registry", "Vault", "Quarantine", "Audit", "Policy", "Quota", "Dialer"} {
+	for _, missing := range []string{"Registry", "Vault", "Quarantine", "Audit", "Policy", "Blocklist", "Quota", "Dialer"} {
 		cfg := fullConfig(t)
 		switch missing {
 		case "Registry":
@@ -1367,6 +1376,8 @@ func TestNew_RejectsMissingPorts(t *testing.T) {
 			cfg.Audit = nil
 		case "Policy":
 			cfg.Policy = nil
+		case "Blocklist":
+			cfg.Blocklist = nil
 		case "Quota":
 			// A nil quota Gate must be a construction error and not "then
 			// nothing is counted": an installation with no account wires a
@@ -1462,6 +1473,7 @@ func fullConfig(t *testing.T) Config {
 		Quarantine: quarantinesql.New(db),
 		Audit:      auditsql.New(db),
 		Policy:     policy,
+		Blocklist:  noBlocks{},
 		Quota:      emptyQuotaGate(t),
 		Dialer:     newFakeDialer(),
 	}

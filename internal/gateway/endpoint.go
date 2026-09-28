@@ -280,6 +280,18 @@ const (
 	reasonQuotaUnavailable = "quota unavailable"
 )
 
+// Reasons for a request refused by the operator's per-analyst kill switch
+// (design/adr/0031-bloqueio-imediato-por-analista.md). Declared interface
+// strings, like the ones above.
+const (
+	// reasonSubjectBlocked means the operator blocked this subject with
+	// `mcp-gateway access block`. The caller is told only "forbidden".
+	reasonSubjectBlocked = "subject blocked"
+	// reasonBlocklistUnavailable means the blocklist could not be read, so
+	// the request was refused rather than waved through.
+	reasonBlocklistUnavailable = "blocklist unavailable"
+)
+
 // redacted replaces a resolved credential value wherever one is found in
 // text that is about to leave this package.
 const redacted = "[redacted]"
@@ -301,6 +313,12 @@ type Config struct {
 	Audit audit.Recorder
 	// Policy decides which namespaced tools an identity may see and call.
 	Policy *access.Policy
+	// Blocklist is the operator's per-analyst kill switch
+	// (design/adr/0031-bloqueio-imediato-por-analista.md), read on every
+	// AdmitCaller, ListTools and Dispatch. Required: a nil one would have to
+	// mean "nobody can be blocked", which is a control switched off by an
+	// unset field. The port can only ask; placing a block is the console's.
+	Blocklist access.Blocklist
 	// Quota is the per-analyst quota, consulted on every dispatch between
 	// Tool Quarantine's admission and the audit record that says the call
 	// was allowed (design/adr/0030-quota-por-analista.md).
@@ -399,6 +417,7 @@ type Gateway struct {
 	quarantine quarantine.Store
 	audit      audit.Recorder
 	policy     *access.Policy
+	blocklist  access.Blocklist
 	quota      *quota.Gate
 	dialer     Dialer
 	signatures signer.Store
@@ -590,6 +609,9 @@ func New(cfg Config) (*Gateway, error) {
 	if cfg.Policy == nil {
 		missing = append(missing, "Policy")
 	}
+	if cfg.Blocklist == nil {
+		missing = append(missing, "Blocklist")
+	}
 	if cfg.Quota == nil {
 		missing = append(missing, "Quota")
 	}
@@ -657,6 +679,7 @@ func New(cfg Config) (*Gateway, error) {
 		quarantine:     cfg.Quarantine,
 		audit:          cfg.Audit,
 		policy:         cfg.Policy,
+		blocklist:      cfg.Blocklist,
 		quota:          cfg.Quota,
 		dialer:         cfg.Dialer,
 		signatures:     cfg.Signatures,
@@ -1659,6 +1682,14 @@ func (g *Gateway) resolveEnv(ctx context.Context, entry registry.UpstreamServer)
 // empty tool list and a broken approval store must not look the same to an
 // operator.
 func (g *Gateway) ListTools(ctx context.Context, id access.Identity) ([]ToolDef, error) {
+	// First, before the suspension answer: a blocked subject learns nothing
+	// about the fleet, not even that it is suspended (ADR-0031). Not
+	// audited here -- ListTools has no Caller to attribute a row to, and
+	// the serving adapter's AdmitCaller has already written one for this
+	// request unless the block landed in between.
+	if err := g.checkBlock(ctx, id.Subject); err != nil {
+		return nil, err
+	}
 	// Suspended is not the same answer as "you may use nothing", for the
 	// reason the quarantine-unavailable case above gives: an empty list
 	// and a fleet that cannot be confirmed must not look alike to whoever
@@ -1713,6 +1744,8 @@ func (g *Gateway) ListTools(ctx context.Context, id access.Identity) ([]ToolDef,
 //
 // The order below is a security property, not an implementation detail:
 //
+//  0. Refuse a subject the operator blocked (design/adr/0031), before
+//     anything is said about the fleet or the tool.
 //  1. Resolve the namespaced name to a route. An unknown name never
 //     reaches any other component.
 //  2. Authorize the identity for that name. This runs before the
@@ -1826,6 +1859,21 @@ func (g *Gateway) ListTools(ctx context.Context, id access.Identity) ([]ToolDef,
 // currently under suspicion is -- and that is the fact the opaque error
 // protects.
 func (g *Gateway) Dispatch(ctx context.Context, c Caller, namespacedTool string, args json.RawMessage) (Result, error) {
+	// The kill switch first (ADR-0031), ahead of every answer below: a
+	// blocked subject is told "forbidden" whatever they named, so the
+	// refusal cannot be used to tell a real tool from an invented one. The
+	// serving adapter already refused them at AdmitCaller; this is the
+	// same check at the gate every surface shares, for a call that arrives
+	// after the list it was chosen from.
+	if err := g.checkBlock(ctx, c.Identity.Subject); err != nil {
+		reason := reasonSubjectBlocked
+		if !errors.Is(err, access.ErrSubjectBlocked) {
+			reason = reasonBlocklistUnavailable
+		}
+		g.auditRefusal(ctx, c, namespacedTool, targetOf(namespacedTool), reason)
+		return Result{}, err
+	}
+
 	// Before the routing table is consulted at all: while the fleet is
 	// suspended the table is empty by construction, and answering "unknown
 	// tool" would tell a caller -- and the audit trail -- that a tool they
@@ -2167,6 +2215,55 @@ func (g *Gateway) RecordAuthFailure(ctx context.Context, source string) {
 		g.log.ErrorContext(ctx, "gateway: unauthenticated request was not audited",
 			slog.String("detail", err.Error()))
 	}
+}
+
+// AdmitCaller is the per-analyst kill switch at the front door
+// (design/adr/0031-bloqueio-imediato-por-analista.md): the serving adapter
+// calls it right after the token verified, before anything else is done
+// for the request.
+//
+// A blocked subject gets access.ErrSubjectBlocked, which wraps
+// access.ErrForbidden, so the caller hears the one constant "forbidden" and
+// nothing about why. A blocklist that cannot be read refuses too, with an
+// error wrapping access.ErrBlocklistUnavailable, which is NOT forbidden: a
+// serving adapter reports it as an internal error. Both are written to the
+// trail the way every other refusal is, as a denied row with the verified
+// subject, the source address and the reason the caller is not told.
+//
+// The table is read on every call, which is what makes a block reach a
+// token that is still valid on its very next request, with no restart and
+// no cache to go stale. It is one primary-key read.
+func (g *Gateway) AdmitCaller(ctx context.Context, c Caller) error {
+	err := g.checkBlock(ctx, c.Identity.Subject)
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, access.ErrSubjectBlocked):
+		g.auditRefusal(ctx, c, authenticationTool, gatewayItself, reasonSubjectBlocked)
+	default:
+		g.log.ErrorContext(ctx, "gateway: refusing request whose blocklist could not be read",
+			slog.String("detail", err.Error()))
+		g.auditRefusal(ctx, c, authenticationTool, gatewayItself, reasonBlocklistUnavailable)
+	}
+	return err
+}
+
+// checkBlock asks the blocklist about subject and reduces the answer to
+// nil, access.ErrSubjectBlocked, or an error wrapping
+// access.ErrBlocklistUnavailable. It is the one implementation behind
+// AdmitCaller, ListTools and Dispatch, so the three cannot disagree about
+// who is blocked.
+func (g *Gateway) checkBlock(ctx context.Context, subject string) error {
+	blocked, err := g.blocklist.Blocked(ctx, subject)
+	switch {
+	case err != nil && errors.Is(err, access.ErrBlocklistUnavailable):
+		return err
+	case err != nil:
+		return fmt.Errorf("%w: %w", access.ErrBlocklistUnavailable, err)
+	case blocked:
+		return access.ErrSubjectBlocked
+	}
+	return nil
 }
 
 // RecordRefusedProbe writes the audit record for a call that named a tool

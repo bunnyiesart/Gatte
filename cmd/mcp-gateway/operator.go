@@ -37,6 +37,8 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/bunnyiesart/Gatte/internal/access"
+	accesssqlite "github.com/bunnyiesart/Gatte/internal/access/sqlite"
 	"github.com/bunnyiesart/Gatte/internal/audit"
 	auditsqlite "github.com/bunnyiesart/Gatte/internal/audit/sqlite"
 	"github.com/bunnyiesart/Gatte/internal/config"
@@ -128,16 +130,52 @@ func (e *opEnv) signatures() signer.Store { return signersqlite.New(e.db) }
 // would make `quota list` able to spend somebody's allowance.
 func (e *opEnv) quotaCounters() quota.Reader { return quotasqlite.New(e.db) }
 
-// auditTrail returns the Audit Trail port, wired to SQLite.
+// blocks returns the blocklist's console port, wired to SQLite
+// (design/adr/0031). The Gateway holds the same adapter as an
+// access.Blocklist, which can only ask.
+func (e *opEnv) blocks() access.BlockStore { return accesssqlite.New(e.db) }
+
+// auditTrail returns the Audit Trail port, wired to SQLite, for READING.
 //
 // Deliberately NOT decorated with the JSONL sink, even when [audit.siem]
-// is configured: the console only ever reads this port (`audit` calls
-// List), and the decorator emits on write. Wrapping it here would attach
-// the serving process's sink file to every operator subcommand -- opening
-// it, and failing to start the command if it could not be opened -- for a
-// code path that never writes a record. The sink belongs to the process
-// that records; see auditRecorder in serve.go.
+// is configured: `audit` only calls List, and the decorator emits on write.
+// Wrapping it here would attach the sink file to every operator subcommand
+// for a code path that never writes a record. The one console path that
+// does write -- an operator action, ADR-0031 -- goes through
+// recordOperatorAction, which is decorated.
 func (e *opEnv) auditTrail() audit.Recorder { return auditsqlite.New(e.db) }
+
+// recordOperatorAction appends one operator action to the trail through
+// the same recorder `serve` builds: SQLite first, then the JSONL copy and
+// the GELF copy when the file configures them (design/adr/0031).
+//
+// The console is a second writer of the chain. SQLite orders the two:
+// every append reads the head inside its own BEGIN IMMEDIATE, so the lock
+// on the file -- not either process's memory -- decides which record links
+// to which. The JSONL copy is not optional here for a different reason: a
+// row in SQLite that never reached the SIEM leaves the next line `serve`
+// ships with a prev_hash the SIEM has never seen, which is the DANGLING
+// alarm of deploy/gatte-anchor-verify.sh raised by an operator's own
+// action. Both processes append to that file with O_APPEND and one write
+// per line.
+func (e *opEnv) recordOperatorAction(rec audit.Record) error {
+	logger := newLogger(e.stderr)
+	aud, _, closeAudit, err := auditRecorder(e.cfg, e.db, logger)
+	if err != nil {
+		return err
+	}
+	defer closeAudit()
+	sink, err := newTelemetrySink(e.cfg, logger)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err := sink.Close(); err != nil {
+			logger.Warn("mcp-gateway: telemetry close", "detail", err.Error())
+		}
+	}()
+	return telemetryRecorder{Recorder: aud, sink: sink}.Record(e.ctx(), rec)
+}
 
 // auditChain returns the port for checking the stored trail's internal
 // consistency and reading its head (design/adr/0015-audit-tamper-evidence.md,

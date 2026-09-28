@@ -369,7 +369,7 @@ func TestSecBearerTokenIsNeverPassedThrough(t *testing.T) {
 	logger := secLogger(logs)
 	gw, err := gateway.New(gateway.Config{
 		Registry: reg, Vault: fakeVault{}, Quarantine: q, Audit: auditsql.New(db),
-		Policy: policy, Dialer: dialer, Logger: logger, Quota: noQuota(t),
+		Policy: policy, Dialer: dialer, Logger: logger, Quota: noQuota(t), Blocklist: noBlocks{},
 		Now: func() time.Time { return time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC) },
 	})
 	if err != nil {

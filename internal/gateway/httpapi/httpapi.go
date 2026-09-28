@@ -361,6 +361,25 @@ func (h *Handler) authenticate(w http.ResponseWriter, r *http.Request, source st
 		return access.Identity{}, false
 	}
 
+	// The operator's kill switch (design/adr/0031), right after the token
+	// verified and before anything is done for the request. A valid token
+	// lives until its `exp`, which the IdP decides; this is what makes a
+	// block reach it on the next request instead. The Gateway audits the
+	// refusal; the caller gets the constant 403 of any forbidden answer --
+	// or the generic 500 when the blocklist cannot be read -- and never the
+	// word "blocked".
+	if err := h.gateway.AdmitCaller(r.Context(), gateway.Caller{Identity: id, SourceAddress: source}); err != nil {
+		class := classify(err)
+		h.log.LogAttrs(r.Context(), slog.LevelWarn, "httpapi: caller refused after authentication",
+			slog.String("subject", id.Subject),
+			slog.String("source", source),
+			slog.String("class", class.String()),
+			slog.String("detail", err.Error()),
+		)
+		writeGeneric(w, class)
+		return access.Identity{}, false
+	}
+
 	return id, true
 }
 

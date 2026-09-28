@@ -39,6 +39,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/bunnyiesart/Gatte/internal/access"
+	accesssql "github.com/bunnyiesart/Gatte/internal/access/sqlite"
 	"github.com/bunnyiesart/Gatte/internal/audit"
 	auditsql "github.com/bunnyiesart/Gatte/internal/audit/sqlite"
 	"github.com/bunnyiesart/Gatte/internal/gateway"
@@ -198,6 +199,9 @@ type harness struct {
 	db      *sql.DB
 	dialer  *fakeDialer
 	logs    *lockedBuffer
+	// blocks is the console's side of the blocklist the Gateway reads
+	// (design/adr/0031), over the same database.
+	blocks access.BlockStore
 }
 
 // harnessOptions lets one test bend the wiring without every other test
@@ -207,6 +211,9 @@ type harnessOptions struct {
 	// given, so a test can make it misbehave in a way no real store would
 	// on demand.
 	wrapQuarantine func(quarantine.Store) quarantine.Store
+	// blocklist replaces the real blocklist the Gateway reads, for a test
+	// that needs one which fails on command.
+	blocklist access.Blocklist
 }
 
 func newHarness(t *testing.T) *harness {
@@ -227,6 +234,14 @@ func newHarnessWith(t *testing.T, opts harnessOptions) *harness {
 	}
 	if err := auditsql.Migrate(db); err != nil {
 		t.Fatalf("audit migrate: %v", err)
+	}
+	if err := accesssql.Migrate(db); err != nil {
+		t.Fatalf("blocklist migrate: %v", err)
+	}
+	blocks := accesssql.New(db)
+	var blocklist access.Blocklist = blocks
+	if opts.blocklist != nil {
+		blocklist = opts.blocklist
 	}
 	q := quarantinesql.New(db)
 	// served is what the Gateway consults; q is what the test approves
@@ -281,6 +296,7 @@ func newHarnessWith(t *testing.T, opts harnessOptions) *harness {
 		Quarantine: served,
 		Audit:      auditsql.New(db),
 		Policy:     policy,
+		Blocklist:  blocklist,
 		Quota:      noQuota(t),
 		Dialer:     dialer,
 		Now:        func() time.Time { return time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC) },
@@ -322,7 +338,7 @@ func newHarnessWith(t *testing.T, opts harnessOptions) *harness {
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 
-	return &harness{t: t, gw: gw, handler: handler, server: srv, db: db, dialer: dialer, logs: logs}
+	return &harness{t: t, gw: gw, handler: handler, server: srv, db: db, dialer: dialer, logs: logs, blocks: blocks}
 }
 
 // endpoint is the MCP endpoint: any path that is not the metadata path.
@@ -983,7 +999,10 @@ func TestDifferentInternalFailuresLookIdentical(t *testing.T) {
 // -- and this asserts that distinction survives the last hop, without the
 // SQLite driver's error text going with it.
 func TestBrokenQuarantineIsAGenericFiveHundred(t *testing.T) {
-	h := newHarness(t)
+	// The blocklist is kept off the database this test closes, so the
+	// failure it observes is the quarantine's and not the blocklist's,
+	// which is read first (ADR-0031) and has its own test.
+	h := newHarnessWith(t, harnessOptions{blocklist: noBlocks{}})
 
 	// It works before.
 	if res := h.post("/mcp", "Bearer "+tokenAnalyst, initializeBody); res.StatusCode != http.StatusOK {

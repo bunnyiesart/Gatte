@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	accesssqlite "github.com/bunnyiesart/Gatte/internal/access/sqlite"
 	"github.com/bunnyiesart/Gatte/internal/audit"
 	auditsqlite "github.com/bunnyiesart/Gatte/internal/audit/sqlite"
 	"github.com/bunnyiesart/Gatte/internal/config"
@@ -65,6 +66,7 @@ func newOpTestEnv(t *testing.T) opTestEnv {
 		"tool quarantine":   quarantinesqlite.Migrate,
 		"entry signatures":  signersqlite.Migrate,
 		"quota counters":    quotasqlite.Migrate,
+		"blocked subjects":  accesssqlite.Migrate,
 	} {
 		if err := migrate(db); err != nil {
 			t.Fatalf("migrate %s: %v", name, err)

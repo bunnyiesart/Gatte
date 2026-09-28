@@ -40,6 +40,10 @@ What it does, for any stdio MCP server you put behind it:
   calls one analyst may spend against one third-party account per window,
   so a runaway agent loop cannot burn an API budget
   (`design/adr/0030-quota-por-analista.md`).
+- **Per-analyst kill switch.** `mcp-gateway access block SUBJECT` refuses
+  that analyst on their next request, whatever token they hold, with no
+  restart; block and unblock are audited operator actions
+  (`design/adr/0031-bloqueio-imediato-por-analista.md`).
 - **GELF to Graylog, optionally.** `[telemetry]` sends a copy of every
   accepted audit record straight to a GELF input, no shipper needed
   (`design/adr/0029-telemetria-gelf.md`).
@@ -281,6 +285,11 @@ another service of the same IdP is refused), role to tool subset, and the
 per-tool quarantine. Every call, refusal and failure lands in the audit
 trail, and the JSONL copy gives the SIEM a record the gateway cannot
 rewrite once it has been shipped.
+
+**Revocation has two clocks.** A token is valid until its `exp`, which is
+the IdP's to set; revoking an analyst at the IdP does not shorten a token
+already issued. `mcp-gateway access block` is immediate, from the next
+request (`design/adr/0031`), so an incident needs both.
 
 **Against someone with write access to the SQLite database**, registry
 entries are signed with Ed25519 and verified against public keys that live

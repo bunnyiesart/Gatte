@@ -86,8 +86,8 @@ func moduleSource(t *testing.T) []sourceFile {
 const migrationFuncName = "Migrate"
 
 // TestEveryAdapterMigrationIsWiredIntoTheCompositionRoot is ADR-0030
-// Compliance item 9, generalised: the quota counter's Migrate is the fifth,
-// and the rule is written for the sixth.
+// Compliance item 9, generalised: the quota counter's Migrate was the
+// fifth, and the blocklist's (ADR-0031) is the sixth the rule caught.
 func TestEveryAdapterMigrationIsWiredIntoTheCompositionRoot(t *testing.T) {
 	files := moduleSource(t)
 
@@ -109,9 +109,9 @@ func TestEveryAdapterMigrationIsWiredIntoTheCompositionRoot(t *testing.T) {
 	// The canary. If go list stops reporting GoFiles, or the adapters are
 	// renamed out from under this rule, it would pass by inspecting
 	// nothing -- the failure mode every check of this shape dies of.
-	if len(migrators) < 5 {
-		t.Fatalf("found %d adapter packages exporting %s, want at least 5 "+
-			"(registry, audit, quarantine, signer, quota). Either an adapter was removed, or this rule "+
+	if len(migrators) < 6 {
+		t.Fatalf("found %d adapter packages exporting %s, want at least 6 "+
+			"(registry, audit, quarantine, signer, quota, access). Either an adapter was removed, or this rule "+
 			"has stopped being able to see them and is now checking nothing.", len(migrators), migrationFuncName)
 	}
 

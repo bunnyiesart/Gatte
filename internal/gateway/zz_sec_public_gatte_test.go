@@ -81,7 +81,7 @@ func newSecSignedFleet(t *testing.T, tamper func(db *sql.DB)) *secSignedFleet {
 	v.values["CASEMGMT_TOKEN"] = "s3cr3t-value"
 	q := quarantinesql.New(db)
 	gw, err := New(Config{
-		Registry: reg, Vault: v, Quarantine: q, Audit: auditsql.New(db), Policy: policy, Quota: emptyQuotaGate(t), Dialer: dialer,
+		Registry: reg, Vault: v, Quarantine: q, Audit: auditsql.New(db), Policy: policy, Blocklist: noBlocks{}, Quota: emptyQuotaGate(t), Dialer: dialer,
 		Signatures: sigs, Verifier: trusting(t, sgn), RequireSigned: true,
 		Now: func() time.Time { return fixedAt }, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})

@@ -143,3 +143,10 @@ coverage.out
 /bin/lab/
 /mcp-gateway
 vendor/
+
+# Impeccable: the surface briefs and DESIGN.md sidecar are versioned; review
+# captures and local overrides are not.
+.impeccable/review/
+.impeccable/mocks/
+.impeccable/config.local.json
+.impeccable/hook.cache.json

@@ -4,9 +4,14 @@ package main
 
 import (
 	"context"
+	"fmt"
+	"html/template"
+	"net"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -115,5 +120,95 @@ func TestUI_OverviewShowsTheGatewayMaintenanceBannerAndAServeNotReporting(t *tes
 	page := uiDo(s, "GET", "/upstreams", nil, cookie, nil).Body.String()
 	if !strings.Contains(page, "End gateway maintenance") {
 		t.Error("the Backends page does not offer to end the gateway maintenance")
+	}
+}
+
+// A maintenance in force can be updated from the page, as from the CLI and
+// the API: the form comes filled with the current message and end, so
+// fixing one does not erase the other.
+func TestUI_AMaintenanceInForceCanBeUpdated(t *testing.T) {
+	e, s, cookie := newUITest(t)
+	mustRegister(t, e, stdioEntry("casemgmt"))
+	hs := healthsqlite.New(e.db)
+	for _, form := range []url.Values{
+		{"scope": {"upstream"}, "upstream": {"casemgmt"}, "message": {`<b>Troca</b> de versão`}, "until": {"2h"}, "csrf": {s.csrf}},
+		{"scope": {"gateway"}, "message": {"Atualização do binário"}, "until": {"3h"}, "csrf": {s.csrf}},
+	} {
+		if w := uiDo(s, "POST", "/upstreams/maintenance/on", form, cookie, samePost); w.Code != http.StatusOK {
+			t.Fatalf("maintenance on: %d\n%s", w.Code, w.Body)
+		}
+	}
+	rows, err := hs.Maintenance(context.Background())
+	if err != nil || len(rows) != 2 {
+		t.Fatalf("maintenance: %+v, %v", rows, err)
+	}
+	page := uiDo(s, "GET", "/upstreams", nil, cookie, nil).Body.String()
+	for _, m := range rows {
+		for _, want := range []string{`value="` + template.HTMLEscapeString(m.Message) + `"`, `value="` + m.Until.UTC().Format(time.RFC3339) + `"`} {
+			if !strings.Contains(page, want) {
+				t.Errorf("the Backends page has no update form filled with %s", want)
+			}
+		}
+	}
+	if strings.Count(page, "Update maintenance") < 1 || !strings.Contains(page, "Update gateway maintenance") {
+		t.Error("the Backends page offers no update of a maintenance in force")
+	}
+
+	// The update keeps when it started.
+	up := url.Values{"scope": {"upstream"}, "upstream": {"casemgmt"}, "message": {"Troca de versão do casemgmt"}, "csrf": {s.csrf}}
+	if w := uiDo(s, "POST", "/upstreams/maintenance/on", up, cookie, samePost); w.Code != http.StatusOK {
+		t.Fatalf("maintenance update: %d\n%s", w.Code, w.Body)
+	}
+	after, _ := hs.Maintenance(context.Background())
+	for _, m := range after {
+		for _, b := range rows {
+			if m.Target == "casemgmt" && b.Target == "casemgmt" && (m.Message != "Troca de versão do casemgmt" || !m.StartedAt.Equal(b.StartedAt)) {
+				t.Errorf("after the update: %+v, want the new message and the same start", m)
+			}
+		}
+	}
+}
+
+// A console over a backend that does not list the maintenance feature
+// neither shows the forms nor forwards their POSTs.
+func TestUI_MaintenancePostsAreRefusedWithoutTheFeature(t *testing.T) {
+	var calls []string
+	var mu sync.Mutex
+	sock := filepath.Join(uiSocketDir(t), "op.sock")
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		calls = append(calls, r.Method+" "+r.URL.Path)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/whoami":
+			fmt.Fprint(w, `{"operator":"ana.ops","features":[]}`)
+		case "/v1/upstreams":
+			fmt.Fprint(w, `{"upstreams":[]}`)
+		default:
+			fmt.Fprint(w, `{}`)
+		}
+	})}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() { srv.Close() })
+	s := newUIFrontOn(t, sock)
+	cookie := uiLogin(t, s)
+
+	for _, path := range []string{"/upstreams/maintenance/on", "/upstreams/maintenance/off"} {
+		form := url.Values{"scope": {"gateway"}, "message": {"x"}, "csrf": {s.csrf}}
+		if w := uiDo(s, "POST", path, form, cookie, samePost); w.Code != http.StatusNotFound {
+			t.Errorf("POST %s without the feature: %d, want 404", path, w.Code)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	for _, c := range calls {
+		if strings.Contains(c, "/maintenance") {
+			t.Errorf("the console forwarded %s to a backend without the feature", c)
+		}
 	}
 }

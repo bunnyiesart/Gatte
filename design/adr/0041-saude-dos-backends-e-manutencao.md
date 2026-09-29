@@ -152,10 +152,10 @@ Por baixo há **um fato de vida**, mantido pelo gateway em memória:
 
 | campo | o que é |
 |---|---|
-| `live` | há uma conexão aberta para ele e ela não foi marcada morta (`gone`) |
+| `live` | há uma conexão aberta para ele, ela não foi marcada morta (`gone`) **e um `Refresh` já a listou** (a conexão re-discada que ainda espera a listagem não recebe chamada, item 4, e por isso também não está `up`) |
 | `since` | quando `live` assumiu o valor atual, neste processo |
 | `last_attempt` | a última discagem tentada, com ou sem sucesso; vazio se nenhuma ainda |
-| `cause` | só para o operador: `process_gone` (ADR-0024 viu o processo acabar), `not_brought_up` (a discagem falhou), `held_back` (discagens congeladas pela divergência quota × registro) |
+| `cause` | só para o operador: `process_gone` (ADR-0024 viu o processo acabar), `not_brought_up` (a discagem falhou), `held_back` (discagens congeladas pela divergência quota × registro), `not_listed` (há um processo novo conectado e nenhuma listagem dele deu certo ainda) |
 
 Por cima há **o estado público**, derivado na hora, na ordem:
 
@@ -168,13 +168,25 @@ Por cima há **o estado público**, derivado na hora, na ordem:
    timer depois do trabalho (ADR-0020 item 5).
 4. `down` — não `live`, e nenhuma discagem está marcada: o `Reconcile` está
    congelado (`held_back`). Sem `next_attempt`; o texto diz que um operador
-   precisa agir, sem dizer por quê.
+   precisa agir, sem dizer por quê. O estado sai da `cause` de cada backend,
+   não de uma marca global da rodada: é a mesma `cause` que o gateway grava
+   para o backend de gestão, e os dois derivam `down` × `reconnecting` do
+   mesmo dado, sem discordar. Um `markGone` entre rodadas com as discagens
+   congeladas grava `cause = held_back` (ninguém vai re-discá-lo), enquanto
+   a linha da trilha diz `process_gone`, que é o que aconteceu.
 
 Transições de `live`, e só elas, mexem em `since`:
 
 - `Connect` e cada `Reconcile`: depois de `retire` e `adopt`, todo nome de
-  `servable` é conferido; o que discou e entrou vira `live`, o que discou e
-  falhou fica não-`live` com `last_attempt` = agora.
+  `servable` é conferido; o que o `Connect` discou e listou vira `live`, o
+  que discou e falhou fica não-`live` com `last_attempt` = agora. O que o
+  `Reconcile` adotou fica não-`live` com `cause = not_listed` até o
+  `Refresh` listá-lo: é a listagem bem-sucedida (`markListed`) que o põe
+  `live` e escreve a linha `backend up`, depois de instalar a tabela que
+  roteia para ele. Até lá o chamador, o `gatte.status`, o batimento e o
+  front dizem `reconnecting` desde a queda de verdade — não `up`. Uma
+  listagem do processo novo que falha sem `ErrUpstreamGone` (um processo
+  lento que estoura o prazo) o mantém assim.
 - `markGone` (chamado pelo `Refresh` e pelo `Dispatch`, como hoje) põe
   `live` em falso **na hora**, com `cause = process_gone`. Não fecha nada: o
   fechamento continua sendo do `Reconcile` (ADR-0024 item 3). O que muda é que
@@ -642,7 +654,13 @@ usam igualmente:
   mcp-gateway maintenance list [-json]
   ```
   `-until 2h` é relativo ao agora e só existe no CLI; a API recebe instante
-  absoluto.
+  absoluto. Um `on` repetido **sem** `-until` mantém o `until` já anunciado
+  (o CLI lê a linha e o reenvia; se ele já passou, é descartado com um
+  aviso), para que corrigir a mensagem não apague a previsão que os
+  analistas viram; `-until none` retira a previsão. A API continua
+  substituindo `until` pelo que recebe — é o cliente que decide manter —,
+  e os dois fronts preenchem o formulário de atualização com a mensagem e o
+  `until` atuais pelo mesmo motivo.
 - front do Gatte: página Backends (estado, desde, próxima tentativa, causa;
   formulário de manutenção por backend, POST com CSRF) e Overview (aviso do
   gateway, backends fora de `up`, `serve` sem reportar); os fronts de
@@ -671,7 +689,7 @@ linha — portanto também no JSONL e no GELF. **Só em transição de `live`:**
 |---|---|---|
 | primeira observação do backend neste processo, vivo | `allowed` | `backend up: first observed` |
 | primeira observação, não vivo | `denied` | `backend down: <cause>` |
-| vivo → não vivo | `denied` | `backend down: process_gone` / `not_brought_up` / `held_back` |
+| vivo → não vivo | `denied` | `backend down: process_gone` / `not_brought_up` / `held_back` / `not_listed` (a especificação mudou e o processo novo ainda não foi listado) |
 | não vivo → vivo | `allowed` | `backend up: down since <RFC 3339>` |
 | sai de `servable` sem ser por manutenção | `denied` | `backend removed: no longer servable per the registry` |
 
@@ -795,13 +813,13 @@ fixtures no teste do script):
 
 | `Status:` | `Issue:` | diz | saída |
 |---|---|---|---|
-| `Connected` | — | tudo certo; e: "se a sua sessão aberta do `claude` mostra NOME como `failed` ou `disconnected`, rode `/mcp` nela e escolha reconnect" — o `get` abre uma conexão nova e não vê a da sessão | 0 |
+| `Connected` | — | o Gatte em si está bem (não "tudo certo": sem `-backends` os backends não foram olhados, e a saída diz para rodar `gatte-status -backends` ou pedir ao Claude o `gatte.status`); e: "se a sua sessão aberta do `claude` mostra NOME como `failed` ou `disconnected`, rode `/mcp` nela e escolha reconnect" — o `get` abre uma conexão nova e não vê a da sessão | 0 |
 | `Needs authentication` | — | "abra o `claude`, digite `/mcp`, escolha NOME e autentique" | 4 |
 | `Failed to connect` | `HTTP 5xx: ...` | o Gatte responde mas não está servindo tools (suspenso ou com problema); a linha `Issue:` impressa sem caracteres de controle e cortada em 300 posições — num `503` do Gatte é o corpo constante | 3 |
 | `Failed to connect` | qualquer outra | a linha `Issue:` saneada do mesmo jeito, "inesperado" | 5 |
 | sem linha `Status:` / `claude` ausente | — | "o Claude Code não está instalado ou NOME não está configurado: rode o `connect-gatte`" | 4 |
 
-Saída: 0 tudo certo; 1 rede (VPN/DNS/rota); 2 TLS; 3 o Gatte (ou o proxy à
+Saída: 0 o Gatte responde e o Claude Code conecta (backends só com `-backends`); 1 rede (VPN/DNS/rota); 2 TLS; 3 o Gatte (ou o proxy à
 frente dele) não está servindo; 4 Gatte de pé mas o Claude Code não está
 autenticado ou configurado; 5 inesperado. Não lê token, não imprime
 cabeçalho além de dizer se o desafio veio, não guarda nada.
@@ -843,6 +861,35 @@ existe no Windows PowerShell 5.1 e no PowerShell 7) e, quando há CA, com um
 > passo 1 (o proxy responde e o Gatte não), e qualquer outra resposta sem
 > o desafio responde 5. Nada disso foi executado num Windows: o teste de
 > template afirma o texto, e o comportamento só é medido no sh.
+
+> **CORREÇÃO — 29 set 2026, revisão da terceira etapa.** Três defeitos do
+> passo 3 e do 4, achados na revisão, corrigidos com teste:
+>
+> - **A ordem dos argumentos do `claude -p`.** `--allowedTools` recebe uma
+>   lista, então o pedido escrito depois dele era lido como um segundo nome
+>   de tool e o `-p` ficava sem pedido (o Claude Code 2.1.285 sai com
+>   `Input must be provided ...`): o passo 4 nunca funcionou. O pedido vem
+>   agora antes das opções. O `claude` falso do teste interpreta
+>   `--allowedTools` como o de verdade e recusa a ordem errada.
+> - **O diretório em que o Claude Code roda.** O analista roda o
+>   diagnóstico de onde estiver, muitas vezes um repositório clonado; ali o
+>   Claude Code carregaria o `.claude/settings.json` (hooks, permissões) e o
+>   `.mcp.json` do projeto — no `-p` sem a confirmação de confiança —, e um
+>   servidor de projeto com o mesmo nome esconderia o do usuário no
+>   `claude mcp get`. Os dois comandos rodam agora no diretório temporário
+>   do próprio script (`cd "$tmp"`; no PowerShell, `Push-Location` num
+>   diretório novo em `%TEMP%`), e o `-p` roda com `--setting-sources user`.
+>   O teste roda o script de dentro de um "repositório" e falha se o
+>   `claude` for chamado ali.
+> - **`Stop` no Windows PowerShell 5.1.** Com `$ErrorActionPreference =
+>   'Stop'`, cada linha que um comando nativo escreve no stderr sob `2>&1`
+>   vira um erro que encerra o script — e o `claude mcp get` escreve no
+>   stderr justamente nos casos que o passo 3 classifica (servidor
+>   inexistente; o aviso do SDK antes de `Needs authentication`). O
+>   resultado seria um erro vermelho e saída 1, que a tabela chama de
+>   "rede". As duas chamadas ao `claude` rodam agora sob `'Continue'`, e o
+>   `Stop` volta logo depois; um teste de template confere isso linha a
+>   linha.
 
 Sem CA, a validação é a do sistema. O mapeamento é o da tabela do curl pelo
 `WebException.Status` e pelo `SocketException.SocketErrorCode` interno:
@@ -1039,6 +1086,24 @@ escreve na trilha (ADR-0017).
     `TestUI_BackendsShowHealthAndMaintenanceIsAnAuditedOperatorAction`
     (estado, formulário com CSRF, mensagem escapada, linhas `[ui]`) e
     `TestUI_OverviewShowsTheGatewayMaintenanceBannerAndAServeNotReporting`.
+- Os da revisão da terceira etapa, todos vistos falhando no código
+  anterior:
+  - `internal/gateway`:
+    `TestHealth_AReDialledConnectionIsReconnectingEverywhereUntilListed`
+    (a chamada, o `gatte.status`, o `Status`, a linha do backend de gestão e
+    a trilha dizem `reconnecting` desde a queda até a listagem, também
+    quando a listagem do processo novo estoura o prazo; a linha `up` só
+    depois dela) e
+    `TestHealth_ADeathFoundWhileHeldBackIsDownForTheConsolesToo`.
+  - `internal/admin`: `TestStatusScript_PowerShellCallsClaudeSafely`,
+    `TestStatusScript_APassWithoutBackendsPointsToThem`, e o `claude` falso
+    de todos os testes do `gatte-status` passou a interpretar
+    `--allowedTools` como o de verdade e a registrar o diretório em que
+    roda (o script é executado de dentro de um "repositório").
+  - `cmd/mcp-gateway`:
+    `TestUpstreamMaintenance_OnAgainWithoutUntilKeepsTheAnnouncedEnd`,
+    `TestUI_AMaintenanceInForceCanBeUpdated` e
+    `TestUI_MaintenancePostsAreRefusedWithoutTheFeature`.
 - Quando roda: a cada build/CI (`make ci`).
 
 ## Notas

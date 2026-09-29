@@ -19,9 +19,9 @@ import (
 
 func maintenanceUsage(w io.Writer) {
 	fmt.Fprint(w, `Usage:
-  mcp-gateway upstream maintenance on  [-config FILE] NAME -message TEXT [-until RFC3339|DURATION]
+  mcp-gateway upstream maintenance on  [-config FILE] NAME -message TEXT [-until RFC3339|DURATION|none]
   mcp-gateway upstream maintenance off [-config FILE] NAME
-  mcp-gateway maintenance on   [-config FILE] -message TEXT [-until RFC3339|DURATION]
+  mcp-gateway maintenance on   [-config FILE] -message TEXT [-until RFC3339|DURATION|none]
   mcp-gateway maintenance off  [-config FILE]
   mcp-gateway maintenance list [-config FILE] [-json]
 
@@ -35,8 +35,10 @@ No restart is needed either way.
 line, no control or hidden characters. -until announces the end, as an
 RFC 3339 time (2026-09-29T15:00:00Z) or a duration from now (2h, 90m), at
 most 90 days ahead. It is a forecast, not a deadline: the maintenance lasts
-until "off". Running "on" again changes the message or the end and keeps
-when the maintenance started.
+until "off". Running "on" again changes the message, and the end when
+-until is given, and keeps when the maintenance started: without -until the
+end already announced is kept (dropped, with a note, if it has passed), and
+-until none takes it back.
 
 Each on and off is recorded in the audit trail as an operator action.
 
@@ -105,10 +107,14 @@ func parseInterspersed(fs *flag.FlagSet, args []string, stdout, stderr io.Writer
 	}
 }
 
+// untilNone is the -until that takes an announced end back.
+const untilNone = "none"
+
 // parseUntil reads -until: an RFC 3339 time, or a duration from now. The
-// range (future, at most 90 days) is health.ValidateUntil's.
+// range (future, at most 90 days) is health.ValidateUntil's. "" and
+// "none" are no end; the caller tells them apart.
 func parseUntil(raw string, now time.Time) (time.Time, error) {
-	if raw == "" {
+	if raw == "" || raw == untilNone {
 		return time.Time{}, nil
 	}
 	if t, err := time.Parse(time.RFC3339, raw); err == nil {
@@ -173,6 +179,8 @@ func maintenanceChange(scope, sub string, args []string, stdout, stderr io.Write
 			req.Until = &end
 		}
 	}
+	// Without -until, an "on" that updates a maintenance keeps its end.
+	keepUntil := sub == "on" && *until == ""
 	actor, err := cliActor()
 	if err != nil {
 		fmt.Fprintf(stderr, "%v\n", err)
@@ -186,6 +194,29 @@ func maintenanceChange(scope, sub string, args []string, stdout, stderr io.Write
 			return exitCannotRun
 		}
 		var res adminapi.MaintenanceResult
+		if keepUntil {
+			list, err := svc.ListMaintenance(e.ctx())
+			if err != nil {
+				fmt.Fprintf(e.stderr, "maintenance: %s\n", cliErrText(err))
+				return exitCannotRun
+			}
+			var cur *adminapi.Maintenance
+			if scope == adminapi.ScopeGateway {
+				cur = list.Gateway
+			}
+			for i := range list.Upstreams {
+				if scope == adminapi.ScopeUpstream && list.Upstreams[i].Upstream == upstream {
+					cur = &list.Upstreams[i].Maintenance
+				}
+			}
+			switch {
+			case cur == nil || cur.Until == nil:
+			case cur.UntilPassed:
+				fmt.Fprintf(e.stdout, "The end announced for %s has passed and is dropped; announce a new one with -until.\n", opTime(*cur.Until))
+			default:
+				req.Until = cur.Until
+			}
+		}
 		if sub == "on" {
 			res, err = svc.StartMaintenance(e.ctx(), actor, req)
 		} else {

@@ -147,3 +147,39 @@ func TestRunUpstreamDeregister_ForgetsHealthAndMaintenance(t *testing.T) {
 		t.Errorf("last listing after deregister: %+v", l)
 	}
 }
+
+// Running "on" again to fix the message keeps the end analysts were told;
+// "-until none" is how the end is taken back.
+func TestUpstreamMaintenance_OnAgainWithoutUntilKeepsTheAnnouncedEnd(t *testing.T) {
+	cfg := maintenanceConfig(t)
+	t.Setenv("SUDO_USER", "operator1")
+	stored := func() *adminapi.UpstreamMaintenance {
+		t.Helper()
+		code, out, _ := runCLI("maintenance", "list", "-config", cfg, "-json")
+		requireExit(t, code, exitOK, "maintenance list -json")
+		var list adminapi.MaintenanceList
+		if err := json.Unmarshal([]byte(out), &list); err != nil || len(list.Upstreams) != 1 {
+			t.Fatalf("maintenance list -json = %s (%v)", out, err)
+		}
+		return &list.Upstreams[0]
+	}
+	code, out, errText := runCLI("upstream", "maintenance", "on", "-config", cfg, "casemgmt", "-message", "Troca de versão", "-until", "2h")
+	requireExit(t, code, exitOK, "maintenance on: "+out+errText)
+	first := stored()
+	if first.Until == nil {
+		t.Fatal("-until 2h stored no end")
+	}
+
+	code, out, errText = runCLI("upstream", "maintenance", "on", "-config", cfg, "casemgmt", "-message", "Troca de versão do casemgmt")
+	requireExit(t, code, exitOK, "maintenance on, new message: "+out+errText)
+	second := stored()
+	if second.Message != "Troca de versão do casemgmt" || second.Until == nil || !second.Until.Equal(*first.Until) || !second.StartedAt.Equal(first.StartedAt) {
+		t.Fatalf("after a new message without -until: %+v, want the message changed and until %v kept", second.Maintenance, *first.Until)
+	}
+
+	code, out, errText = runCLI("upstream", "maintenance", "on", "-config", cfg, "casemgmt", "-message", "Troca de versão do casemgmt", "-until", "none")
+	requireExit(t, code, exitOK, "maintenance on -until none: "+out+errText)
+	if third := stored(); third.Until != nil {
+		t.Fatalf("after -until none: until %v, want none", *third.Until)
+	}
+}

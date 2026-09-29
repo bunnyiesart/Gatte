@@ -30,7 +30,8 @@ var statusSh = template.Must(template.New("status-sh").Parse(`#!/bin/sh
 #   gatte-status            check the network, Gatte and Claude Code
 #   gatte-status -backends  also ask Claude Code to call gatte.status
 #
-# Exit: 0 all good; 1 network (VPN, DNS, route); 2 TLS; 3 Gatte, or the
+# Exit: 0 Gatte answers and Claude Code connects (backends are checked
+# only with -backends); 1 network (VPN, DNS, route); 2 TLS; 3 Gatte, or the
 # proxy in front of it, is not serving; 4 Gatte is up but Claude Code is not
 # signed in or not set up; 5 unexpected.
 
@@ -129,12 +130,14 @@ case "$code" in
 esac
 
 # 3. Is Claude Code signed in? claude mcp get exits 0 whatever the state,
-# so only its Status: and Issue: lines are read.
+# so only its Status: and Issue: lines are read. Claude Code always runs
+# from the script's own temporary directory: where the analyst stands may
+# be a checkout whose project settings, hooks or .mcp.json would load with it.
 if ! command -v claude >/dev/null 2>&1; then
   say "✘ Claude Code is not installed on this machine (no claude command). Install it, then run connect-gatte."
   exit 4
 fi
-claude mcp get "$GATTE_SERVER" >"$tmp/get" 2>&1
+(cd "$tmp" && claude mcp get "$GATTE_SERVER") >"$tmp/get" 2>&1
 status=$(grep -m 1 'Status:' "$tmp/get" | clean)
 issue=$(grep -m 1 'Issue:' "$tmp/get" | sed 's/^[[:space:]]*Issue:[[:space:]]*//' | clean)
 case "$status" in
@@ -156,8 +159,12 @@ case "$status" in
         exit 5 ;;
     esac ;;
   *Connected*)
-    say "✓ Claude Code connects to Gatte as $GATTE_SERVER."
-    say "  If your open claude session shows $GATTE_SERVER as failed or disconnected, type /mcp there, choose $GATTE_SERVER and reconnect." ;;
+    say "✓ Claude Code connects to Gatte as $GATTE_SERVER: Gatte itself is fine."
+    say "  If your open claude session shows $GATTE_SERVER as failed or disconnected, type /mcp there, choose $GATTE_SERVER and reconnect."
+    if [ "$backends" != yes ]; then
+      say "  The backends behind Gatte were not checked. If a tool keeps failing, run gatte-status -backends"
+      say "  (one model request), or ask Claude to call gatte.status."
+    fi ;;
   *)
     say "✘ Claude Code has no server named $GATTE_SERVER. Run connect-gatte again."
     exit 4 ;;
@@ -169,7 +176,9 @@ if [ "$backends" = yes ]; then
   say ""
   say "Asking Claude Code to call gatte.status (one model request)."
   say "The model's answer, not Gatte's own output:"
-  claude -p --allowedTools "$GATTE_TOOL" "Call the $GATTE_TOOL tool once and repeat its result literally, adding nothing." || {
+  # The prompt comes first: --allowedTools takes every argument after it.
+  # Only the analyst's own settings load, never a project's.
+  (cd "$tmp" && claude -p "Call the $GATTE_TOOL tool once and repeat its result literally, adding nothing." --setting-sources user --allowedTools "$GATTE_TOOL") || {
     say "✘ claude -p failed."
     exit 5
   }
@@ -184,7 +193,8 @@ var statusPS1 = template.Must(template.New("status-ps1").Parse(`# gatte-status: 
 #   gatte-status            check the network, Gatte and Claude Code
 #   gatte-status -backends  also ask Claude Code to call gatte.status
 #
-# Exit: 0 all good; 1 network (VPN, DNS, route); 2 TLS; 3 Gatte, or the
+# Exit: 0 Gatte answers and Claude Code connects (backends are checked
+# only with -backends); 1 network (VPN, DNS, route); 2 TLS; 3 Gatte, or the
 # proxy in front of it, is not serving; 4 Gatte is up but Claude Code is not
 # signed in or not set up; 5 unexpected.
 param([switch]$Backends)
@@ -328,11 +338,23 @@ if ($r.Code -ne 401 -or $r.Challenge -notmatch 'resource_metadata') {
 Write-Host "OK Gatte's MCP endpoint asks for sign-in, as it should."
 
 # 3. Is Claude Code signed in? claude mcp get exits 0 whatever the state,
-# so only its Status: and Issue: lines are read.
+# so only its Status: and Issue: lines are read. Claude Code always runs
+# from the script's own empty directory: where the analyst stands may be a
+# checkout whose project settings, hooks or .mcp.json would load with it.
+# And never under 'Stop': Windows PowerShell 5.1 turns each line a native
+# command writes to stderr into a terminating error there.
 if (-not (Get-Command claude -ErrorAction SilentlyContinue)) {
   Write-Host "X Claude Code is not installed on this machine (no claude command). Install it, then run connect-gatte."; exit 4
 }
-$get = (& claude mcp get $GatteServer 2>&1 | Out-String) -split "\r?\n"
+$Work = Join-Path ([IO.Path]::GetTempPath()) ('gatte-status-' + [Guid]::NewGuid().ToString('N'))
+[void][IO.Directory]::CreateDirectory($Work)
+function DropWork { try { [IO.Directory]::Delete($Work, $true) } catch { } }
+Push-Location $Work
+$ErrorActionPreference = 'Continue'
+$get = (& claude mcp get $GatteServer 2>&1 | ForEach-Object { [string]$_ } | Out-String) -split "\r?\n"
+$ErrorActionPreference = 'Stop'
+Pop-Location
+DropWork
 $status = Clean ([string]($get | Where-Object { $_ -match 'Status:' } | Select-Object -First 1))
 $issue = Clean (([string]($get | Where-Object { $_ -match 'Issue:' } | Select-Object -First 1)) -replace '^\s*Issue:\s*', '')
 if ($status -match 'Needs authentication') {
@@ -348,8 +370,12 @@ if ($status -match 'Needs authentication') {
   Write-Host "  $issue"
   Write-Host "  Tell the Gatte operator."; exit 5
 } elseif ($status -cmatch 'Connected') {
-  Write-Host "OK Claude Code connects to Gatte as $GatteServer."
+  Write-Host "OK Claude Code connects to Gatte as $($GatteServer): Gatte itself is fine."
   Write-Host "  If your open claude session shows $GatteServer as failed or disconnected, type /mcp there, choose $GatteServer and reconnect."
+  if (-not $Backends) {
+    Write-Host "  The backends behind Gatte were not checked. If a tool keeps failing, run gatte-status -backends"
+    Write-Host "  (one model request), or ask Claude to call gatte.status."
+  }
 } else {
   Write-Host "X Claude Code has no server named $GatteServer. Run connect-gatte again."; exit 4
 }
@@ -360,8 +386,17 @@ if ($Backends) {
   Write-Host ""
   Write-Host "Asking Claude Code to call gatte.status (one model request)."
   Write-Host "The model's answer, not Gatte's own output:"
-  & claude -p --allowedTools $GatteTool "Call the $GatteTool tool once and repeat its result literally, adding nothing."
-  if ($LASTEXITCODE -ne 0) { Write-Host "X claude -p failed."; exit 5 }
+  # The prompt comes first: --allowedTools takes every argument after it.
+  # Only the analyst's own settings load, never a project's.
+  [void][IO.Directory]::CreateDirectory($Work)
+  Push-Location $Work
+  $ErrorActionPreference = 'Continue'
+  & claude -p "Call the $GatteTool tool once and repeat its result literally, adding nothing." --setting-sources user --allowedTools $GatteTool
+  $rc = $LASTEXITCODE
+  $ErrorActionPreference = 'Stop'
+  Pop-Location
+  DropWork
+  if ($rc -ne 0) { Write-Host "X claude -p failed."; exit 5 }
 }
 exit 0
 `))

@@ -9,7 +9,9 @@ package gateway
 // there is an open connection to it not found dead (`live`), since when,
 // the last dial tried and, for the operator only, why it is not live. Over
 // it the public state is derived at the moment it is asked for:
-// maintenance, else up, else reconnecting, else down (dials held back).
+// maintenance, else up, else down when its cause is held_back (no dial is
+// scheduled), else reconnecting. The management backend derives the same
+// state from the same persisted cause, so the two never disagree.
 //
 // Nothing in this file reads an upstream's error text. Every field of the
 // errors below is the gateway's own state -- a name, a state, instants, an
@@ -238,10 +240,15 @@ func (g *Gateway) settleHealth(servable []string, keep func(string) bool, frozen
 	for _, name := range servable {
 		next[name] = true
 		up, connected := g.conns[name]
-		live := connected && g.gone[name] != up
+		alive := connected && g.gone[name] != up
+		// A connection no Refresh has listed takes no call, so it is not
+		// live either: it becomes live when markListed says so.
+		live := alive && g.unlisted[name] != up
 		cause := health.Cause("")
 		switch {
 		case live:
+		case alive:
+			cause = health.CauseNotListed
 		case frozen:
 			cause = health.CauseHeldBack
 		case dialed[name]:
@@ -275,7 +282,7 @@ func (g *Gateway) publicState(name string, maint map[string]health.Maintenance, 
 		return BackendStatus{}, false
 	}
 	st := BackendStatus{Name: name, Since: b.since, LastAttempt: b.lastAttempt}
-	if !b.live && !g.heldBack {
+	if !b.live && b.cause != health.CauseHeldBack {
 		st.NextAttempt = g.nextAttempt()
 	}
 	switch m, inMaint := maint[name]; {
@@ -286,7 +293,7 @@ func (g *Gateway) publicState(name string, maint map[string]health.Maintenance, 
 		}
 	case b.live:
 		st.State = StateUp
-	case g.heldBack:
+	case b.cause == health.CauseHeldBack:
 		st.State = StateDown
 	default:
 		st.State = StateReconnecting
@@ -364,13 +371,21 @@ func (g *Gateway) availability(name string, up Upstream, maint map[string]health
 }
 
 // markListed records that up, the connection for name, has been listed
-// and observed, so the routes built from that listing may reach it.
-func (g *Gateway) markListed(name string, up Upstream) {
+// and observed, so the routes built from that listing may reach it. That
+// is the moment a re-dialled backend is up again, and not the dial: the
+// transition row is returned for Refresh to write once the table that
+// routes to it is installed.
+func (g *Gateway) markListed(name string, up Upstream) *healthEvent {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if g.unlisted[name] == up {
-		delete(g.unlisted, name)
+	if up == nil || g.unlisted[name] != up {
+		return nil
 	}
+	delete(g.unlisted, name)
+	if _, known := g.health[name]; !known || g.gone[name] == up {
+		return nil
+	}
+	return g.observeLive(name, true, "", false, g.now())
 }
 
 // reasonFor is the audit reason of a step-4 refusal.
@@ -547,7 +562,7 @@ func (g *Gateway) persistHealth(ctx context.Context, round bool) {
 	for _, name := range slices.Sorted(maps.Keys(g.health)) {
 		b := g.health[name]
 		rec := health.BackendRecord{Backend: name, Live: b.live, Since: b.since, LastAttempt: b.lastAttempt, Cause: b.cause, UpdatedAt: now}
-		if !b.live && !g.heldBack {
+		if !b.live && b.cause != health.CauseHeldBack {
 			rec.NextAttempt = g.nextAttempt()
 		}
 		snap.Backends = append(snap.Backends, rec)

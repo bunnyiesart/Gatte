@@ -738,8 +738,8 @@ components:
 
         | state | meaning |
         |---|---|
-        | up | connected and not found dead |
-        | reconnecting | not connected; the next round dials it (`next_attempt`) |
+        | up | connected, listed since it was dialled, and not found dead |
+        | reconnecting | not connected, or a new process not listed yet (`cause` `not_listed`); the next round dials or lists it |
         | down | not connected, and no dial is scheduled (`cause` `held_back`): an operator has to act |
         | maintenance | an operator put it in maintenance; calls are answered without dialing it |
         | unknown | no report from the gateway process |
@@ -773,7 +773,7 @@ components:
           type: string
           x-gatte-open-enum: true
           description: Set when not live. Operator only.
-          enum: [process_gone, not_brought_up, held_back]
+          enum: [process_gone, not_brought_up, held_back, not_listed]
         maintenance:
           $ref: '#/components/schemas/Maintenance'
     ServeStatus:

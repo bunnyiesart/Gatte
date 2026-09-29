@@ -149,6 +149,9 @@ const (
 	// CauseHeldBack: dials are frozen while the quota and the registry
 	// disagree (ADR-0030).
 	CauseHeldBack Cause = "held_back"
+	// CauseNotListed: a new process is connected but no listing of it has
+	// succeeded yet, so it takes no call (ADR-0041 item 4).
+	CauseNotListed Cause = "not_listed"
 )
 
 // BackendRecord is what the gateway process last observed about one

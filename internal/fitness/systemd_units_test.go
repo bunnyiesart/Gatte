@@ -1,0 +1,77 @@
+package fitness
+
+import (
+	"os"
+	"path"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"testing"
+)
+
+// unitDirective returns every value of key in a unit file, words split.
+func unitDirective(t *testing.T, file, key string) []string {
+	t.Helper()
+	b, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	for _, line := range strings.Split(string(b), "\n") {
+		if v, ok := strings.CutPrefix(strings.TrimSpace(line), key+"="); ok {
+			out = append(out, strings.Fields(v)...)
+		}
+	}
+	return out
+}
+
+// TestSystemdUnits_WriteWhereTheExampleConfigurationWrites: under
+// ProtectSystem=strict a unit writes only its ReadWritePaths, so the
+// shipped units must cover the database directory and the [audit.siem]
+// directory of the shipped config.example.toml. Otherwise every operator
+// write, and the SIEM copy of its row, hits a read-only file system.
+func TestSystemdUnits_WriteWhereTheExampleConfigurationWrites(t *testing.T) {
+	root := repoRoot(t)
+	ex, err := os.ReadFile(filepath.Join(root, "config.example.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	db := regexp.MustCompile(`(?m)^database\s*=\s*"([^"]+)"`).FindSubmatch(ex)
+	siem := regexp.MustCompile(`(?m)^#?\s*path\s*=\s*"(/[^"]+\.jsonl)"`).FindSubmatch(ex)
+	if db == nil || siem == nil {
+		t.Fatal("config.example.toml no longer names a database path and an [audit.siem] path")
+	}
+	want := []string{path.Dir(string(db[1])), path.Dir(string(siem[1]))}
+	for _, unit := range []string{"mcp-gateway-admin.service", "mcp-gateway-admin-accounts.service"} {
+		rw := unitDirective(t, filepath.Join(root, "examples", "systemd", unit), "ReadWritePaths")
+		for _, w := range want {
+			found := false
+			for _, p := range rw {
+				if p == w {
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("%s: ReadWritePaths %v does not include %s, where config.example.toml writes", unit, rw, w)
+			}
+		}
+	}
+}
+
+// TestSystemdUnits_TheAccountsBackendCanKeepTheUsersFilesGroup: the users
+// file is rewritten by tmp+rename, and giving the new file the original's
+// group (root:www 0640, read by Authelia) needs CAP_CHOWN.
+func TestSystemdUnits_TheAccountsBackendCanKeepTheUsersFilesGroup(t *testing.T) {
+	caps := unitDirective(t, filepath.Join(repoRoot(t), "examples", "systemd", "mcp-gateway-admin-accounts.service"), "CapabilityBoundingSet")
+	for _, want := range []string{"CAP_CHOWN", "CAP_SETUID", "CAP_SETGID"} {
+		found := false
+		for _, c := range caps {
+			if c == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("mcp-gateway-admin-accounts.service: CapabilityBoundingSet %v lacks %s", caps, want)
+		}
+	}
+}

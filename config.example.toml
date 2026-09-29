@@ -517,7 +517,9 @@ max_bytes = 1048576
 #   account_group  -- delega a edicao de contas a um grupo, sem sudo. So vale
 #                     com o socket de contas desse grupo e 0660
 #                     (SocketGroup/SocketMode da unidade); um desencontro
-#                     impede o backend de subir.
+#                     impede o backend de subir. O grupo so altera contas
+#                     cujos grupos estao todos em [group_to_role]; as outras
+#                     contas do IdP sao so do root (account_not_managed).
 #
 # [admin]
 # operator_group = "gatte-operators"

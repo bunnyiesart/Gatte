@@ -88,12 +88,27 @@ dois ao subir e recusa um desencontro: grupo configurado com arquivo
 `0600`, ou arquivo de um grupo que o `config.toml` não nomeia. É assim que o
 `ui -manage-users` roda sem root.
 
+O que a delegação entrega são as contas que o Gatte gerencia: uma conta
+com pelo menos um grupo, todos em `[group_to_role]`. Trocar grupos,
+desativar, ativar ou gerar senha de qualquer outra conta do IdP (o admin de
+outras aplicações, uma pessoa sem grupo do Gatte) é recusado com
+`account_not_managed`, porque a senha nova daria o login dela em todas as
+aplicações atrás do IdP. Só um par que o kernel diz ser root (inclusive
+atrás de `sudo`) alcança essas contas, como em `0038`. Tirar todos os
+grupos de uma conta a põe fora do alcance do grupo; devolvê-la exige root.
+
 Com `[admin] operator_group` configurado, o socket do operador recusa um par
 que não seja root, nem o usuário de serviço, nem tenha esse grupo entre os
 grupos que o kernel dá ao par (`SO_PEERGROUPS` no Linux, `cr_groups` de
 `LOCAL_PEERCRED` no FreeBSD e no macOS). A barreira é o modo do arquivo; essa
 checagem é a segunda, e não consulta o banco de grupos do sistema, que pode
 discordar das sessões abertas.
+
+Por isso o backend do operador confere o arquivo do socket ao subir, venha
+ele do systemd ou de `-socket`: arquivo aberto a outros (`perm & 0007`)
+recusa subir, e com `operator_group` configurado um arquivo aberto a grupo
+tem de ser desse grupo. Um `SocketMode=0666` por engano admitiria todo uid
+local como operador.
 
 ### 2. Quem é o operador: o kernel diz, o cliente não
 
@@ -106,14 +121,21 @@ parâmetro da API diz quem é o operador. `operatorName()` (`SUDO_USER`,
 
 - O uid vira nome pelo banco de contas do sistema, e a linha é
   `(operator:NOME)`, como hoje (`0031`).
-- Quando o uid é uma conta compartilhada (0, ou o usuário de serviço) e o
-  sistema é Linux, o backend lê o `loginuid` do par **uma vez, no
-  `accept`**. Com `SO_PEERPIDFD` (Linux 6.5+), lê pelo pidfd e confere que
+- Quando o uid é 0 e o sistema é Linux, o backend lê o `loginuid` do par
+  **uma vez, no `accept`**. Com `SO_PEERPIDFD` (Linux 6.5+), lê pelo pidfd e confere que
   o processo ainda vive depois da leitura; sem ele, lê `/proc/PID/loginuid`
   e confere que o `Uid` de `/proc/PID/status` é o uid do par. Se o pid pode
   ter sido reutilizado (a conferência falha) ou o valor é `4294967295`, a
-  linha fica com o nome da conta compartilhada. Senão, é atribuída ao nome
-  do loginuid, e a razão ganha `[via root]` (ou `[via NOME-DO-SERVIÇO]`).
+  linha fica com `root`. Senão, é atribuída ao nome do loginuid, e a razão
+  ganha `[via root]`.
+- O usuário de serviço **não** é renomeado pelo loginuid. No Linux, um
+  processo cujo loginuid não foi definido pode defini-lo sem privilégio
+  (`audit_set_loginuid_perm`), e todo processo que o systemd sobe como
+  usuário de serviço (o `serve`, um timer) está nessa situação: ele
+  escreveria o uid de qualquer operador e teria a linha atribuída a ele.
+  A linha de um par do usuário de serviço fica com o nome dele; o operador
+  conecta como ele mesmo, membro de `gatte-operators`. O root poderia
+  gravar a trilha direto, então o loginuid dele não abre nada novo.
 - Sem loginuid (FreeBSD, macOS, login direto de root), a linha fica com o
   nome da conta compartilhada, como já acontece no CLI (`0031` §4).
 - Um uid sem nome no sistema é recusado (`peer_unattributable`): ação sem
@@ -356,6 +378,9 @@ Remover, renomear ou mudar o sentido de um campo é `/v2`, servido ao lado de
 - Sem ativação sob demanda fora do systemd; no FreeBSD o backend roda em
   primeiro plano ou por um rc.d escrito pela implantação.
 - Registrar, assinar e desregistrar backends continuam fora da API.
+- O CLI rodado como usuário de serviço ainda lê o próprio loginuid
+  (`[cli]`), que esse processo poderia ter definido; a marca vale o que o
+  CLI sempre valeu, e o usuário de serviço grava o banco de qualquer jeito.
 
 ## Testes
 
@@ -462,3 +487,37 @@ O que a implementação decidiu além do texto acima, ou mudou nele:
   e `TestClient_CoversEveryOperationOfTheContractAgainstTheRealBackend`; a
   atribuição pelo kernel por
   `TestIdentity_ComesFromThePeerAndNotFromTheRequest`.
+- Correções da revisão de segurança:
+  - `account_not_managed` (§1): grupos, desativar, ativar e
+    `reset-password` só alcançam contas cujos grupos estão todos em
+    `[group_to_role]` (e ao menos um), a menos que o par seja root.
+    `TestAccounts_ADelegatedOperatorReachesOnlyAccountsGatteManages` e
+    `TestAccounts_ARootPeerReachesEveryAccount`.
+  - O loginuid só renomeia par root (§2):
+    `TestLoginUID_NamesOnlyARootPeer`.
+  - O socket do operador aberto a outros, ou de outro grupo que o
+    `operator_group`, recusa subir (§1):
+    `TestOperatorSocket_AFileOpenToOthersRefusesToStart` e
+    `TestAdmin_TheOperatorBackendRefusesASocketOpenToEveryone`.
+  - `/v1/audit` pagina no banco (`Recorder.Page`: com ids 1..COUNT, a
+    posição é o id e os filtros vão para o `WHERE`; com lacuna, percorre do
+    mais novo contando a posição) e `/v1/people` agrega com `GROUP BY`
+    (`Recorder.Analysts`); nenhum dos dois carrega a trilha inteira. O
+    `last_call` de People passa a ser o timestamp da linha mais nova da
+    identidade. `TestAuditAndPeople_DoNotReadTheWholeTrail`,
+    `TestPage_MatchesTheChainPositionsWithAndWithoutAGap`.
+  - O `users_file` mantém dono e grupo a cada reescrita: a unidade de
+    contas tem `CAP_CHOWN`, e sem o privilégio o `autheliafile` recusa a
+    troca em vez de deixar um arquivo que o IdP não lê.
+    `TestWrite_RefusesToReplaceAFileWhoseOwnerItCannotKeep`,
+    `TestSystemdUnits_TheAccountsBackendCanKeepTheUsersFilesGroup`.
+  - Em primeiro plano o `-idle` padrão é 0 (nunca sai); o de 5 min vale só
+    para o socket ativado pelo systemd.
+    `TestAdmin_TheForegroundBackendDoesNotExitWhenIdle`.
+  - As unidades gravam onde o `config.example.toml` grava
+    (`/var/db/mcp-gateway`, `/var/log/mcp-gateway`).
+    `TestSystemdUnits_WriteWhereTheExampleConfigurationWrites`.
+  - O motivo guardado no bloqueio leva a marca do ator (`[cli] motivo`,
+    `[ui] motivo`), e é essa a coluna REASON do `access list`; a checagem
+    antecipada do CLI valida o motivo já marcado.
+    `TestAccessBlock_TheEarlyCheckValidatesTheReasonTheServiceStores`.

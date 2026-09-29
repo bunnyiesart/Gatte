@@ -10,14 +10,18 @@ Type=simple
 User=root
 ExecStart=/usr/local/bin/mcp-gateway admin -accounts -config /etc/mcp-gateway/config.toml -idle 5m
 # The IdP's users file is rewritten by tmp+rename in its directory; the
-# audit writer child appends to the database (and the [audit.siem] file).
-ReadWritePaths=/etc/authelia /var/lib/mcp-gateway
+# audit writer child appends to the database and the [audit.siem] file
+# (config.example.toml's database and [audit.siem] path; adjust to yours).
+ReadWritePaths=/etc/authelia /var/db/mcp-gateway /var/log/mcp-gateway
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
 # No listener but the socket; INET only for a [telemetry] GELF sink, if any.
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
-# Only what dropping to the service account for the child needs.
-CapabilityBoundingSet=CAP_SETUID CAP_SETGID
+# CAP_SETUID/CAP_SETGID drop the audit writer child to the service
+# account; CAP_CHOWN gives the rewritten users file the original's group
+# (root:www 0640, read by Authelia). Without it the backend refuses the
+# change rather than leave the IdP unable to read its users file.
+CapabilityBoundingSet=CAP_CHOWN CAP_SETUID CAP_SETGID
 LockPersonality=yes
 SystemCallArchitectures=native

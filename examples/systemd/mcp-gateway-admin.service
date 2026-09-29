@@ -10,8 +10,9 @@ Type=simple
 User=mcpgw
 Group=mcpgw
 ExecStart=/usr/local/bin/mcp-gateway admin -config /etc/mcp-gateway/config.toml -idle 5m
-# The database directory, and the [audit.siem] file if it is elsewhere.
-ReadWritePaths=/var/lib/mcp-gateway
+# The database directory and the [audit.siem] file's directory, as in
+# config.example.toml; adjust to yours.
+ReadWritePaths=/var/db/mcp-gateway /var/log/mcp-gateway
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes

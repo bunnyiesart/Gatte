@@ -112,12 +112,14 @@ func accessChange(sub string, args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "%v\n", err)
 		return exitCannotRun
 	}
-	if err := access.ValidateBlock(access.Block{Subject: subject, Reason: *reason, By: "-", At: time.Now()}); err != nil {
+	actor, err := cliActor()
+	if err != nil {
 		fmt.Fprintf(stderr, "%v\n", err)
 		return exitCannotRun
 	}
-	actor, err := cliActor()
-	if err != nil {
+	// The reason stored is the tagged one ("[cli] ..."), so that is the one
+	// validated here, as the service will.
+	if err := access.ValidateBlock(access.Block{Subject: subject, Reason: admin.BlockNote(actor, *reason), By: actor.Name, At: time.Now()}); err != nil {
 		fmt.Fprintf(stderr, "%v\n", err)
 		return exitCannotRun
 	}

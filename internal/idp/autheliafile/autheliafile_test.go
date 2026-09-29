@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/bunnyiesart/Gatte/internal/idp"
@@ -165,4 +166,44 @@ func labFixture(t *testing.T, text string) string {
 	// The key is spelled out here, not in the fixture, so the fixture
 	// holds no "key: value" pair a secret scanner reads as a credential.
 	return strings.NewReplacer("LAB_HASH", h, "PWKEY", "pass"+"word").Replace(text)
+}
+
+// TestWrite_RefusesToReplaceAFileWhoseOwnerItCannotKeep: a root process
+// without CAP_CHOWN cannot give the new file the original's group (root:www
+// 0640, read by Authelia as www). Renaming it over the original would lock
+// the IdP out of its own users file at the next reload, while the change
+// looked applied; the write is refused and the original stays.
+func TestWrite_RefusesToReplaceAFileWhoseOwnerItCannotKeep(t *testing.T) {
+	p := writeFixture(t)
+	before, _ := os.ReadFile(p)
+	oldChown, oldOwner := chownFile, ownerOf
+	t.Cleanup(func() { chownFile, ownerOf = oldChown, oldOwner })
+	chownFile = func(f *os.File, uid, gid int) error {
+		return &os.PathError{Op: "fchown", Path: f.Name(), Err: syscall.EPERM}
+	}
+	// The temporary file comes out with another group than the original.
+	ownerOf = func(fi os.FileInfo) (uint32, uint32, bool) {
+		uid, gid, ok := oldOwner(fi)
+		if strings.HasPrefix(fi.Name(), ".") {
+			gid++
+		}
+		return uid, gid, ok
+	}
+	if err := New(p).SetDisabled("ana", true); err == nil {
+		t.Fatal("the users file was replaced by one of another group")
+	}
+	after, _ := os.ReadFile(p)
+	if string(before) != string(after) {
+		t.Fatal("the original users file changed")
+	}
+	if left, _ := filepath.Glob(filepath.Join(filepath.Dir(p), ".*")); len(left) != 0 {
+		t.Fatalf("temporary files left behind: %v", left)
+	}
+
+	// Without the privilege but with the same owner already, the write is
+	// fine: nothing would change hands.
+	ownerOf = oldOwner
+	if err := New(p).SetDisabled("ana", true); err != nil {
+		t.Fatalf("a write whose owner already matches was refused: %v", err)
+	}
 }

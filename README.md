@@ -452,10 +452,13 @@ sudo systemctl enable --now mcp-gateway-admin.socket mcp-gateway-admin-accounts.
 # elsewhere, in the foreground, as the service account (root is refused):
 sudo -u mcpgw mcp-gateway admin -config "$CFG" \
     -socket /run/mcp-gateway-admin/operator/operator.sock -socket-group gatte-operators
+# (in the foreground it does not exit when idle unless -idle is given)
 ```
 
 Identity provider accounts are served by a second, root-only socket
-(`admin -accounts`). The contract is `api/admin.openapi.yaml`; how to write
+(`admin -accounts`); a group it is delegated to reaches only the accounts
+whose groups all map to a role. A block's stored reason, the REASON column
+of `access list`, now starts with where it came from (`[cli]`, `[ui]`). The contract is `api/admin.openapi.yaml`; how to write
 a front is `docs/admin-api.md`.
 
 ## Security model

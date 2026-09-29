@@ -201,14 +201,16 @@ func TestClient_CoversEveryOperationOfTheContractAgainstTheRealBackend(t *testin
 	}
 	_, err = acc.GetAccount(ctx, "bruno")
 	do("getAccount", err)
-	_, err = acc.SetAccountGroups(ctx, "bruno", []string{})
-	do("setAccountGroups", err)
 	_, err = acc.DisableAccount(ctx, "bruno")
 	do("disableAccount", err)
 	_, err = acc.EnableAccount(ctx, "bruno")
 	do("enableAccount", err)
 	_, err = acc.ResetAccountPassword(ctx, "bruno")
 	do("resetAccountPassword", err)
+	// Last: with no group left, the account is out of a non-root peer's
+	// reach (design/adr/0040 §1).
+	_, err = acc.SetAccountGroups(ctx, "bruno", []string{})
+	do("setAccountGroups", err)
 
 	for _, id := range operationIDs(t) {
 		err, ok := covered[id]

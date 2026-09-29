@@ -24,4 +24,16 @@ backend refuses to start when the two disagree.
 
 The accounts backend also refuses `config.toml`, `[idp] users_file` or any
 directory above them that is not root's or is writable by group or others.
-Adjust `ReadWritePaths=` to where the database and the users file live.
+The units' `ReadWritePaths=` are `config.example.toml`'s: the database in
+`/var/db/mcp-gateway`, the `[audit.siem]` file in `/var/log/mcp-gateway`,
+and the users file in `/etc/authelia`. Adjust them to where yours live;
+under `ProtectSystem=strict` anything else is read-only, and an operator
+write whose row cannot reach the SIEM copy answers `recorded: false`.
+
+The users file keeps its owner and group across every rewrite (Authelia
+usually reads it through its group, e.g. `root:www 0640`). That needs
+`CAP_CHOWN`, which the accounts unit keeps; a backend without it refuses
+the change instead of leaving the IdP a file it cannot read.
+
+The operator backend refuses to start when its socket file is open to
+others, or belongs to a group other than `[admin] operator_group`.

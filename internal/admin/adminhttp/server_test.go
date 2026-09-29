@@ -389,3 +389,49 @@ func TestSocketGroup_MustMatchTheConfiguredAccountGroup(t *testing.T) {
 		}
 	}
 }
+
+// TestLoginUID_NamesOnlyARootPeer is design/adr/0040 §2: a process whose
+// loginuid is unset may write it without privilege, and every process
+// systemd starts as the service account has it unset. A service-account
+// peer is therefore never renamed by its loginuid (it could claim any
+// operator); only a root peer, which could write the trail anyway, is.
+func TestLoginUID_NamesOnlyARootPeer(t *testing.T) {
+	const svc = 990
+	if !adminhttp.TrustsLoginUID(0, svc) {
+		t.Error("a root peer (sudo) is not named by its loginuid")
+	}
+	if adminhttp.TrustsLoginUID(svc, svc) {
+		t.Error("a service-account peer is named by a loginuid it could have written itself")
+	}
+	if adminhttp.TrustsLoginUID(1001, svc) {
+		t.Error("an operator connecting as themselves is renamed by a loginuid")
+	}
+}
+
+// TestOperatorSocket_AFileOpenToOthersRefusesToStart is design/adr/0040
+// §1: the barrier is the operator socket's mode, so a socket-activated
+// file that admits every local user, or one of a group other than
+// [admin] operator_group, refuses to start.
+func TestOperatorSocket_AFileOpenToOthersRefusesToStart(t *testing.T) {
+	gid := uint32(os.Getegid())
+	cases := []struct {
+		name     string
+		cfgGID   *uint32
+		fileGID  uint32
+		fileMode os.FileMode
+		ok       bool
+	}{
+		{"service-only file", nil, 0, 0o600, true},
+		{"operators group file, no operator_group", nil, gid, 0o660, true},
+		{"operators group file matching operator_group", &gid, gid, 0o660, true},
+		{"file open to others", nil, gid, 0o666, false},
+		{"file open to others with operator_group", &gid, gid, 0o666, false},
+		{"group file of another group than operator_group", &gid, gid + 1, 0o660, false},
+	}
+	for _, c := range cases {
+		err := adminhttp.CheckOperatorFile(c.fileGID, c.fileMode, c.cfgGID)
+		if (err == nil) != c.ok {
+			t.Errorf("%s: %v, want ok=%v", c.name, err, c.ok)
+		}
+	}
+}

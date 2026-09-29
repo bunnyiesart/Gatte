@@ -34,9 +34,12 @@ import (
 
 // Trail is what the service reads of the audit trail.
 type Trail interface {
-	// ChainOrder returns every record in insertion (chain) order: the
-	// record at index i is at position i+1.
-	ChainOrder(ctx context.Context) ([]audit.Record, error)
+	// Page returns the newest records matching q, newest first, with
+	// their chain positions, and whether more match; it never holds the
+	// whole trail.
+	Page(ctx context.Context, q audit.TrailQuery) ([]audit.PositionedRecord, bool, error)
+	// Analysts summarises every person's identity on the trail.
+	Analysts(ctx context.Context) ([]audit.AnalystSeen, error)
 	// HasAnalyst reports whether any record carries identity.
 	HasAnalyst(ctx context.Context, identity string) (bool, error)
 	// VerifyChain walks the hash chain.
@@ -106,6 +109,9 @@ type Actor struct {
 	// Front labels where the action came from: "ui", "api", "cli",
 	// "cli env", or a third-party front's name. Display only.
 	Front string
+	// Root is true when the kernel said the peer is uid 0. Only root
+	// reaches IdP accounts Gatte does not manage (design/adr/0040 §1).
+	Root bool
 }
 
 // Identity is the ANALYST value of the actor's rows.

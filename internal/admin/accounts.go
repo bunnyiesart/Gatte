@@ -106,6 +106,31 @@ func (s *Service) Account(ctx context.Context, username string) (adminapi.Accoun
 	return AccountOf(a), nil
 }
 
+// inReach refuses an account a delegated operator may not change
+// (design/adr/0040 §1). [admin] account_group hands the accounts socket to
+// a group that is not root, and what it hands over is the accounts Gatte
+// manages: those with at least one group, every one of them in
+// [group_to_role]. Any other account of the IdP (an administrator of other
+// applications, a person with no Gatte group) is out of reach, since a
+// reset would give its login to every application behind the IdP. A peer
+// the kernel says is root reaches every account, as under design/adr/0038.
+func inReach(a Actor, cfg *config.Config, acct idp.Account) error {
+	if a.Root {
+		return nil
+	}
+	if len(acct.Groups) == 0 {
+		return adminapi.NewError(adminapi.CodeAccountNotManaged, "account %q has no group of [group_to_role]; Gatte does not manage it, and only root may change it", visible.Escape(acct.Username)).
+			With("username", acct.Username)
+	}
+	for _, g := range acct.Groups {
+		if _, ok := cfg.GroupToRole[g]; !ok {
+			return adminapi.NewError(adminapi.CodeAccountNotManaged, "account %q has group %q, outside [group_to_role]; Gatte does not manage it, and only root may change it", visible.Escape(acct.Username), visible.Escape(g)).
+				With("username", acct.Username).With("group", g)
+		}
+	}
+	return nil
+}
+
 // mappedGroups refuses any group that maps to no role: accounts get access
 // through group_to_role, never around it. The result is sorted.
 func mappedGroups(cfg *config.Config, groups []string) ([]string, error) {
@@ -291,6 +316,9 @@ func (s *Service) SetAccountGroups(ctx context.Context, a Actor, username string
 		if err != nil {
 			return idp.Account{Username: username}, "", err
 		}
+		if err := inReach(a, cfg, cur); err != nil {
+			return cur, "", err
+		}
 		groups, err := mappedGroups(cfg, req.Groups)
 		if err != nil {
 			return cur, "", err
@@ -321,6 +349,9 @@ func (s *Service) SetAccountDisabled(ctx context.Context, a Actor, username stri
 		if err != nil {
 			return idp.Account{Username: username}, "", err
 		}
+		if err := inReach(a, cfg, cur); err != nil {
+			return cur, "", err
+		}
 		if cur.Disabled == disabled {
 			return cur, "", errNoChange
 		}
@@ -342,6 +373,9 @@ func (s *Service) ResetAccountPassword(ctx context.Context, a Actor, username st
 		cur, err := findAccount(dir, username)
 		if err != nil {
 			return idp.Account{Username: username}, "", err
+		}
+		if err := inReach(a, cfg, cur); err != nil {
+			return cur, "", err
 		}
 		p, hash, err := newPassword()
 		if err != nil {

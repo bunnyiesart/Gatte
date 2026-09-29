@@ -79,6 +79,12 @@ In the foreground, the same is `-socket-group gatte-accounts -socket-mode
 of that group then runs `mcp-gateway ui -manage-users` as themselves,
 without root. Unit files to copy are in `examples/systemd/`.
 
+What the group gets is the accounts Gatte manages: an account with at
+least one group, every one of them in `[group_to_role]`. Changing groups,
+disabling, enabling or resetting the password of any other account of the
+IdP (an administrator of other applications, a person with no Gatte group)
+is refused with `account_not_managed`; only a root peer reaches those.
+
 ## What you import
 
 Two public packages:
@@ -131,7 +137,8 @@ Every rule lives in the backend, so a front cannot forget one:
   without one, refuses another, and refuses if the definition moved while
   approving.
 - **Access is only through `[group_to_role]`.** Accounts get only groups
-  that map to a role.
+  that map to a role, and a peer that is not root changes only accounts
+  whose groups all map to one (`account_not_managed` otherwise).
 - **Passwords are generated, returned once and stored hashed.** No endpoint
   accepts a password. It appears in exactly one field,
   `one_time_password`, and never in `messages`, `warnings`, an error, the

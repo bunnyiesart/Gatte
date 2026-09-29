@@ -457,6 +457,152 @@ ORDER BY id ASC
 	return records, nil
 }
 
+// Page returns the newest q.Limit records matching q, newest first, each
+// with its chain position, and whether more match further back. It reads
+// row by row and keeps only the page (design/adr/0040): the trail gets a
+// row per MCP call, and a management request must not hold all of them.
+//
+// A trail whose ids run 1..COUNT, which is every trail no one deleted
+// from, has position = id, and the filters and the Before bound go to the
+// database. A trail with a gap (a deleted row, which VerifyChain reports)
+// is walked newest first from COUNT down, so positions stay those
+// VerifyChain names. Since is compared in Go on the parsed instant, for
+// the reason List gives. Both reads run in one transaction, so a row
+// appended meanwhile cannot shift the positions.
+func (r *Recorder) Page(ctx context.Context, q audit.TrailQuery) ([]audit.PositionedRecord, bool, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, false, fmt.Errorf("audit/sqlite: page: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	var count, maxID int64
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(MAX(id), 0) FROM audit_records`).Scan(&count, &maxID); err != nil {
+		return nil, false, fmt.Errorf("audit/sqlite: page: %w", err)
+	}
+	contiguous := count == maxID
+	var where []string
+	var args []any
+	if contiguous {
+		if q.Before > 0 {
+			where, args = append(where, "id < ?"), append(args, q.Before)
+		}
+		for _, f := range []struct{ col, v string }{{"analyst_identity", q.Subject}, {"outcome", q.Outcome}, {"source_address", q.Source}} {
+			if f.v != "" {
+				where, args = append(where, f.col+" = ?"), append(args, f.v)
+			}
+		}
+	}
+	stmt := `SELECT id, analyst_identity, tool, target_upstream, timestamp, outcome, reason, source_address, analyst_name FROM audit_records`
+	if len(where) > 0 {
+		stmt += " WHERE " + strings.Join(where, " AND ")
+	}
+	stmt += " ORDER BY id DESC"
+	rows, err := tx.QueryContext(ctx, stmt, args...)
+	if err != nil {
+		return nil, false, fmt.Errorf("audit/sqlite: page: %w", err)
+	}
+	defer rows.Close()
+	out := []audit.PositionedRecord{}
+	pos := int(count) + 1
+	for rows.Next() {
+		var id int64
+		var rec audit.Record
+		var ts, outcome string
+		if err := rows.Scan(&id, &rec.AnalystIdentity, &rec.Tool, &rec.TargetUpstream, &ts, &outcome, &rec.Reason, &rec.SourceAddress, &rec.AnalystName); err != nil {
+			return nil, false, fmt.Errorf("audit/sqlite: page: scan: %w", err)
+		}
+		rec.Outcome = audit.Outcome(outcome)
+		p := int(id)
+		if !contiguous {
+			pos--
+			p = pos
+			if q.Before > 0 && p >= q.Before ||
+				q.Subject != "" && rec.AnalystIdentity != q.Subject ||
+				q.Outcome != "" && outcome != q.Outcome ||
+				q.Source != "" && rec.SourceAddress != q.Source {
+				continue
+			}
+		}
+		rec.Timestamp, err = time.Parse(timeLayout, ts)
+		if err != nil {
+			return nil, false, fmt.Errorf("audit/sqlite: page: parse timestamp: %w", err)
+		}
+		if !q.Since.IsZero() && rec.Timestamp.Before(q.Since) {
+			continue
+		}
+		if len(out) == q.Limit {
+			return out, true, nil
+		}
+		out = append(out, audit.PositionedRecord{Position: p, Record: rec})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, fmt.Errorf("audit/sqlite: page: %w", err)
+	}
+	return out, false, nil
+}
+
+// Analysts summarises, in the database, every identity on the trail that
+// is a person's: not empty and not in parentheses ("(gateway)",
+// "(operator:x)", "(unauthenticated)"). LastCall is the timestamp of the
+// identity's newest row, and Name the newest non-empty name it was
+// written with. Memory is one entry per identity, not per row.
+func (r *Recorder) Analysts(ctx context.Context) ([]audit.AnalystSeen, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("audit/sqlite: analysts: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	const person = `analyst_identity <> '' AND substr(analyst_identity, 1, 1) <> '('`
+	// SQLite gives a bare column of a MAX() aggregate the value of the row
+	// that holds the maximum: timestamp and analyst_name below are the
+	// newest row's.
+	rows, err := tx.QueryContext(ctx, `SELECT analyst_identity, COUNT(*), MAX(id), timestamp FROM audit_records WHERE `+person+` GROUP BY analyst_identity`)
+	if err != nil {
+		return nil, fmt.Errorf("audit/sqlite: analysts: %w", err)
+	}
+	var out []audit.AnalystSeen
+	index := map[string]int{}
+	for rows.Next() {
+		var a audit.AnalystSeen
+		var maxID int64
+		var ts string
+		if err := rows.Scan(&a.Identity, &a.Calls, &maxID, &ts); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("audit/sqlite: analysts: scan: %w", err)
+		}
+		if a.LastCall, err = time.Parse(timeLayout, ts); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("audit/sqlite: analysts: parse timestamp: %w", err)
+		}
+		index[a.Identity] = len(out)
+		out = append(out, a)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, fmt.Errorf("audit/sqlite: analysts: %w", err)
+	}
+	rows.Close()
+	names, err := tx.QueryContext(ctx, `SELECT analyst_identity, MAX(id), analyst_name FROM audit_records WHERE `+person+` AND analyst_name <> '' GROUP BY analyst_identity`)
+	if err != nil {
+		return nil, fmt.Errorf("audit/sqlite: analysts: %w", err)
+	}
+	defer names.Close()
+	for names.Next() {
+		var id, name string
+		var maxID int64
+		if err := names.Scan(&id, &maxID, &name); err != nil {
+			return nil, fmt.Errorf("audit/sqlite: analysts: scan: %w", err)
+		}
+		if i, ok := index[id]; ok {
+			out[i].Name = name
+		}
+	}
+	if err := names.Err(); err != nil {
+		return nil, fmt.Errorf("audit/sqlite: analysts: %w", err)
+	}
+	return out, nil
+}
+
 // HasAnalyst reports whether any record on the trail carries identity as
 // its ANALYST. The Operator Console asks it after `access block`, so a
 // subject with a typo in it -- which would block nobody, since matching is

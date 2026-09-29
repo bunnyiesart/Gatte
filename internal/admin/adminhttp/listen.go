@@ -215,6 +215,21 @@ func CheckAccountsFile(fileGID uint32, mode os.FileMode, configGID *uint32) erro
 	return nil
 }
 
+// CheckOperatorFile holds the operator socket file to design/adr/0040 §1,
+// where the barrier is the file's mode: a file other users may connect to
+// admits every local uid as an operator, so it refuses to start. With
+// [admin] operator_group set, a file open to a group must be that group's.
+func CheckOperatorFile(fileGID uint32, mode os.FileMode, operatorGID *uint32) error {
+	perm := mode.Perm()
+	if perm&0o007 != 0 {
+		return fmt.Errorf("the operator socket is %04o: open to every local user (SocketMode=0660, or -socket-mode 0660)", perm)
+	}
+	if operatorGID != nil && perm&0o070 != 0 && fileGID != *operatorGID {
+		return fmt.Errorf("the operator socket's group is %d and [admin] operator_group is %d: they must match", fileGID, *operatorGID)
+	}
+	return nil
+}
+
 // SocketFileOf stats the socket file behind a listener.
 func SocketFileOf(ln net.Listener) (uint32, os.FileMode, string, error) {
 	path := ln.Addr().String()

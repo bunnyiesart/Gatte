@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bunnyiesart/Gatte/internal/audit"
 )
@@ -192,5 +194,52 @@ func TestAdmin_TheAuditWriterRunsAsTheOwnerOfARealDatabaseDirectory(t *testing.T
 	}
 	if _, _, err := databaseOwner(filepath.Join(link, "gateway.db")); err == nil {
 		t.Fatal("a database directory that is a symbolic link was accepted")
+	}
+}
+
+// TestAdmin_TheOperatorBackendRefusesASocketOpenToEveryone is
+// design/adr/0040 §1: whatever handed the socket over (systemd, or
+// -socket-mode), a file other users may connect to, or one of a group
+// other than [admin] operator_group, is refused at start.
+func TestAdmin_TheOperatorBackendRefusesASocketOpenToEveryone(t *testing.T) {
+	d, err := os.MkdirTemp("", "ga")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(d) })
+	path := filepath.Join(d, "o.sock")
+	ln, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	gid := uint32(os.Getegid())
+	other := gid + 1
+	for _, c := range []struct {
+		mode os.FileMode
+		gid  *uint32
+		ok   bool
+	}{{0o600, nil, true}, {0o660, &gid, true}, {0o666, nil, false}, {0o660, &other, false}} {
+		if err := os.Chmod(path, c.mode); err != nil {
+			t.Fatal(err)
+		}
+		if err := checkOperatorSocket(ln, c.gid); (err == nil) != c.ok {
+			t.Errorf("mode %04o, operator_group %v: %v, want ok=%v", c.mode, c.gid, err, c.ok)
+		}
+	}
+}
+
+// TestAdmin_TheForegroundBackendDoesNotExitWhenIdle: idle exit is for a
+// socket-activated backend, which systemd starts again on the next
+// connection. In the foreground nobody would, and the socket is gone.
+func TestAdmin_TheForegroundBackendDoesNotExitWhenIdle(t *testing.T) {
+	if got := adminIdle(5*time.Minute, false, false); got != 0 {
+		t.Errorf("foreground, -idle not given: %v, want 0 (never exits)", got)
+	}
+	if got := adminIdle(5*time.Minute, false, true); got != 5*time.Minute {
+		t.Errorf("socket-activated, -idle not given: %v, want the 5m default", got)
+	}
+	if got := adminIdle(time.Minute, true, false); got != time.Minute {
+		t.Errorf("foreground, -idle 1m: %v, want 1m", got)
 	}
 }

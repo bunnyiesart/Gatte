@@ -228,8 +228,8 @@ func (s *Server) identify(c net.Conn) *peer {
 			return p
 		}
 	}
-	// A shared account: the loginuid, read now, names the human.
-	if peercred.HasLoginUID && (cred.UID == 0 || cred.UID == s.o.ServiceUID) {
+	// Root behind sudo: the loginuid, read now, names the human.
+	if peercred.HasLoginUID && trustsLoginUID(cred.UID, s.o.ServiceUID) {
 		if lu, ok := peercred.LoginUID(s.o.ProcRoot, cred.PID, cred.UID, cred.Alive); ok && lu != cred.UID {
 			if human, err := s.o.LookupUser(lu); err == nil && human != "" {
 				p.via, p.name = name, human
@@ -238,6 +238,15 @@ func (s *Server) identify(c net.Conn) *peer {
 	}
 	return p
 }
+
+// trustsLoginUID says whether a peer of this uid is named by its loginuid
+// (design/adr/0040 §2). Only root: a process whose loginuid is unset may
+// set it without privilege (audit_set_loginuid_perm), and every process
+// systemd starts as the service account has it unset, so a service-account
+// peer could name any operator. It keeps its own name; an operator
+// connects as themselves, as a member of the operator group. Root could
+// write the trail directly anyway.
+func trustsLoginUID(uid, _ uint32) bool { return uid == 0 }
 
 var frontRe = regexp.MustCompile(`^[a-z0-9._-]{1,32}$`)
 

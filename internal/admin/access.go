@@ -25,9 +25,10 @@ func (s *Service) ListBlocks(ctx context.Context) (adminapi.BlockList, error) {
 	return out, nil
 }
 
-// blockNote is the note a block carries: the actor's tag, then the
-// operator's reason.
-func blockNote(a Actor, reason string) string {
+// BlockNote is the note a block carries, and the blocklist's REASON: the
+// actor's tag, then the operator's reason. Its length is what the
+// blocklist bounds, so an early check validates this, not the raw reason.
+func BlockNote(a Actor, reason string) string {
 	note := a.Tag()
 	if r := strings.TrimSpace(reason); r != "" {
 		note += " " + r
@@ -55,7 +56,7 @@ func (s *Service) validateBlock(a Actor, req adminapi.BlockRequest) (string, err
 	if err := access.ValidateSubject(req.Subject); err != nil {
 		return "", adminapi.NewError(adminapi.CodeInvalidArgument, "%v", err).With("field", "subject")
 	}
-	note := blockNote(a, req.Reason)
+	note := BlockNote(a, req.Reason)
 	if err := access.ValidateBlock(access.Block{Subject: req.Subject, Reason: note, By: a.Name, At: s.d.Now()}); err != nil {
 		return "", adminapi.NewError(adminapi.CodeInvalidArgument, "%v", err).With("field", "reason")
 	}

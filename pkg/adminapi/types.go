@@ -96,6 +96,11 @@ const (
 	AttentionChanged  = "changed"
 	AttentionPending  = "pending"
 	AttentionUnsigned = "unsigned"
+	// Since 1.1.0, with FeatureBackendHealth (design/adr/0041).
+	AttentionBackendUnavailable = "backend_unavailable"
+	AttentionBackendMaintenance = "backend_maintenance"
+	AttentionGatewayMaintenance = "gateway_maintenance"
+	AttentionServeNotReporting  = "serve_not_reporting"
 )
 
 // Attention is one thing only an operator can resolve.
@@ -130,6 +135,9 @@ type Overview struct {
 	Counts       OverviewCounts `json:"counts"`
 	RecentDenied []AuditRecord  `json:"recent_denied"`
 	Problems     []Problem      `json:"problems,omitempty"`
+	// Health is present with FeatureBackendHealth, and absent when it
+	// could not be read (a Problem with part "health" says so).
+	Health *Health `json:"health,omitempty"`
 }
 
 // Tool statuses. The set is open.
@@ -376,6 +384,8 @@ type Upstream struct {
 	Signature    string    `json:"signature"`
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
+	// Health is present with FeatureBackendHealth.
+	Health *BackendHealth `json:"health,omitempty"`
 }
 
 // UpstreamList answers GET /v1/upstreams.
@@ -603,4 +613,56 @@ type UpstreamMaintenance struct {
 type MaintenanceList struct {
 	Gateway   *Maintenance          `json:"gateway,omitempty"`
 	Upstreams []UpstreamMaintenance `json:"upstreams"`
+}
+
+// Backend states (BackendHealth.State). The set is open.
+const (
+	BackendUp           = "up"
+	BackendReconnecting = "reconnecting"
+	BackendDown         = "down"
+	BackendMaintenance  = "maintenance"
+	// BackendUnknown: the gateway process has not reported this backend,
+	// or is not reporting at all.
+	BackendUnknown = "unknown"
+)
+
+// Serve states (ServeStatus.State). The set is open.
+const (
+	ServeRunning       = "running"
+	ServeNotReporting  = "not_reporting"
+	ServeNeverReported = "never_reported"
+)
+
+// BackendHealth is what the gateway process last wrote about one backend,
+// merged with its maintenance row (design/adr/0041 item 7). Operator view:
+// Cause and Maintenance.SetBy never reach an analyst.
+type BackendHealth struct {
+	Name  string `json:"name"`
+	State string `json:"state"`
+	// Live is the liveness underneath State.
+	Live        bool       `json:"live"`
+	Since       *time.Time `json:"since,omitempty"`
+	LastAttempt *time.Time `json:"last_attempt,omitempty"`
+	// NextAttempt is approximate: the last round's start plus the round
+	// interval.
+	NextAttempt *time.Time   `json:"next_attempt,omitempty"`
+	Cause       string       `json:"cause,omitempty"`
+	Maintenance *Maintenance `json:"maintenance,omitempty"`
+}
+
+// ServeStatus is what the gateway process last wrote about itself; the
+// management backend reads it from the database, so it is also how a
+// front learns that serve is not running.
+type ServeStatus struct {
+	State                string     `json:"state"`
+	Boot                 *time.Time `json:"boot,omitempty"`
+	LastRoundAt          *time.Time `json:"last_round_at,omitempty"`
+	RoundIntervalSeconds int        `json:"round_interval_seconds,omitempty"`
+}
+
+// Health is the gateway's and every registered backend's health.
+type Health struct {
+	Serve              ServeStatus     `json:"serve"`
+	GatewayMaintenance *Maintenance    `json:"gateway_maintenance,omitempty"`
+	Backends           []BackendHealth `json:"backends"`
 }

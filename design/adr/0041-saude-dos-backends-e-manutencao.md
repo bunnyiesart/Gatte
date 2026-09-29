@@ -8,11 +8,14 @@ primeira parte), o `gatte.status` com nome reservado e as instructions
 (item 5), a manutenção persistida em `internal/health/sqlite`, lida por
 chamada e escrita pela API de gestão (item 6, com as três rotas do
 contrato 1.1.0 e a feature `maintenance`), as linhas de transição e o
-batimento versão 5 (item 7). Ficam para as etapas seguintes, e até lá não
-existem: o CLI (`upstream maintenance`, `maintenance`, e o `deregister`
-apagando manutenção, saúde e listagem), o `health` no `Overview` e nos
-`Upstreams` (feature `backend_health`), os fronts, o `gatte-status` do
-script de conexão (item 8a) e a receita de re-medição em `lab/README.md`.
+batimento versão 5 (item 7). A segunda etapa, com notas de correção nas
+ADRs 0039 e 0040, trouxe o resto: o CLI (`upstream maintenance`,
+`maintenance`, e o `deregister` apagando manutenção, saúde e listagem), o
+`health` no `Overview` e nos `Upstreams` (feature `backend_health`, agora
+em `features`), o front do Gatte (Overview e Backends), o `gatte-status`
+do script de conexão (item 8a) e a receita de re-medição em
+`lab/README.md`. O front da implantação interna é de outro repositório e
+chega em etapa própria, pelo mesmo `pkg/adminapi`.
 
 ## Contexto
 
@@ -92,8 +95,8 @@ A sonda (servidor, API falsa, scripts) é descartável e não é CI: estes oito
 comportamentos são do cliente, não do Gatte, e mudam com a versão dele. Os
 itens 6, 7 e 8 são os que este desenho usa como premissa; ao trocar a
 versão do Claude Code suportada, a medição é refeita pela receita de
-`lab/README.md` (seção a acrescentar no commit da implementação) antes de
-confiar neles.
+`lab/README.md` (seção *Re-measuring what Claude Code does with Gatte's
+answers*) antes de confiar neles.
 
 O que o gateway já tem e este ADR reaproveita: a detecção de morte da
 ADR-0024 (`ErrUpstreamGone`, `markGone`, re-discagem na rodada seguinte), as
@@ -825,6 +828,22 @@ existe no Windows PowerShell 5.1 e no PowerShell 7) e, quando há CA, com um
    o certificado raiz da cadeia tenha o thumbprint do CA do time — sem essa
    última conferência, a flag aceitaria qualquer raiz.
 
+> **CORREÇÃO — 29 set 2026, segunda etapa.** O callback é uma classe C#
+> compilada pelo próprio script (`Add-Type`), não um scriptblock: no
+> PowerShell 7 o `HttpWebRequest` roda sobre o `HttpClient`, e o callback
+> de validação é chamado numa thread do pool, onde um scriptblock não tem
+> runspace e falha. As regras são as desta lista, palavra por palavra
+> (nome do host conferido, `X509Chain` com o CA em `ExtraStore`,
+> `RevocationMode = NoCheck`, `AllowUnknownCertificateAuthority` e a raiz
+> com o thumbprint de um certificado do CA). O `.ps1` e o script de
+> conexão do Windows são ASCII, porque são gravados com
+> `Set-Content -Encoding ascii` e o PowerShell 5 lê um script sem BOM na
+> página de código do sistema; por isso o `.ps1` escreve `OK`/`X` onde o
+> sh escreve `✓`/`✘`. No passo 2, um `502`/`503`/`504` responde 3 como no
+> passo 1 (o proxy responde e o Gatte não), e qualquer outra resposta sem
+> o desafio responde 5. Nada disso foi executado num Windows: o teste de
+> template afirma o texto, e o comportamento só é medido no sh.
+
 Sem CA, a validação é a do sistema. O mapeamento é o da tabela do curl pelo
 `WebException.Status` e pelo `SocketException.SocketErrorCode` interno:
 `NameResolutionFailure` → 1; `Timeout`, `HostUnreachable`,
@@ -991,19 +1010,35 @@ escreve na trilha (ADR-0017).
     (`TestContract_EveryDocumentedOperationIsServedAndEveryServedRouteIsDocumented`,
     `TestClient_CoversEveryOperationOfTheContractAgainstTheRealBackend`),
     que falhavam desde o commit do desenho.
-- Testes das etapas seguintes, ainda por escrever: overview com `serve`
-  `not_reporting` e upstream com `health`; `cmd/mcp-gateway`:
-  `upstream maintenance`, `maintenance`, `deregister` apagando manutenção,
-  saúde e `backend_listing`; o script de conexão instalando o `gatte-status`
-  sh e PowerShell sem segredo e com valores entre aspas, o `.ps1` com CA
-  validando pelo `X509Chain` e o thumbprint (sem `Invoke-WebRequest`), o
-  `PATH` do usuário por `SetEnvironmentVariable` e não `setx`, e a allowlist
-  do passo 4 como `mcp__NOME__gatte_status`; o `gatte-status` sh rodado
-  contra um servidor de teste (200 + 401 → 0; **porta fechada → 3**; nome
-  que não resolve → 1; 503 com corpo → 3 e o corpo sem controle) e contra um
-  `claude` falso com as saídas do `claude mcp get` 2.1.285 do Contexto,
-  item 8; `internal/front/gatteweb`: Backends com estado e formulário com
-  CSRF, Overview com aviso do gateway e `serve` sem reportar.
+- Os da segunda etapa, vistos falhando antes da implementação (por não
+  compilar, quando usam a API nova, ou por comportamento):
+  - `internal/admin`: `TestOverview_CarriesTheHealthServeWrote`,
+    `TestOverview_AServeThatStoppedReportingIsFirstAndItsBackendsAreUnknown`,
+    `TestOverview_ADatabaseNoServeReportedIsNeverReported`,
+    `TestUpstreams_EachEntryCarriesItsHealth`; e o `gatte-status`:
+    `TestStatusScript_TellsUnreachableFromNeedsLoginFromUp` (rodado de
+    verdade contra servidores de teste e um `claude` falso com as saídas do
+    `claude mcp get` 2.1.285 do Contexto, item 8: 200 + 401 e `Connected`
+    → 0; `Needs authentication` → 4; `Failed to connect` com `HTTP 503` →
+    3; outra falha → 5; sem `claude` → 4; **porta fechada → 3**; nome que
+    não resolve → 1; proxy com `503` → 3 e o corpo sem controle; outra coisa
+    no endpoint MCP → 5), `TestStatusScript_ChecksTLSAgainstTheTeamCA`,
+    `TestStatusScript_BackendsCallsGatteStatusAsTheClientNamesIt`,
+    `TestStatusScripts_AreValidAndCarryNoSecret` (o `.ps1` com CA pelo
+    `X509Chain` e o thumbprint, sem `Invoke-WebRequest`),
+    `TestConnectScripts_InstallGatteStatus` (o `PATH` do usuário por
+    `SetEnvironmentVariable` e não `setx`, o script do Windows em ASCII) e
+    `TestConnectScript_InstallsGatteStatusIdempotently`.
+  - `pkg/adminapi`: `TestHealthTypes_CarryExactlyTheContractsFields` e
+    `TestWhoAmI_ListsBackendHealthAndTheOverviewCarriesIt`.
+  - `cmd/mcp-gateway`:
+    `TestUpstreamMaintenance_OnAndOffAreAuditedOperatorActions`,
+    `TestMaintenance_TheWholeGatewayOnListOff`,
+    `TestUpstreamMaintenance_RefusesWhatTheServiceRefuses`,
+    `TestRunUpstreamDeregister_ForgetsHealthAndMaintenance`,
+    `TestUI_BackendsShowHealthAndMaintenanceIsAnAuditedOperatorAction`
+    (estado, formulário com CSRF, mensagem escapada, linhas `[ui]`) e
+    `TestUI_OverviewShowsTheGatewayMaintenanceBannerAndAServeNotReporting`.
 - Quando roda: a cada build/CI (`make ci`).
 
 ## Notas

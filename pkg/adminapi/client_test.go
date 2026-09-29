@@ -81,7 +81,7 @@ func newBackend(t *testing.T) backend {
 	tools := quarantinesqlite.New(db)
 	svc, err := admin.New(admin.Deps{
 		Config: func() (*config.Config, error) { return cfg, nil },
-		Tools:  tools, Blocks: accesssqlite.New(db), Trail: trail, Quota: quotasqlite.New(db), Maintenance: healthsqlite.New(db),
+		Tools:  tools, Blocks: accesssqlite.New(db), Trail: trail, Quota: quotasqlite.New(db), Maintenance: healthsqlite.New(db), Health: healthsqlite.New(db),
 		Record:   func(ctx context.Context, _ *config.Config, rec audit.Record) error { return trail.Record(ctx, rec) },
 		Accounts: func(c *config.Config) (idp.Directory, error) { return autheliafile.New(c.IdP.UsersFile), nil },
 		IsBusy:   store.IsBusy,

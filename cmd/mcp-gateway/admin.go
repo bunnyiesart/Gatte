@@ -451,8 +451,12 @@ func newAdminService(db *sql.DB, loadCfg func() (*config.Config, error), stderr 
 		// Planned maintenance (design/adr/0041), over the database serve
 		// reads it from on every call.
 		Maintenance: healthsqlite.New(db),
-		Trail:       auditsqlite.New(db),
-		Quota:       base.quotaCounters(),
+		// What serve last wrote about its backends and itself: this is
+		// another process and reads it from the same database.
+		Health:     healthsqlite.New(db),
+		ServeGrace: reconcileTimeout,
+		Trail:      auditsqlite.New(db),
+		Quota:      base.quotaCounters(),
 		Upstreams: func(ctx context.Context, cfg *config.Config) ([]adminapi.Upstream, error) {
 			return opUpstreams(envFor(cfg))
 		},

@@ -61,8 +61,16 @@ type Deps struct {
 	// Maintenance is where planned maintenance is written
 	// (design/adr/0041); the gateway reads it per call.
 	Maintenance health.MaintenanceStore
-	Trail       Trail
-	Quota       quota.Reader
+	// Health is what the gateway process last wrote about its backends
+	// and itself (design/adr/0041 item 7). nil: the overview and the
+	// upstream list carry no health.
+	Health health.StateReader
+	// ServeGrace is how long past twice its round interval serve may go
+	// without completing a round before it counts as not reporting: the
+	// reconciliation timeout, the longest a round may take.
+	ServeGrace time.Duration
+	Trail      Trail
+	Quota      quota.Reader
 	// Upstreams lists the registry with each entry's signature state and
 	// network, the way `upstream list -json` computes them.
 	Upstreams func(ctx context.Context, cfg *config.Config) ([]adminapi.Upstream, error)

@@ -1,26 +1,100 @@
 {{template "top" .}}
+{{$csrf := .CSRF}}
+{{with .Data}}
 <div class="head">
   <h1>Backends</h1>
   <p class="sub">Register and sign backends in the terminal. An unsigned backend isn't served.</p>
 </div>
-{{if .Data}}
-<div class="group">
-  <table>
-    <thead><tr><th>Name</th><th>Runs as</th><th>Network</th><th>Credentials</th><th>Signed</th></tr></thead>
-    <tbody>
-    {{range .Data}}
-      <tr>
-        <td data-label="Name"><b>{{vis .Name}}</b></td>
-        <td class="muted" data-label="Runs as">{{if eq .Transport "oci"}}Container{{else}}Process{{end}}<span class="mono wrap cell-sub">{{if .Image}}{{vis .Image}}{{else}}{{vis .Command}}{{end}}</span></td>
-        <td data-label="Network">{{if .NetworkError}}<span class="badge danger">Refused</span>{{else}}{{.Network}}{{end}}</td>
-        <td class="mono" data-label="Credentials">{{range $i, $n := .EnvVarNames}}{{if $i}}, {{end}}{{vis $n}}{{else}}<span class="muted">None</span>{{end}}</td>
-        <td data-label="Signed">{{if eq .Signature "yes"}}<span class="badge ok">{{template "check"}}Signed</span>{{else}}<span class="badge danger">{{template "warn"}}Not signed</span>{{end}}</td>
-      </tr>
+
+{{if .Maintenance}}
+<section>
+  <h2>Whole gateway</h2>
+  {{if .Gateway}}
+  <div class="group row">
+    <span class="lead-icon maintenance">{{template "warn"}}</span>
+    <span class="row-text">
+      <span class="row-title">Gatte is in planned maintenance</span>
+      <span class="row-detail">“{{vis .Gateway.Message}}” · since {{time .Gateway.StartedAt}}{{if .Gateway.Until}} · until {{since .Gateway.Until}}{{if .Gateway.UntilPassed}} (passed){{end}}{{end}} · by {{vis .Gateway.SetBy}}</span>
+    </span>
+    <form method="post" action="{{$.Base}}/upstreams/maintenance/off">
+      <input type="hidden" name="csrf" value="{{$csrf}}">
+      <input type="hidden" name="scope" value="gateway">
+      <button class="btn small">End gateway maintenance</button>
+    </form>
+  </div>
+  {{else}}
+  <form class="group form" method="post" action="{{$.Base}}/upstreams/maintenance/on">
+    <input type="hidden" name="csrf" value="{{$csrf}}">
+    <input type="hidden" name="scope" value="gateway">
+    <label class="field wide"><span>Notice to analysts</span><input name="message" required maxlength="200" autocomplete="off" placeholder="Gateway update tonight; tools may pause for a few minutes"></label>
+    <label class="field"><span>Until (UTC, optional)</span><input name="until" autocomplete="off" placeholder="2h or 2026-09-29T15:00"></label>
+    <div class="form-end"><button class="btn">Announce gateway maintenance</button></div>
+  </form>
+  <p class="caption">A notice, not a block: calls are still served, and analysts' models read it in text results and in gatte.status.</p>
+  {{end}}
+</section>
+{{end}}
+
+<section>
+  {{if .Maintenance}}<h2>Backends</h2>{{end}}
+  {{if .Upstreams}}
+  <div class="group">
+    <table>
+      <thead><tr><th>Name</th>{{if .Health}}<th>State</th>{{end}}<th>Runs as</th><th>Network</th><th>Credentials</th><th>Signed</th></tr></thead>
+      <tbody>
+      {{range .Upstreams}}
+        <tr>
+          <td data-label="Name"><b>{{vis .Name}}</b></td>
+          {{if $.Data.Health}}<td data-label="State">{{with .Health}}<span class="badge {{if eq .State "up"}}ok{{else if or (eq .State "reconnecting") (eq .State "down")}}danger{{end}}">{{state .State}}</span>{{if .Since}}<span class="cell-sub">since {{since .Since}}</span>{{end}}{{if .NextAttempt}}<span class="cell-sub">next attempt around {{since .NextAttempt}}</span>{{end}}{{if .Cause}}<span class="cell-sub mono">{{vis .Cause}}</span>{{end}}{{else}}<span class="muted">-</span>{{end}}</td>{{end}}
+          <td class="muted" data-label="Runs as">{{if eq .Transport "oci"}}Container{{else}}Process{{end}}<span class="mono wrap cell-sub">{{if .Image}}{{vis .Image}}{{else}}{{vis .Command}}{{end}}</span></td>
+          <td data-label="Network">{{if .NetworkError}}<span class="badge danger">Refused</span>{{else}}{{.Network}}{{end}}</td>
+          <td class="mono" data-label="Credentials">{{range $i, $n := .EnvVarNames}}{{if $i}}, {{end}}{{vis $n}}{{else}}<span class="muted">None</span>{{end}}</td>
+          <td data-label="Signed">{{if eq .Signature "yes"}}<span class="badge ok">{{template "check"}}Signed</span>{{else}}<span class="badge danger">{{template "warn"}}Not signed</span>{{end}}</td>
+        </tr>
+      {{end}}
+      </tbody>
+    </table>
+  </div>
+  {{else if not $.Error}}
+  <div class="group empty-state"><p><b>No backends yet.</b> Register one with <code>mcp-gateway upstream register</code>, then sign it.</p></div>
+  {{end}}
+</section>
+
+{{if and .Maintenance .Upstreams}}
+<section>
+  <h2>Planned maintenance</h2>
+  <p class="caption">A backend in maintenance keeps its tools listed; its calls are answered with your message and not sent to it, from the next call on, until you end it. The end time is only announced.</p>
+  <ul class="group">
+    {{range .Upstreams}}
+    {{$m := index $.Data.InMaintenance .Name}}
+    <li class="row">
+      {{if $m.Message}}
+      <span class="lead-icon maintenance">{{template "warn"}}</span>
+      <span class="row-text">
+        <span class="row-title">{{vis .Name}} · In maintenance</span>
+        <span class="row-detail">“{{vis $m.Message}}” · since {{time $m.StartedAt}}{{if $m.Until}} · until {{since $m.Until}}{{if $m.UntilPassed}} (passed){{end}}{{end}} · by {{vis $m.SetBy}}</span>
+      </span>
+      <form method="post" action="{{$.Base}}/upstreams/maintenance/off">
+        <input type="hidden" name="csrf" value="{{$csrf}}">
+        <input type="hidden" name="scope" value="upstream">
+        <input type="hidden" name="upstream" value="{{.Name}}">
+        <button class="btn small">End maintenance</button>
+      </form>
+      {{else}}
+      <form class="form" method="post" action="{{$.Base}}/upstreams/maintenance/on">
+        <input type="hidden" name="csrf" value="{{$csrf}}">
+        <input type="hidden" name="scope" value="upstream">
+        <input type="hidden" name="upstream" value="{{.Name}}">
+        <span class="row-title field">{{vis .Name}}</span>
+        <label class="field wide"><span>Message to analysts</span><input name="message" required maxlength="200" autocomplete="off" placeholder="Version upgrade; back in about an hour"></label>
+        <label class="field"><span>Until (UTC, optional)</span><input name="until" autocomplete="off" placeholder="2h or 2026-09-29T15:00"></label>
+        <div class="form-end"><button class="btn small">Start maintenance</button></div>
+      </form>
+      {{end}}
+    </li>
     {{end}}
-    </tbody>
-  </table>
-</div>
-{{else if not .Error}}
-<div class="group empty-state"><p><b>No backends yet.</b> Register one with <code>mcp-gateway upstream register</code>, then sign it.</p></div>
+  </ul>
+</section>
+{{end}}
 {{end}}
 {{template "bottom" .}}

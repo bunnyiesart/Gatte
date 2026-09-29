@@ -214,10 +214,8 @@ func whoami(s *Server, r *request) (int, any, error) {
 	return 200, adminapi.WhoAmI{
 		APIVersions:     []string{"v1"},
 		ContractVersion: adminapi.ContractVersion,
-		// backend_health (health on overview and upstreams) is not served
-		// yet, so it is not listed: a front asks for a feature, not a
-		// version.
-		Features:       []string{adminapi.FeatureMaintenance},
+		// A front asks for a feature, not a version.
+		Features:       []string{adminapi.FeatureMaintenance, adminapi.FeatureBackendHealth},
 		GatewayVersion: s.o.GatewayVersion,
 		Socket:         s.o.Socket,
 		ConfigPath:     s.o.ConfigPath,

@@ -378,6 +378,10 @@ refusing unknown keys, before doing anything. `mcp-gateway help` and
 | Read the trail | `audit [-subject ID] [-outcome denied] [-since TIME]` | -- |
 | Check the trail was not edited | `audit -verify [-expect-head HASH]` | -- |
 | See quota spend | `quota usage [-analyst SUBJECT]` | -- |
+| Take one backend out for maintenance | `upstream maintenance on NAME -message TEXT [-until 2h]` | next call |
+| Bring it back | `upstream maintenance off NAME` | next call |
+| Announce maintenance of the whole gateway | `maintenance on -message TEXT [-until 2026-09-29T15:00:00Z]`, later `maintenance off` | next call |
+| See what is in maintenance | `maintenance list [-json]` | -- |
 | Change roles or rotate a credential | edit `config.toml` / `sops secrets.enc.json`, then restart | after restart |
 
 **During an incident, do two things.** `access block` stops the analyst at
@@ -392,6 +396,47 @@ who did it in `-reason` when the row can only name a shared account.
 boot and on every maintenance tick, including the number of tools pending
 and changed. Alert when it stops arriving, not only on what it says
 (`deploy/freebsd-jail.md`, "Alerting on a chain that went quiet").
+
+**When a backend goes down** (`design/adr/0041`), its tools stay listed and
+a call to one is answered, only to an analyst granted that tool, with a
+result that says which backend is unavailable, since when and when Gatte
+retries, and tells the model to call the built-in `gatte.status` before
+blaming the request. Each up and down is one `(backend health)` row
+attributed to `(gateway)`, written only on the transition (`denied` when it
+goes down, `allowed` when it comes back), and the heartbeat counts backends
+up, reconnecting and down. Alert on `tool:"(backend health)" AND
+outcome:denied` and close on the `allowed` row of the same backend.
+
+**Planned maintenance.** `upstream maintenance on NAME -message TEXT`
+answers that backend's calls with your message, without calling it, from
+the next call on and until `off`; its tools stay listed. `-until` only
+announces the end. `maintenance on` for the whole gateway is a notice, not
+a block: calls are still served, and text results and `gatte.status` carry
+it. The message goes in front of analysts and their models: one line, at
+most 200 characters, no hidden characters. Each on and off is an operator
+row, `(maintenance on)` or `(maintenance off)`. To stop `serve` itself
+(an upgrade, a host reboot): `maintenance on -until ...`, give open
+sessions a few minutes to read it, stop `serve`, work, start it, then
+`maintenance off`. While `serve` is stopped nothing answers inside MCP; the
+service manager restarts it on failure (`daemon -r` in the FreeBSD rc.d
+script, `deploy/gateway-serve.md`; `Restart=on-failure` under systemd), and
+the SIEM should alert on the heartbeat going quiet for three intervals
+and on a new `boot` value, which is a restart. A proxy in front of `serve`
+may answer 503 with a one-line maintenance sentence meanwhile: that body
+reaches Claude Code and `gatte-status`.
+
+**When the analyst cannot reach Gatte at all**, the connect script has
+installed `gatte-status` on their machine (`~/.config/gatte/bin`, or
+`%USERPROFILE%\.gatte` on Windows). It tells "the network does not reach
+Gatte" (exit 1: VPN, DNS, route) from TLS (2), from "Gatte or the proxy in
+front of it is not serving" (3, including a closed port on a host that
+answers), from "Gatte is up and Claude Code is not signed in" (4: run
+`/mcp`), using only the public protected-resource metadata, the MCP
+endpoint's 401 challenge and `claude mcp get`. `gatte-status -backends`
+also asks Claude Code to call `gatte.status`, at the cost of one model
+request. There is no `/healthz`: those two public answers already prove
+DNS, network, TLS, proxy and the process, and per-backend state needs the
+caller's identity.
 
 **Watch for tool changes.** The first sighting of a tool, a change to an
 approved tool and a registry entry whose signature fails are each written
@@ -420,12 +465,13 @@ link locally.
 
 | Page | What you do there |
 |---|---|
-| Overview | See what needs attention: changed and pending tools, unsigned backends, blocked analysts, the latest refusals. |
-| People | See each role, the groups that map to it and its tools, and everyone the gateway has seen, with a Block button. With `sudo mcp-gateway ui -manage-users` (or without sudo, as a member of a delegated `[admin] account_group`), also add people at the identity provider, change their groups, disable them or give them a new one-time password (`design/adr/0038`). Adding a person is a three-step assistant that ends with their one-time password and a connect script for macOS, Linux or Windows that sets up Claude Code on their machine (`[connect]`, `design/adr/0039`). |
+| Overview | See what needs attention: `serve` not reporting, changed and pending tools, unsigned backends, backends down, reconnecting or in maintenance, the gateway's maintenance; each backend's health (state, since, maintenance message); blocked analysts; the latest refusals. |
+| People | See each role, the groups that map to it and its tools, and everyone the gateway has seen, with a Block button. With `sudo mcp-gateway ui -manage-users` (or without sudo, as a member of a delegated `[admin] account_group`), also add people at the identity provider, change their groups, disable them or give them a new one-time password (`design/adr/0038`). Adding a person is a three-step assistant that ends with their one-time password and a connect script for macOS, Linux or Windows that sets up Claude Code on their machine and installs `gatte-status` (`[connect]`, `design/adr/0039`, `design/adr/0041`). |
 | Tools | Review a definition with hidden characters escaped and the diff coloured, then approve that exact fingerprint, or revoke. |
 | Access | Block or unblock an analyst, with a reason that goes in the trail. |
 | Audit | Filter the trail by analyst and outcome, and verify the hash chain against your SIEM's head. |
-| Backends, Quota | Read-only: what is registered and signed, and what each analyst has spent. |
+| Backends | What is registered and signed, each backend's state (up, reconnecting, down, in maintenance), since when and why, and a form to start or end the maintenance of one backend or of the whole gateway, with the message analysts read and an optional end time. |
+| Quota | Read-only: what each analyst has spent. |
 
 Every button is the management API's action of the same name, the one the
 commands in the table above call too, with the same checks and the same
@@ -575,6 +621,13 @@ that backend's data: nothing in text can prove its origin, so the server
 instructions name `gatte.status` as the only authoritative source, and
 results Gatte builds itself carry `_meta` key
 `io.github.bunnyiesart.gatte/origin`, which an upstream result never does.
+An analyst who cannot reach Gatte at all runs `gatte-status`, which reads
+only what anyone who reaches the host already sees (the protected-resource
+metadata and the MCP endpoint's 401 challenge) and the local `claude mcp
+get`; it reads no token. No unauthenticated endpoint reports health: the
+state of backends is only ever told to an authenticated caller, as above,
+and to the operator (the Backends page and `GET /v1/overview` of the
+management API, over its operator socket).
 A tool of a backend that is down stays listed for as long as its registry
 entry is servable (registered, valid, signed, covered by the quota), from
 the definition a human approved and the backend last announced; removing or

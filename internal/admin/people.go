@@ -138,5 +138,26 @@ func (s *Service) Upstreams(ctx context.Context) (adminapi.UpstreamList, error) 
 	if ups == nil {
 		ups = []adminapi.Upstream{}
 	}
+	if s.d.Health != nil {
+		names := make([]string, len(ups))
+		for i, u := range ups {
+			names[i] = u.Name
+		}
+		// A health that cannot be read leaves the list as it is: the
+		// registry is what this answers, and the overview says the part
+		// is missing.
+		if h, _, err := s.health(ctx, names); err != nil {
+			s.d.Log.Warn("admin: backend health not read", "detail", err.Error())
+		} else {
+			byName := map[string]adminapi.BackendHealth{}
+			for _, b := range h.Backends {
+				byName[b.Name] = b
+			}
+			for i := range ups {
+				b := byName[ups[i].Name]
+				ups[i].Health = &b
+			}
+		}
+	}
 	return adminapi.UpstreamList{Upstreams: ups}, nil
 }

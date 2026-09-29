@@ -11,12 +11,13 @@
 // Subcommands:
 //
 //	serve                     run the gateway
-//	upstream list|register|deregister
+//	upstream list|register|deregister|maintenance
 //	tool list|approve|revoke  Tool Quarantine
 //	sign                      sign a registry entry
 //	audit                     read the Audit Trail
 //	quota list|usage          per-analyst quota: the policy, and the counters
 //	access block|unblock|list per-analyst kill switch
+//	maintenance on|off|list   planned maintenance (upstream maintenance for one backend)
 //	admin                     the management API, over a UNIX socket
 //	ui                        the web console (not in a -tags nofront build)
 //	version
@@ -90,6 +91,8 @@ func runWithStdin(args []string, stdin io.Reader, stdout, stderr io.Writer) int 
 		return cmdQuota(rest, stdout, stderr)
 	case "access":
 		return cmdAccess(rest, stdout, stderr)
+	case "maintenance":
+		return cmdMaintenance(rest, stdout, stderr)
 	case "admin":
 		return cmdAdmin(rest, stdin, stdout, stderr)
 	case "ui":
@@ -121,6 +124,7 @@ Commands:
   audit        Read the audit trail.
   quota        Show the declared limits and what each analyst has spent.
   access       Block or unblock one analyst at once, or list who is blocked.
+  maintenance  Announce planned maintenance of the whole gateway, or list it.
   admin        Serve the management API on a UNIX socket (for the fronts).
   ui           Serve the operator console as a web page on loopback.
   version      Print the build version.

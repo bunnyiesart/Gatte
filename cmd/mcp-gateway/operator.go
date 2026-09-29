@@ -43,6 +43,7 @@ import (
 	"github.com/bunnyiesart/Gatte/internal/audit"
 	auditsqlite "github.com/bunnyiesart/Gatte/internal/audit/sqlite"
 	"github.com/bunnyiesart/Gatte/internal/config"
+	healthsqlite "github.com/bunnyiesart/Gatte/internal/health/sqlite"
 	"github.com/bunnyiesart/Gatte/internal/quarantine"
 	quarantinesqlite "github.com/bunnyiesart/Gatte/internal/quarantine/sqlite"
 	"github.com/bunnyiesart/Gatte/internal/quota"
@@ -116,6 +117,10 @@ func (e *opEnv) upstreams() registry.Repository { return registrysqlite.New(e.db
 
 // tools returns the Tool Quarantine port, wired to SQLite.
 func (e *opEnv) tools() quarantine.Store { return quarantinesqlite.New(e.db) }
+
+// health returns the maintenance and backend health store (design/adr/0041),
+// wired to SQLite. The concrete type, for its Forget.
+func (e *opEnv) health() *healthsqlite.Store { return healthsqlite.New(e.db) }
 
 // signatures returns the Definition Signer's signature store, wired to
 // SQLite. Signatures live in their own table, not as a column of the

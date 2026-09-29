@@ -331,17 +331,36 @@ func (s *Service) Overview(ctx context.Context) (adminapi.Overview, error) {
 		}
 	}
 	ov.Attention = append(ov.Attention, pending...)
+	var names []string
+	upstreamsRead := s.d.Upstreams == nil
 	if s.d.Upstreams != nil {
 		if ups, err := s.d.Upstreams(ctx, cfg); err != nil {
 			problem("upstreams", err)
 		} else {
+			upstreamsRead = true
 			ov.Counts.Upstreams = len(ups)
 			for _, u := range ups {
+				names = append(names, u.Name)
 				if u.Signature != "yes" {
 					ov.Attention = append(ov.Attention, adminapi.Attention{Kind: adminapi.AttentionUnsigned, Title: u.Name, Upstream: u.Name,
 						Detail: "Backend not signed, so none of its tools are served. Sign it in the terminal."})
 				}
 			}
+		}
+	}
+	// Health (design/adr/0041 item 7) is per registered backend, so it
+	// needs the registry; without it, it is a problem too.
+	if s.d.Health != nil {
+		switch h, part, err := s.health(ctx, names); {
+		case !upstreamsRead:
+			problem("health", errors.New("the backends are not known: the registry could not be read"))
+		case err != nil:
+			problem(part, err)
+		default:
+			ov.Health = h
+			first, backends, last := healthAttention(h)
+			ov.Attention = append(append(first, ov.Attention...), backends...)
+			ov.Attention = append(ov.Attention, last...)
 		}
 	}
 	if s.d.Blocks != nil {

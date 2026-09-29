@@ -4,6 +4,11 @@
   <h1>Overview</h1>
   <p class="sub">{{.Approved}} tools served · {{.Upstreams}} backends · {{.Blocked}} blocked</p>
 </div>
+{{with .Health}}{{with .GatewayMaintenance}}
+<div class="notice" role="status">{{template "warn"}}<p><b>Gatte is in planned maintenance</b> since {{time .StartedAt}}{{if .Until}}, until {{since .Until}}{{if .UntilPassed}} (passed, not ended){{end}}{{end}}. Analysts read: “{{vis .Message}}”. Calls are still served. <a href="{{$.Base}}/upstreams">End it on Backends</a>.</p></div>
+{{end}}{{if eq .Serve.State "not_reporting"}}
+<div class="notice danger" role="alert">{{template "warn"}}<p><b>The gateway process is not reporting</b>: its last round was at {{since .Serve.LastRoundAt}}. It may be stopped; check its service. Backend states below are not current.</p></div>
+{{end}}{{end}}
 
 <section>
   <h2>Needs attention</h2>
@@ -11,17 +16,17 @@
   <ul class="group">
     {{range .Attention}}
     <li>
-      {{if eq .Kind "unsigned"}}
+      {{if or (eq .Kind "unsigned") (eq .Kind "backend_unavailable") (eq .Kind "backend_maintenance") (eq .Kind "gateway_maintenance") (eq .Kind "serve_not_reporting")}}
       <a class="row" href="{{$.Base}}/upstreams">
       {{else}}
       <a class="row" href="{{$.Base}}/tools/show?server={{.Server}}&amp;tool={{.Tool}}">
       {{end}}
-        <span class="lead-icon {{.Kind}}">{{if eq .Kind "pending"}}{{template "dot"}}{{else}}{{template "warn"}}{{end}}</span>
+        <span class="lead-icon {{.Kind}}">{{if or (eq .Kind "pending") (eq .Kind "backend_maintenance") (eq .Kind "gateway_maintenance")}}{{template "dot"}}{{else}}{{template "warn"}}{{end}}</span>
         <span class="row-text">
           <span class="row-title">{{vis .Title}}</span>
           <span class="row-detail">{{.Detail}}</span>
         </span>
-        <span class="row-action">{{if eq .Kind "unsigned"}}View{{else}}Review{{end}}</span>
+        <span class="row-action">{{if or (eq .Kind "changed") (eq .Kind "pending")}}Review{{else}}View{{end}}</span>
         {{template "chev"}}
       </a>
     </li>
@@ -34,6 +39,25 @@
   </div>
   {{end}}
 </section>
+
+{{with .Health}}{{if .Backends}}
+<section>
+  <div class="section-head">
+    <h2>Backend health</h2>
+    <a href="{{$.Base}}/upstreams">Backends</a>
+  </div>
+  <div class="group">
+    <table class="list">
+      <thead><tr><th>Backend</th><th>State</th><th>Since</th><th>Maintenance</th></tr></thead>
+      <tbody>
+      {{range .Backends}}
+        <tr><td class="t-title" data-label="Backend"><b>{{vis .Name}}</b></td><td class="t-badge" data-label="State"><span class="badge {{if eq .State "up"}}ok{{else if or (eq .State "reconnecting") (eq .State "down")}}danger{{end}}">{{state .State}}</span></td><td class="muted num t-sub2" data-label="Since">{{if .Maintenance}}{{time .Maintenance.StartedAt}}{{else}}{{since .Since}}{{end}}</td><td class="t-sub" data-label="Maintenance">{{with .Maintenance}}“{{vis .Message}}”{{if .Until}} · until {{since .Until}}{{end}}{{else}}<span class="muted">-</span>{{end}}</td></tr>
+      {{end}}
+      </tbody>
+    </table>
+  </div>
+</section>
+{{end}}{{end}}
 
 <section>
   <div class="section-head">

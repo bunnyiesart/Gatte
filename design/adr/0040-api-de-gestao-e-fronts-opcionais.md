@@ -337,6 +337,20 @@ Remover, renomear ou mudar o sentido de um campo é `/v2`, servido ao lado de
 > no `Overview` e em cada `Upstream`) está no contrato e **ainda não é
 > servido**, por isso ainda não aparece em `features`.
 
+> **CORREÇÃO — 29 set 2026, segunda etapa da ADR-0041.** `backend_health`
+> passa a ser servido e a constar em `features`, ao lado de `maintenance`.
+> O `Overview` e cada `Upstream` levam `health`, lido das tabelas que o
+> `serve` escreve (`backend_health`, `serve_status`) e da `maintenance`: o
+> backend de gestão continua sem enxergar a memória do `serve`. O `serve`
+> conta como `not_reporting` quando a última rodada é mais velha que duas
+> vezes o intervalo mais o `reconcileTimeout` (`Deps.ServeGrace`), e então
+> todo backend fora de manutenção é `unknown`. No `Overview`, um `health`
+> ilegível é um `problem` de parte `health` (ou `maintenance`); na lista de
+> `Upstreams`, é logado e a lista sai sem `health`, porque o que ela
+> responde é o registro. O CLI (`upstream maintenance`, `maintenance`) e o
+> front do Gatte (página Backends, formulário com CSRF) chamam o mesmo
+> `admin.Service`.
+
 ## O que sai do front e o que fica
 
 | Sai de `ui*.go` para o backend | Fica em cada front (via `frontkit`) |

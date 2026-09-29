@@ -1,0 +1,10 @@
+{{template "top" .}}
+{{with .Data}}
+<div class="outcome {{if .OK}}done{{else}}refused{{end}}" role="status">
+  <b>{{if .OK}}Done.{{else}}Not done.{{end}}</b>
+  <span>What the command printed:</span>
+</div>
+<pre class="definition">{{vistext .Output}}</pre>
+<div class="levers"><a class="btn" href="{{.Back}}">Back</a></div>
+{{end}}
+{{template "bottom" .}}

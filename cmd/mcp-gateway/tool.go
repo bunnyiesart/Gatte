@@ -378,7 +378,8 @@ func toolRevoke(args []string, stdout, stderr io.Writer) int {
 // serving the tool, and it does nothing else at all.
 func runToolRevoke(e *opEnv, server, tool string) int {
 	q := e.tools()
-	name := server + "." + tool
+	// Escaped: the names come from a backend (design/adr/0032).
+	name := visible.Escape(server + "." + tool)
 
 	// Read first, like approve does: what an operator needs to be told
 	// depends on the state before the transition, and Revoke returns the

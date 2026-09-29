@@ -1,0 +1,35 @@
+{{define "top"}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>{{.Title}} · Gatte console</title>
+<link rel="stylesheet" href="{{$.Base}}/app.css">
+</head>
+<body>
+<header class="shelf">
+  <a class="nameplate" href="{{$.Base}}/"><span>Gatte</span></a>
+  <nav class="tabs" aria-label="Console">
+    <a href="{{$.Base}}/" {{if eq .Nav "overview"}}aria-current="page"{{end}}>Overview</a>
+    <a href="{{$.Base}}/tools" {{if eq .Nav "tools"}}aria-current="page"{{end}}>Tools</a>
+    <a href="{{$.Base}}/access" {{if eq .Nav "access"}}aria-current="page"{{end}}>Access</a>
+    <a href="{{$.Base}}/audit" {{if eq .Nav "audit"}}aria-current="page"{{end}}>Audit</a>
+    <a href="{{$.Base}}/upstreams" {{if eq .Nav "upstreams"}}aria-current="page"{{end}}>Backends</a>
+    <a href="{{$.Base}}/quota" {{if eq .Nav "quota"}}aria-current="page"{{end}}>Quota</a>
+  </nav>
+</header>
+<main>
+<h1>{{.Title}}</h1>
+{{if .Error}}<pre class="fault">{{vistext .Error}}</pre>{{end}}
+{{end}}
+
+{{define "bottom"}}
+</main>
+<footer class="foot">
+  <span class="mono">{{.Config}}</span>
+  <span>Every lever here is the <code>mcp-gateway</code> command of the same name.</span>
+</footer>
+</body>
+</html>
+{{end}}

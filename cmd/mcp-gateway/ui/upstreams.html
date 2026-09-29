@@ -1,0 +1,26 @@
+{{template "top" .}}
+<p class="imperative">An entry nobody signed is not served.</p>
+<p class="lead">The registered backends. Registering and signing stay in the terminal
+(<code>mcp-gateway upstream register</code>, then <code>sudo mcp-gateway sign</code>), because
+signing needs the key only root can read.</p>
+{{if .Data}}
+<table class="register">
+  <thead><tr><th>Name</th><th>Transport</th><th>Runs</th><th>Network</th><th>Credentials</th><th>Signed</th></tr></thead>
+  <tbody>
+  {{range .Data}}
+    <tr>
+      <td data-label="Name"><span class="plate">{{vis .Name}}</span></td>
+      <td data-label="Transport">{{.Transport}}</td>
+      <td class="mono wrap" data-label="Runs">{{if .Image}}{{vis .Image}}{{else}}{{vis .Command}}{{end}}</td>
+      <td data-label="Network">{{if .NetworkError}}<span class="state changed">refused</span> {{vis .NetworkError}}{{else}}{{.Network}}{{end}}</td>
+      <td class="mono" data-label="Credentials">{{range $i, $n := .EnvVarNames}}{{if $i}}, {{end}}{{vis $n}}{{else}}none{{end}}</td>
+      <td data-label="Signed">{{if eq .Signature "yes"}}<span class="state approved">signed</span>{{else}}<span class="state changed">{{.Signature}}</span>{{end}}</td>
+    </tr>
+  {{end}}
+  </tbody>
+</table>
+{{else if not .Error}}
+<p class="empty">No backend is registered. Register one with <code>mcp-gateway upstream register</code>
+and sign it; it appears here straight away.</p>
+{{end}}
+{{template "bottom" .}}

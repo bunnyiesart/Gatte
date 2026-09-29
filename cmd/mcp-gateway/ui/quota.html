@@ -1,0 +1,24 @@
+{{template "top" .}}
+<p class="imperative">A runaway agent spends someone's API budget; this is where you see it.</p>
+<p class="lead">What each analyst has spent against each third-party account in the current
+window. Budgets are declared in <code>[[quota.provider]]</code> in the configuration file.</p>
+{{if .Data}}
+<table class="register">
+  <thead><tr><th>Analyst</th><th>Account</th><th>Window start</th><th class="num">Used</th><th class="num">Limit</th><th class="num">Left</th></tr></thead>
+  <tbody>
+  {{range .Data}}
+    <tr>
+      <td data-label="Analyst">{{vis .Analyst}}</td>
+      <td data-label="Account">{{vis .Account}}</td>
+      <td class="mono num" data-label="Window start">{{time .WindowStart}}</td>
+      <td class="num" data-label="Used">{{.Used}}</td>
+      <td class="num" data-label="Limit">{{if .Limit}}{{.Limit}}{{else}}none{{end}}</td>
+      <td class="num" data-label="Left">{{if .Remaining}}{{.Remaining}}{{else}}none{{end}}</td>
+    </tr>
+  {{end}}
+  </tbody>
+</table>
+{{else if not .Error}}
+<p class="empty">Nothing has been spent in the current window, or no budget is declared.</p>
+{{end}}
+{{template "bottom" .}}

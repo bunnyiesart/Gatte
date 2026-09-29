@@ -88,6 +88,7 @@ trail with its reason.
 | **Egress** | Network grants are limited to `none` (default), `slirp4netns`, `pasta` or a named podman network. `upstream list -json` shows each backend's network so the host firewall can build its allowlist. | `design/adr/0033` |
 | **Audit** | One hash-chained SQLite record per call, refusal and failure. A JSONL copy for any log shipper and optional GELF straight to Graylog, plus a heartbeat so a dead shipper is noticed. | `design/adr/0012`, `0021`, `0029` |
 | **Resilience** | Per-call time and size ceilings, a per-analyst concurrency cap, a 1 MiB request body cap, JWKS refetch at most every 30 s, and a panic contained to the one call that hit it. | `design/adr/0025`, `0035` |
+| **Web console** | `mcp-gateway ui` serves the operator console as a page on loopback: review and approve tools with a coloured diff, block analysts, read and verify the audit trail. Every button is the CLI command of the same name. | `design/adr/0036` |
 | **Quota** | Optional: cap how many calls each analyst spends against one third-party account per window, so a runaway agent loop cannot burn an API budget. | `design/adr/0030` |
 
 Gatte was built for one SOC team fronting four existing stdio MCP servers
@@ -393,6 +394,36 @@ approved tool and a registry entry whose signature fails are each written
 to the trail as a `denied` row attributed to `(gateway)`. A `changed` row
 means a backend altered a tool you approved: read the diff before
 re-approving.
+
+### The web console
+
+The same console, as a page in your browser:
+
+```sh
+sudo -u mcpgw mcp-gateway ui -config "$CFG"          # listens on 127.0.0.1:8090
+# prints: http://127.0.0.1:8090/login?token=...      works once; keep it private
+```
+
+On the gateway host itself, open the link. From your own machine, forward the
+port first with `ssh -L 8090:127.0.0.1:8090 gateway-host` and open the same
+link locally.
+
+| Page | What you do there |
+|---|---|
+| Overview | See what needs attention: changed and pending tools, unsigned backends, blocked analysts, the latest refusals. |
+| Tools | Review a definition with hidden characters escaped and the diff coloured, then approve that exact fingerprint, or revoke. |
+| Access | Block or unblock an analyst, with a reason that goes in the trail. |
+| Audit | Filter the trail by analyst and outcome, and verify the hash chain against your SIEM's head. |
+| Backends, Quota | Read-only: what is registered and signed, and what each analyst has spent. |
+
+Every button runs the command of the same name in the table above, with the
+same checks and the same audit rows; the page shows what the command
+printed. Registering and signing stay in the terminal, because signing needs
+root's key. The console runs only while you run it (Ctrl-C stops it) and
+binds loopback only. The login link works once and opens one session of up to
+12 hours; for a new one, restart `mcp-gateway ui`. Requests without that
+session, from a non-loopback `Host`, or, for a POST, without the form token or
+from another origin are refused (`design/adr/0036`).
 
 ## Security model
 

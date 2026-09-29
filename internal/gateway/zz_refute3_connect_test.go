@@ -87,10 +87,13 @@ func TestRefute3_ConnectBurnsWholeBudget(t *testing.T) {
 
 	// Stand-in for config.DefaultConnectTimeout (30s), same shape.
 	budget := 300 * time.Millisecond
+	// The clock starts before the deadline does: started after it, the
+	// measured time could read a hair under the budget on a loaded machine
+	// even though the deadline is exactly what ended Connect.
+	start := time.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), budget)
 	defer cancel()
 
-	start := time.Now()
 	connErr := gw.Connect(ctx)
 	elapsed := time.Since(start)
 

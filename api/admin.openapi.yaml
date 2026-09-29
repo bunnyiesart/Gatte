@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Gatte management API
-  version: 1.0.0
+  version: 1.1.0
   summary: The backend every Gatte front talks to (design/adr/0040).
   description: |
     Served by `mcp-gateway admin` over UNIX sockets only. There is no TCP
@@ -96,6 +96,14 @@ info:
     new optional request fields. Ignore unknown fields; give every enum and
     error code a default branch, handled by the HTTP status. Breaking
     changes go to `/v2`, served beside `/v1` for at least one release.
+
+    ## Revisions
+
+    - 1.1.0 (design/adr/0041): features `maintenance` (the three
+      `/v1/maintenance` operations, the `(maintenance on)` and
+      `(maintenance off)` operator rows) and `backend_health` (`health` on
+      `Overview` and on each `Upstream`, new `Attention.kind` and
+      `Overview.problems[].part` values).
   license:
     name: Apache-2.0
 servers:
@@ -111,6 +119,8 @@ tags:
   - name: quota
   - name: people
   - name: connect
+  - name: maintenance
+    description: Planned maintenance of one backend or of the whole gateway (design/adr/0041). Feature `maintenance`.
   - name: accounts
     description: Account socket only (root, or `[admin] account_group` when delegated). Identity provider accounts (design/adr/0038).
 components:
@@ -166,7 +176,9 @@ components:
         details:
           type: object
           description: |
-            Code-specific facts. Known keys: `field` (invalid_argument),
+            Code-specific facts. Known keys: `field` (invalid_argument;
+            for maintenance `scope`, `upstream`, `message` or `until`),
+            `upstream` (not_found on a maintenance request),
             `observed_fingerprint` (fingerprint_required, fingerprint_mismatch,
             fingerprint_moved), `status` (fingerprint_mismatch), `username`
             (account_exists, not_found, account_not_managed), `group`
@@ -193,7 +205,7 @@ components:
         | forbidden_peer | 403 | peer not allowed on this socket (group, or the service account on the account socket) |
         | browser_request_refused | 403 | request carried Origin or Cookie |
         | account_not_managed | 403 | the account has no group, or one outside `[group_to_role]`; only a root peer may change it |
-        | not_found | 404 | no such tool, account or block |
+        | not_found | 404 | no such tool, account, block, or registered backend (maintenance) |
         | unknown_route | 404 | no such route in this backend (older backend, or wrong path) |
         | wrong_socket | 404 | the route is served by the other socket; `details.socket` names it |
         | method_not_allowed | 405 | wrong method for the route |
@@ -292,7 +304,8 @@ components:
           description: |
             Stable names of capabilities added after 1.0 (empty in 1.0). A
             front sends a newer optional request field, or calls a newer
-            endpoint, only when its feature is listed.
+            endpoint, only when its feature is listed. Known: `maintenance`
+            and `backend_health` (1.1.0).
           items:
             type: string
         gateway_version:
@@ -328,8 +341,14 @@ components:
         kind:
           type: string
           x-gatte-open-enum: true
-          description: The key a front localises on and links from.
-          enum: [changed, pending, unsigned]
+          description: |
+            The key a front localises on and links from. Since 1.1.0
+            (`backend_health`): `backend_unavailable` (a backend is
+            `reconnecting` or `down`; `upstream` set), `backend_maintenance`
+            (`upstream` set), `gateway_maintenance`, and `serve_not_reporting`
+            (the gateway process has not completed a round for longer than
+            it should; see `ServeStatus`).
+          enum: [changed, pending, unsigned, backend_unavailable, backend_maintenance, gateway_maintenance, serve_not_reporting]
         title:
           type: string
         detail:
@@ -341,14 +360,17 @@ components:
           type: string
         upstream:
           type: string
-          description: Set for `unsigned`.
+          description: Set for `unsigned`, `backend_unavailable` and `backend_maintenance`.
     Overview:
       type: object
       required: [attention, counts, recent_denied]
       properties:
         attention:
           type: array
-          description: Changed tools first, then pending, then unsigned backends.
+          description: |
+            `serve_not_reporting` first, then changed tools, pending tools,
+            unsigned backends, unavailable backends, backends in
+            maintenance, and `gateway_maintenance` last.
           items:
             $ref: '#/components/schemas/Attention'
         counts:
@@ -378,10 +400,13 @@ components:
               part:
                 type: string
                 x-gatte-open-enum: true
-                enum: [tools, upstreams, blocks, audit]
+                enum: [tools, upstreams, blocks, audit, health, maintenance]
               message:
                 type: string
                 description: English fallback.
+        health:
+          description: Present with feature `backend_health`. Absent when it could not be read (see `problems`, part `health`).
+          $ref: '#/components/schemas/Health'
     ToolStatus:
       type: string
       x-gatte-open-enum: true
@@ -699,6 +724,178 @@ components:
         signature: {type: string, x-gatte-open-enum: true, enum: ['yes', 'no', INVALID], description: '`INVALID`: a signature is stored and does not authenticate the entry.'}
         created_at: {type: string, format: date-time}
         updated_at: {type: string, format: date-time}
+        health:
+          description: Present with feature `backend_health`. `name` repeats this entry's name.
+          $ref: '#/components/schemas/BackendHealth'
+    BackendState:
+      type: string
+      x-gatte-open-enum: true
+      description: |
+        The public state of a backend, as an analyst's `gatte.status` would
+        show it (design/adr/0041 §1), plus `unknown`: the gateway process
+        has not reported this backend (registered after its last round, not
+        servable, or the process is not reporting).
+
+        | state | meaning |
+        |---|---|
+        | up | connected and not found dead |
+        | reconnecting | not connected; the next round dials it (`next_attempt`) |
+        | down | not connected, and no dial is scheduled (`cause` `held_back`): an operator has to act |
+        | maintenance | an operator put it in maintenance; calls are answered without dialing it |
+        | unknown | no report from the gateway process |
+      enum: [up, reconnecting, down, maintenance, unknown]
+    BackendHealth:
+      type: object
+      description: |
+        What the gateway process last wrote about one backend, merged with
+        its maintenance row. Operator view: `cause` and `maintenance.set_by`
+        are never shown to analysts.
+      required: [name, state, live]
+      properties:
+        name: {type: string}
+        state: {$ref: '#/components/schemas/BackendState'}
+        live:
+          type: boolean
+          description: The liveness underneath `state`. A backend in maintenance can be live or not; the gateway keeps re-dialing it either way.
+        since:
+          type: string
+          format: date-time
+          description: When `live` last changed, in the reporting process. Absent for `unknown`.
+        last_attempt:
+          type: string
+          format: date-time
+          description: The last dial the gateway tried. Absent when none was tried in this process.
+        next_attempt:
+          type: string
+          format: date-time
+          description: Approximate (last round start plus the round interval). Set for `reconnecting`, and for a backend in maintenance that is not live.
+        cause:
+          type: string
+          x-gatte-open-enum: true
+          description: Set when not live. Operator only.
+          enum: [process_gone, not_brought_up, held_back]
+        maintenance:
+          $ref: '#/components/schemas/Maintenance'
+    ServeStatus:
+      type: object
+      description: |
+        What the gateway process (`serve`) last wrote about itself. The
+        management backend is a separate process and reads it from the
+        database, so this is also how a front learns that `serve` is not
+        running.
+      required: [state]
+      properties:
+        state:
+          type: string
+          x-gatte-open-enum: true
+          description: |
+            `running`: a round completed within twice the round interval
+            plus the reconciliation timeout. `not_reporting`: the last round
+            is older than that. `never_reported`: no row (a database no
+            `serve` of this version has opened).
+          enum: [running, not_reporting, never_reported]
+        boot: {type: string, format: date-time}
+        last_round_at: {type: string, format: date-time}
+        round_interval_seconds: {type: integer, minimum: 1}
+    Health:
+      type: object
+      required: [serve, backends]
+      properties:
+        serve: {$ref: '#/components/schemas/ServeStatus'}
+        gateway_maintenance:
+          description: Present while the whole gateway is in maintenance.
+          $ref: '#/components/schemas/Maintenance'
+        backends:
+          type: array
+          description: Every registered backend, by name.
+          items: {$ref: '#/components/schemas/BackendHealth'}
+    Maintenance:
+      type: object
+      description: |
+        One maintenance row (design/adr/0041 §6). `message` and `until` reach
+        analysts and their models (the call result, `gatte.status`, the
+        server instructions); `set_by` and `set_at` never do.
+      required: [message, set_by, set_at]
+      properties:
+        message:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: One line, no control characters and no hidden code points (refused, not escaped).
+        until:
+          type: string
+          format: date-time
+          description: |
+            The announced end. A forecast, not a deadline: maintenance ends
+            only by `endMaintenance`. After it passes, analysts are told the
+            time has passed and the maintenance was not ended yet.
+        until_passed:
+          type: boolean
+          description: true when `until` is set and in the past.
+        set_by:
+          type: string
+          description: The operator row identity, e.g. `(operator:alice)`.
+        set_at: {type: string, format: date-time}
+    MaintenanceScope:
+      type: string
+      description: '`upstream`: one backend, named in `upstream`. `gateway`: a notice on every call result; calls are still served.'
+      enum: [upstream, gateway]
+    MaintenanceRequest:
+      type: object
+      required: [scope, message]
+      additionalProperties: false
+      properties:
+        scope: {$ref: '#/components/schemas/MaintenanceScope'}
+        upstream:
+          type: string
+          description: Required for scope `upstream`, refused for `gateway`. Must be a registered backend (`not_found` otherwise).
+        message:
+          type: string
+          description: 1 to 200 characters after trimming; one line; no control characters or hidden code points (`invalid_argument`, `details.field` = `message`).
+        until:
+          type: string
+          format: date-time
+          description: Optional. In the future and at most 90 days ahead (`invalid_argument`, `details.field` = `until`). Stored in UTC.
+    MaintenanceTarget:
+      type: object
+      required: [scope]
+      additionalProperties: false
+      properties:
+        scope: {$ref: '#/components/schemas/MaintenanceScope'}
+        upstream:
+          type: string
+          description: Required for scope `upstream`, refused for `gateway`.
+    MaintenanceResult:
+      allOf:
+        - $ref: '#/components/schemas/ActionResult'
+        - type: object
+          required: [scope]
+          properties:
+            scope: {$ref: '#/components/schemas/MaintenanceScope'}
+            upstream: {type: string}
+            maintenance:
+              description: The row now in force; absent after `endMaintenance`.
+              $ref: '#/components/schemas/Maintenance'
+            previous:
+              description: The row this request replaced or ended, when there was one.
+              $ref: '#/components/schemas/Maintenance'
+    MaintenanceList:
+      type: object
+      required: [upstreams]
+      properties:
+        gateway:
+          description: Present while the whole gateway is in maintenance.
+          $ref: '#/components/schemas/Maintenance'
+        upstreams:
+          type: array
+          description: Backends in maintenance, by name.
+          items:
+            allOf:
+              - $ref: '#/components/schemas/Maintenance'
+              - type: object
+                required: [upstream]
+                properties:
+                  upstream: {type: string}
     QuotaUsage:
       type: object
       required: [analyst_identity, account, window_start, used]
@@ -1101,7 +1298,7 @@ paths:
       operationId: listUpstreams
       tags: [upstreams]
       x-gatte-socket: [operator]
-      summary: Registered backends and whether each is signed (`upstream list`). Read only; register, sign and deregister stay in the terminal.
+      summary: Registered backends, whether each is signed (`upstream list`) and, with `backend_health`, its health. Read only; register, sign and deregister stay in the terminal; maintenance is under `/v1/maintenance`.
       responses:
         '200':
           description: OK
@@ -1114,6 +1311,72 @@ paths:
                   upstreams:
                     type: array
                     items: {$ref: '#/components/schemas/Upstream'}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/maintenance:
+    get:
+      operationId: listMaintenance
+      tags: [maintenance]
+      x-gatte-socket: [operator]
+      summary: The maintenance in force, for the gateway and for each backend (`maintenance list`). Feature `maintenance`.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MaintenanceList'}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/maintenance/on:
+    post:
+      operationId: startMaintenance
+      x-gatte-idempotent: true
+      tags: [maintenance]
+      x-gatte-socket: [operator]
+      summary: Put one backend, or the whole gateway, in planned maintenance (`upstream maintenance on`, `maintenance on`). Writes `(maintenance on)`.
+      description: |
+        Takes effect on the gateway's next call, without a restart. For a
+        backend, its calls are answered with the maintenance text and not
+        dialed; for the gateway, every call result gets a notice and calls
+        are still served. The row is written first and recorded second: if
+        the trail fails, the maintenance is in force and `recorded` is
+        false. The same message and `until` again answers `changed: false`;
+        another message or `until` replaces the row and writes a row.
+      parameters: [{$ref: '#/components/parameters/GatteFront'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/MaintenanceRequest'}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MaintenanceResult'}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/maintenance/off:
+    post:
+      operationId: endMaintenance
+      x-gatte-idempotent: true
+      tags: [maintenance]
+      x-gatte-socket: [operator]
+      summary: End the maintenance of one backend or of the gateway (`upstream maintenance off`, `maintenance off`). Writes `(maintenance off)`.
+      description: |
+        Ends first and records second, like `startMaintenance`. Nothing in
+        maintenance answers `changed: false` and writes nothing. A backend no
+        longer registered is still accepted, so a row left behind can be
+        cleared.
+      parameters: [{$ref: '#/components/parameters/GatteFront'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/MaintenanceTarget'}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MaintenanceResult'}
         default: {$ref: '#/components/responses/Error'}
   /v1/quota:
     get:

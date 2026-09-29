@@ -14,7 +14,7 @@ TCP listener, so a front runs on the gateway host (or reaches it through
 
 | Socket | Default path | Who can connect | Serves |
 |---|---|---|---|
-| operator | `/run/mcp-gateway-admin/operator/operator.sock` | members of `gatte-operators` (file `0660`) | overview, tools, access, audit, backends, quota, people, connect |
+| operator | `/run/mcp-gateway-admin/operator/operator.sock` | members of `gatte-operators` (file `0660`) | overview, tools, access, audit, backends, maintenance, quota, people, connect |
 | accounts | `/run/mcp-gateway-admin/accounts/accounts.sock` | root (file `root:root 0600`), or the delegated group (below) | identity provider accounts |
 
 Each socket has a directory of its own under a `root:root 0755`
@@ -132,6 +132,7 @@ Every rule lives in the backend, so a front cannot forget one:
   socket's peer credentials, never from a request field. Every state change
   writes an operator row, `(operator:NAME)`, to the audit trail:
   `(tool approve)`, `(tool revoke)`, `(access block)`, `(access unblock)`,
+  `(maintenance on)`, `(maintenance off)`,
   `(account add|groups|disable|enable|reset password)`.
 - **An approval is of the fingerprint you were shown.** Approve refuses
   without one, refuses another, and refuses if the definition moved while
@@ -163,8 +164,8 @@ set: handle one you do not know by its HTTP status.
 
 ### Retrying
 
-Approve, revoke, block, unblock, set groups, disable and enable are safe to
-repeat after `internal` or a dropped connection: a repeat answers
+Approve, revoke, block, unblock, maintenance on and off, set groups, disable
+and enable are safe to repeat after `internal` or a dropped connection: a repeat answers
 `changed: false`. Unblock records before it lifts (`design/adr/0031`), so an
 unblock the trail cannot record is not performed and answers an error:
 the subject stays blocked. Creating an account is not: read the account first, and
@@ -216,8 +217,44 @@ The backend does not know what you render or who is at your screen.
    cache, a template variable that outlives the response, or a URL.
 6. **Localise on keys, not prose.** `Attention.kind`, warning and error
    codes, `Overview.problems[].code` and `Connect.missing` (the missing
-   `[connect]` keys) are for your texts; `detail`, `message` and
-   `messages` are English fallbacks.
+   `[connect]` keys), `BackendHealth.state` and `cause`, and
+   `ServeStatus.state` are for your texts; `detail`, `message` and
+   `messages` are English fallbacks. A maintenance `message` is the
+   operator's own text and is shown as it is (escaped).
+
+## Backend health and maintenance
+
+With the features `backend_health` and `maintenance` (contract 1.1.0,
+`design/adr/0041`):
+
+- `GET /v1/overview` carries `health`: `serve` (is the gateway process
+  running? `running`, `not_reporting`, `never_reported`), the gateway's
+  maintenance if any, and every backend with its `state` (`up`,
+  `reconnecting`, `down`, `maintenance`, `unknown`), `since`,
+  `last_attempt`, `next_attempt` and, when it is not live, `cause`.
+  `GET /v1/upstreams` carries the same `health` on each entry. The
+  management backend is not the gateway process: these are what `serve`
+  last wrote to the database, which is why a stopped `serve` shows as
+  `not_reporting` instead of as a healthy fleet. Show it first.
+- `POST /v1/maintenance/on` with `{"scope": "upstream", "upstream":
+  "casemgmt", "message": "...", "until": "..."}` puts one backend in
+  maintenance: from the gateway's next call, analysts' calls to it are
+  answered with the maintenance text and not dialed. `{"scope": "gateway",
+  ...}` adds a notice to every call result instead; calls are still served.
+  `POST /v1/maintenance/off` with `{"scope": ..., "upstream": ...}` ends it.
+  `GET /v1/maintenance` lists what is in force.
+- `message` and `until` reach analysts and their models; `set_by` never
+  does. The backend refuses a message with a control character, a hidden
+  code point or a line break rather than escaping it, so what you show is
+  what analysts get. `until` is a forecast: nothing ends by itself, so a
+  front should show `until_passed` loudly.
+- `cause` (`process_gone`, `not_brought_up`, `held_back`) is for the
+  operator only; analysts are told the state, never why. `held_back` means
+  the gateway is not dialing anything new (the quota policy and the registry
+  disagree): `down` stays `down` until an operator fixes that.
+- Localise on `Attention.kind` (`backend_unavailable`,
+  `backend_maintenance`, `gateway_maintenance`, `serve_not_reporting`) and
+  on `state`, like every other key.
 
 ## Reading the trail
 

@@ -1,0 +1,18 @@
+# The management API's operator socket (design/adr/0040 §1, §4).
+# systemd creates the file and its directories; the backend starts on the
+# first connection and exits when idle. Nothing runs while nobody operates.
+[Unit]
+Description=Gatte management API, operator socket
+
+[Socket]
+ListenStream=/run/mcp-gateway-admin/operator/operator.sock
+Accept=no
+# /run/mcp-gateway-admin and operator/ are created root:root 0755.
+DirectoryMode=0755
+SocketUser=root
+SocketGroup=gatte-operators
+SocketMode=0660
+RemoveOnStop=yes
+
+[Install]
+WantedBy=sockets.target

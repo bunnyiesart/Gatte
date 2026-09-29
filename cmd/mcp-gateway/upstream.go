@@ -12,6 +12,7 @@ import (
 
 	"github.com/bunnyiesart/Gatte/internal/registry"
 	"github.com/bunnyiesart/Gatte/internal/signer"
+	"github.com/bunnyiesart/Gatte/pkg/adminapi"
 )
 
 // cmdUpstream implements "mcp-gateway upstream": list, register and
@@ -133,24 +134,7 @@ func runUpstreamList(e *opEnv, asJSON bool) int {
 	if asJSON {
 		out := make([]upstreamJSON, 0, len(entries))
 		for i, entry := range entries {
-			row := upstreamJSON{
-				Name:        entry.Name,
-				Transport:   string(entry.Transport),
-				Command:     entry.Command,
-				Args:        entry.Args,
-				URL:         entry.URL,
-				Image:       entry.Image,
-				EnvVarNames: envVarNamesOrEmpty(entry),
-				Signature:   string(states[i]),
-				CreatedAt:   entry.CreatedAt,
-				UpdatedAt:   entry.UpdatedAt,
-			}
-			if network, err := entryNetwork(entry); err != nil {
-				row.NetworkError = err.Error()
-			} else {
-				row.Network = network
-			}
-			out = append(out, row)
+			out = append(out, upstreamRow(entry, states[i]))
 		}
 		if err := opJSON(e.stdout, out); err != nil {
 			fmt.Fprintf(e.stderr, "writing json: %v\n", err)
@@ -222,6 +206,50 @@ func runUpstreamList(e *opEnv, asJSON bool) int {
 			strings.Join(invalid, ", "))
 	}
 	return exitOK
+}
+
+// upstreamRow is the -json and API shape of one entry: names only, never a
+// value.
+func upstreamRow(entry registry.UpstreamServer, state signatureState) upstreamJSON {
+	row := upstreamJSON{
+		Name:        entry.Name,
+		Transport:   string(entry.Transport),
+		Command:     entry.Command,
+		Args:        entry.Args,
+		URL:         entry.URL,
+		Image:       entry.Image,
+		EnvVarNames: envVarNamesOrEmpty(entry),
+		Signature:   string(state),
+		CreatedAt:   entry.CreatedAt,
+		UpdatedAt:   entry.UpdatedAt,
+	}
+	if network, err := entryNetwork(entry); err != nil {
+		row.NetworkError = err.Error()
+	} else {
+		row.Network = network
+	}
+	return row
+}
+
+// opUpstreams is the registry as the management API returns it, with each
+// entry's signature state resolved the way `upstream list` resolves it.
+func opUpstreams(e *opEnv) ([]adminapi.Upstream, error) {
+	entries, err := e.upstreams().List(e.ctx())
+	if err != nil {
+		return nil, err
+	}
+	out := make([]adminapi.Upstream, 0, len(entries))
+	for _, entry := range entries {
+		state, err := entrySignatureState(e, entry)
+		if err != nil {
+			return nil, err
+		}
+		r := upstreamRow(entry, state)
+		out = append(out, adminapi.Upstream{Name: r.Name, Transport: r.Transport, Command: r.Command, Args: r.Args, URL: r.URL,
+			Image: r.Image, Network: r.Network, NetworkError: r.NetworkError, EnvVarNames: r.EnvVarNames, Signature: r.Signature,
+			CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt})
+	}
+	return out, nil
 }
 
 // envVarNamesOrEmpty keeps the JSON field an array rather than null, so a

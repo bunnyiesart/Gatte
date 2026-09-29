@@ -25,6 +25,11 @@ quem executa código como o gateway se daria acesso a todas as tools.
 
 ### 2. Edição de contas só num console root
 
+*Revisto por `0040`:* a regra passa a ser do socket de contas
+(`mcp-gateway admin -accounts`, só root). As operações abaixo são as do
+serviço de gestão (`internal/admin`), que o console chama no próprio
+processo até virar cliente da API; o `keepDBOwner` sai com essa conversão.
+
 `sudo mcp-gateway ui -manage-users` liga a edição: adicionar uma pessoa,
 trocar seus grupos, desativar, reativar e gerar uma senha nova. O comando
 recusa se o processo não for root, e o console normal, que roda como o

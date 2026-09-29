@@ -1,0 +1,23 @@
+# Started by mcp-gateway-admin-accounts.socket; runs as root, never opens a
+# file of the service account, and writes each account action's audit row
+# through a child running as the database's owner (`admin -audit-writer`).
+[Unit]
+Description=Gatte management API, accounts socket
+Requires=mcp-gateway-admin-accounts.socket
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/local/bin/mcp-gateway admin -accounts -config /etc/mcp-gateway/config.toml -idle 5m
+# The IdP's users file is rewritten by tmp+rename in its directory; the
+# audit writer child appends to the database (and the [audit.siem] file).
+ReadWritePaths=/etc/authelia /var/lib/mcp-gateway
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+# No listener but the socket; INET only for a [telemetry] GELF sink, if any.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+# Only what dropping to the service account for the child needs.
+CapabilityBoundingSet=CAP_SETUID CAP_SETGID
+LockPersonality=yes
+SystemCallArchitectures=native

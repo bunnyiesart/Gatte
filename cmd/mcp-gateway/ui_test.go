@@ -1,3 +1,5 @@
+//go:build !nofront
+
 package main
 
 import (

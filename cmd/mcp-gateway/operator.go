@@ -39,6 +39,7 @@ import (
 
 	"github.com/bunnyiesart/Gatte/internal/access"
 	accesssqlite "github.com/bunnyiesart/Gatte/internal/access/sqlite"
+	"github.com/bunnyiesart/Gatte/internal/admin"
 	"github.com/bunnyiesart/Gatte/internal/audit"
 	auditsqlite "github.com/bunnyiesart/Gatte/internal/audit/sqlite"
 	"github.com/bunnyiesart/Gatte/internal/config"
@@ -73,6 +74,9 @@ type opEnv struct {
 	// configPath is the -config value this command actually loaded,
 	// made absolute. Empty only in tests that build an opEnv by hand.
 	configPath string
+	// actor, when set, is who this command's operator rows are attributed
+	// to (the web console sets it); otherwise cliActor decides.
+	actor admin.Actor
 }
 
 // cmd renders the command an operator should run next, for the hints this

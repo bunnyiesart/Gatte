@@ -42,6 +42,9 @@ sudo mcp-gateway admin -accounts -config /etc/mcp-gateway/config.toml \
     -socket /run/mcp-gateway-admin/accounts/accounts.sock -idle 0
 ```
 
+The operator backend refuses to run as root, and the accounts backend
+refuses to run as anything else.
+
 The backend refuses a socket directory, or any directory above it, that is
 a symbolic link, is writable by group or others, or is owned by someone
 other than root (the operator socket's own directory may belong to the
@@ -155,7 +158,9 @@ set: handle one you do not know by its HTTP status.
 
 Approve, revoke, block, unblock, set groups, disable and enable are safe to
 repeat after `internal` or a dropped connection: a repeat answers
-`changed: false`. Creating an account is not: read the account first, and
+`changed: false`. Unblock records before it lifts (`design/adr/0031`), so an
+unblock the trail cannot record is not performed and answers an error:
+the subject stays blocked. Creating an account is not: read the account first, and
 if it exists, its password was lost with the answer, so call
 `reset-password`. `reset-password` is safe to repeat, and each call
 invalidates the previous password. The contract marks each operation with

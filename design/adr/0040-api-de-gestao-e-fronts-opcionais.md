@@ -1,8 +1,12 @@
 # 0040. API de gestão e fronts opcionais
 
-**Status:** Proposed — 29 set 2026. Vira Accepted quando a implementação
-entrar; nesse commit, `0036` §1–§2 e `0038` §2 ganham a nota "revisto por
-`0040`" e o README deixa de dizer que o `ui` roda como usuário de serviço.
+**Status:** Accepted — 29 set 2026, para o backend: §1–§5 e §7
+(`mcp-gateway admin`, `internal/admin`, `internal/peercred`,
+`pkg/adminapi`, `pkg/frontkit`, `-tags nofront`). §6, o front do Gatte como
+cliente da API (`internal/front/gatteweb`), é a mudança seguinte; até ela o
+`ui` chama o mesmo serviço no próprio processo e o README ainda o descreve
+rodando como o usuário de serviço. As diferenças entre o desenho e o que
+entrou estão em "Notas da implementação", no fim.
 
 ## Contexto
 
@@ -398,3 +402,34 @@ Escritos antes da implementação, cada um falhando no código de hoje:
 - `cmd/mcp-gateway`: `admin -accounts` recusa fora do root; nenhuma flag
   abre TCP; as linhas do CLI levam `[cli]` ou `[cli env]`; o `ui` passa
   pelos testes de hoje falando com um backend real.
+
+## Notas da implementação
+
+O que a implementação decidiu além do texto acima, ou mudou nele:
+
+- `mcp-gateway admin` sem `-accounts` recusa rodar como root: o socket do
+  operador é do usuário de serviço, e um processo root que abrisse o banco
+  deixaria `-wal` e `-shm` do root.
+- `access unblock` segue `0031`: grava a linha e depois solta. Se a trilha
+  falhar, nada mudou, e a resposta é um erro, não um 2xx com `recorded:
+  false`; esse só existe para mudança que já vale.
+- `-audit-writer` só acrescenta linha de conta: `(operator:…)`,
+  `(gateway)`, `allowed` e uma das cinco `(account …)`. Não é um caminho
+  para escrever outra linha na trilha como o usuário de serviço.
+- A credencial do par está em `internal/peercred`, usado pelo backend e
+  pelo `pkg/adminapi`. No Linux, com `SO_PEERPIDFD`, o pidfd é conferido
+  vivo depois da leitura do loginuid; sem ele, vale só a conferência do
+  `Uid` de `/proc/PID/status`.
+- Cada requisição tem prazo de 25 s (`RequestDeadline`), dentro do
+  `WriteTimeout`, e é ele que limita o `retryBusy` do serviço.
+- A trilha da API é paginada pela posição na cadeia (ordem de inserção),
+  a mesma do `audit -verify`; o `audit` do CLI continua por timestamp.
+- Trocar grupos para os mesmos, desativar uma conta desativada e ativar
+  uma ativa respondem `changed: false` e não gravam linha.
+- O `pkg/frontkit` saiu do `ui.go`; o `ui` ainda tem a própria cópia das
+  defesas até a conversão de §6, que a remove.
+- O contrato é conferido por
+  `TestContract_EveryDocumentedOperationIsServedAndEveryServedRouteIsDocumented`
+  e `TestClient_CoversEveryOperationOfTheContractAgainstTheRealBackend`; a
+  atribuição pelo kernel por
+  `TestIdentity_ComesFromThePeerAndNotFromTheRequest`.

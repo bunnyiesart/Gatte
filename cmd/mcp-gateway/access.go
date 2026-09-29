@@ -16,6 +16,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -25,9 +26,9 @@ import (
 	"unicode"
 
 	"github.com/bunnyiesart/Gatte/internal/access"
-	"github.com/bunnyiesart/Gatte/internal/audit"
-	auditsqlite "github.com/bunnyiesart/Gatte/internal/audit/sqlite"
+	"github.com/bunnyiesart/Gatte/internal/admin"
 	"github.com/bunnyiesart/Gatte/internal/store"
+	"github.com/bunnyiesart/Gatte/pkg/adminapi"
 )
 
 // The Tool and TargetUpstream of an operator action's audit row. In
@@ -35,9 +36,9 @@ import (
 // and no registered upstream can ever read the same. Declared interface
 // strings: a SIEM rule that alerts on an unblock matches on them.
 const (
-	accessBlockTool   = "(access block)"
-	accessUnblockTool = "(access unblock)"
-	operatorTarget    = "(gateway)"
+	accessBlockTool   = admin.AccessBlock
+	accessUnblockTool = admin.AccessUnblock
+	operatorTarget    = admin.OperatorTarget
 )
 
 func cmdAccess(args []string, stdout, stderr io.Writer) int {
@@ -115,16 +116,17 @@ func accessChange(sub string, args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "%v\n", err)
 		return exitCannotRun
 	}
-	operator, err := operatorName()
+	actor, err := cliActor()
 	if err != nil {
 		fmt.Fprintf(stderr, "%v\n", err)
 		return exitCannotRun
 	}
 	return opRun(*configPath, stdout, stderr, func(e *opEnv) int {
+		e.actor = actor
 		if sub == "block" {
-			return runAccessBlock(e, operator, subject, *reason)
+			return runAccessBlock(e, actor.Name, subject, *reason)
 		}
-		return runAccessUnblock(e, operator, subject, *reason)
+		return runAccessUnblock(e, actor.Name, subject, *reason)
 	})
 }
 
@@ -154,91 +156,77 @@ func operatorName() (string, error) {
 	return name, nil
 }
 
-// operatorIdentity is the ANALYST value of an operator action's row. In
-// parentheses, like "(unauthenticated)", because no IdP issues a subject in
-// parentheses: this row can never be read as an analyst's.
-func operatorIdentity(name string) string { return "(operator:" + name + ")" }
-
-// operatorReason is the row's Reason: the subject acted on, quoted so a
-// subject that looks like prose cannot be misread, then the operator's note.
-func operatorReason(subject, note string) string {
-	r := fmt.Sprintf("subject %q", subject)
-	if note != "" {
-		r += ": " + note
+// actorNamed is this command's actor when it is operator, and otherwise an
+// actor of that name from the terminal.
+func (e *opEnv) actorNamed(operator string) admin.Actor {
+	if e.actor.Name == operator {
+		return e.actor
 	}
-	return r
+	return admin.Actor{Name: operator, Front: "cli"}
 }
 
-func operatorRecord(tool, operator, subject, note string, at time.Time) audit.Record {
-	return audit.Record{
-		AnalystIdentity: operatorIdentity(operator),
-		Tool:            tool,
-		TargetUpstream:  operatorTarget,
-		Timestamp:       at,
-		Outcome:         audit.OutcomeAllowed,
-		Reason:          operatorReason(subject, note),
-	}
-}
-
-// runAccessBlock places the block FIRST and records it second. If the
-// record cannot be written the block stays: every failure of this command
-// leaves the subject blocked, which is the direction an operator in the
-// middle of an incident needs -- and the exit code and the message say the
-// trail does not have it.
+// runAccessBlock places the block FIRST and records it second, through the
+// management service (design/adr/0031, 0040). If the record cannot be
+// written the block stays: every failure of this command leaves the
+// subject blocked, which is the direction an operator in the middle of an
+// incident needs -- and the exit code and the message say the trail does
+// not have it.
 func runAccessBlock(e *opEnv, operator, subject, note string) int {
-	now := time.Now().UTC()
-	var placed bool
-	err := retryBusy(e.ctx(), func() (err error) {
-		placed, err = e.blocks().Block(e.ctx(), access.Block{Subject: subject, Reason: note, By: operator, At: now})
-		return err
-	})
+	svc, err := e.service()
 	if err != nil {
-		fmt.Fprintf(e.stderr, "blocklist: %v\n", err)
+		fmt.Fprintf(e.stderr, "%v\n", err)
 		return exitCannotRun
 	}
-	if !placed {
+	res, err := svc.Block(e.ctx(), e.actorNamed(operator), adminapi.BlockRequest{Subject: subject, Reason: note})
+	if err != nil {
+		fmt.Fprintf(e.stderr, "blocklist: %v\n", cliErrText(err))
+		return exitCannotRun
+	}
+	if !res.Changed {
 		fmt.Fprintf(e.stdout, "%s is already blocked; nothing changed and nothing was recorded.\nSee %s.\n",
 			subject, e.cmd("access list"))
 		return exitOK
 	}
-	if err := retryBusy(e.ctx(), func() error {
-		return e.recordOperatorAction(operatorRecord(accessBlockTool, operator, subject, note, now))
-	}); err != nil {
-		fmt.Fprintf(e.stderr, "%s IS BLOCKED, but the audit trail could not record it: %v\n"+
-			"The block stays in force. Record it by hand before anything else.\n", subject, err)
+	if !res.Recorded {
+		fmt.Fprintf(e.stderr, "%s IS BLOCKED, but the audit trail could not record it: %s\n"+
+			"The block stays in force. Record it by hand before anything else.\n", subject, warningText(res.ActionResult, adminapi.WarnAuditWriteFailed))
 		return exitProblem
 	}
 	fmt.Fprintf(e.stdout, "Blocked %s. The running gateway refuses it from its next request, whatever\n"+
 		"token it carries; no restart is needed. This does not revoke anything at the\n"+
 		"IdP: revoke the session there too. Lift it with: %s %s\n",
 		subject, e.cmd("access unblock"), opShellQuote(subject))
-	warnIfNeverSeen(e, subject)
-	return exitOK
-}
-
-// warnIfNeverSeen tells the operator when the trail holds no row whose
-// ANALYST is subject. Matching is exact, so "sub-analyst-l" for
-// "sub-analyst-1" blocks nobody and the real analyst keeps being served.
-// Only a warning: the block stays and the exit code is still 0, because a
-// subject that has not called yet -- or whose rows were pruned -- is a
-// legitimate thing to block, and this command must fail closed.
-func warnIfNeverSeen(e *opEnv, subject string) {
-	seen, err := auditsqlite.New(e.db).HasAnalyst(e.ctx(), subject)
-	switch {
-	case err != nil:
-		fmt.Fprintf(e.stderr, "warning: could not check the trail for %s: %v\n", subject, err)
-	case !seen:
+	if res.HasWarning(adminapi.WarnNeverSeen) {
 		fmt.Fprintf(e.stderr, "warning: no request from this subject is on record; check the spelling against %s.\n"+
 			"The block is in force either way.\n", e.cmd("audit"))
 	}
+	return exitOK
+}
+
+// warningText is the message of the result's warning code, or "".
+func warningText(r adminapi.ActionResult, code string) string {
+	for _, w := range r.Warnings {
+		if w.Code == code {
+			return w.Message
+		}
+	}
+	return ""
+}
+
+// cliErrText is an error as the terminal shows it: the service's message
+// without the "gatte admin: code:" prefix.
+func cliErrText(err error) string {
+	var ae *adminapi.Error
+	if errors.As(err, &ae) {
+		return ae.Message
+	}
+	return err.Error()
 }
 
 // retryBusy runs fn again when it fails because another writer -- the
 // running serve, typically -- held the database's write lock for the whole
-// busy_timeout. SQLite's busy handler is not fair, so under sustained
-// writes that can happen, and an incident command must not give up on the
-// first try (ADR-0031 §5). A busy error means nothing was written, so the
-// retry cannot duplicate a row.
+// busy_timeout (ADR-0031 §5). A busy error means nothing was written, so
+// the retry cannot duplicate a row.
 func retryBusy(ctx context.Context, fn func() error) error {
 	backoff := 100 * time.Millisecond
 	var err error
@@ -265,29 +253,19 @@ const busyAttempts = 4
 // for the same reason: the subject stays blocked on every failure. An
 // unblock the trail cannot record is not performed.
 func runAccessUnblock(e *opEnv, operator, subject, note string) int {
-	blocks := e.blocks()
-	blocked, err := blocks.Blocked(e.ctx(), subject)
+	svc, err := e.service()
 	if err != nil {
-		fmt.Fprintf(e.stderr, "blocklist: %v\n", err)
+		fmt.Fprintf(e.stderr, "%v\n", err)
 		return exitCannotRun
 	}
-	if !blocked {
+	res, err := svc.Unblock(e.ctx(), e.actorNamed(operator), adminapi.BlockRequest{Subject: subject, Reason: note})
+	if err != nil {
+		fmt.Fprintf(e.stderr, "%s\n", cliErrText(err))
+		return exitCannotRun
+	}
+	if !res.Changed {
 		fmt.Fprintf(e.stdout, "%s is not blocked; nothing changed and nothing was recorded.\n", subject)
 		return exitProblem
-	}
-	now := time.Now().UTC()
-	if err := retryBusy(e.ctx(), func() error {
-		return e.recordOperatorAction(operatorRecord(accessUnblockTool, operator, subject, note, now))
-	}); err != nil {
-		fmt.Fprintf(e.stderr, "not unblocked: the audit trail could not record it: %v\n%s stays blocked.\n", err, subject)
-		return exitCannotRun
-	}
-	if err := retryBusy(e.ctx(), func() error {
-		_, err := blocks.Unblock(e.ctx(), subject)
-		return err
-	}); err != nil {
-		fmt.Fprintf(e.stderr, "blocklist: %v\nThe trail records an unblock that did not take effect: %s is STILL blocked.\n", err, subject)
-		return exitCannotRun
 	}
 	fmt.Fprintf(e.stdout, "Unblocked %s. The running gateway serves it again from its next request.\n", subject)
 	return exitOK

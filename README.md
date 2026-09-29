@@ -90,6 +90,7 @@ trail with its reason.
 | **Resilience** | Per-call time and size ceilings, a per-analyst concurrency cap, a 1 MiB request body cap, JWKS refetch at most every 30 s, and a panic contained to the one call that hit it. | `design/adr/0025`, `0035` |
 | **People** | The console shows roles, their groups and who has used the gateway. Run as root with `-manage-users`, it also edits the identity provider's accounts (Authelia file backend): one-time passwords stored only as argon2id hashes, groups limited to those that map to a role, every change audited. | `design/adr/0038` |
 | **Web console** | `mcp-gateway ui` serves the operator console as a page on loopback: review and approve tools with a coloured diff, block analysts, read and verify the audit trail. Every button is the CLI command of the same name. | `design/adr/0036` |
+| **Management API** | `mcp-gateway admin` serves the console's operations as versioned JSON (`api/admin.openapi.yaml`) on UNIX sockets only, socket-activated and idle-exiting. The operator is whoever the kernel says connected; account editing is a separate root-only socket. Any front can be built on `pkg/adminapi` and `pkg/frontkit`; `-tags nofront` builds without the web console. | `design/adr/0040` |
 | **Quota** | Optional: cap how many calls each analyst spends against one third-party account per window, so a runaway agent loop cannot burn an API budget. | `design/adr/0030` |
 
 Gatte was built for one SOC team fronting four existing stdio MCP servers
@@ -382,8 +383,10 @@ refusing unknown keys, before doing anything. `mcp-gateway help` and
 **During an incident, do two things.** `access block` stops the analyst at
 the gateway immediately. It does not touch the IdP: their token stays
 valid there until it expires, so revoke the session at the IdP too. The
-block's audit row names the login account that ran it (`SUDO_USER`, else
-`USER`), so say who did it in `-reason`.
+block's audit row names the login account that ran it and says where the
+name came from: `[cli]` when the kernel said it (on Linux, the loginuid,
+which survives `sudo`), `[cli env]` when it was `SUDO_USER` or `USER`. Say
+who did it in `-reason` when the row can only name a shared account.
 
 **Watch for silence.** The JSONL copy of the trail carries a heartbeat at
 boot and on every maintenance tick, including the number of tools pending
@@ -426,6 +429,26 @@ binds loopback only. The login link works once and opens one session of up to
 12 hours; for a new one, restart `mcp-gateway ui`. Requests without that
 session, from a non-loopback `Host`, or, for a POST, without the form token or
 from another origin are refused (`design/adr/0036`).
+
+### The management API
+
+Every console operation is also a versioned JSON API, `mcp-gateway admin`,
+for fronts other than the one above (a deployment's own web console, a
+TUI, a bot on the gateway host). It listens on UNIX sockets and nothing
+else, and takes the operator's name from the kernel, never from the
+request:
+
+```sh
+# systemd: examples/systemd/ (socket-activated, exits 5 minutes after the last request)
+sudo systemctl enable --now mcp-gateway-admin.socket mcp-gateway-admin-accounts.socket
+# elsewhere, in the foreground, as the service account (root is refused):
+sudo -u mcpgw mcp-gateway admin -config "$CFG" \
+    -socket /run/mcp-gateway-admin/operator/operator.sock -socket-group gatte-operators
+```
+
+Identity provider accounts are served by a second, root-only socket
+(`admin -accounts`). The contract is `api/admin.openapi.yaml`; how to write
+a front is `docs/admin-api.md`.
 
 ## Security model
 
@@ -476,9 +499,10 @@ each tool are kept under their fingerprints, never rewritten; a definition
 over 64 KiB is refused at discovery. `tool show` prints a definition with
 invisible code points escaped as `\u{XXXX}`, plus a diff against the
 approved one, and `tool approve` needs the `-fingerprint` of what was
-shown. Tool names outside `[A-Za-z0-9_-]{1,64}` are not served. Not
-covered: who approved is not in the trail, and nothing judges the text for
-the operator.
+shown. Tool names outside `[A-Za-z0-9_-]{1,64}` are not served. Every
+approval and revocation writes a `(tool approve)` or `(tool revoke)` operator
+row with the fingerprints (`design/adr/0040`). Not covered: nothing judges
+the text for the operator.
 
 **Against someone with write access to the SQLite database**, registry
 entries are signed with Ed25519 and verified against public keys that live

@@ -412,6 +412,20 @@ FROM audit_records ORDER BY id ASC`)
 // head is the highest id) and verified (VerifyChain) in id order, which
 // this does not touch.
 func (r *Recorder) List(ctx context.Context) ([]audit.Record, error) {
+	records, err := r.ChainOrder(ctx)
+	if err != nil {
+		return nil, err
+	}
+	slices.SortStableFunc(records, func(a, b audit.Record) int { return a.Timestamp.Compare(b.Timestamp) })
+	return records, nil
+}
+
+// ChainOrder returns every record in insertion (id) order, the order the
+// chain is built and verified in: the record at index i is at chain
+// position i+1, the position VerifyChain reports. The management API pages
+// the trail by that position (design/adr/0040), because it is stable --
+// the trail is append-only -- where a timestamp is the caller's clock.
+func (r *Recorder) ChainOrder(ctx context.Context) ([]audit.Record, error) {
 	const stmt = `
 SELECT analyst_identity, tool, target_upstream, timestamp, outcome, reason, source_address, analyst_name
 FROM audit_records
@@ -440,7 +454,6 @@ ORDER BY id ASC
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("audit/sqlite: list: %w", err)
 	}
-	slices.SortStableFunc(records, func(a, b audit.Record) int { return a.Timestamp.Compare(b.Timestamp) })
 	return records, nil
 }
 

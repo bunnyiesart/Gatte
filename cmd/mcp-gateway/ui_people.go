@@ -1,3 +1,5 @@
+//go:build !nofront
+
 // Operator Console -- "ui": the People page and, in the root-only
 // -manage-users mode, the identity provider's accounts
 // (design/adr/0038-contas-do-idp-pelo-console.md).
@@ -13,6 +15,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -22,18 +25,22 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/bunnyiesart/Gatte/internal/admin"
 	"github.com/bunnyiesart/Gatte/internal/audit"
+	"github.com/bunnyiesart/Gatte/internal/config"
 	"github.com/bunnyiesart/Gatte/internal/idp"
+	"github.com/bunnyiesart/Gatte/internal/store"
 	"github.com/bunnyiesart/Gatte/internal/visible"
+	"github.com/bunnyiesart/Gatte/pkg/adminapi"
 )
 
 // Operator actions on accounts, recorded like `access block` (ADR-0031).
 const (
-	accountAddTool     = "(account add)"
-	accountGroupsTool  = "(account groups)"
-	accountDisableTool = "(account disable)"
-	accountEnableTool  = "(account enable)"
-	accountResetTool   = "(account reset password)"
+	accountAddTool     = admin.AccountAdd
+	accountGroupsTool  = admin.AccountGroups
+	accountDisableTool = admin.AccountDisable
+	accountEnableTool  = admin.AccountEnable
+	accountResetTool   = admin.AccountReset
 )
 
 // uiRecordName is the display name a record carries, when it carries one.
@@ -184,30 +191,23 @@ func (s *uiServer) accountPage(w http.ResponseWriter, r *http.Request) {
 	s.render(w, "account", visible.Escape(d.Account.DisplayName), page{Nav: "people", Data: d})
 }
 
-// uiAccountGroups reads the groups a form ticked, refusing any that does
-// not map to a role: the console hands out access through
-// group_to_role, never around it.
-func uiAccountGroups(e *opEnv, r *http.Request) ([]string, error) {
-	known := map[string]bool{}
-	for g := range e.cfg.GroupToRole {
-		known[g] = true
-	}
-	var out []string
-	for _, g := range r.PostForm["group"] {
-		if !known[g] {
-			return nil, fmt.Errorf("group %q maps to no role in the configuration file; the console only assigns groups that do", g)
-		}
-		out = append(out, g)
-	}
-	sort.Strings(out)
-	return out, nil
+// accountService is the management service over the console's account
+// store: the same rules the accounts socket answers with -- groups only
+// from group_to_role, a generated one-time password stored as a hash, the
+// users file first and the trail second.
+func (s *uiServer) accountService(e *opEnv) (*admin.Service, error) {
+	return admin.New(admin.Deps{
+		Config:   func() (*config.Config, error) { return e.cfg, nil },
+		Record:   func(_ context.Context, _ *config.Config, rec audit.Record) error { return e.recordOperatorAction(rec) },
+		Accounts: func(*config.Config) (idp.Directory, error) { return s.accounts, nil },
+		IsBusy:   store.IsBusy,
+	})
 }
 
-// accountAction runs one account change and records it. The IdP file is
-// written first and the trail second, like `access block`: a change that
-// happened is never hidden by a trail that could not be written, and the
-// page says so.
-func (s *uiServer) accountAction(w http.ResponseWriter, r *http.Request, tool, title string, fn func(e *opEnv) (username, detail, secret string, err error)) {
+// accountAction runs one account change through the service and shows its
+// result. A change the trail could not record is shown as made and
+// unrecorded.
+func (s *uiServer) accountAction(w http.ResponseWriter, r *http.Request, title string, fn func(e *opEnv, svc *admin.Service, a admin.Actor) (username, secret string, res adminapi.ActionResult, err error)) {
 	displayName := strings.TrimSpace(r.PostForm.Get("displayname"))
 	if s.accounts == nil {
 		http.NotFound(w, r)
@@ -215,26 +215,28 @@ func (s *uiServer) accountAction(w http.ResponseWriter, r *http.Request, tool, t
 	}
 	var secret, username string
 	out, errText, code := s.uiRun(func(e *opEnv) int {
-		u, detail, sec, err := fn(e)
-		username = u
+		svc, err := s.accountService(e)
 		if err != nil {
 			fmt.Fprintf(e.stderr, "%v\n", err)
+			return exitCannotRun
+		}
+		u, sec, res, err := fn(e, svc, e.actor)
+		username = u
+		if err != nil {
+			fmt.Fprintf(e.stderr, "%s\n", cliErrText(err))
 			return exitProblem
 		}
 		secret = sec
-		reason := fmt.Sprintf("account %q", u)
-		if detail != "" {
-			reason += ": " + detail
+		for _, m := range res.Messages {
+			fmt.Fprintln(e.stdout, m)
 		}
-		reason += " [ui]"
-		rec := audit.Record{AnalystIdentity: operatorIdentity(s.operator), Tool: tool, TargetUpstream: operatorTarget,
-			Timestamp: time.Now().UTC(), Outcome: audit.OutcomeAllowed, Reason: reason}
-		if err := e.recordOperatorAction(rec); err != nil {
-			fmt.Fprintf(e.stderr, "The change was made in the identity provider, but the audit trail could not record it: %v\n", err)
+		for _, wn := range res.Warnings {
+			fmt.Fprintln(e.stdout, wn.Message)
+		}
+		if res.Changed && !res.Recorded {
+			fmt.Fprintf(e.stderr, "The change was made in the identity provider, but the audit trail could not record it: %s\n", warningText(res, adminapi.WarnAuditWriteFailed))
 			return exitProblem
 		}
-		fmt.Fprintf(e.stdout, "%s: %s\nRecorded in the audit trail as %s by %s.\n", tool, reason, tool, operatorIdentity(s.operator))
-		fmt.Fprint(e.stdout, "The identity provider applies this when it reloads its users file (Authelia: watch: true, or a restart).\n")
 		return exitOK
 	})
 	res := uiResult(out, errText, code)
@@ -242,7 +244,7 @@ func (s *uiServer) accountAction(w http.ResponseWriter, r *http.Request, tool, t
 	if res.SecretName == "" {
 		res.SecretName = username
 	}
-	if res.OK && secret != "" {
+	if secret != "" {
 		panel := s.connectPanelFor(username)
 		res.Connect = &panel
 	}
@@ -250,46 +252,27 @@ func (s *uiServer) accountAction(w http.ResponseWriter, r *http.Request, tool, t
 }
 
 func (s *uiServer) accountAdd(w http.ResponseWriter, r *http.Request) {
-	s.accountAction(w, r, accountAddTool, "Add", func(e *opEnv) (string, string, string, error) {
-		a := idp.Account{
+	s.accountAction(w, r, "Add", func(e *opEnv, svc *admin.Service, a admin.Actor) (string, string, adminapi.ActionResult, error) {
+		n := adminapi.NewAccount{
 			Username:    strings.TrimSpace(r.PostForm.Get("username")),
 			DisplayName: strings.TrimSpace(r.PostForm.Get("displayname")),
 			Email:       strings.TrimSpace(r.PostForm.Get("email")),
+			Groups:      r.PostForm["group"],
 		}
-		groups, err := uiAccountGroups(e, r)
-		if err != nil {
-			return a.Username, "", "", err
-		}
-		a.Groups = groups
-		if err := idp.ValidateAccount(a); err != nil {
-			return a.Username, "", "", err
-		}
-		pw, err := idp.GeneratePassword()
-		if err != nil {
-			return a.Username, "", "", err
-		}
-		hash, err := idp.HashPassword(pw)
-		if err != nil {
-			return a.Username, "", "", err
-		}
-		if err := s.accounts.Add(a, hash); err != nil {
-			return a.Username, "", "", err
-		}
-		return a.Username, "groups " + uiGroupList(groups), pw, nil
+		res, err := svc.AddAccount(e.ctx(), a, n)
+		return n.Username, res.OneTimePassword, res.ActionResult, err
 	})
 }
 
 func (s *uiServer) accountGroups(w http.ResponseWriter, r *http.Request) {
-	s.accountAction(w, r, accountGroupsTool, "Groups for", func(e *opEnv) (string, string, string, error) {
+	s.accountAction(w, r, "Groups for", func(e *opEnv, svc *admin.Service, a admin.Actor) (string, string, adminapi.ActionResult, error) {
 		u := r.PostForm.Get("username")
-		groups, err := uiAccountGroups(e, r)
-		if err != nil {
-			return u, "", "", err
+		groups := r.PostForm["group"]
+		if groups == nil {
+			groups = []string{}
 		}
-		if err := s.accounts.SetGroups(u, groups); err != nil {
-			return u, "", "", err
-		}
-		return u, "groups " + uiGroupList(groups), "", nil
+		res, err := svc.SetAccountGroups(e.ctx(), a, u, adminapi.GroupsRequest{Groups: groups})
+		return u, "", res.ActionResult, err
 	})
 }
 
@@ -302,39 +285,23 @@ func (s *uiServer) accountEnable(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *uiServer) accountSetDisabled(w http.ResponseWriter, r *http.Request, disabled bool) {
-	tool, title := accountEnableTool, "Enable"
+	title := "Enable"
 	if disabled {
-		tool, title = accountDisableTool, "Disable"
+		title = "Disable"
 	}
-	s.accountAction(w, r, tool, title, func(e *opEnv) (string, string, string, error) {
+	s.accountAction(w, r, title, func(e *opEnv, svc *admin.Service, a admin.Actor) (string, string, adminapi.ActionResult, error) {
 		u := r.PostForm.Get("username")
-		return u, "", "", s.accounts.SetDisabled(u, disabled)
+		res, err := svc.SetAccountDisabled(e.ctx(), a, u, disabled)
+		return u, "", res.ActionResult, err
 	})
 }
 
 func (s *uiServer) accountReset(w http.ResponseWriter, r *http.Request) {
-	s.accountAction(w, r, accountResetTool, "New password for", func(e *opEnv) (string, string, string, error) {
+	s.accountAction(w, r, "New password for", func(e *opEnv, svc *admin.Service, a admin.Actor) (string, string, adminapi.ActionResult, error) {
 		u := r.PostForm.Get("username")
-		pw, err := idp.GeneratePassword()
-		if err != nil {
-			return u, "", "", err
-		}
-		hash, err := idp.HashPassword(pw)
-		if err != nil {
-			return u, "", "", err
-		}
-		if err := s.accounts.SetPassword(u, hash); err != nil {
-			return u, "", "", err
-		}
-		return u, "", pw, nil
+		res, err := svc.ResetAccountPassword(e.ctx(), a, u)
+		return u, res.OneTimePassword, res.ActionResult, err
 	})
-}
-
-func uiGroupList(groups []string) string {
-	if len(groups) == 0 {
-		return "(none)"
-	}
-	return strings.Join(groups, ", ")
 }
 
 // keepDBOwner gives the gateway database, and the WAL and shared-memory

@@ -1,0 +1,73 @@
+{{template "top" .}}
+{{with .Data}}
+<a class="back" href="{{$.Base}}/people"><svg viewBox="0 0 8 14" width="8" height="14" aria-hidden="true"><path d="M7 1L1 7l6 6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>People</a>
+<div class="head">
+  <h1>Add a person</h1>
+</div>
+<ol class="stepper" aria-label="Steps">
+  <li class="{{if eq .Step 1}}current{{else}}done{{end}}"><span>1</span>Person</li>
+  <li class="{{if eq .Step 2}}current{{else if gt .Step 2}}done{{end}}"><span>2</span>Access</li>
+  <li class="{{if eq .Step 3}}current{{end}}"><span>3</span>Review</li>
+  <li><span>4</span>Connect</li>
+</ol>
+
+{{if eq .Step 1}}
+<form class="group form stack" method="get" action="{{$.Base}}/people/new/access">
+  <label class="field"><span>Full name</span><input name="displayname" value="{{.DisplayName}}" required autocomplete="off" placeholder="Ana Souza" autofocus></label>
+  <label class="field"><span>Username <small>leave empty to use their name, like ana.souza</small></span><input name="username" value="{{.Username}}" autocomplete="off" spellcheck="false" class="mono" placeholder="ana.souza"></label>
+  <label class="field"><span>Email <small>optional, for password resets</small></span><input name="email" type="email" value="{{.Email}}" autocomplete="off" placeholder="ana@example.org"></label>
+  <div class="form-end"><button class="btn primary">Continue</button></div>
+</form>
+{{end}}
+
+{{if eq .Step 2}}
+<form method="get" action="{{$.Base}}/people/new/review">
+  <input type="hidden" name="displayname" value="{{.DisplayName}}">
+  <input type="hidden" name="username" value="{{.Username}}">
+  <input type="hidden" name="email" value="{{.Email}}">
+  <p class="lead-text">What should <b>{{vis .DisplayName}}</b> be able to do?</p>
+  <div class="cards">
+    {{range .Groups}}{{$role := index $.Data.Roles .Role}}
+    <label class="card">
+      <input type="checkbox" name="group" value="{{.Name}}" {{if index $.Data.Chosen .Name}}checked{{end}}>
+      <span class="card-check" aria-hidden="true">{{template "check"}}</span>
+      <span class="card-title">{{vis .Role}}</span>
+      <span class="card-sub">{{len $role.Tools}} tools · group <span class="mono">{{vis .Name}}</span></span>
+      {{if $role.Tools}}<span class="card-tools">{{range $i, $t := $role.Tools}}{{if lt $i 4}}<span class="mono">{{vis $t}}</span>{{end}}{{end}}{{if gt (len $role.Tools) 4}}<span>+{{sub (len $role.Tools) 4}} more</span>{{end}}</span>{{end}}
+    </label>
+    {{else}}
+    <div class="group empty-state"><p><b>No group maps to a role yet.</b> Add one under [group_to_role] in the configuration file.</p></div>
+    {{end}}
+  </div>
+  <div class="form-foot">
+    <a class="btn" href="{{$.Base}}/people/new?displayname={{.DisplayName}}&amp;username={{.Username}}&amp;email={{.Email}}">Back</a>
+    <button class="btn primary">Continue</button>
+  </div>
+</form>
+{{end}}
+
+{{if eq .Step 3}}
+<form method="post" action="{{$.Base}}/people/add">
+  <input type="hidden" name="csrf" value="{{$.CSRF}}">
+  <input type="hidden" name="displayname" value="{{.DisplayName}}">
+  <input type="hidden" name="username" value="{{.Username}}">
+  <input type="hidden" name="email" value="{{.Email}}">
+  {{range .Picked}}<input type="hidden" name="group" value="{{.Name}}">{{end}}
+  <div class="group review-card">
+    <div class="review-person">
+      <span class="avatar big" aria-hidden="true">{{initial .DisplayName .Username}}</span>
+      <div><b>{{vis .DisplayName}}</b><span class="muted mono">{{vis .Username}}</span>{{if .Email}}<span class="muted">{{vis .Email}}</span>{{end}}</div>
+    </div>
+    <dl class="review-list">
+      <div><dt>Access</dt><dd>{{range $i, $g := .Picked}}{{if $i}}, {{end}}{{vis $g.Role}}{{else}}<span class="muted">None yet: they can sign in but won't see any tool.</span>{{end}}</dd></div>
+      <div><dt>Password</dt><dd>A one-time password, shown on the next page.</dd></div>
+    </dl>
+  </div>
+  <div class="form-foot">
+    <a class="btn" href="{{$.Base}}/people/new/access?displayname={{.DisplayName}}&amp;username={{.Username}}&amp;email={{.Email}}{{range .Picked}}&amp;group={{.Name}}{{end}}">Back</a>
+    <button class="btn primary">Create account</button>
+  </div>
+</form>
+{{end}}
+{{end}}
+{{template "bottom" .}}

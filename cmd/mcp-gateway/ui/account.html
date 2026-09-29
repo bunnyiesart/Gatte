@@ -24,6 +24,9 @@
 <section>
   <h2>Account</h2>
   <ul class="group">
+    <li><a class="row" href="{{$base}}/people/connect?u={{.Username}}">
+      <span class="row-text"><span class="row-title">Connect a computer</span><span class="row-detail">The script that sets up Claude Code on their machine.</span></span>{{template "chev"}}
+    </a></li>
     <li class="row">
       <span class="row-text"><span class="row-title">New password</span><span class="row-detail">Replaces the password with a one-time one, shown once.</span></span>
       <form method="post" action="{{$base}}/people/reset"><input type="hidden" name="csrf" value="{{$csrf}}"><input type="hidden" name="username" value="{{.Username}}"><button class="btn small">Reset password</button></form>

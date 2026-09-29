@@ -412,7 +412,7 @@ link locally.
 | Page | What you do there |
 |---|---|
 | Overview | See what needs attention: changed and pending tools, unsigned backends, blocked analysts, the latest refusals. |
-| People | See each role, the groups that map to it and its tools, and everyone the gateway has seen, with a Block button. With `sudo mcp-gateway ui -manage-users`, also add people at the identity provider, change their groups, disable them or give them a new one-time password (`design/adr/0038`). |
+| People | See each role, the groups that map to it and its tools, and everyone the gateway has seen, with a Block button. With `sudo mcp-gateway ui -manage-users`, also add people at the identity provider, change their groups, disable them or give them a new one-time password (`design/adr/0038`). Adding a person is a three-step assistant that ends with their one-time password and a connect script for macOS, Linux or Windows that sets up Claude Code on their machine (`[connect]`, `design/adr/0039`). |
 | Tools | Review a definition with hidden characters escaped and the diff coloured, then approve that exact fingerprint, or revoke. |
 | Access | Block or unblock an analyst, with a reason that goes in the trail. |
 | Audit | Filter the trail by analyst and outcome, and verify the hash chain against your SIEM's head. |

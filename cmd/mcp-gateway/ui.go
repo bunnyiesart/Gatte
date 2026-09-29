@@ -143,6 +143,9 @@ func newUIServer(base *opEnv, listen, operator, token string) (*uiServer, error)
 		"dash":    opDash,
 		"lines":   uiReviewLines,
 		"initial": uiInitial,
+		"dict":    uiDict,
+		"oslist":  uiOSList,
+		"sub":     func(a, b int) int { return a - b },
 	}).ParseFS(uiAssets, "ui/*.html")
 	if err != nil {
 		return nil, fmt.Errorf("ui: templates: %w", err)
@@ -178,6 +181,11 @@ func (s *uiServer) Handler() http.Handler {
 	mux.HandleFunc("POST /audit/verify", s.auditVerify)
 	mux.HandleFunc("GET /people", s.peoplePage)
 	mux.HandleFunc("GET /people/account", s.accountPage)
+	mux.HandleFunc("GET /people/new", s.newPersonPage)
+	mux.HandleFunc("GET /people/new/access", s.newPersonPage)
+	mux.HandleFunc("GET /people/new/review", s.newPersonPage)
+	mux.HandleFunc("GET /people/connect", s.connectPage)
+	mux.HandleFunc("GET /people/connect/script", s.connectScript)
 	mux.HandleFunc("POST /people/add", s.accountAdd)
 	mux.HandleFunc("POST /people/groups", s.accountGroups)
 	mux.HandleFunc("POST /people/disable", s.accountDisable)
@@ -394,6 +402,11 @@ type result struct {
 	// never logged, never recorded, never stored in plain text.
 	Secret    string
 	SecretFor string
+	// SecretName is the person's display name, for the handover heading.
+	SecretName string
+	// Connect, after adding a person or resetting their password, is how
+	// they connect their computer (ui_connect.go).
+	Connect *connectPanel
 }
 
 func uiResult(stdout, stderr string, code int) result {
@@ -954,4 +967,33 @@ func uiInitial(names ...string) string {
 		}
 	}
 	return "?"
+}
+
+// uiDict builds a map from key, value pairs, so a template can hand a
+// partial more than one value.
+func uiDict(kv ...any) (map[string]any, error) {
+	if len(kv)%2 != 0 {
+		return nil, errors.New("dict: odd number of arguments")
+	}
+	m := make(map[string]any, len(kv)/2)
+	for i := 0; i < len(kv); i += 2 {
+		k, ok := kv[i].(string)
+		if !ok {
+			return nil, errors.New("dict: keys must be strings")
+		}
+		m[k] = kv[i+1]
+	}
+	return m, nil
+}
+
+type uiOS struct{ ID, Name, File, Run string }
+
+// uiOSList is the systems the connect panel offers, and how each runs
+// the script it downloads.
+func uiOSList() []uiOS {
+	return []uiOS{
+		{ID: "macos", Name: "macOS", File: "connect-gatte.sh", Run: "sh ~/Downloads/connect-gatte.sh"},
+		{ID: "linux", Name: "Linux", File: "connect-gatte.sh", Run: "sh ~/Downloads/connect-gatte.sh"},
+		{ID: "windows", Name: "Windows", File: "connect-gatte.ps1", Run: `powershell -ExecutionPolicy Bypass -File "$HOME\Downloads\connect-gatte.ps1"`},
+	}
 }

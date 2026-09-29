@@ -27,6 +27,7 @@
   --mark-text: #ffffff;
   --add-bg: rgba(0, 113, 227, 0.1);
   --bar: rgba(255, 255, 255, 0.78);
+  --seg-on: #ffffff;
 
   --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", "Segoe UI", Roboto, sans-serif;
   --display: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Helvetica Neue", "Segoe UI", Roboto, sans-serif;
@@ -60,6 +61,7 @@
     --mark-text: #000000;
     --add-bg: rgba(10, 132, 255, 0.2);
     --bar: rgba(22, 22, 23, 0.78);
+    --seg-on: #636366;
   }
 }
 
@@ -196,7 +198,7 @@ tbody tr { position: relative; }
 }
 .segmented a span { color: var(--text-2); margin-left: 4px; }
 .segmented a:hover { text-decoration: none; background: var(--fill); }
-.segmented a[aria-current] { background: var(--surface); box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12); }
+.segmented a[aria-current] { background: var(--seg-on); box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12); }
 
 /* ---- buttons ---- */
 
@@ -326,6 +328,87 @@ details summary .row-text { gap: 2px; }
 .secret-value { padding: 6px 12px; font-size: 20px; letter-spacing: 0.04em; background: var(--fill); user-select: all; }
 .secret-note { max-width: 44ch; font-size: 13px; color: var(--text-2); }
 .row form .btn { white-space: nowrap; }
+
+/* ---- add person assistant ---- */
+
+.stepper { display: flex; gap: 8px; margin: -8px 0 28px; padding: 0; list-style: none; flex-wrap: wrap; }
+.stepper li { display: inline-flex; align-items: center; gap: 8px; color: var(--text-3); font-size: 14px; font-weight: 500; }
+.stepper li + li::before { content: ""; width: 28px; height: 1px; background: var(--sep); margin-right: 4px; }
+.stepper span {
+  display: grid; place-items: center; width: 24px; height: 24px; border-radius: 50%;
+  background: var(--fill); font-size: 12px; font-weight: 600; color: var(--text-2);
+}
+.stepper .current { color: var(--text); }
+.stepper .current span { background: var(--btn); color: var(--on-accent); }
+.stepper .done { color: var(--text-2); }
+.stepper .done span { background: var(--accent-soft); color: var(--accent-text); }
+.form.stack { flex-direction: column; align-items: stretch; max-width: 560px; padding: 22px; }
+.form.stack .field { flex: none; }
+.form-foot { display: flex; justify-content: space-between; gap: 12px; margin-top: 22px; max-width: 900px; }
+.lead-text { margin: 0 0 16px; font-size: 17px; }
+
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; max-width: 900px; }
+.card {
+  position: relative; display: flex; flex-direction: column; gap: 4px; padding: 16px 18px 16px 18px;
+  background: var(--surface); border-radius: var(--r); cursor: pointer;
+  box-shadow: inset 0 0 0 1px var(--sep); transition: box-shadow 150ms ease-out, background-color 150ms ease-out;
+}
+.card:hover { background: var(--surface-2); }
+.card input { position: absolute; opacity: 0; pointer-events: none; }
+.card:has(input:checked) { box-shadow: inset 0 0 0 2px var(--btn); background: var(--surface); }
+.card:has(input:focus-visible) { outline: 3px solid var(--accent-soft); outline-offset: 2px; }
+.card-check {
+  position: absolute; top: 14px; right: 14px; display: grid; place-items: center; width: 22px; height: 22px;
+  border-radius: 50%; box-shadow: inset 0 0 0 1.5px var(--text-3); color: transparent;
+}
+.card:has(input:checked) .card-check { background: var(--btn); box-shadow: none; color: var(--on-accent); }
+.card-check .glyph { width: 14px; height: 14px; }
+.card-title { font-weight: 600; font-size: 16px; padding-right: 28px; }
+.card-sub { font-size: 13px; color: var(--text-2); }
+.card-tools { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; font-size: 11px; color: var(--text-2); }
+.card-tools span { padding: 2px 6px; border-radius: 5px; background: var(--fill); }
+
+.review-card { max-width: 560px; padding: 20px 22px; }
+.review-person { display: flex; align-items: center; gap: 14px; padding-bottom: 16px; border-bottom: 1px solid var(--sep); }
+.review-person div { display: flex; flex-direction: column; gap: 2px; }
+.review-person b { font-size: 17px; }
+.avatar.big { width: 48px; height: 48px; font-size: 20px; }
+.review-list { margin: 16px 0 0; display: grid; gap: 12px; }
+.review-list div { display: grid; grid-template-columns: 90px 1fr; gap: 12px; }
+.review-list dt { color: var(--text-2); font-size: 14px; }
+.review-list dd { margin: 0; }
+
+/* ---- handover and connect ---- */
+
+.handover { display: grid; gap: 8px; max-width: 760px; margin: 0 auto; }
+.handover h2 { display: flex; align-items: center; gap: 10px; }
+.handover .secret { align-items: flex-start; margin: 0; }
+.step-n {
+  display: inline-grid; place-items: center; flex: none; width: 24px; height: 24px; border-radius: 50%;
+  background: var(--btn); color: var(--on-accent); font: 600 13px/1 var(--sans);
+}
+.center { text-align: center; margin: 28px 0; }
+.connect { display: flex; flex-direction: column; gap: 14px; }
+.os-tabs { align-self: flex-start; margin: 0; }
+.os-panel { display: none; margin: 0; }
+.os-panel:target { display: block; }
+.os-panels:not(:has(.os-panel:target)) .os-panel:first-child { display: block; }
+.connect:has(#os-linux:target) .os-tabs a[href="#os-linux"],
+.connect:has(#os-windows:target) .os-tabs a[href="#os-windows"],
+.connect:has(#os-macos:target) .os-tabs a[href="#os-macos"],
+.connect:not(:has(.os-panel:target)) .os-tabs a[href="#os-macos"] { background: var(--seg-on); box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12); }
+.steps { display: grid; gap: 0; margin: 0 0 12px; padding: 4px 0; list-style: none; background: var(--surface); border-radius: var(--r); }
+.steps li { display: flex; gap: 14px; padding: 16px 18px; }
+.steps li + li { border-top: 1px solid var(--sep); }
+.step-body { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; min-width: 0; flex: 1; }
+.step-body p { margin: 0; }
+.code {
+  width: 100%; padding: 10px 12px; border-radius: 8px; background: var(--fill);
+  font: 400 13px/1.5 var(--mono); user-select: all; white-space: pre-wrap; overflow-wrap: anywhere;
+}
+details.inline summary { padding: 4px 0; font-size: 14px; color: var(--accent-text); justify-content: flex-start; gap: 6px; }
+details.inline summary:hover { background: none; }
+details.inline[open] summary { margin-bottom: 6px; }
 
 /* ---- small screens ---- */
 

@@ -8,7 +8,7 @@
 
 {{if .Manage}}
 <section>
-  <div class="section-head"><h2>Accounts</h2></div>
+  <div class="section-head"><h2>Accounts</h2><a class="btn primary small" href="{{$.Base}}/people/new">Add person</a></div>
   {{if .Accounts}}
   <ul class="group">
     {{range .Accounts}}
@@ -29,21 +29,6 @@
   {{end}}
 </section>
 
-<section>
-  <h2>Add a person</h2>
-  <form class="group form" method="post" action="{{$.Base}}/people/add">
-    <input type="hidden" name="csrf" value="{{$csrf}}">
-    <label class="field"><span>Name</span><input name="displayname" required autocomplete="off" placeholder="Ana Souza"></label>
-    <label class="field"><span>Username</span><input name="username" required autocomplete="off" spellcheck="false" placeholder="ana.souza" class="mono"></label>
-    <label class="field"><span>Email</span><input name="email" type="email" autocomplete="off" placeholder="ana@example.org"></label>
-    <fieldset class="field wide checks">
-      <legend>Groups</legend>
-      {{range .Groups}}<label class="check"><input type="checkbox" name="group" value="{{.Name}}"><span>{{vis .Name}}</span><small>{{vis .Role}}</small></label>{{else}}<p class="muted">No group maps to a role yet. Add one under [group_to_role] in the configuration file.</p>{{end}}
-    </fieldset>
-    <div class="form-end"><button class="btn primary">Add person</button></div>
-  </form>
-  <p class="caption">Creates the account at the identity provider with a one-time password, shown once on the next page.</p>
-</section>
 {{else}}
 <div class="notice" role="note">{{template "dot"}}<p>To add people or change their groups, run the console as root: <code>sudo mcp-gateway ui -manage-users</code>. The normal console can't edit accounts, on purpose.</p></div>
 {{end}}

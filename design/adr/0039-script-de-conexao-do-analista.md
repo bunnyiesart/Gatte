@@ -1,0 +1,66 @@
+# 0039. Script de conexão do analista
+
+**Status:** Accepted — 29 set 2026.
+
+## Contexto
+
+Com contas criadas pelo console (`0038`), o operador ainda precisava dizer a
+cada analista, à mão, como ligar o cliente MCP ao gateway: a URL, o client
+OAuth que o IdP registrou para o Claude Code, a porta de callback desse
+client e, numa implantação com CA própria, como confiar no certificado. Um
+erro em qualquer um desses dá uma falha de login que o analista não sabe
+ler. Gerenciadores de agentes de SIEM resolvem o mesmo problema terminando
+o cadastro com um comando pronto.
+
+## Decisão
+
+1. **Assistente em passos.** No modo `-manage-users`, adicionar uma pessoa
+   é Pessoa (nome, username sugerido a partir do nome, email), Acesso (um
+   cartão por grupo que mapeia para um papel, com as tools do papel) e
+   Revisão. Os passos são GETs sem efeito; só o último é um POST, o mesmo
+   `/people/add` de antes.
+2. **Entrega.** A página final mostra a senha de uso único e, ao lado, como
+   conectar o computador: abas macOS, Linux e Windows (CSS `:target`, sem
+   script), cada uma com o botão de baixar `connect-gatte.sh` ou
+   `connect-gatte.ps1`, o comando para rodá-lo e o próximo passo (`claude`,
+   `/mcp`, entrar com o username). A mesma página existe para contas que já
+   existem (`/people/connect?u=`).
+3. **O script.** Verifica que o Claude Code está instalado; quando há
+   `[connect] ca_file`, grava o certificado em `~/.config/gatte/ca.pem`
+   (Windows: `%USERPROFILE%\.gatte\ca.pem`) e aponta `NODE_EXTRA_CA_CERTS`
+   para ele, uma vez só no perfil do shell (Windows: variável do usuário);
+   testa se o gateway responde e avisa sobre a VPN sem parar; e roda
+   `claude mcp add --transport http --scope user --client-id ID
+   --callback-port PORT NOME URL`, depois de remover uma entrada antiga.
+   Rodar duas vezes não muda nada além da primeira.
+4. **Nada secreto, nada injetável.** O script leva a URL (`oidc.audience`),
+   um client id público, uma porta e um certificado público. A senha vai
+   separada. Cada valor entra entre aspas simples e é validado antes: a URL
+   e os nomes têm charsets sem aspas nem espaço, e o CA é lido como PEM,
+   cada certificado é analisado e reescrito, então nada fora dos
+   certificados chega ao script.
+5. **Configuração.** `[connect] client_id`, `callback_port`, `ca_file`
+   (opcional) e `server_name` (padrão `gatte`). Sem `client_id`, a página
+   diz o que falta e o download dá 404.
+
+## Consequências
+
+- O operador entrega duas coisas, o arquivo e a senha, por canais
+  separados, e o analista roda um comando.
+- Só o Claude Code é suportado: é o cliente que o IdP tem registrado. Outro
+  cliente precisa do próprio registro no IdP e de um template novo.
+- O script do Windows não testa a resposta do gateway quando há CA própria,
+  porque o PowerShell usa o repositório de certificados do sistema e não o
+  `NODE_EXTRA_CA_CERTS`.
+- Não resolve: a resolução do nome do gateway na máquina do analista (VPN,
+  DNS) e a instalação do próprio Claude Code.
+
+## Testes
+
+`cmd/mcp-gateway/ui_connect_test.go`: os três scripts levam URL, client,
+porta e nome, e o CA só quando configurado, e nada de fora dos certificados
+do arquivo; o script sh passa em `sh -n` e roda de verdade contra um
+`claude` e um `curl` falsos num HOME descartável, duas vezes, sem editar o
+perfil duas vezes; uma URL ou um username com aspas não chega ao script; o
+download é anexo e dá 404 sem configuração ou com sistema desconhecido; o
+assistente vai do passo 1 à entrega e não existe sem `-manage-users`.

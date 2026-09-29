@@ -505,6 +505,27 @@ max_bytes = 1048576
 
 
 # ===========================================================================
+# [connect] -- script de conexao do analista (ADR-0039)
+# ===========================================================================
+# O que o console coloca no script que o analista roda para ligar o Claude
+# Code a este gateway. Tudo aqui e publico. Sem client_id, os scripts ficam
+# desligados.
+#
+#   client_id     -- o client OAuth publico que o IdP registrou para o
+#                    Claude Code (no Authelia: public: true, PKCE).
+#   callback_port -- a porta do redirect URI desse client no IdP
+#                    (http://127.0.0.1:PORTA/callback).
+#   ca_file       -- opcional: a CA que assina o certificado do gateway,
+#                    quando e uma CA propria.
+#   server_name   -- o nome do gateway no cliente. Padrao "gatte".
+#
+# [connect]
+# client_id     = "claude-code"
+# callback_port = 47823
+# ca_file       = "/etc/ssl/example-ca/ca.crt"
+
+
+# ===========================================================================
 # [upstreams] -- stdio com credencial (ADR-0034)
 # ===========================================================================
 # Um upstream `stdio` roda com o uid do proprio gateway: um open() na chave

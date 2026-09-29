@@ -8,26 +8,39 @@ info:
     listener. HTTP/1.1, JSON bodies, snake_case fields, times in RFC 3339
     UTC.
 
-    Two sockets, two processes, two disjoint route sets. Every operation
-    below carries `x-gatte-socket`:
+    Two sockets, two processes, two directories, two disjoint route sets.
+    Every operation below carries `x-gatte-socket`:
 
-    - `operator`: `/run/mcp-gateway-admin/operator.sock`, served by a
-      process running as the gateway's service account; the file is
-      `root:gatte-operators 0660`.
-    - `accounts`: `/run/mcp-gateway-admin/accounts.sock`, served only by a
-      root process; the file is `root:root 0600` by default.
+    - `operator`: `/run/mcp-gateway-admin/operator/operator.sock`, served
+      by a process running as the gateway's service account; the file is
+      group `gatte-operators`, `0660`, in a directory of its own.
+    - `accounts`: `/run/mcp-gateway-admin/accounts/accounts.sock`, served
+      only by a root process; the file is `root:root 0600`, or
+      `root:ACCOUNT_GROUP 0660` when `[admin] account_group` delegates
+      accounts (both settings are required; the backend refuses a mismatch
+      at startup). Its directory is `root:root 0755`.
 
-    A route of the other socket answers 404 `not_found`.
+    A route of the other socket answers 404 `wrong_socket` with
+    `details.socket`; a route that does not exist answers 404
+    `unknown_route`.
+
+    ## Who serves
+
+    `pkg/adminapi` reads the server's credentials after connecting and
+    refuses an accounts socket whose server is not uid 0 (under systemd the
+    kernel reports systemd, which created the socket). `WithServerUID` pins
+    the operator socket's server.
 
     ## Who the operator is
 
     The operator is NOT a request field. The backend reads the connecting
-    process's credentials from the kernel (SO_PEERCRED on Linux,
-    LOCAL_PEERCRED / getpeereid on FreeBSD and macOS), maps the uid to a
-    system account name, and records every state change as
-    `(operator:NAME)`. On Linux, when the uid is 0 or the service account,
-    the peer's `/proc/PID/loginuid` names the human instead and the reason
-    gets `[via ACCOUNT]`. `GET /v1/whoami` returns what the backend decided.
+    process's credentials from the kernel at accept time (SO_PEERCRED and
+    SO_PEERGROUPS on Linux, LOCAL_PEERCRED xucred on FreeBSD and macOS),
+    maps the uid to a system account name, and records every state change
+    as `(operator:NAME)`. On Linux, when the uid is 0 or the service
+    account, the peer's loginuid (read once at accept, checked against the
+    peer uid) names the human instead and the reason gets `[via ACCOUNT]`.
+    `GET /v1/whoami` returns what the backend decided.
 
     The optional `Gatte-Front` header labels the calling front
     (`[a-z0-9._-]{1,32}`). It is display only: it becomes the `[ui]`-style
@@ -36,30 +49,53 @@ info:
 
     ## Request rules
 
-    - Bodies are `application/json`, at most 64 KiB; unknown fields are
-      refused (`bad_request`).
+    - Bodies are `application/json`, at most 64 KiB; headers at most
+      16 KiB. Unknown request fields are refused (`bad_request`). Send an
+      optional field only when its `feature` is in `GET /v1/whoami`;
+      `pkg/adminapi` omits zero-valued optional fields.
     - A request carrying `Origin` or `Cookie` is refused
       (`browser_request_refused`): a browser's request must never reach the
       socket as it is. A web front terminates the browser with
       `pkg/frontkit` and calls this API itself.
     - Every request re-reads the configuration file; one that no longer
-      loads refuses the request (`config_unavailable`). State changes are
-      serialised.
+      loads, or on the accounts socket is not root-owned and closed to
+      group and others (with `users_file` and every parent directory),
+      refuses the request (`config_unavailable`). State changes are
+      serialised, after the body has been read and validated.
+    - Deadlines: 5 s to send the headers, 10 s for the whole request, 30 s
+      to read the answer, 30 s idle keep-alive; at most 16 connections.
 
     ## Untrusted text
 
-    Fields marked `x-gatte-untrusted: true` carry text written by an MCP
-    backend, an analyst, the IdP or a person typing a form. They are
-    returned raw. A front MUST escape them for its medium AND make hidden
-    code points visible (`frontkit.Visible`, `frontkit.VisibleText`,
-    `frontkit.Segments`).
+    EVERY string in EVERY response is untrusted: it may come from an MCP
+    backend, an analyst, the IdP, a hand-edited `users_file`, or the
+    configuration. A front MUST escape every string for its medium AND
+    make hidden code points visible. Review text (tool name, description,
+    definition lines, diff) also comes as `Text`: segments computed by the
+    backend from the raw bytes, so a front draws them and never re-parses
+    escaped text.
+
+    ## Applied changes and retries
+
+    A change that took effect is always answered with its normal 2xx body.
+    If the trail could not record it, `recorded` is false, `audit` is
+    absent and `warnings` carries `audit_write_failed`: show that the
+    change is in force AND unrecorded. Operations marked
+    `x-gatte-idempotent: true` are safe to repeat after `internal` or a
+    dropped connection (a repeat answers `changed: false`). `addAccount` is
+    not: read the account first, and if it exists, `resetAccountPassword`.
+    `resetAccountPassword` is not idempotent either but is safe to repeat:
+    each call invalidates the previous password.
 
     ## Versioning
 
-    `/v1` only changes additively: new endpoints, new optional fields, new
-    error codes. A client treats an unknown error code by its HTTP status.
-    Breaking changes go to `/v2`, served beside `/v1` for at least one
-    release.
+    `info.version` is the contract revision, returned by `GET /v1/whoami`
+    as `contract_version` with a `features` list. `/v1` only changes
+    additively: new endpoints, new response fields, new values in response
+    enums (fields marked `x-gatte-open-enum: true`) and in error codes,
+    new optional request fields. Ignore unknown fields; give every enum and
+    error code a default branch, handled by the HTTP status. Breaking
+    changes go to `/v2`, served beside `/v1` for at least one release.
   license:
     name: Apache-2.0
 servers:
@@ -76,7 +112,7 @@ tags:
   - name: people
   - name: connect
   - name: accounts
-    description: Account socket only (root). Identity provider accounts (design/adr/0038).
+    description: Account socket only (root, or `[admin] account_group` when delegated). Identity provider accounts (design/adr/0038).
 components:
   parameters:
     GatteFront:
@@ -95,7 +131,10 @@ components:
         $ref: '#/components/schemas/Username'
   headers:
     NoStore:
-      description: Always `no-store` on a response that carries a one-time password.
+      description: |
+        Always `no-store` on a response that carries a one-time password.
+        Advisory only on a UNIX socket: the protection a browser gets is the
+        `no-store` that `pkg/frontkit` sends on every page.
       schema:
         type: string
         const: no-store
@@ -112,33 +151,37 @@ components:
     ErrorResponse:
       type: object
       required: [error]
-      additionalProperties: false
       properties:
         error:
           $ref: '#/components/schemas/Error'
     Error:
       type: object
       required: [code, message]
-      additionalProperties: false
       properties:
         code:
           $ref: '#/components/schemas/ErrorCode'
         message:
           type: string
-          x-gatte-untrusted: true
+          description: One English sentence for a person. Never carries a password.
         details:
           type: object
           description: |
             Code-specific facts. Known keys: `field` (invalid_argument),
             `observed_fingerprint` (fingerprint_required, fingerprint_mismatch,
-            fingerprint_moved), `status` (fingerprint_mismatch), `applied`
-            (audit_write_failed: true means the change IS in force),
-            `username` (account_exists, not_found), `group`
-            (group_not_mapped).
+            fingerprint_moved), `status` (fingerprint_mismatch), `username`
+            (account_exists, not_found), `group` (group_not_mapped), `socket`
+            (wrong_socket: the socket that serves this route), `path` and
+            `problem` (config_unavailable: the file or directory that failed
+            the check, and `not_root_owned`, `group_or_other_writable`,
+            `symlink`, `not_regular` or `does_not_load`). More keys may appear.
           additionalProperties: true
     ErrorCode:
       type: string
       description: |
+        Stable, machine-readable, and OPEN: new codes may appear within
+        `/v1`. A client handles a code it does not know by its HTTP status.
+        A change that took effect is never an error (see `recorded`).
+
         | code | HTTP | meaning |
         |---|---|---|
         | bad_request | 400 | malformed JSON, wrong content type, unknown field, bad query value |
@@ -148,7 +191,9 @@ components:
         | peer_unattributable | 403 | the kernel's peer uid has no account name |
         | forbidden_peer | 403 | peer not allowed on this socket (group, or the service account on the account socket) |
         | browser_request_refused | 403 | request carried Origin or Cookie |
-        | not_found | 404 | no such tool, account, route, or a route of the other socket |
+        | not_found | 404 | no such tool, account or block |
+        | unknown_route | 404 | no such route in this backend (older backend, or wrong path) |
+        | wrong_socket | 404 | the route is served by the other socket; `details.socket` names it |
         | method_not_allowed | 405 | wrong method for the route |
         | fingerprint_mismatch | 409 | the tool advertises another fingerprint than the one reviewed |
         | fingerprint_moved | 409 | the definition changed while approving |
@@ -158,32 +203,10 @@ components:
         | payload_too_large | 413 | body over 64 KiB |
         | connect_not_configured | 404 | `[connect]` is incomplete |
         | corrupt_state | 500 | a stored row is invalid (unknown status); refused |
-        | audit_write_failed | 500 | the change was made (details.applied) but the trail could not record it |
-        | internal | 500 | anything else |
-        | config_unavailable | 503 | the configuration file does not load |
+        | internal | 500 | anything else; see `x-gatte-idempotent` before retrying |
+        | config_unavailable | 503 | the configuration does not load, or fails the ownership check; `details.path` |
         | store_busy | 503 | the database stayed locked through every retry; nothing was written |
-      enum:
-        - bad_request
-        - invalid_argument
-        - fingerprint_required
-        - group_not_mapped
-        - peer_unattributable
-        - forbidden_peer
-        - browser_request_refused
-        - not_found
-        - method_not_allowed
-        - fingerprint_mismatch
-        - fingerprint_moved
-        - definition_unavailable
-        - changed_not_revocable
-        - account_exists
-        - payload_too_large
-        - connect_not_configured
-        - corrupt_state
-        - audit_write_failed
-        - internal
-        - config_unavailable
-        - store_busy
+      examples: [fingerprint_mismatch]
     Fingerprint:
       type: string
       description: Hex SHA-256 of a tool definition, without the `sha256:` prefix. Requests may carry the prefix.
@@ -197,10 +220,13 @@ components:
       properties:
         code:
           type: string
-          description: e.g. `never_seen`, `no_role_grants`, `wildcard_grant`, `idp_reload`.
+          description: |
+            Open set. Known: `never_seen`, `no_role_grants`, `wildcard_grant`,
+            `idp_reload`, `audit_write_failed` (the change IS in force and the
+            trail has no row for it; `recorded` is false).
         message:
           type: string
-          x-gatte-untrusted: true
+          description: English fallback for a person; localise on `code`.
     OperatorRow:
       type: object
       description: The operator row this action wrote to the audit trail.
@@ -214,18 +240,24 @@ components:
           examples: ['(tool approve)']
         reason:
           type: string
-          x-gatte-untrusted: true
         timestamp:
           type: string
           format: date-time
     ActionResult:
       type: object
       description: Common part of every state-changing response.
-      required: [changed, messages]
+      required: [changed, recorded, messages]
       properties:
         changed:
           type: boolean
           description: false when the request was already true (already blocked, already pending); no row is written then.
+        recorded:
+          type: boolean
+          description: |
+            true when `audit` holds the operator row of this change. false
+            with `changed` true means the change is in force and the trail
+            could not record it (warning `audit_write_failed`). false with
+            `changed` false means nothing needed recording.
         audit:
           $ref: '#/components/schemas/OperatorRow'
         warnings:
@@ -234,19 +266,33 @@ components:
             $ref: '#/components/schemas/Warning'
         messages:
           type: array
-          description: What the CLI would have printed, one line per item, for a "details" disclosure.
+          description: |
+            What the CLI would have printed, one line per item, for a
+            "details" disclosure. English, not for localisation; never
+            carries a password.
           items:
             type: string
-            x-gatte-untrusted: true
     WhoAmI:
       type: object
-      required: [api_versions, gateway_version, socket, operator, config_path]
+      required: [api_versions, contract_version, features, gateway_version, socket, operator, config_path]
       properties:
         api_versions:
           type: array
           items:
             type: string
           examples: [[v1]]
+        contract_version:
+          type: string
+          description: This contract's `info.version` as the running backend implements it.
+          examples: [1.0.0]
+        features:
+          type: array
+          description: |
+            Stable names of capabilities added after 1.0 (empty in 1.0). A
+            front sends a newer optional request field, or calls a newer
+            endpoint, only when its feature is listed.
+          items:
+            type: string
         gateway_version:
           type: string
         socket:
@@ -279,18 +325,18 @@ components:
       properties:
         kind:
           type: string
+          x-gatte-open-enum: true
+          description: The key a front localises on and links from.
           enum: [changed, pending, unsigned]
         title:
           type: string
-          x-gatte-untrusted: true
         detail:
           type: string
+          description: English fallback only; build the sentence from `kind` and the fields below.
         server:
           type: string
-          x-gatte-untrusted: true
         tool:
           type: string
-          x-gatte-untrusted: true
         upstream:
           type: string
           description: Set for `unsigned`.
@@ -321,16 +367,29 @@ components:
           type: array
           description: Parts of the overview that could not be read; the rest is still returned.
           items:
-            type: string
+            type: object
+            required: [code, part, message]
+            properties:
+              code:
+                type: string
+                description: Open set, e.g. `store_busy`, `corrupt_state`, `internal`.
+              part:
+                type: string
+                x-gatte-open-enum: true
+                enum: [tools, upstreams, blocks, audit]
+              message:
+                type: string
+                description: English fallback.
     ToolStatus:
       type: string
+      x-gatte-open-enum: true
       enum: [pending, approved, changed]
     Tool:
       type: object
       required: [server, tool, status, usable, approved_hash, observed_hash, first_seen_at, updated_at]
       properties:
-        server: {type: string, x-gatte-untrusted: true}
-        tool: {type: string, x-gatte-untrusted: true}
+        server: {type: string}
+        tool: {type: string}
         status: {$ref: '#/components/schemas/ToolStatus'}
         usable: {type: boolean}
         approved_hash: {type: string, description: Empty when never approved.}
@@ -351,6 +410,44 @@ components:
             all: {type: integer}
             review: {type: integer}
             approved: {type: integer}
+    Segment:
+      type: object
+      description: |
+        One run of a review line, computed by the backend from the raw
+        bytes. `text` is ordinary text to escape and draw; `hidden` is one
+        code point a screen would not show (draw `code_point` visibly,
+        e.g. as `\u{202E}`); `invalid_byte` is one byte that is not UTF-8
+        (draw `byte` visibly, e.g. as `\x{FF}`). A literal backslash
+        sequence in the backend's text is a `text` segment, never `hidden`.
+      required: [kind]
+      properties:
+        kind:
+          type: string
+          x-gatte-open-enum: true
+          enum: [text, hidden, invalid_byte]
+        text:
+          type: string
+          description: Set for `text`.
+        code_point:
+          type: string
+          pattern: '^U\+[0-9A-F]{4,6}$'
+          description: Set for `hidden`.
+        byte:
+          type: string
+          pattern: '^[0-9A-F]{2}$'
+          description: Set for `invalid_byte`.
+    Text:
+      type: object
+      required: [raw, segments]
+      properties:
+        raw:
+          type: string
+          description: |
+            The value as advertised, NOT escaped. Invalid UTF-8 cannot travel
+            in JSON and arrives as U+FFFD here; `segments` is authoritative.
+        segments:
+          type: array
+          items: {$ref: '#/components/schemas/Segment'}
     Definition:
       type: object
       required: [fingerprint, kept]
@@ -359,30 +456,50 @@ components:
         kept:
           type: boolean
           description: false when only the hash survives (approved before definitions were stored, design/adr/0032).
-        name: {type: string, x-gatte-untrusted: true}
-        description: {type: string, x-gatte-untrusted: true}
+        name: {$ref: '#/components/schemas/Text'}
+        description: {$ref: '#/components/schemas/Text'}
         input_schema:
-          description: The schema exactly as advertised (JSON value).
-          x-gatte-untrusted: true
+          description: The schema exactly as advertised (JSON value, raw).
         output_schema:
-          x-gatte-untrusted: true
+          description: The schema exactly as advertised (JSON value, raw).
         lines:
           type: array
-          description: The canonical line form the diff is computed over.
-          items: {type: string, x-gatte-untrusted: true}
+          description: |
+            The canonical line form the diff is computed over: `name: ...`,
+            `description:`, `input schema:` / `output schema:` label lines,
+            and content lines under them. No `+ `/`- ` marker. `depth` is the
+            display indent (0 for a label, 1 for content under it, plus the
+            re-indented JSON's own nesting inside `segments`).
+          items: {$ref: '#/components/schemas/ReviewLine'}
         hidden_code_points:
           type: integer
-          description: How many code points `internal/visible` would escape.
+          description: |
+            Code points a screen would not show, counted from the raw bytes
+            as a model reads them (including JSON `\u202e` escapes inside
+            schemas). Set on both `observed` and `approved`; the one that
+            matters for approving is `observed`.
+    ReviewLine:
+      type: object
+      required: [depth, segments]
+      properties:
+        depth: {type: integer, minimum: 0}
+        segments:
+          type: array
+          items: {$ref: '#/components/schemas/Segment'}
     DiffLine:
       type: object
-      required: [op, text]
+      description: One line of the approved-to-observed diff. `segments` and `depth` as in ReviewLine; no textual marker, `op` says it.
+      required: [op, depth, segments]
       properties:
         op:
           type: string
+          x-gatte-open-enum: true
           enum: [context, add, del, gap]
-        text:
-          type: string
-          x-gatte-untrusted: true
+          description: '`gap` stands for unchanged lines left out and has no segments.'
+        depth: {type: integer, minimum: 0}
+        segments:
+          type: array
+          items: {$ref: '#/components/schemas/Segment'}
     RoleCoverage:
       type: object
       required: [role, how]
@@ -404,7 +521,10 @@ components:
           $ref: '#/components/schemas/Definition'
         diff:
           type: array
-          description: approved (-) to observed (+), changed lines with one line of context, `gap` where unchanged lines were left out.
+          description: |
+            approved (`del`) to observed (`add`), changed lines with one line
+            of context and `gap` where unchanged lines were left out. A label
+            line left as the last context line of a hunk is already dropped.
           items: {$ref: '#/components/schemas/DiffLine'}
         callable_by:
           type: array
@@ -412,7 +532,11 @@ components:
           items: {$ref: '#/components/schemas/RoleCoverage'}
         review_text:
           type: string
-          description: The `tool show` text, already escaped by the backend, for a details disclosure.
+          description: |
+            The `tool show` text, ALREADY ESCAPED by `internal/visible`, for a
+            plain-text details disclosure only. Do not parse it for hidden
+            code points (a literal `\u{202E}` and a real one look the same
+            here); use the `Text` and `segments` fields.
     ApproveRequest:
       type: object
       required: [server, tool, fingerprint]
@@ -454,10 +578,10 @@ components:
       type: object
       required: [subject, blocked_by, blocked_at, reason]
       properties:
-        subject: {type: string, x-gatte-untrusted: true}
+        subject: {type: string}
         blocked_by: {type: string}
         blocked_at: {type: string, format: date-time}
-        reason: {type: string, x-gatte-untrusted: true}
+        reason: {type: string}
     BlockRequest:
       type: object
       required: [subject]
@@ -475,24 +599,27 @@ components:
         - type: object
           required: [subject]
           properties:
-            subject: {type: string, x-gatte-untrusted: true}
+            subject: {type: string}
     AuditOutcome:
       type: string
+      x-gatte-open-enum: true
       enum: [allowed, denied, failed]
     AuditRecord:
       type: object
-      required: [timestamp, analyst_identity, tool, target_upstream, outcome]
+      required: [position, timestamp, analyst_identity, tool, target_upstream, outcome]
       properties:
+        position:
+          type: integer
+          description: The record's position in the hash chain (1 = first). Stable; the trail is append-only.
         timestamp: {type: string, format: date-time}
-        analyst_identity: {type: string, x-gatte-untrusted: true}
+        analyst_identity: {type: string}
         analyst_name:
           type: string
-          x-gatte-untrusted: true
           description: Display only (design/adr/0037). Never filtered on.
-        tool: {type: string, x-gatte-untrusted: true}
-        target_upstream: {type: string, x-gatte-untrusted: true}
+        tool: {type: string}
+        target_upstream: {type: string}
         outcome: {$ref: '#/components/schemas/AuditOutcome'}
-        reason: {type: string, x-gatte-untrusted: true}
+        reason: {type: string}
         source_address: {type: string}
     AuditPage:
       type: object
@@ -508,6 +635,9 @@ components:
         more:
           type: boolean
           description: true when older matching records were left out.
+        next_before:
+          type: integer
+          description: Set when `more`. Pass it as `before` to get the next older page.
     VerifyRequest:
       type: object
       additionalProperties: false
@@ -551,7 +681,7 @@ components:
       required: [name, transport, network, env_var_names, signature, created_at, updated_at]
       properties:
         name: {type: string}
-        transport: {type: string, enum: [stdio, http, oci]}
+        transport: {type: string, x-gatte-open-enum: true, enum: [stdio, http, oci]}
         command: {type: string}
         args: {type: array, items: {type: string}}
         url: {type: string}
@@ -562,14 +692,14 @@ components:
           type: array
           description: Names only. No endpoint ever returns a secret value.
           items: {type: string}
-        signature: {type: string, enum: ['yes', 'no', INVALID], description: '`INVALID`: a signature is stored and does not authenticate the entry.'}
+        signature: {type: string, x-gatte-open-enum: true, enum: ['yes', 'no', INVALID], description: '`INVALID`: a signature is stored and does not authenticate the entry.'}
         created_at: {type: string, format: date-time}
         updated_at: {type: string, format: date-time}
     QuotaUsage:
       type: object
       required: [analyst_identity, account, window_start, used]
       properties:
-        analyst_identity: {type: string, x-gatte-untrusted: true}
+        analyst_identity: {type: string}
         account: {type: string}
         window_start: {type: string, format: date-time}
         window_end: {type: string, format: date-time}
@@ -598,8 +728,8 @@ components:
       type: object
       required: [identity, last_call, calls, blocked]
       properties:
-        identity: {type: string, x-gatte-untrusted: true}
-        name: {type: string, x-gatte-untrusted: true}
+        identity: {type: string}
+        name: {type: string}
         last_call: {type: string, format: date-time}
         calls: {type: integer}
         blocked: {type: boolean}
@@ -633,8 +763,9 @@ components:
       properties:
         ready: {type: boolean}
         missing:
-          type: string
-          description: When not ready, what `[connect]` lacks.
+          type: array
+          description: When not ready, the `[connect]` keys that are missing or invalid, e.g. `[client_id, callback_port]`.
+          items: {type: string}
         url: {type: string, examples: ['https://gateway.example.internal/mcp']}
         client_id: {type: string}
         callback_port: {type: integer}
@@ -653,8 +784,8 @@ components:
       required: [username, display_name, groups, disabled]
       properties:
         username: {$ref: '#/components/schemas/Username'}
-        display_name: {type: string, x-gatte-untrusted: true}
-        email: {type: string, x-gatte-untrusted: true}
+        display_name: {type: string}
+        email: {type: string}
         groups:
           type: array
           items: {type: string}
@@ -696,7 +827,7 @@ components:
             properties:
               field: {type: string, enum: [display_name, username, email, groups]}
               code: {type: string, examples: [invalid_argument, account_exists, group_not_mapped]}
-              message: {type: string, x-gatte-untrusted: true}
+              message: {type: string}
         groups:
           type: array
           description: The requested groups that map to a role, with the role's tools.
@@ -738,9 +869,11 @@ components:
             one_time_password:
               type: string
               description: |
-                20 characters, about 117 bits. Returned once, in this response
-                only; stored only as an argon2id hash; never logged, never in
-                the trail. A front shows it once and keeps no copy.
+                20 characters, about 117 bits. Returned once, in this field of
+                this response only, also when `recorded` is false; stored only
+                as an argon2id hash; never in `messages`, `warnings`, an error,
+                the trail or the backend's log. A front shows it once and keeps
+                no copy.
 paths:
   /v1/whoami:
     get:
@@ -807,6 +940,7 @@ paths:
   /v1/tools/approve:
     post:
       operationId: approveTool
+      x-gatte-idempotent: true
       tags: [tools]
       x-gatte-socket: [operator]
       summary: Approve the fingerprint that was reviewed, and only that one. Writes `(tool approve)`.
@@ -823,13 +957,14 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/ApproveResult'}
         default:
-          description: fingerprint_required, fingerprint_mismatch, fingerprint_moved, definition_unavailable, not_found, corrupt_state, audit_write_failed, store_busy, ...
+          description: fingerprint_required, fingerprint_mismatch, fingerprint_moved, definition_unavailable, not_found, corrupt_state, store_busy, ...
           content:
             application/json:
               schema: {$ref: '#/components/schemas/ErrorResponse'}
   /v1/tools/revoke:
     post:
       operationId: revokeTool
+      x-gatte-idempotent: true
       tags: [tools]
       x-gatte-socket: [operator]
       summary: Return an approved tool to pending. Writes `(tool revoke)`.
@@ -846,7 +981,7 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/RevokeResult'}
         default:
-          description: changed_not_revocable, not_found, corrupt_state, audit_write_failed, ...
+          description: changed_not_revocable, not_found, corrupt_state, ...
           content:
             application/json:
               schema: {$ref: '#/components/schemas/ErrorResponse'}
@@ -872,10 +1007,11 @@ paths:
   /v1/access/block:
     post:
       operationId: blockSubject
+      x-gatte-idempotent: true
       tags: [access]
       x-gatte-socket: [operator]
       summary: Block an analyst from the next request on (design/adr/0031). Writes `(access block)`.
-      description: The block is placed first and recorded second. If the record fails the answer is audit_write_failed with `details.applied` true, and the block stays.
+      description: The block is placed first and recorded second. If the record fails the answer is still 200 with `recorded` false and warning `audit_write_failed`, and the block stays.
       parameters: [{$ref: '#/components/parameters/GatteFront'}]
       requestBody:
         required: true
@@ -892,6 +1028,7 @@ paths:
   /v1/access/unblock:
     post:
       operationId: unblockSubject
+      x-gatte-idempotent: true
       tags: [access]
       x-gatte-socket: [operator]
       summary: Lift a block. Writes `(access unblock)`.
@@ -926,6 +1063,10 @@ paths:
           description: Exact match on analyst_identity only, never on analyst_name (design/adr/0037).
         - {name: outcome, in: query, schema: {$ref: '#/components/schemas/AuditOutcome'}}
         - {name: source, in: query, schema: {type: string}, description: Exact source address.}
+        - name: before
+          in: query
+          schema: {type: integer, minimum: 1}
+          description: Only records with a `position` lower than this (from `next_before`), to walk the trail backwards.
       responses:
         '200':
           description: OK
@@ -1084,6 +1225,7 @@ paths:
         default: {$ref: '#/components/responses/Error'}
     post:
       operationId: addAccount
+      x-gatte-idempotent: false
       tags: [accounts]
       x-gatte-socket: [accounts]
       summary: Create an account with a generated one-time password. Writes `(account add)`.
@@ -1095,14 +1237,18 @@ paths:
             schema: {$ref: '#/components/schemas/NewAccount'}
       responses:
         '201':
-          description: Created. Warning `idp_reload` says the IdP applies it when it re-reads the file.
+          description: Created (also when `recorded` is false). Warning `idp_reload` says the IdP applies it when it re-reads the file.
           headers:
             Cache-Control: {$ref: '#/components/headers/NoStore'}
           content:
             application/json:
               schema: {$ref: '#/components/schemas/PasswordResult'}
         default:
-          description: invalid_argument, group_not_mapped, account_exists, audit_write_failed, ...
+          description: |
+            invalid_argument, group_not_mapped, account_exists, ... NOT
+            idempotent: after `internal` or a dropped connection, GET the
+            account; if it exists, the password was lost with the answer, so
+            call resetAccountPassword instead of retrying.
           content:
             application/json:
               schema: {$ref: '#/components/schemas/ErrorResponse'}
@@ -1140,6 +1286,7 @@ paths:
   /v1/accounts/{username}/groups:
     post:
       operationId: setAccountGroups
+      x-gatte-idempotent: true
       tags: [accounts]
       x-gatte-socket: [accounts]
       summary: Replace the account's groups. Writes `(account groups)`.
@@ -1161,6 +1308,7 @@ paths:
   /v1/accounts/{username}/disable:
     post:
       operationId: disableAccount
+      x-gatte-idempotent: true
       tags: [accounts]
       x-gatte-socket: [accounts]
       summary: Refuse new logins. Does not end a token already issued (use access block). Writes `(account disable)`.
@@ -1177,6 +1325,7 @@ paths:
   /v1/accounts/{username}/enable:
     post:
       operationId: enableAccount
+      x-gatte-idempotent: true
       tags: [accounts]
       x-gatte-socket: [accounts]
       summary: Allow logins again. Writes `(account enable)`.
@@ -1193,9 +1342,11 @@ paths:
   /v1/accounts/{username}/reset-password:
     post:
       operationId: resetAccountPassword
+      x-gatte-idempotent: false
       tags: [accounts]
       x-gatte-socket: [accounts]
       summary: Replace the password with a generated one-time password. Writes `(account reset password)`.
+      description: Safe to repeat; each call invalidates the previous one-time password, so only the last answer's password works.
       parameters:
         - {$ref: '#/components/parameters/Username'}
         - {$ref: '#/components/parameters/GatteFront'}

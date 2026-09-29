@@ -84,7 +84,7 @@ func (s *Service) definitionOf(ctx context.Context, hash string) (adminapi.Defin
 	lines, hidden := DefinitionLines(id)
 	d.Kept = true
 	d.Name = TextOf(id.Name)
-	d.Description = TextOf(id.Description)
+	d.Description = MultilineTextOf(id.Description)
 	d.InputSchema = rawJSON(id.InputSchema)
 	d.OutputSchema = rawJSON(id.OutputSchema)
 	d.HiddenCodePoints = hidden

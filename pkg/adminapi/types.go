@@ -169,6 +169,9 @@ const (
 	SegmentText        = "text"
 	SegmentHidden      = "hidden"
 	SegmentInvalidByte = "invalid_byte"
+	// SegmentNewline is a line break in a multi-line field (a tool's
+	// description): structure, not a hidden character. Draw it as a break.
+	SegmentNewline = "newline"
 )
 
 // Segment is one run of review text, computed from the raw bytes.

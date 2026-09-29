@@ -345,6 +345,8 @@ func DrawSegments(segs []adminapi.Segment) template.HTML {
 			b.WriteString(`<mark class="hidden-cp" title="Hidden character">\u{` + html.EscapeString(strings.TrimPrefix(s.CodePoint, "U+")) + `}</mark>`)
 		case adminapi.SegmentInvalidByte:
 			b.WriteString(`<mark class="hidden-cp" title="Hidden character">\x{` + html.EscapeString(s.Byte) + `}</mark>`)
+		case adminapi.SegmentNewline:
+			b.WriteString("<br>")
 		default:
 			b.WriteString(`<mark class="hidden-cp" title="Hidden character">` + html.EscapeString(escapeVisible(s.Text+s.CodePoint+s.Byte)) + `</mark>`)
 		}
@@ -353,3 +355,17 @@ func DrawSegments(segs []adminapi.Segment) template.HTML {
 }
 
 func escapeVisible(s string) string { return visible.Escape(s) }
+
+// SplitLines cuts segments at newline segments, for a front that draws a
+// multi-line field one line per element instead of with <br>.
+func SplitLines(segs []adminapi.Segment) [][]adminapi.Segment {
+	out := [][]adminapi.Segment{{}}
+	for _, s := range segs {
+		if s.Kind == adminapi.SegmentNewline {
+			out = append(out, []adminapi.Segment{})
+			continue
+		}
+		out[len(out)-1] = append(out[len(out)-1], s)
+	}
+	return out
+}

@@ -106,17 +106,7 @@ func (f *Front) toolShowPage(w http.ResponseWriter, r *http.Request) {
 
 // splitLines cuts segments at each line feed, which the backend sends as a
 // hidden U+000A: a description keeps its own line breaks.
-func splitLines(segs []adminapi.Segment) [][]adminapi.Segment {
-	out := [][]adminapi.Segment{{}}
-	for _, s := range segs {
-		if s.Kind == adminapi.SegmentHidden && s.CodePoint == "U+000A" {
-			out = append(out, []adminapi.Segment{})
-			continue
-		}
-		out[len(out)-1] = append(out[len(out)-1], s)
-	}
-	return out
-}
+func splitLines(segs []adminapi.Segment) [][]adminapi.Segment { return frontkit.SplitLines(segs) }
 
 // plain is a line's text when it is all text, and false when it holds a
 // hidden code point or a bad byte.

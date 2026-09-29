@@ -27,7 +27,10 @@ type auditFilter struct {
 	Limit int
 	// Since excludes records older than this instant.
 	Since time.Time
-	// Subject restricts to one analyst identity, matched exactly.
+	// Subject restricts to one analyst identity, matched exactly. Never
+	// against AnalystName: the name is display only (design/adr/0037), and
+	// a filter that matched it would let a user the IdP lets rename
+	// themselves step into -- or out of -- somebody's query.
 	Subject string
 	// Outcome restricts to one of allowed/denied/failed.
 	Outcome audit.Outcome
@@ -208,6 +211,11 @@ table enforces on anyone else with write access to it. Count
 "-outcome allowed" for attempts, and read a "failed" row as an annotation
 on the allowed row above it. A "-" means the record predates the column.
 
+NAME is the analyst's display name as the identity provider stated it at
+the time of the call, shown for reading only. ANALYST is the attribution,
+and -subject matches it and never the name: a user renamed at the IdP
+shows the new name on new rows only.
+
 Rows attributed to (unauthenticated) are requests refused at the door:
 no credential, or one that did not verify. The gateway deliberately does
 not distinguish those, so neither can the trail; what it has is that the
@@ -221,6 +229,7 @@ Exit codes: 0 ok, 1 ran and found a problem (nothing matched), 2 could not run.
 type auditJSON struct {
 	Timestamp     time.Time `json:"timestamp"`
 	Analyst       string    `json:"analyst_identity"`
+	AnalystName   string    `json:"analyst_name,omitempty"`
 	Tool          string    `json:"tool"`
 	Upstream      string    `json:"target_upstream"`
 	Outcome       string    `json:"outcome"`
@@ -265,6 +274,7 @@ func runAudit(e *opEnv, filter auditFilter, asJSON bool) int {
 			out = append(out, auditJSON{
 				Timestamp:     r.Timestamp,
 				Analyst:       r.AnalystIdentity,
+				AnalystName:   r.AnalystName,
 				Tool:          r.Tool,
 				Upstream:      r.TargetUpstream,
 				Outcome:       string(r.Outcome),
@@ -300,7 +310,11 @@ func runAudit(e *opEnv, filter auditFilter, asJSON bool) int {
 		filter.describe(), len(all), opPlural(len(all), "record", "records"))
 
 	tw := opTable(e.stdout)
-	fmt.Fprintln(tw, "TIME\tANALYST\tSOURCE\tTOOL\tUPSTREAM\tOUTCOME\tREASON")
+	// NAME sits beside ANALYST, not inside it: the subject stays whole in
+	// its own column so it can be copied into -subject or `access block`,
+	// and the name is the IdP's display label, for reading only
+	// (design/adr/0037). "-" when the row has none.
+	fmt.Fprintln(tw, "TIME\tANALYST\tNAME\tSOURCE\tTOOL\tUPSTREAM\tOUTCOME\tREASON")
 	// Every field but the time and the outcome is someone else's text: a
 	// probe name is whatever a caller typed, a subject is the IdP's, a
 	// reason can quote either. Escaped, so no row can drive the operator's
@@ -308,8 +322,8 @@ func runAudit(e *opEnv, filter auditFilter, asJSON bool) int {
 	// raw values.
 	esc := visible.Escape
 	for _, r := range newestFirst {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			opTime(r.Timestamp), esc(r.AnalystIdentity), esc(opDash(r.SourceAddress)), esc(r.Tool),
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			opTime(r.Timestamp), esc(r.AnalystIdentity), esc(opDash(r.AnalystName)), esc(opDash(r.SourceAddress)), esc(r.Tool),
 			esc(r.TargetUpstream), esc(string(r.Outcome)), esc(opDash(r.Reason)))
 	}
 	if !opFlushTable(tw, e.stderr) {

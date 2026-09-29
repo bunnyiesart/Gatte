@@ -115,7 +115,12 @@ import (
 // `changed`, the quarantine's backlog. Record lines are unchanged in shape;
 // the quarantine and signature events they now also carry are ordinary
 // records (caller `(gateway)`, verdict `denied`).
-const Version = 3
+//
+// 4 (design/adr/0037, 29 Sep 2026): a record line may carry
+// `analyst_name`, present only when the record names its analyst. The
+// heartbeat is unchanged in shape; its `v` moves because the two version
+// together.
+const Version = 4
 
 // Line and Heartbeat type discriminators, as they appear in the `type`
 // field. They are a declared interface: a SIEM query filters on them, so
@@ -133,7 +138,8 @@ const (
 
 // Line is one record as the SIEM receives it.
 //
-// Every field is always present -- no omitempty anywhere. An absent key
+// Every field is always present -- no omitempty, with the single exception
+// of AnalystName, which documents why it differs. An absent key
 // and an empty value are different things to a log pipeline, and "this
 // call had no rule" should not be indistinguishable from "this gateway
 // version did not emit rule at all". A fixed key set is also what makes
@@ -166,6 +172,21 @@ type Line struct {
 	// the gateway's own marker for a request that never authenticated.
 	// Never a display name, never a token.
 	Caller string `json:"caller"`
+	// AnalystName is audit.Record.AnalystName: the caller's display name,
+	// beside Caller and never instead of it (design/adr/0037). Display
+	// only; a saved search that attributes must key on caller, since a
+	// user the IdP renames shows the new name on new lines only.
+	//
+	// The one omitempty in the record shape, and deliberately so. It is
+	// absent on every line that has no analyst to name -- the gateway's own
+	// events, unauthenticated requests -- and on every line whose name
+	// would only repeat the subject; since Version 4 an absent key means
+	// exactly that, so the ambiguity the rule above guards against (absent
+	// because the gateway did not emit it) is answered by `v`. Sending ""
+	// instead would put "no name" and "a name that was empty" in one
+	// bucket of a Graylog aggregation, the argument the GELF sink makes
+	// for its own optional keys.
+	AnalystName string `json:"analyst_name,omitempty"`
 	// Backend is audit.Record.TargetUpstream.
 	Backend string `json:"backend"`
 	// Tool is the namespaced tool name.
@@ -648,14 +669,15 @@ func (r *Recorder) line(rec audit.Record, link audit.ChainLink) Line {
 		Type:    TypeRecord,
 		// UTC for the SIEM's benefit; see the package doc on what this
 		// costs in re-derivability.
-		Time:    rec.Timestamp.UTC().Format(time.RFC3339Nano),
-		Chain:   r.chain,
-		Caller:  rec.AnalystIdentity,
-		Backend: rec.TargetUpstream,
-		Tool:    rec.Tool,
-		Verdict: string(rec.Outcome),
-		Rule:    rec.Reason,
-		Src:     rec.SourceAddress,
+		Time:        rec.Timestamp.UTC().Format(time.RFC3339Nano),
+		Chain:       r.chain,
+		Caller:      rec.AnalystIdentity,
+		AnalystName: rec.AnalystName,
+		Backend:     rec.TargetUpstream,
+		Tool:        rec.Tool,
+		Verdict:     string(rec.Outcome),
+		Rule:        rec.Reason,
+		Src:         rec.SourceAddress,
 
 		PrevHash: link.Prev,
 		Hash:     link.Hash,

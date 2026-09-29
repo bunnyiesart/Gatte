@@ -1,6 +1,31 @@
 {{template "top" .}}
 {{$title := .Title}}
 {{with .Data}}
+{{if and .OK .Connect}}
+<div class="result">
+  <span class="result-icon ok">{{template "check"}}</span>
+  <h1>{{vis .SecretName}} is ready</h1>
+  <p class="sub">Two things to hand over: the password, and the connect script.</p>
+</div>
+<div class="handover">
+  <section>
+    <h2><span class="step-n">1</span>Their one-time password</h2>
+    <div class="secret" role="note">
+      <code class="secret-value">{{.Secret}}</code>
+      <span class="secret-note">Shown only here, stored only as a hash. Send it separately from the script, then close this page.</span>
+    </div>
+  </section>
+  <section>
+    <h2><span class="step-n">2</span>Connect their computer</h2>
+    {{template "connectpanel" dict "Base" $.Base "P" .Connect}}
+  </section>
+  <details class="group">
+    <summary>Command output{{template "chev"}}</summary>
+    <pre>{{vistext .Output}}</pre>
+  </details>
+  <p class="center"><a class="btn" href="{{.Back}}">Back to People</a></p>
+</div>
+{{else}}
 <div class="result">
   <span class="result-icon {{if .OK}}ok{{else}}danger{{end}}">{{if .OK}}{{template "check"}}{{else}}{{template "warn"}}{{end}}</span>
   <h1>{{$title}}</h1>
@@ -9,7 +34,7 @@
   <div class="secret" role="note">
     <span class="secret-label">One-time password for {{vis .SecretFor}}</span>
     <code class="secret-value">{{.Secret}}</code>
-    <span class="secret-note">Shown only here, stored only as a hash. Hand it over privately; they should change it at sign-in.</span>
+    <span class="secret-note">Shown only here, stored only as a hash. Hand it over privately.</span>
   </div>
   {{end}}
   <a class="btn primary" href="{{.Back}}">Done</a>
@@ -18,5 +43,6 @@
   <summary>Command output{{template "chev"}}</summary>
   <pre>{{vistext .Output}}</pre>
 </details>
+{{end}}
 {{end}}
 {{template "bottom" .}}

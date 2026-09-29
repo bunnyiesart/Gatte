@@ -63,6 +63,7 @@ type Config struct {
 	OCI        OCI        `toml:"oci"`
 	Upstreams  Upstreams  `toml:"upstreams"`
 	IdP        IdP        `toml:"idp"`
+	Connect    Connect    `toml:"connect"`
 
 	// Roles defines what each role may call. Order is irrelevant.
 	Roles []Role `toml:"role"`
@@ -707,6 +708,24 @@ func (c *Config) Validate() error {
 	if c.IdP.UsersFile != "" && !filepath.IsAbs(c.IdP.UsersFile) {
 		errs = append(errs, fmt.Errorf("idp.users_file: %q is not an absolute path", c.IdP.UsersFile))
 	}
+	if c.Connect.ServerName == "" {
+		c.Connect.ServerName = "gatte"
+	}
+	if !connectNameRe.MatchString(c.Connect.ServerName) {
+		errs = append(errs, fmt.Errorf("connect.server_name: %q: use 1-32 lowercase letters, digits or '-'", c.Connect.ServerName))
+	}
+	if c.Connect.ClientID != "" && !connectClientRe.MatchString(c.Connect.ClientID) {
+		errs = append(errs, fmt.Errorf("connect.client_id: %q is not a plain OAuth client id", c.Connect.ClientID))
+	}
+	if c.Connect.ClientID != "" && (c.Connect.CallbackPort < 1 || c.Connect.CallbackPort > 65535) {
+		errs = append(errs, errors.New("connect.callback_port: required with connect.client_id, 1-65535: the port of the client's redirect URI at the IdP"))
+	}
+	if c.Connect.ClientID == "" && (c.Connect.CallbackPort != 0 || c.Connect.CAFile != "") {
+		errs = append(errs, errors.New("connect: callback_port and ca_file do nothing without client_id"))
+	}
+	if c.Connect.CAFile != "" && !filepath.IsAbs(c.Connect.CAFile) {
+		errs = append(errs, fmt.Errorf("connect.ca_file: %q is not an absolute path", c.Connect.CAFile))
+	}
 
 	if strings.TrimSpace(c.Listen) == "" {
 		c.Listen = DefaultListen
@@ -1319,6 +1338,30 @@ type IdP struct {
 	// root, reads or writes it; the service account is never given access.
 	UsersFile string `toml:"users_file"`
 }
+
+// Connect is what the console's connect scripts put on an analyst's
+// machine to point their MCP client at this gateway
+// (design/adr/0039-script-de-conexao-do-analista.md). All of it is
+// public: an OAuth client id, a callback port, a CA certificate.
+type Connect struct {
+	// ClientID is the public OAuth client the IdP has registered for the
+	// analysts' MCP client, e.g. "claude-code". Empty turns the connect
+	// scripts off.
+	ClientID string `toml:"client_id"`
+	// CallbackPort is the loopback port that client's redirect URI names
+	// at the IdP (http://127.0.0.1:PORT/callback). Required with ClientID.
+	CallbackPort int `toml:"callback_port"`
+	// CAFile is a PEM certificate authority the analyst's machine must
+	// trust to reach the gateway, for a deployment on a private CA.
+	// Optional; absolute path.
+	CAFile string `toml:"ca_file"`
+	// ServerName is the name the MCP client lists the gateway under.
+	// Default "gatte".
+	ServerName string `toml:"server_name"`
+}
+
+var connectNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,31}$`)
+var connectClientRe = regexp.MustCompile(`^[A-Za-z0-9._~-]{1,128}$`)
 
 type Upstreams struct {
 	// AllowCredentialedStdio lets a stdio entry that declares credential

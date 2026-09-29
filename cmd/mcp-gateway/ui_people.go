@@ -208,6 +208,7 @@ func uiAccountGroups(e *opEnv, r *http.Request) ([]string, error) {
 // happened is never hidden by a trail that could not be written, and the
 // page says so.
 func (s *uiServer) accountAction(w http.ResponseWriter, r *http.Request, tool, title string, fn func(e *opEnv) (username, detail, secret string, err error)) {
+	displayName := strings.TrimSpace(r.PostForm.Get("displayname"))
 	if s.accounts == nil {
 		http.NotFound(w, r)
 		return
@@ -237,7 +238,14 @@ func (s *uiServer) accountAction(w http.ResponseWriter, r *http.Request, tool, t
 		return exitOK
 	})
 	res := uiResult(out, errText, code)
-	res.Secret, res.SecretFor = secret, username
+	res.Secret, res.SecretFor, res.SecretName = secret, username, displayName
+	if res.SecretName == "" {
+		res.SecretName = username
+	}
+	if res.OK && secret != "" {
+		panel := s.connectPanelFor(username)
+		res.Connect = &panel
+	}
 	s.render(w, "result", title+" "+visible.Escape(username), page{Nav: "people", Data: res.withBack(s.basePath() + "/people")})
 }
 

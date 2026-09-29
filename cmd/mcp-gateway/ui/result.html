@@ -1,10 +1,14 @@
 {{template "top" .}}
 {{with .Data}}
-<div class="outcome {{if .OK}}done{{else}}refused{{end}}" role="status">
-  <b>{{if .OK}}Done.{{else}}Not done.{{end}}</b>
-  <span>What the command printed:</span>
+<div class="result">
+  <span class="result-icon {{if .OK}}ok{{else}}danger{{end}}">{{if .OK}}{{template "check"}}{{else}}{{template "warn"}}{{end}}</span>
+  <h1>{{.Action}}</h1>
+  <p class="sub">{{if .OK}}Done.{{else}}{{vistext .Summary}}{{end}}</p>
+  <a class="btn primary" href="{{.Back}}">Done</a>
 </div>
-<pre class="definition">{{vistext .Output}}</pre>
-<div class="levers"><a class="btn" href="{{.Back}}">Back</a></div>
+<details class="group">
+  <summary>Command output{{template "chev"}}</summary>
+  <pre>{{vistext .Output}}</pre>
+</details>
 {{end}}
 {{template "bottom" .}}

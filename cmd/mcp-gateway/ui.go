@@ -358,13 +358,14 @@ func (s *uiServer) render(w http.ResponseWriter, tmpl, title string, p page) {
 	_, _ = w.Write(b.Bytes())
 }
 
-// result is the page after an action: what the command printed, as the
-// CLI would have printed it.
+// result is the page after an action: one plain sentence saying what
+// happened, and what the command printed, kept one click away.
 type result struct {
-	Action string
-	OK     bool
-	Output string
-	Back   string
+	Action  string
+	OK      bool
+	Summary string
+	Output  string
+	Back    string
 }
 
 func (s *uiServer) showResult(w http.ResponseWriter, nav, action, back, stdout, stderr string, code int) {
@@ -375,26 +376,43 @@ func (s *uiServer) showResult(w http.ResponseWriter, nav, action, back, stdout, 
 		}
 		out += e
 	}
-	s.render(w, "result", action, page{Nav: nav, Data: result{Action: action, OK: code == exitOK, Output: out, Back: s.basePath() + back}})
+	summary := "Done."
+	if code != exitOK {
+		// The command's own first line says why; the rest is one click away.
+		summary = uiFirstLine(stderr)
+		if summary == "" {
+			summary = uiFirstLine(stdout)
+		}
+	}
+	s.render(w, "result", action, page{Nav: nav, Data: result{Action: action, OK: code == exitOK, Summary: summary, Output: out, Back: s.basePath() + back}})
+}
+
+func uiFirstLine(text string) string {
+	for _, l := range strings.Split(text, "\n") {
+		if l = strings.TrimSpace(l); l != "" {
+			return l
+		}
+	}
+	return ""
 }
 
 // ---- overview
 
 type overviewData struct {
-	Pending, Changed, Approved int
-	Upstreams, Unsigned        int
-	Blocked                    int
-	Denied                     []auditJSON
-	Sections                   []uiSection
+	Attention           []uiAttention
+	Approved, Upstreams int
+	Blocked             int
+	Denied              []auditJSON
 }
 
-// uiSection is one backend on the diagram board, with its tools as the
-// levers that work it. Lever numbers are the tools' positions in `tool
-// list`, the same numbers the Tools page shows.
-type uiSection struct {
-	Name   string
-	Signed bool
-	Levers []uiLever
+// uiAttention is one row of "Needs attention": something only an operator
+// can resolve, with the page that resolves it.
+type uiAttention struct {
+	Kind   string // changed, pending, unsigned
+	Title  string
+	Detail string
+	Server string
+	Tool   string
 }
 
 type uiLever struct {
@@ -406,7 +424,6 @@ type uiLever struct {
 	UpdatedAt    time.Time
 }
 
-// uiLevers numbers the tools the way the Tools page does.
 func uiLevers(tools []toolJSON) []uiLever {
 	out := make([]uiLever, len(tools))
 	for i, t := range tools {
@@ -416,58 +433,40 @@ func uiLevers(tools []toolJSON) []uiLever {
 	return out
 }
 
-// uiSections lays the backends out as track sections: every registered
-// backend, in registry order, then any server the quarantine knows that is
-// no longer registered.
-func uiSections(ups []upstreamJSON, levers []uiLever) []uiSection {
-	idx := map[string]int{}
-	var out []uiSection
-	for _, u := range ups {
-		idx[u.Name] = len(out)
-		out = append(out, uiSection{Name: u.Name, Signed: u.Signature == "yes"})
-	}
-	for _, l := range levers {
-		i, ok := idx[l.Server]
-		if !ok {
-			i = len(out)
-			idx[l.Server] = i
-			out = append(out, uiSection{Name: l.Server})
-		}
-		out[i].Levers = append(out[i].Levers, l)
-	}
-	return out
-}
-
 func (s *uiServer) overview(w http.ResponseWriter, r *http.Request) {
 	var d overviewData
 	var errs []string
 	tools, e1 := uiJSON[[]toolJSON](s, func(e *opEnv) int { return runToolList(e, "", true) })
+	var pending []uiAttention
 	for _, t := range tools {
 		switch quarantine.Status(t.Status) {
-		case quarantine.StatusPending:
-			d.Pending++
 		case quarantine.StatusChanged:
-			d.Changed++
+			d.Attention = append(d.Attention, uiAttention{Kind: "changed", Title: t.Server + "." + t.Tool,
+				Detail: "Changed since it was approved. Not served until reviewed.", Server: t.Server, Tool: t.Tool})
+		case quarantine.StatusPending:
+			pending = append(pending, uiAttention{Kind: "pending", Title: t.Server + "." + t.Tool,
+				Detail: "New tool, waiting for review.", Server: t.Server, Tool: t.Tool})
 		default:
 			if t.Usable {
 				d.Approved++
 			}
 		}
 	}
+	d.Attention = append(d.Attention, pending...)
 	ups, e2 := uiJSON[[]upstreamJSON](s, func(e *opEnv) int { return runUpstreamList(e, true) })
 	d.Upstreams = len(ups)
 	for _, u := range ups {
 		if u.Signature != "yes" {
-			d.Unsigned++
+			d.Attention = append(d.Attention, uiAttention{Kind: "unsigned", Title: u.Name,
+				Detail: "Backend not signed, so none of its tools are served. Sign it in the terminal."})
 		}
 	}
 	blocks, e3 := uiJSON[[]accessBlockJSON](s, func(e *opEnv) int { return runAccessList(e, true) })
 	d.Blocked = len(blocks)
 	denied, e4 := uiJSON[[]auditJSON](s, func(e *opEnv) int {
-		return runAudit(e, auditFilter{Limit: 10, Outcome: audit.OutcomeDenied}, true)
+		return runAudit(e, auditFilter{Limit: 5, Outcome: audit.OutcomeDenied}, true)
 	})
 	d.Denied = denied
-	d.Sections = uiSections(ups, uiLevers(tools))
 	for _, e := range []string{e1, e2, e3, e4} {
 		if e != "" && !strings.HasPrefix(e, "No ") {
 			errs = append(errs, e)
@@ -478,18 +477,50 @@ func (s *uiServer) overview(w http.ResponseWriter, r *http.Request) {
 
 // ---- tools
 
-func (s *uiServer) toolsPage(w http.ResponseWriter, r *http.Request) {
-	tools, errText := uiJSON[[]toolJSON](s, func(e *opEnv) int { return runToolList(e, "", true) })
-	s.render(w, "tools", "Tools", page{Data: uiLevers(tools), Error: errText})
+type toolsData struct {
+	Show   string
+	Tools  []uiLever
+	Counts map[string]int
 }
 
+func (s *uiServer) toolsPage(w http.ResponseWriter, r *http.Request) {
+	tools, errText := uiJSON[[]toolJSON](s, func(e *opEnv) int { return runToolList(e, "", true) })
+	d := toolsData{Show: r.URL.Query().Get("show"), Counts: map[string]int{}}
+	for _, t := range uiLevers(tools) {
+		review := t.Status != string(quarantine.StatusApproved)
+		if review {
+			d.Counts["review"]++
+		} else {
+			d.Counts["approved"]++
+		}
+		if d.Show == "review" && !review || d.Show == "approved" && review {
+			continue
+		}
+		d.Tools = append(d.Tools, t)
+	}
+	if d.Show != "review" && d.Show != "approved" {
+		d.Show = ""
+	}
+	d.Counts["all"] = len(tools)
+	s.render(w, "tools", "Tools", page{Data: d, Error: errText})
+}
+
+// toolReview is the review page's content, built from the stored
+// definitions rather than from `tool show`'s text, which stays one click
+// away as Output.
 type toolReview struct {
 	Server, Tool string
 	Status       string
 	Usable       bool
 	Fingerprint  string
-	Review       string
+	Approved     string
 	Shown        bool
+	Description  []uiReviewLine
+	InputSchema  string
+	OutputSchema string
+	Hidden       int
+	Diff         []uiReviewLine
+	Output       string
 }
 
 func (s *uiServer) toolShowPage(w http.ResponseWriter, r *http.Request) {
@@ -500,16 +531,99 @@ func (s *uiServer) toolShowPage(w http.ResponseWriter, r *http.Request) {
 		if !ok {
 			return code
 		}
+		// The fingerprint in the form is the one this read showed, and
+		// approve refuses if the tool advertises another by the time the
+		// form is sent.
+		rv = toolReview{Server: t.ServerName, Tool: t.ToolName, Status: string(t.Status), Usable: t.Usable(),
+			Fingerprint: t.ObservedHash, Approved: t.ApprovedHash}
 		var b bytes.Buffer
-		// The fingerprint in the form is the one writeReview just showed:
-		// both come from this one read of the entry, and approve refuses
-		// if the tool advertises another by the time the form is sent.
-		rv = toolReview{Server: t.ServerName, Tool: t.ToolName, Status: string(t.Status), Usable: t.Usable(), Fingerprint: t.ObservedHash}
 		rv.Shown = writeReview(e, &b, t)
-		rv.Review = b.String()
+		rv.Output = b.String()
+		if !rv.Shown {
+			return exitProblem
+		}
+		observed, err := e.tools().Definition(e.ctx(), t.ObservedHash)
+		if err != nil {
+			rv.Shown = false
+			return exitProblem
+		}
+		obsLines, hidden := definitionLines(observed)
+		rv.Hidden = hidden
+		for _, l := range strings.Split(observed.Description, "\n") {
+			rv.Description = append(rv.Description, uiReviewLine{Segs: uiSegments(visible.Escape(l))})
+		}
+		rv.InputSchema = uiSchema(observed.InputSchema)
+		rv.OutputSchema = uiSchema(observed.OutputSchema)
+		if t.ApprovedHash != "" && t.ApprovedHash != t.ObservedHash {
+			if approved, err := e.tools().Definition(e.ctx(), t.ApprovedHash); err == nil {
+				appLines, _ := definitionLines(approved)
+				rv.Diff = uiDiffHunks(lineDiff(appLines, obsLines), 1)
+			}
+		}
 		return exitOK
 	})
-	s.render(w, "tool", "Review "+visible.Escape(server+"."+tool), page{Nav: "tools", Data: rv, Error: strings.TrimSpace(errText)})
+	s.render(w, "tool", visible.Escape(server+"."+tool), page{Nav: "tools", Data: rv, Error: strings.TrimSpace(errText)})
+}
+
+// uiDiffHunks keeps the changed lines of a lineDiff and ctx unchanged
+// lines around each, with a "gap" line where unchanged lines were left out:
+// the review shows what changed, not the whole definition again.
+func uiDiffHunks(diff []string, ctx int) []uiReviewLine {
+	keep := make([]bool, len(diff))
+	for i, l := range diff {
+		if strings.HasPrefix(l, "+ ") || strings.HasPrefix(l, "- ") {
+			for j := max(0, i-ctx); j <= min(len(diff)-1, i+ctx); j++ {
+				keep[j] = true
+			}
+		}
+	}
+	var out []uiReviewLine
+	gap := false
+	for i, l := range diff {
+		if !keep[i] {
+			gap = true
+			continue
+		}
+		if gap && len(out) > 0 {
+			out = append(out, uiReviewLine{Class: "gap", Segs: []uiSeg{{Text: "…"}}})
+		}
+		gap = false
+		c := ""
+		switch {
+		case strings.HasPrefix(l, "+ "):
+			c = "add"
+		case strings.HasPrefix(l, "- "):
+			c = "del"
+		}
+		out = append(out, uiReviewLine{Class: c, Segs: uiSegments(l)})
+	}
+	// A label line ("input schema:") left as the last context line of a
+	// hunk heads nothing; drop it.
+	var trimmed []uiReviewLine
+	for i, l := range out {
+		last := i == len(out)-1 || out[i+1].Class == "gap"
+		if last && l.Class == "" && len(l.Segs) == 1 && strings.HasSuffix(strings.TrimSpace(l.Segs[0].Text), ":") {
+			continue
+		}
+		trimmed = append(trimmed, l)
+	}
+	if n := len(trimmed); n > 0 && trimmed[n-1].Class == "gap" {
+		trimmed = trimmed[:n-1]
+	}
+	return trimmed
+}
+
+// uiSchema is a schema as the review shows it: indented JSON, every hidden
+// code point escaped.
+func uiSchema(raw []byte) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var b bytes.Buffer
+	if json.Indent(&b, raw, "", "  ") != nil {
+		return uiEscapeText(string(raw))
+	}
+	return uiEscapeText(b.String())
 }
 
 func (s *uiServer) toolApprove(w http.ResponseWriter, r *http.Request) {

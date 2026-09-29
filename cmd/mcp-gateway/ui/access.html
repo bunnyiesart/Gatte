@@ -1,42 +1,41 @@
 {{template "top" .}}
 {{$csrf := .CSRF}}
-<p class="imperative">Block at the gateway, then revoke the session at the identity provider.</p>
-<p class="lead">A block refuses that analyst from their next request, whatever token they hold,
-with no restart. It does not touch the identity provider. Blocking and unblocking are both
-written to the audit trail under the operator who ran this console.</p>
+<div class="head">
+  <h1>Access</h1>
+  <p class="sub">A blocked analyst is refused on their next request. Also revoke their session at your identity provider.</p>
+</div>
 
-<form class="bench" method="post" action="{{$.Base}}/access/block">
-  <input type="hidden" name="csrf" value="{{$csrf}}">
-  <label>Subject <small>the token's <code>sub</code>, as the audit trail shows it</small>
-    <input name="subject" required autocomplete="off" spellcheck="false"></label>
-  <label>Reason <small>who is acting and why; it goes in the trail</small>
-    <input name="reason" autocomplete="off"></label>
-  <button class="btn stop">Block</button>
-</form>
+<section>
+  <h2>Block an analyst</h2>
+  <form class="group form" method="post" action="{{$.Base}}/access/block">
+    <input type="hidden" name="csrf" value="{{$csrf}}">
+    <label class="field"><span>Subject</span><input name="subject" required autocomplete="off" spellcheck="false" placeholder="As shown in the audit trail"></label>
+    <label class="field"><span>Reason</span><input name="reason" autocomplete="off" placeholder="Who is acting, and why"></label>
+    <div class="form-end"><button class="btn destructive">Block</button></div>
+  </form>
+</section>
 
-<h2>Blocked now</h2>
-{{if .Data}}
-<table class="register">
-  <thead><tr><th>Subject</th><th>Since</th><th>By</th><th>Reason</th><th><span class="sr">Action</span></th></tr></thead>
-  <tbody>
-  {{range .Data}}
-    <tr class="collared">
-      <td data-label="Subject"><span class="plate">{{vis .Subject}}</span></td>
-      <td class="mono num" data-label="Since">{{time .At}}</td>
-      <td data-label="By">{{vis .By}}</td>
-      <td data-label="Reason">{{vis (dash .Reason)}}</td>
-      <td class="act">
-        <form method="post" action="{{$.Base}}/access/unblock">
-          <input type="hidden" name="csrf" value="{{$csrf}}">
-          <input type="hidden" name="subject" value="{{.Subject}}">
-          <button class="btn">Unblock</button>
-        </form>
-      </td>
-    </tr>
+<section>
+  <h2>Blocked</h2>
+  {{if .Data}}
+  <ul class="group">
+    {{range .Data}}
+    <li class="row">
+      <span class="lead-icon changed">{{template "warn"}}</span>
+      <span class="row-text">
+        <span class="row-title mono">{{vis .Subject}}</span>
+        <span class="row-detail">{{vis (dash .Reason)}} · by {{vis .By}} · {{time .At}}</span>
+      </span>
+      <form method="post" action="{{$.Base}}/access/unblock">
+        <input type="hidden" name="csrf" value="{{$csrf}}">
+        <input type="hidden" name="subject" value="{{.Subject}}">
+        <button class="btn small">Unblock</button>
+      </form>
+    </li>
+    {{end}}
+  </ul>
+  {{else if not .Error}}
+  <div class="group empty-state"><p><b>No one is blocked.</b></p></div>
   {{end}}
-  </tbody>
-</table>
-{{else if not .Error}}
-<p class="empty">Nobody is blocked. Every analyst whose token and role allow it is being served.</p>
-{{end}}
+</section>
 {{template "bottom" .}}

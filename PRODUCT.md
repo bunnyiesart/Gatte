@@ -60,6 +60,9 @@ part of the claim: what it does not cover is stated next to what it does.
 
 - Name: Gatte. No logo exists.
 - Palette: blue and black shades (owner's commitment, 29 Sep 2026).
+- Standing preference (owner, 29 Sep 2026): Apple-style simplicity, with App
+  Store Connect as the reference product: the familiar standard, done at full
+  craft. The signal-box direction was built, found confusing, and replaced.
 
 ## Evidence on Hand
 

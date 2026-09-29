@@ -1,48 +1,77 @@
 {{template "top" .}}
 {{$csrf := .CSRF}}{{$base := .Base}}
+<a class="back" href="{{$base}}/tools"><svg viewBox="0 0 8 14" width="8" height="14" aria-hidden="true"><path d="M7 1L1 7l6 6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>Tools</a>
 {{with .Data}}{{if .Server}}
-<p class="imperative">Read it as a model will. Then approve this fingerprint, or leave it locked.</p>
-<div class="measure">
-
-{{if eq .Status "changed"}}
-<div class="collar" role="alert">
-  <b>Locked: changed after approval.</b>
-  <p>A definition an operator already approved was replaced. A tool's description is handed to a
-  model as instructions, and rewriting an approved one is how a poisoned tool gets past an
-  approval that already happened. The diff is at the end.</p>
+<div class="head">
+  <h1 class="mono-title">{{vis .Tool}}</h1>
+  <p class="sub">{{vis .Server}} · {{template "status" .Status}}</p>
 </div>
+
+{{if or (eq .Status "changed") .Hidden}}
+<div class="notice danger" role="alert">{{template "warn"}}<p>{{if eq .Status "changed"}}<b>This tool changed after it was approved.</b> It isn't served until you approve the new version.{{end}}
+{{if .Hidden}}<b>{{if eq .Status "changed"}}It also contains{{else}}It contains{{end}} {{.Hidden}} hidden {{if eq .Hidden 1}}character{{else}}characters{{end}}</b>, highlighted below: a model reads {{if eq .Hidden 1}}it{{else}}them{{end}}, a screen wouldn't show {{if eq .Hidden 1}}it{{else}}them{{end}}. That's a reason not to approve; unapproved, the tool stays unserved.{{end}}</p></div>
 {{end}}
 
-<dl class="facts">
-  <div><dt>State</dt><dd><span class="state {{.Status}}">{{if eq .Status "changed"}}locked, changed{{else}}{{.Status}}{{end}}</span></dd></div>
-  <div><dt>Shown fingerprint</dt><dd class="mono">sha256:{{.Fingerprint}}</dd></div>
-</dl>
+{{if .Shown}}
+{{if not .Diff}}
+<section>
+  <h2>Description</h2>
+  <div class="group prose">{{range .Description}}<p>{{range .Segs}}{{if .Hidden}}<mark title="Hidden character">{{.Text}}</mark>{{else}}{{.Text}}{{end}}{{end}}</p>{{end}}</div>
+</section>
 
-<pre class="definition" aria-label="Definition as tool show prints it">{{range lines .Review}}<span class="{{.Class}}">{{range .Segs}}{{if .Hidden}}<mark title="hidden code point">{{.Text}}</mark>{{else}}{{.Text}}{{end}}{{end}}</span>
-{{end}}</pre>
-</div>
+{{end}}
+{{if .Diff}}
+<section>
+  <h2>What changed</h2>
+  <div class="group diff">{{range .Diff}}<div class="line {{.Class}}">{{range .Segs}}{{if .Hidden}}<mark title="Hidden character">{{.Text}}</mark>{{else}}{{.Text}}{{end}}{{end}}</div>{{end}}</div>
+</section>
+{{end}}
 
-<div class="levers">
-  {{if and .Shown (not .Usable)}}
-  <form method="post" action="{{$base}}/tools/approve" class="pull">
+<section class="more">
+  <details class="group">
+    <summary>Input schema{{template "chev"}}</summary>
+    {{if .InputSchema}}<pre>{{.InputSchema}}</pre>{{else}}<p class="muted">None declared.</p>{{end}}
+  </details>
+  <details class="group">
+    <summary>Output schema{{template "chev"}}</summary>
+    {{if .OutputSchema}}<pre>{{.OutputSchema}}</pre>{{else}}<p class="muted">None declared.</p>{{end}}
+  </details>
+  <details class="group">
+    <summary>Technical details{{template "chev"}}</summary>
+    <dl class="facts">
+      <div><dt>This version</dt><dd class="mono">sha256:{{.Fingerprint}}</dd></div>
+      <div><dt>Approved version</dt><dd class="mono">{{if .Approved}}sha256:{{.Approved}}{{else}}None{{end}}</dd></div>
+    </dl>
+    <pre>{{vistext .Output}}</pre>
+  </details>
+</section>
+
+<div class="actions">
+  {{if not .Usable}}
+  <form method="post" action="{{$base}}/tools/approve">
     <input type="hidden" name="csrf" value="{{$csrf}}">
     <input type="hidden" name="server" value="{{.Server}}">
     <input type="hidden" name="tool" value="{{.Tool}}">
     <input type="hidden" name="fingerprint" value="{{.Fingerprint}}">
-    <button class="btn go">Approve sha256:{{short .Fingerprint}}</button>
-    <small>Pins exactly the definition above. If the backend advertises anything else by the
-    time you press, nothing is approved.</small>
+    <button class="btn{{if not .Hidden}} primary{{end}}">Approve this version</button>
   </form>
+  <p class="caption">Approves exactly what's shown here (sha256:{{short .Fingerprint}}). If the backend changes it before you click, nothing is approved.</p>
   {{end}}
   {{if eq .Status "approved"}}
   <form method="post" action="{{$base}}/tools/revoke">
     <input type="hidden" name="csrf" value="{{$csrf}}">
     <input type="hidden" name="server" value="{{.Server}}">
     <input type="hidden" name="tool" value="{{.Tool}}">
-    <button class="btn stop">Revoke approval</button>
+    <button class="btn destructive">Revoke approval</button>
   </form>
+  <p class="caption">Stops serving this tool on the next call.</p>
   {{end}}
-  <a class="btn" href="{{$base}}/tools">Back to tools</a>
 </div>
+{{else}}
+<details class="group" open>
+  <summary>Details{{template "chev"}}</summary>
+  <pre>{{vistext .Output}}</pre>
+</details>
+{{end}}
 {{end}}{{end}}
 {{template "bottom" .}}

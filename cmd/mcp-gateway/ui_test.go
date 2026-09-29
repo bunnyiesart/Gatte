@@ -400,7 +400,7 @@ func TestUI_EachActionReadsTheConfigurationFileAgain(t *testing.T) {
 	w := uiDo(s, "POST", "/access/block", url.Values{"subject": {"ana"}, "csrf": {s.csrf}}, cookie, func(r *http.Request) {
 		r.Header.Set("Origin", "http://127.0.0.1:8090")
 	})
-	if !strings.Contains(w.Body.String(), "Not done.") {
+	if !strings.Contains(w.Body.String(), "result-icon danger") {
 		t.Fatalf("an action ran although the configuration no longer loads:\n%s", w.Body)
 	}
 	if blocked, _ := e.blocks().Blocks(context.Background()); len(blocked) != 0 {

@@ -240,13 +240,19 @@ With the features `backend_health` and `maintenance` (contract 1.1.0,
   "casemgmt", "message": "...", "until": "..."}` puts one backend in
   maintenance: from the gateway's next call, analysts' calls to it are
   answered with the maintenance text and not dialed. `{"scope": "gateway",
-  ...}` adds a notice to every call result instead; calls are still served.
+  ...}` adds a notice to call results instead (text-only and unavailable
+  results; a client that reads only `structuredContent`, as Claude Code
+  does, gets it through `gatte.status`); calls are still served.
   `POST /v1/maintenance/off` with `{"scope": ..., "upstream": ...}` ends it.
   `GET /v1/maintenance` lists what is in force.
-- `message` and `until` reach analysts and their models; `set_by` never
-  does. The backend refuses a message with a control character, a hidden
-  code point or a line break rather than escaping it, so what you show is
-  what analysts get. `until` is a forecast: nothing ends by itself, so a
+- Exactly `message`, `until`, `until_passed` and `started_at` (shown as
+  the maintenance's `since`) reach analysts and their models; `set_by` and
+  `set_at` (who changed it last, and when) never do. A repeated `on` with
+  another message or `until` keeps `started_at`. The backend refuses a
+  message with a control character, a hidden code point or a line break
+  rather than escaping it, and counts the 200 limit in Unicode code points;
+  `"` and `\` are allowed, and the gateway quotes the message where it
+  puts it inside its own text. `until` is a forecast: nothing ends by itself, so a
   front should show `until_passed` loudly.
 - `cause` (`process_gone`, `not_brought_up`, `held_back`) is for the
   operator only; analysts are told the state, never why. `held_back` means

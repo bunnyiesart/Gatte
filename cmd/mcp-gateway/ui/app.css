@@ -1,0 +1,429 @@
+/* Gatte console: a signal box. Black enamel frame, iron panels, a navy
+   illuminated diagram, enamelled plates, and signal blue as the only colour
+   that means "you can act". Danger is inversion and a hatched collar. */
+
+:root {
+  color-scheme: dark light;
+
+  /* the frame and its panels */
+  --ground: #07090c;
+  --iron: #0f131a;
+  --iron-2: #161b24;
+  --rule: #252d3a;
+  --rule-strong: #3a4558;
+
+  /* plates and lettering */
+  --plate: #e2e9f3;
+  --steel: #98a6ba;
+  --dim: #7a889e;
+
+  /* signal blue: action, and only action */
+  --signal: #4d88ff;
+  --signal-hover: #6d9dff;
+  --signal-ink: #050d1f;
+  --signal-text: #8db4ff;
+
+  /* the diagram board keeps its night in both themes */
+  --board: #0a1730;
+  --board-2: #0f2142;
+  --board-line: #27437a;
+  --board-ink: #d5e2f7;
+  --board-dim: #7f93b8;
+  --board-lit: #8fb8ff;
+  --board-lit-ink: #041026;
+
+  --shelf: #030406;
+  --shelf-ink: #e2e9f3;
+  --shelf-dim: #98a6ba;
+  --shelf-rule: #252d3a;
+  --hatch: 135deg;
+
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+  --radius: 3px;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --ground: #eef1f6;
+    --iron: #ffffff;
+    --iron-2: #f3f5f9;
+    --rule: #d2d9e4;
+    --rule-strong: #aab5c6;
+    --plate: #07090c;
+    --steel: #465265;
+    --dim: #5b6678;
+    --signal: #1d4fc4;
+    --signal-hover: #173f9e;
+    --signal-ink: #ffffff;
+    --signal-text: #1a47b0;
+  }
+}
+
+* { box-sizing: border-box; }
+html { background: var(--ground); scrollbar-color: var(--rule-strong) var(--ground); }
+body {
+  margin: 0;
+  background: var(--ground);
+  color: var(--plate);
+  font: 15px/1.5 var(--sans);
+  font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased;
+}
+::selection { background: var(--signal); color: var(--signal-ink); }
+a { color: var(--signal-text); text-underline-offset: 3px; text-decoration-thickness: 1px; }
+a:hover { color: var(--signal-hover); }
+:focus-visible { outline: 2px solid var(--signal); outline-offset: 2px; border-radius: var(--radius); }
+code, .mono { font-family: var(--mono); font-size: 0.875em; }
+code { padding: 0 0.25em; border: 1px solid var(--rule); border-radius: var(--radius); background: var(--iron-2); }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+
+/* ---- the block shelf: nameplate and plate tabs ---- */
+
+.shelf {
+  display: flex; align-items: center; gap: 28px; flex-wrap: wrap;
+  padding: 14px 32px;
+  background: var(--shelf);
+  border-bottom: 1px solid var(--rule);
+}
+.nameplate {
+  display: inline-flex; padding: 3px;
+  border: 1px solid var(--shelf-ink); border-radius: var(--radius);
+  text-decoration: none;
+}
+.nameplate span {
+  padding: 3px 12px 2px;
+  background: var(--shelf-ink); color: var(--shelf);
+  font-weight: 800; font-size: 13px; letter-spacing: 0.32em; text-transform: uppercase;
+}
+.nameplate:hover span { background: var(--signal); color: var(--signal-ink); }
+.tabs { display: flex; gap: 6px; flex-wrap: wrap; }
+.tabs a {
+  padding: 5px 11px 4px;
+  border: 1px solid var(--shelf-rule); border-radius: var(--radius);
+  color: var(--shelf-dim); text-decoration: none;
+  font-size: 12px; font-weight: 650; letter-spacing: 0.12em; text-transform: uppercase;
+  transition: border-color 150ms ease-out, color 150ms ease-out;
+}
+.tabs a:hover { border-color: var(--shelf-dim); color: var(--shelf-ink); }
+/* where you are is a state, not an action: inverted, never signal blue */
+.tabs a[aria-current] { background: var(--shelf-ink); border-color: var(--shelf-ink); color: var(--shelf); }
+
+/* ---- page ---- */
+
+main { max-width: 1180px; margin: 0 auto; padding: 36px 32px 24px; }
+h1 { margin: 0; font-size: 1.625rem; line-height: 1.2; font-weight: 700; letter-spacing: -0.01em; text-wrap: balance; }
+h2 {
+  margin: 40px 0 12px;
+  font-size: 0.8125rem; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; color: var(--steel);
+}
+/* the caption plate: lettering between two double rules, no box, so it
+   never reads as a control */
+.imperative {
+  display: table; margin: 12px 0 22px;
+  padding: 5px 0 4px;
+  border-top: 3px double var(--rule-strong); border-bottom: 3px double var(--rule-strong);
+  font-size: 0.875rem; font-weight: 650; letter-spacing: 0.01em; color: var(--plate);
+}
+.lead { max-width: 70ch; margin: 0 0 20px; color: var(--steel); }
+.empty { color: var(--steel); max-width: 70ch; }
+.more { font-size: 0.875rem; }
+.foot {
+  display: flex; flex-wrap: wrap; gap: 8px 24px; justify-content: space-between;
+  max-width: 1180px; margin: 0 auto; padding: 24px 32px 40px;
+  border-top: 1px solid var(--rule); color: var(--dim); font-size: 0.8125rem;
+}
+.foot .mono { overflow-wrap: anywhere; }
+
+/* ---- the illuminated diagram ---- */
+
+.diagram {
+  padding: 22px 24px 16px;
+  background: var(--board);
+  border: 1px solid var(--board-line); border-radius: var(--radius);
+  color: var(--board-ink);
+}
+.section {
+  display: grid; grid-template-columns: minmax(150px, 220px) 1fr; gap: 16px; align-items: center;
+  padding: 10px 0;
+}
+.section + .section { border-top: 1px solid var(--board-2); }
+.track { display: flex; flex-direction: column; gap: 2px; }
+.section-name {
+  font-family: var(--mono); font-size: 0.875rem; font-weight: 700; letter-spacing: 0.04em;
+}
+.section-note { font-size: 0.75rem; color: var(--board-dim); letter-spacing: 0.06em; text-transform: uppercase; }
+.marks {
+  position: relative; display: flex; flex-wrap: wrap; gap: 10px; margin: 0; padding: 6px 0; list-style: none;
+}
+/* the track itself: a rail every lever sits on */
+.marks::before {
+  content: ""; position: absolute; left: 0; right: 0; top: 50%; height: 2px;
+  background: var(--board-line);
+}
+.track.unsigned + .marks::before {
+  background: repeating-linear-gradient(90deg, var(--board-line) 0 10px, transparent 10px 18px);
+}
+.marks li { position: relative; }
+.marks .none { font-size: 0.8125rem; color: var(--board-dim); background: var(--board); padding: 0 8px; }
+.mark {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 4px 10px 4px 4px;
+  background: var(--board);
+  border: 1px solid var(--board-line); border-radius: var(--radius);
+  color: var(--board-dim); text-decoration: none;
+  font-family: var(--mono); font-size: 0.8125rem;
+  transition: border-color 150ms ease-out, color 150ms ease-out;
+}
+.mark b {
+  min-width: 26px; padding: 1px 5px; text-align: center;
+  border: 1px solid currentColor; border-radius: 2px; font-size: 0.75rem;
+}
+a.mark:hover { border-color: var(--board-ink); color: var(--board-ink); }
+/* served: the route is set and lit */
+.mark.lit { background: var(--board-ink); border-color: var(--board-ink); color: var(--board-lit-ink); }
+.mark.lit b { border-color: var(--board-lit-ink); }
+a.mark.lit:hover { background: #ffffff; color: var(--board-lit-ink); }
+/* locked: a heavy frame and the collar's hatch on the lever number;
+   dark where a served mark is lit, so the two never look alike */
+.mark.changed {
+  padding: 3px 9px 3px 2px; gap: 6px;
+  background: var(--board); border: 2px solid var(--board-ink); color: var(--board-ink); font-weight: 700;
+}
+.mark.changed b { border-color: var(--board-ink); color: var(--board-ink); }
+.mark.changed::before { margin: 0 0 0 3px; height: 18px; }
+a.mark.changed:hover { border-color: #ffffff; color: #ffffff; }
+.legend {
+  display: flex; flex-wrap: wrap; gap: 6px 20px; margin: 14px 0 0; padding: 12px 0 0; list-style: none;
+  border-top: 1px solid var(--board-2); font-size: 0.75rem; color: var(--board-dim);
+}
+.legend li { display: inline-flex; align-items: center; gap: 8px; }
+.legend .mark { width: 22px; height: 14px; padding: 0; }
+.legend .mark.changed b { display: none; }
+.legend .mark.changed::before { width: 100%; height: 100%; margin: 0; border: 0; }
+
+.statusline {
+  display: flex; flex-wrap: wrap; gap: 0; margin: 0; padding: 0;
+  border: 1px solid var(--rule); border-top: 0; border-radius: 0 0 var(--radius) var(--radius);
+  background: var(--iron);
+}
+.statusline a {
+  flex: 1 1 auto; padding: 10px 16px;
+  color: var(--steel); text-decoration: none; font-size: 0.875rem; white-space: nowrap;
+}
+.statusline a + a { border-left: 1px solid var(--rule); }
+.statusline a b { color: var(--plate); font-size: 1rem; margin-right: 4px; }
+.statusline a:hover { background: var(--iron-2); color: var(--plate); }
+/* an alarm cell is collared like a locked lever: enamel frame, hatched count */
+.statusline a.alarm { box-shadow: inset 0 0 0 2px var(--plate); color: var(--plate); font-weight: 650; }
+.statusline a.alarm b { color: var(--plate); }
+.statusline a.alarm::before, .mark.changed::before {
+  content: ""; display: inline-block; flex: none; width: 12px; height: 14px; margin-right: 8px; vertical-align: -2px;
+  border: 1px solid currentColor; border-radius: 1px;
+  background: repeating-linear-gradient(var(--hatch), currentColor 0 1.5px, transparent 1.5px 4px);
+}
+
+/* ---- the register: every table ---- */
+
+table { width: 100%; border-collapse: collapse; background: var(--iron); border: 1px solid var(--rule); border-radius: var(--radius); }
+th, td { padding: 9px 14px; text-align: left; vertical-align: middle; border-bottom: 1px solid var(--rule); }
+th { white-space: nowrap; }
+td.wrap, td.mono { overflow-wrap: anywhere; }
+td.wrap { min-width: 16ch; }
+th {
+  font-size: 0.6875rem; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--steel); background: var(--iron-2); border-bottom: 1px solid var(--rule-strong);
+}
+tbody tr:last-child td { border-bottom: 0; }
+tbody tr:hover td { background: var(--iron-2); }
+.num { text-align: right; white-space: nowrap; }
+td.mono.num { text-align: left; }
+td.act { text-align: right; white-space: nowrap; width: 1%; }
+
+.plate {
+  display: inline-block; padding: 2px 8px; white-space: nowrap;
+  border: 1px solid var(--rule-strong); border-radius: 2px;
+  font-family: var(--mono); font-size: 0.8125rem; font-weight: 600;
+}
+.plate i { font-style: normal; color: var(--dim); }
+
+/* the lever frame: one lever per tool */
+.frame td.num { width: 1%; }
+.frame td.num b { display: inline-block; min-width: 2ch; font-family: var(--mono); font-size: 0.8125rem; }
+.lever {
+  display: inline-block; position: relative; width: 6px; height: 24px; margin-right: 12px;
+  vertical-align: middle; border-radius: 3px 3px 1px 1px;
+  background: var(--dim); transform-origin: 50% 100%;
+  transition: transform 220ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+/* the one authored motion: pointing at a row takes the lever's weight */
+.frame tbody tr:hover .lever { transform: rotate(-8deg); }
+.frame tbody tr:hover .lever.reverse { transform: rotate(-28deg); }
+.frame tbody tr:hover .lever.changed { transform: rotate(-2deg); }
+.lever::before {
+  content: ""; position: absolute; left: -3px; top: -4px; width: 12px; height: 8px; border-radius: 2px;
+  background: inherit;
+}
+.lever.reverse { background: var(--plate); transform: rotate(-22deg); }
+.lever.changed { background: var(--plate); }
+/* the collar: a sleeve that stops a lever being pulled */
+.lever.changed::after {
+  content: ""; position: absolute; left: -4px; right: -4px; top: 9px; height: 9px;
+  border: 1px solid var(--plate); border-radius: 1px;
+  background: repeating-linear-gradient(135deg, var(--plate) 0 2px, var(--ground) 2px 4px);
+}
+tr.changed td { background: var(--iron-2); }
+
+.state {
+  display: inline-block; padding: 1px 8px; border-radius: 2px;
+  font-size: 0.6875rem; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase;
+  border: 1px solid var(--rule-strong); color: var(--steel); white-space: nowrap;
+}
+.state.approved, .state.allowed { border-color: var(--plate); color: var(--plate); }
+.state.pending { border-style: dashed; }
+/* danger in the register: the same frame and collar sleeve as the board */
+.state.changed, .state.denied, .state.failed { border: 2px solid var(--plate); color: var(--plate); padding: 0 7px 0 4px; }
+.state.changed::before, .state.denied::before, .state.failed::before {
+  content: ""; display: inline-block; width: 9px; height: 10px; margin-right: 6px; vertical-align: -1px;
+  border: 1px solid currentColor; border-radius: 1px;
+  background: repeating-linear-gradient(var(--hatch), currentColor 0 1.5px, transparent 1.5px 4px);
+}
+tr.collared td:first-child .plate {
+  background: repeating-linear-gradient(135deg, var(--iron-2) 0 4px, var(--iron) 4px 8px);
+  border-color: var(--plate);
+}
+
+/* ---- levers you pull: buttons ---- */
+
+.btn {
+  display: inline-flex; align-items: center; min-height: 36px; padding: 7px 16px;
+  border: 1px solid var(--rule-strong); border-radius: var(--radius);
+  background: var(--iron); color: var(--plate);
+  font: 600 0.875rem/1.2 var(--sans); letter-spacing: 0.02em; text-decoration: none; cursor: pointer;
+  transition: background-color 150ms ease-out, border-color 150ms ease-out, color 150ms ease-out;
+}
+.btn:hover { border-color: var(--plate); color: var(--plate); }
+.btn:active { background: var(--plate); color: var(--ground); }
+.btn.go { background: var(--signal); border-color: var(--signal); color: var(--signal-ink); }
+.btn.go:hover { background: var(--signal-hover); border-color: var(--signal-hover); color: var(--signal-ink); }
+.btn.go:active { background: var(--plate); border-color: var(--plate); color: var(--ground); }
+.btn.stop { background: var(--plate); border-color: var(--plate); color: var(--ground); }
+.btn.stop:hover { background: var(--ground); color: var(--plate); }
+td .btn { min-height: 30px; padding: 4px 12px; font-size: 0.8125rem; }
+td form { margin: 0; display: inline; }
+
+.levers { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 12px; margin-top: 20px; }
+.levers form { margin: 0; }
+.pull { display: flex; flex-direction: column; gap: 8px; max-width: 46ch; }
+.pull small { color: var(--steel); font-size: 0.8125rem; }
+
+/* ---- forms: the bench ---- */
+
+.bench {
+  display: flex; flex-wrap: wrap; align-items: flex-end; gap: 14px;
+  margin: 0 0 20px; padding: 16px;
+  background: var(--iron); border: 1px solid var(--rule); border-radius: var(--radius);
+}
+label { display: flex; flex-direction: column; gap: 5px; font-size: 0.75rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--steel); }
+label small { font-weight: 400; letter-spacing: 0; text-transform: none; color: var(--dim); font-size: 0.75rem; }
+label.wide { flex: 1 1 340px; }
+input, select {
+  min-height: 36px; min-width: 240px; padding: 6px 10px;
+  border: 1px solid var(--rule-strong); border-radius: var(--radius);
+  background: var(--ground); color: var(--plate);
+  font: 400 0.9375rem/1.3 var(--sans); letter-spacing: 0; text-transform: none;
+  caret-color: var(--signal);
+}
+input.mono { font-family: var(--mono); font-size: 0.875rem; }
+input.short { min-width: 0; width: 110px; }
+label.wide input { width: 100%; }
+input:hover, select:hover { border-color: var(--steel); }
+input:focus-visible, select:focus-visible { border-color: var(--signal); outline-offset: 0; }
+input::placeholder { color: var(--dim); }
+
+/* ---- the review: a definition as a model reads it ---- */
+
+.facts { display: flex; flex-wrap: wrap; gap: 8px 32px; margin: 0 0 16px; }
+.facts div { display: flex; flex-direction: column; gap: 4px; }
+.facts dt { font-size: 0.6875rem; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; color: var(--steel); }
+.facts dd { margin: 0; overflow-wrap: anywhere; }
+
+pre { margin: 0; font-family: var(--mono); font-size: 0.8125rem; line-height: 1.6; white-space: pre-wrap; }
+/* the measure is one fingerprint line: "  observed fingerprint sha256:" and
+   64 hex, counted in the mono face; the alert and the facts share it */
+.measure { max-width: calc(96ch + 42px); font-family: var(--mono); font-size: 0.8125rem; }
+.measure > * { font-family: var(--sans); font-size: 15px; }
+.measure > pre { font-family: var(--mono); font-size: 0.8125rem; }
+.definition {
+  padding: 18px 20px;
+  background: var(--iron); border: 1px solid var(--rule); border-radius: var(--radius);
+  overflow-wrap: anywhere;
+}
+.definition .head { font-weight: 700; color: var(--plate); }
+.definition .add { display: inline-block; width: 100%; background: color-mix(in srgb, var(--board-line) 34%, transparent); color: var(--plate); font-weight: 600; }
+.definition .del { display: inline-block; width: 100%; color: var(--dim); text-decoration: line-through; text-decoration-color: var(--rule-strong); }
+.definition .warn { font-weight: 700; color: var(--plate); }
+/* a hidden code point is a thing on the page, not a polite string */
+mark {
+  padding: 0 3px; margin: 0 1px; border-radius: 2px;
+  background: var(--plate); color: var(--ground);
+  font-weight: 700; outline: 1px solid var(--plate); outline-offset: 1px;
+}
+
+.collar {
+  position: relative; margin: 0 0 18px; padding: 22px 18px 14px;
+  border: 1px solid var(--plate); border-radius: var(--radius); background: var(--iron);
+}
+.collar::before {
+  content: ""; position: absolute; left: 0; right: 0; top: 0; height: 8px;
+  background: repeating-linear-gradient(135deg, var(--plate) 0 3px, var(--iron) 3px 7px);
+}
+.collar b { display: block; font-size: 0.9375rem; }
+.collar p { margin: 6px 0 0; color: var(--steel); }
+
+.outcome { display: flex; align-items: baseline; gap: 12px; margin: 16px 0 12px; }
+.outcome b { padding: 3px 12px; border-radius: 2px; font-size: 0.8125rem; letter-spacing: 0.12em; text-transform: uppercase; }
+.outcome.done b { border: 1px solid var(--plate); color: var(--plate); }
+.outcome.refused b { border: 2px solid var(--plate); color: var(--plate); }
+.outcome span { color: var(--steel); font-size: 0.875rem; }
+
+.fault {
+  position: relative; margin: 16px 0; padding: 22px 16px 14px; max-width: 96ch;
+  border: 1px solid var(--plate); border-radius: var(--radius); background: var(--iron); color: var(--plate);
+}
+.fault::before {
+  content: ""; position: absolute; left: 0; right: 0; top: 0; height: 8px;
+  background: repeating-linear-gradient(var(--hatch), var(--plate) 0 3px, var(--iron) 3px 7px);
+}
+
+/* ---- narrow screens ---- */
+
+@media (max-width: 760px) {
+  .shelf { padding: 12px 16px; gap: 12px; }
+  main { padding: 24px 16px; }
+  .foot { padding: 20px 16px 32px; }
+  .section { grid-template-columns: 1fr; gap: 6px; }
+  .statusline a { flex: 1 1 45%; }
+  .statusline a + a { border-left: 0; }
+  .statusline a { border-top: 1px solid var(--rule); }
+  /* the register on a phone: each row an entry, each cell labelled */
+  table, tbody, tr, td { display: block; width: 100%; }
+  thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  tbody tr { padding: 10px 0; border-bottom: 1px solid var(--rule); }
+  tbody tr:last-child { border-bottom: 0; }
+  td { display: flex; gap: 12px; align-items: baseline; padding: 3px 14px; border: 0; text-align: left; }
+  td[data-label]::before {
+    content: attr(data-label); flex: 0 0 92px;
+    font: 700 0.6875rem/1.6 var(--sans); letter-spacing: 0.12em; text-transform: uppercase; color: var(--steel);
+  }
+  td.act { width: 100%; text-align: left; padding-top: 8px; }
+  .num { text-align: left; }
+  tbody tr:hover td { background: transparent; }
+  input, select, label { min-width: 0; width: 100%; }
+  .bench .btn { width: 100%; justify-content: center; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lever { transition: none; }
+  * { transition: none !important; }
+}

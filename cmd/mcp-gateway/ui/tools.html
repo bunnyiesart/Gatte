@@ -1,0 +1,27 @@
+{{template "top" .}}
+<p class="imperative">Review before you pull. Approving pins one fingerprint, nothing more.</p>
+<p class="lead">Every tool a backend advertises starts here, unserved, until someone reviews its
+definition and approves that exact fingerprint, and it is served only while its backend's entry
+is signed. A locked tool changed after it was approved: it stays out of service until its diff
+is read and approved again.</p>
+{{if .Data}}
+<table class="frame">
+  <thead><tr><th class="num">Lever</th><th>Tool</th><th>State</th><th>Fingerprint</th><th>Updated</th><th><span class="sr">Action</span></th></tr></thead>
+  <tbody>
+  {{range .Data}}
+    <tr class="{{.Status}}">
+      <td class="num" data-label="Lever"><span class="lever {{.Status}}{{if .Usable}} reverse{{end}}" aria-hidden="true"></span><b>{{.N}}</b></td>
+      <td data-label="Tool"><span class="plate">{{vis .Server}}<i>.</i>{{vis .Tool}}</span></td>
+      <td data-label="State"><span class="state {{.Status}}">{{if eq .Status "changed"}}locked, changed{{else}}{{.Status}}{{end}}</span></td>
+      <td class="mono" data-label="Fingerprint">{{short .ObservedHash}}</td>
+      <td class="mono num" data-label="Updated">{{time .UpdatedAt}}</td>
+      <td class="act"><a class="btn {{if ne .Status "approved"}}go{{end}}" href="{{$.Base}}/tools/show?server={{.Server}}&amp;tool={{.Tool}}">Review</a></td>
+    </tr>
+  {{end}}
+  </tbody>
+</table>
+{{else if not .Error}}
+<p class="empty">No tool has been observed yet. Tools appear once the gateway connects to a
+registered, signed backend.</p>
+{{end}}
+{{template "bottom" .}}

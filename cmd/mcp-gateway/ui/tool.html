@@ -1,0 +1,48 @@
+{{template "top" .}}
+{{$csrf := .CSRF}}{{$base := .Base}}
+{{with .Data}}{{if .Server}}
+<p class="imperative">Read it as a model will. Then approve this fingerprint, or leave it locked.</p>
+<div class="measure">
+
+{{if eq .Status "changed"}}
+<div class="collar" role="alert">
+  <b>Locked: changed after approval.</b>
+  <p>A definition an operator already approved was replaced. A tool's description is handed to a
+  model as instructions, and rewriting an approved one is how a poisoned tool gets past an
+  approval that already happened. The diff is at the end.</p>
+</div>
+{{end}}
+
+<dl class="facts">
+  <div><dt>State</dt><dd><span class="state {{.Status}}">{{if eq .Status "changed"}}locked, changed{{else}}{{.Status}}{{end}}</span></dd></div>
+  <div><dt>Shown fingerprint</dt><dd class="mono">sha256:{{.Fingerprint}}</dd></div>
+</dl>
+
+<pre class="definition" aria-label="Definition as tool show prints it">{{range lines .Review}}<span class="{{.Class}}">{{range .Segs}}{{if .Hidden}}<mark title="hidden code point">{{.Text}}</mark>{{else}}{{.Text}}{{end}}{{end}}</span>
+{{end}}</pre>
+</div>
+
+<div class="levers">
+  {{if and .Shown (not .Usable)}}
+  <form method="post" action="{{$base}}/tools/approve" class="pull">
+    <input type="hidden" name="csrf" value="{{$csrf}}">
+    <input type="hidden" name="server" value="{{.Server}}">
+    <input type="hidden" name="tool" value="{{.Tool}}">
+    <input type="hidden" name="fingerprint" value="{{.Fingerprint}}">
+    <button class="btn go">Approve sha256:{{short .Fingerprint}}</button>
+    <small>Pins exactly the definition above. If the backend advertises anything else by the
+    time you press, nothing is approved.</small>
+  </form>
+  {{end}}
+  {{if eq .Status "approved"}}
+  <form method="post" action="{{$base}}/tools/revoke">
+    <input type="hidden" name="csrf" value="{{$csrf}}">
+    <input type="hidden" name="server" value="{{.Server}}">
+    <input type="hidden" name="tool" value="{{.Tool}}">
+    <button class="btn stop">Revoke approval</button>
+  </form>
+  {{end}}
+  <a class="btn" href="{{$base}}/tools">Back to tools</a>
+</div>
+{{end}}{{end}}
+{{template "bottom" .}}

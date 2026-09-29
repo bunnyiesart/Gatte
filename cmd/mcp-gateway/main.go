@@ -81,6 +81,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return cmdQuota(rest, stdout, stderr)
 	case "access":
 		return cmdAccess(rest, stdout, stderr)
+	case "ui":
+		return cmdUI(rest, stdout, stderr)
 	case "version":
 		fmt.Fprintln(stdout, version())
 		return exitOK
@@ -108,6 +110,7 @@ Commands:
   audit        Read the audit trail.
   quota        Show the declared limits and what each analyst has spent.
   access       Block or unblock one analyst at once, or list who is blocked.
+  ui           Serve the operator console as a web page on loopback.
   version      Print the build version.
 
 Every command except sign -generate-key takes -config (default:

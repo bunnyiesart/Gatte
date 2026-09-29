@@ -1,0 +1,53 @@
+{{template "top" .}}
+<p class="imperative">Clear what is locked before anything else.</p>
+{{with .Data}}
+<section class="diagram" aria-label="Backends and their tools">
+  {{range $sec := .Sections}}
+  <div class="section">
+    <div class="track {{if not .Signed}}unsigned{{end}}">
+      <span class="section-name">{{vis .Name}}</span>
+      {{if not .Signed}}<span class="section-note">not signed, not served</span>{{end}}
+    </div>
+    <ol class="marks">
+      {{range .Levers}}
+      <li><a class="mark {{.Status}}{{if and $sec.Signed .Usable}} lit{{end}}" href="{{$.Base}}/tools/show?server={{.Server}}&amp;tool={{.Tool}}">
+        <b>{{.N}}</b><span>{{vis .Tool}}</span></a></li>
+      {{else}}
+      <li class="none">no tool observed</li>
+      {{end}}
+    </ol>
+  </div>
+  {{else}}
+  <p class="empty">No backend is registered. Register and sign one in the terminal; its tools appear here once the gateway connects.</p>
+  {{end}}
+  <ul class="legend" aria-label="Legend">
+    <li><i class="mark lit"></i>served: approved, on a signed backend</li>
+    <li><i class="mark"></i>not served: awaiting approval, or its backend is unsigned</li>
+    <li><i class="mark changed"><b></b></i>locked: changed after approval</li>
+  </ul>
+</section>
+
+<p class="statusline">
+  <a href="{{$.Base}}/tools" class="{{if .Changed}}alarm{{end}}"><b>{{.Changed}}</b> changed</a>
+  <a href="{{$.Base}}/tools"><b>{{.Pending}}</b> awaiting approval</a>
+  <a href="{{$.Base}}/tools"><b>{{.Approved}}</b> approved</a>
+  <a href="{{$.Base}}/upstreams" class="{{if .Unsigned}}alarm{{end}}"><b>{{.Upstreams}}</b> backends{{if .Unsigned}}, {{.Unsigned}} unsigned{{end}}</a>
+  <a href="{{$.Base}}/access"><b>{{.Blocked}}</b> blocked</a>
+</p>
+
+<h2>Latest refusals</h2>
+{{if .Denied}}
+<table class="register">
+  <thead><tr><th>Time</th><th>Analyst</th><th>Tool</th><th>Reason</th></tr></thead>
+  <tbody>
+  {{range .Denied}}
+    <tr><td class="mono num" data-label="Time">{{time .Timestamp}}</td><td data-label="Analyst">{{vis .Analyst}}</td><td class="mono" data-label="Tool">{{vis .Tool}}</td><td data-label="Reason">{{vis .Reason}}</td></tr>
+  {{end}}
+  </tbody>
+</table>
+<p><a class="more" href="{{$.Base}}/audit?outcome=denied">Every refusal in the audit trail</a></p>
+{{else}}
+<p class="empty">No refusal is on the trail.</p>
+{{end}}
+{{end}}
+{{template "bottom" .}}

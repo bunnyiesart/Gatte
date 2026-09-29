@@ -19,8 +19,13 @@ func TestReview_ALiteralEscapeAndARealHiddenCodePointAreDrawnApart(t *testing.T)
 	}
 }
 
+// A description's line breaks arrive as newline segments (the contract);
+// a hidden U+000A, which only a single-line field can carry, stays a mark.
 func TestReview_ADescriptionKeepsItsLineBreaks(t *testing.T) {
-	lines := splitLines([]adminapi.Segment{{Kind: adminapi.SegmentText, Text: "one"}, {Kind: adminapi.SegmentHidden, CodePoint: "U+000A"}, {Kind: adminapi.SegmentText, Text: "two"}})
+	if got := splitLines([]adminapi.Segment{{Kind: adminapi.SegmentHidden, CodePoint: "U+000A"}}); len(got) != 1 {
+		t.Fatalf("a hidden U+000A split the line: %+v", got)
+	}
+	lines := splitLines([]adminapi.Segment{{Kind: adminapi.SegmentText, Text: "one"}, {Kind: adminapi.SegmentNewline}, {Kind: adminapi.SegmentText, Text: "two"}})
 	if len(lines) != 2 || lines[0][0].Text != "one" || lines[1][0].Text != "two" {
 		t.Fatalf("lines = %+v", lines)
 	}

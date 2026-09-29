@@ -51,6 +51,29 @@ func Segments(s string) []adminapi.Segment {
 // TextOf is a value and its segments.
 func TextOf(s string) *adminapi.Text { return &adminapi.Text{Raw: s, Segments: Segments(s)} }
 
+// MultilineSegments is Segments for a field whose line breaks are its own
+// structure, such as a tool's description: "\n" and "\r\n" become newline
+// segments, and everything else, a lone "\r" included, is segmented as
+// Segments does.
+func MultilineSegments(s string) []adminapi.Segment {
+	out := []adminapi.Segment{}
+	for i, line := range strings.Split(s, "\n") {
+		if i > 0 {
+			out = append(out, adminapi.Segment{Kind: adminapi.SegmentNewline})
+		}
+		if i < strings.Count(s, "\n") {
+			line = strings.TrimSuffix(line, "\r")
+		}
+		out = append(out, Segments(line)...)
+	}
+	return out
+}
+
+// MultilineTextOf is a multi-line value and its segments.
+func MultilineTextOf(s string) *adminapi.Text {
+	return &adminapi.Text{Raw: s, Segments: MultilineSegments(s)}
+}
+
 // Line is one line of a definition's canonical form: raw text and its
 // display depth (0 for a label, 1 for content under one).
 type Line struct {

@@ -419,14 +419,16 @@ components:
         bytes. `text` is ordinary text to escape and draw; `hidden` is one
         code point a screen would not show (draw `code_point` visibly,
         e.g. as `\u{202E}`); `invalid_byte` is one byte that is not UTF-8
-        (draw `byte` visibly, e.g. as `\x{FF}`). A literal backslash
-        sequence in the backend's text is a `text` segment, never `hidden`.
+        (draw `byte` visibly, e.g. as `\x{FF}`); `newline` is a line break
+        in a multi-line field (a tool's description), structure to draw as a
+        break, never an alarm. A literal backslash sequence in the backend's
+        text is a `text` segment, never `hidden`.
       required: [kind]
       properties:
         kind:
           type: string
           x-gatte-open-enum: true
-          enum: [text, hidden, invalid_byte]
+          enum: [text, hidden, invalid_byte, newline]
         text:
           type: string
           description: Set for `text`.

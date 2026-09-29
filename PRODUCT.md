@@ -33,11 +33,13 @@ part of the claim: what it does not cover is stated next to what it does.
 
 ## Operating Context
 
-- The console is `mcp-gateway ui`, a foreground command run as the service
-  account; it binds loopback only and lives only while an operator runs it.
-- Every action on the page is the CLI command of the same name, and the page
-  shows what the command printed. Registering and signing a backend stay in
-  the terminal.
+- The console is `mcp-gateway ui`, a foreground command the operator runs as
+  themselves; it binds loopback only and lives only while an operator runs
+  it. It is an optional client of the management API (`mcp-gateway admin`),
+  and a binary built with `-tags nofront` has no console at all.
+- Every action on the page is the management API's action of the same name,
+  the one the CLI commands call too, and the page shows what the backend
+  answered. Registering and signing a backend stay in the terminal.
 - Tool definitions are untrusted text written by backends; hidden code points
   are shown as `\u{XXXX}` and a changed tool is shown as a diff against the
   approved one.

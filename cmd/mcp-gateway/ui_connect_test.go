@@ -18,6 +18,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/bunnyiesart/Gatte/internal/admin"
 )
 
 // withConnect configures the connect scripts on e, optionally with a CA
@@ -52,12 +54,12 @@ func TestConnectScripts_CarryTheGatewayAndTheClientAndNothingElse(t *testing.T) 
 	for _, withCA := range []bool{false, true} {
 		e := newOpTestEnv(t)
 		withConnect(t, e, withCA)
-		info, err := uiConnectInfo(e.cfg, "ana.souza", time.Now())
+		info, err := admin.ConnectInfoOf(e.cfg, "ana.souza", time.Now())
 		if err != nil || !info.Ready {
-			t.Fatalf("uiConnectInfo: %+v, %v", info, err)
+			t.Fatalf("ConnectInfoOf: %+v, %v", info, err)
 		}
 		for _, osName := range []string{"macos", "linux", "windows"} {
-			text, name, err := uiRenderScript(info, osName)
+			text, name, err := admin.RenderScript(info, osName)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -95,12 +97,12 @@ func TestConnectScripts_RefuseAnAudienceThatCouldBreakOutOfAQuote(t *testing.T) 
 	withConnect(t, e, false)
 	for _, bad := range []string{"https://mcp.example.internal/mcp'; touch x; '", "http://mcp.example.internal/mcp", "https://mcp.example.internal/a b"} {
 		e.cfg.OIDC.Audience = bad
-		if _, err := uiConnectInfo(e.cfg, "", time.Now()); err == nil {
+		if _, err := admin.ConnectInfoOf(e.cfg, "", time.Now()); err == nil {
 			t.Errorf("audience %q reached a script", bad)
 		}
 	}
 	e.cfg.OIDC.Audience = "https://mcp.example.internal/mcp"
-	if _, err := uiConnectInfo(e.cfg, "ana'; x", time.Now()); err == nil {
+	if _, err := admin.ConnectInfoOf(e.cfg, "ana'; x", time.Now()); err == nil {
 		t.Error("a username with a quote reached a script")
 	}
 }
@@ -171,8 +173,8 @@ func TestUI_TheAssistantDoesNotExistWithoutManageUsers(t *testing.T) {
 
 func TestSuggestUsername(t *testing.T) {
 	for in, want := range map[string]string{"Ana Souza": "ana.souza", "João da Silva": "joao.da.silva", "  Bruno  ": "bruno", "Ç-ã": "c.a"} {
-		if got := uiSuggestUsername(in); got != want {
-			t.Errorf("uiSuggestUsername(%q) = %q, want %q", in, got, want)
+		if got := admin.SuggestUsername(in); got != want {
+			t.Errorf("admin.SuggestUsername(%q) = %q, want %q", in, got, want)
 		}
 	}
 }
@@ -184,8 +186,8 @@ func TestSuggestUsername(t *testing.T) {
 func TestConnectScript_RunsAndRunningItTwiceIsHarmless(t *testing.T) {
 	e := newOpTestEnv(t)
 	withConnect(t, e, true)
-	info, _ := uiConnectInfo(e.cfg, "ana.souza", time.Now())
-	text, _, _ := uiRenderScript(info, "macos")
+	info, _ := admin.ConnectInfoOf(e.cfg, "ana.souza", time.Now())
+	text, _, _ := admin.RenderScript(info, "macos")
 	dir := t.TempDir()
 	home, bin := filepath.Join(dir, "home"), filepath.Join(dir, "bin")
 	for _, d := range []string{home, bin} {

@@ -12,7 +12,6 @@ import (
 	"github.com/bunnyiesart/Gatte/internal/admin"
 	"github.com/bunnyiesart/Gatte/internal/quarantine"
 	"github.com/bunnyiesart/Gatte/internal/visible"
-	"github.com/bunnyiesart/Gatte/pkg/adminapi"
 )
 
 // toolShow prints what one quarantined tool advertises and what was
@@ -78,39 +77,4 @@ func getForConsole(e *opEnv, server, tool, verb string) (quarantine.Tool, int, b
 // e.stderr.
 func writeReview(e *opEnv, w io.Writer, t quarantine.Tool) bool {
 	return admin.WriteReview(e.ctx(), e.tools(), w, e.stderr, t)
-}
-
-// definitionLines is a definition as tool show prints it, one escaped line
-// each, and the number of hidden code points in it.
-func definitionLines(t quarantine.ToolIdentity) ([]string, int) {
-	lines, hidden := admin.DefinitionLines(t)
-	out := make([]string, len(lines))
-	for i, l := range lines {
-		out[i] = l.Escaped()
-	}
-	return out, hidden
-}
-
-// reviewDiff is the approved-to-observed line diff as tool show prints it:
-// "  " for a line in both, "- " for one only approved, "+ " for one only
-// observed.
-func reviewDiff(approved, observed quarantine.ToolIdentity) []string {
-	a, _ := admin.DefinitionLines(approved)
-	b, _ := admin.DefinitionLines(observed)
-	diff, err := admin.LineDiff(a, b)
-	if err != nil {
-		return []string{"  (" + err.Error() + " above)"}
-	}
-	out := make([]string, len(diff))
-	for i, d := range diff {
-		mark := "  "
-		switch d.Op {
-		case adminapi.DiffAdd:
-			mark = "+ "
-		case adminapi.DiffDel:
-			mark = "- "
-		}
-		out[i] = mark + d.Line.Escaped()
-	}
-	return out
 }

@@ -27,12 +27,12 @@ const peopleUsersFixture = `users:
     groups: [blue-ir]
 `
 
-// newPeopleTest is a logged-in console whose configuration has two roles,
-// with -manage-users switched on over a temporary Authelia users file when
-// manage is true.
-func newPeopleTest(t *testing.T, manage bool) (opTestEnv, *uiServer, *http.Cookie, string) {
+// newPeopleTest is a logged-in console whose configuration has two roles
+// and a temporary Authelia users file, with the accounts socket served and
+// opened (-manage-users) when manage is true.
+func newPeopleTest(t *testing.T, manage bool) (opTestEnv, *uiHarness, *http.Cookie, string) {
 	t.Helper()
-	e, s, cookie := newUITest(t)
+	e := newOpTestEnv(t)
 	e.cfg.Roles = []config.Role{
 		{Name: "ir-lead", Tools: []string{"casemgmt.create_case"}},
 		{Name: "tier1-analyst", Grants: map[string][]string{"logsearch": {"search_relative"}}},
@@ -46,13 +46,10 @@ func newPeopleTest(t *testing.T, manage bool) (opTestEnv, *uiServer, *http.Cooki
 	if err := os.WriteFile(path, []byte(strings.NewReplacer("LAB_HASH", hash, "PWKEY", "pass"+"word").Replace(peopleUsersFixture)), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if manage {
-		s.enableAccounts(autheliafile.New(path))
-	}
-	return e, s, cookie, path
+	e.cfg.IdP.UsersFile = path
+	s := newUIFront(t, e, manage)
+	return e, s, uiLogin(t, s), path
 }
-
-func samePost(r *http.Request) { r.Header.Set("Origin", "http://127.0.0.1:8090") }
 
 func TestUI_PeopleShowsRolesTheirGroupsAndWhoWasSeen(t *testing.T) {
 	e, s, cookie, _ := newPeopleTest(t, false)
@@ -122,7 +119,7 @@ func TestUI_AddingAPersonWritesTheIdPShowsThePasswordOnceAndAuditsWithoutIt(t *t
 		if strings.Contains(r.Reason, pw) || strings.Contains(r.Tool, pw) {
 			t.Fatal("the one-time password reached the audit trail")
 		}
-		if r.Tool == accountAddTool && r.AnalystIdentity == "(operator:ana.ops)" && strings.Contains(r.Reason, `"carla"`) && strings.Contains(r.Reason, "blue-tier1") {
+		if r.Tool == "(account add)" && r.AnalystIdentity == "(operator:ana.ops)" && strings.Contains(r.Reason, `"carla"`) && strings.Contains(r.Reason, "blue-tier1") {
 			found = true
 		}
 	}
@@ -175,18 +172,26 @@ func TestUI_GroupsDisableEnableAndResetChangeTheAccount(t *testing.T) {
 	}
 }
 
-func TestUI_ManageUsersRefusesAConsoleThatIsNotRoot(t *testing.T) {
-	orig := uiGeteuid
-	uiGeteuid = func() int { return 1000 }
-	t.Cleanup(func() { uiGeteuid = orig })
-	e, s, _, path := newPeopleTest(t, false)
-	e.cfg.IdP.UsersFile = path
-	var stderr bytes.Buffer
-	if _, ok := uiEnableManage(s, e.opEnv, &stderr); ok || s.accounts != nil {
-		t.Fatal("-manage-users was enabled in a process that is not root")
+// TestUI_ManageUsersRefusesAnAccountsSocketNotServedByRoot: -manage-users
+// opens the accounts socket, and the console refuses one whose server is
+// not root, so a socket another account put in place cannot collect the
+// accounts an operator creates (design/adr/0040 §4).
+func TestUI_ManageUsersRefusesAnAccountsSocketNotServedByRoot(t *testing.T) {
+	if os.Geteuid() == 0 {
+		// As root, this test's backend IS root's; the refusal of any other
+		// server is pkg/adminapi's TestClient_RefusesAnAccountsSocketServedByAnyoneButRoot.
+		return
 	}
-	if !strings.Contains(stderr.String(), "runs only as root") {
-		t.Fatalf("refusal does not say why: %s", stderr.String())
+	e := newOpTestEnv(t)
+	op := uiServeBackend(t, e, "operator")
+	acc := uiServeBackend(t, e, "accounts")
+	var out, errb bytes.Buffer
+	code := runUI(context.Background(), uiOptions{Listen: "127.0.0.1:0", Socket: op, AccountsSocket: acc, Manage: true}, &out, &errb)
+	if code != exitCannotRun || !strings.Contains(errb.String(), "not root") {
+		t.Fatalf("ui -manage-users against a non-root accounts socket: exit %d\n%s", code, errb.String())
+	}
+	if strings.Contains(out.String(), "/login?token=") {
+		t.Fatal("ui printed a login link although it refused the accounts socket")
 	}
 }
 

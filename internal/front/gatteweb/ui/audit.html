@@ -26,7 +26,7 @@
     {{range .Records}}
       <tr>
         <td class="muted num" data-label="Time">{{time .Timestamp}}</td>
-        <td data-label="Analyst">{{if .AnalystName}}{{vis .AnalystName}}<span class="cell-sub mono">{{vis .Analyst}}</span>{{else}}<span class="mono">{{vis .Analyst}}</span>{{end}}</td>
+        <td data-label="Analyst">{{if .AnalystName}}{{vis .AnalystName}}<span class="cell-sub mono">{{vis .AnalystIdentity}}</span>{{else}}<span class="mono">{{vis .AnalystIdentity}}</span>{{end}}</td>
         <td class="mono" data-label="Tool">{{vis .Tool}}</td>
         <td data-label="Outcome">{{if eq .Outcome "allowed"}}<span class="badge ok">Allowed</span>{{else if eq .Outcome "denied"}}<span class="badge danger">Denied</span>{{else}}<span class="badge danger">Failed</span>{{end}}</td>
         <td class="muted" data-label="Reason">{{vis (dash .Reason)}}</td>

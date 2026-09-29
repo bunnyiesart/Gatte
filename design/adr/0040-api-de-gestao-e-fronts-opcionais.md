@@ -1,12 +1,11 @@
 # 0040. API de gestão e fronts opcionais
 
-**Status:** Accepted — 29 set 2026, para o backend: §1–§5 e §7
-(`mcp-gateway admin`, `internal/admin`, `internal/peercred`,
-`pkg/adminapi`, `pkg/frontkit`, `-tags nofront`). §6, o front do Gatte como
-cliente da API (`internal/front/gatteweb`), é a mudança seguinte; até ela o
-`ui` chama o mesmo serviço no próprio processo e o README ainda o descreve
-rodando como o usuário de serviço. As diferenças entre o desenho e o que
-entrou estão em "Notas da implementação", no fim.
+**Status:** Accepted — 29 set 2026. O backend (§1–§5 e §7: `mcp-gateway
+admin`, `internal/admin`, `internal/peercred`, `pkg/adminapi`,
+`pkg/frontkit`, `-tags nofront`) entrou primeiro; §6, o front do Gatte como
+cliente da API (`internal/front/gatteweb`, `ui -socket`), entrou em seguida.
+As diferenças entre o desenho e o que entrou estão em "Notas da
+implementação", no fim.
 
 ## Contexto
 
@@ -426,8 +425,38 @@ O que a implementação decidiu além do texto acima, ou mudou nele:
   a mesma do `audit -verify`; o `audit` do CLI continua por timestamp.
 - Trocar grupos para os mesmos, desativar uma conta desativada e ativar
   uma ativa respondem `changed: false` e não gravam linha.
-- O `pkg/frontkit` saiu do `ui.go`; o `ui` ainda tem a própria cópia das
-  defesas até a conversão de §6, que a remove.
+- O `pkg/frontkit` saiu do `ui.go`. Na conversão de §6 o `ui` perdeu a
+  própria cópia das defesas, o `keepDBOwner` e o diff por texto
+  (`uiDiffHunks`): a página desenha os trechos e os segmentos de
+  `ToolReview`, e o prefixo `+ `/`- ` e o recuo da definição são postos
+  pelo front na hora de desenhar.
+- §6, como entrou: `internal/front/gatteweb` recebe um `*adminapi.Client`
+  do socket do operador, um do socket de contas (nulo sem
+  `-manage-users`, e as páginas de conta são 404) e o `*frontkit.Kit`, e
+  serve por `f.kit.Serve`. O `cmd/mcp-gateway/ui.go` só liga isso: cria o
+  kit, chama `whoami` no socket do operador (sem backend, diz como subir e
+  sai antes de imprimir o link), abre o de contas com `NewAccounts` (que
+  recusa servidor que não seja root) e imprime o nome que o backend deu ao
+  operador. `-config` é recusado com o caminho do socket.
+- Os testes de fitness são três (`internal/fitness/front_test.go`): o grafo
+  de imports do front (só a biblioteca padrão, `pkg/adminapi` e
+  `pkg/frontkit`, e nenhuma dependência transitiva em store, config ou
+  serviço), os arquivos `ui*.go` do comando (os mesmos imports, e nenhum
+  `run*`, `opEnv`, `loadConfig` ou `openStore`), e que nenhum arquivo de front
+  abra listener ou `http.Server` fora do `kit.Serve`.
+- O `frontkit.DrawSegments` marca o code point escondido com
+  `title="Hidden character"`, como a página já fazia.
+- Criar conta não é idempotente: se a resposta se perde, o front consulta a
+  conta e, se ela existe, diz que a senha se perdeu com a resposta e manda
+  gerar outra (Reset password), sem tentar de novo por conta própria.
+- Os testes do `ui` rodam contra um backend real (`adminhttp` sobre o banco
+  do teste) num socket temporário, e o front por HTTP de verdade num porto
+  de loopback. O socket de contas do teste é do usuário do teste, então o
+  teste o abre com o cliente do operador; o `NewAccounts` recusaria. A
+  recusa é o próprio teste `TestUI_ManageUsersRefusesAnAccountsSocketNotServedByRoot`.
+- Não exercitado ainda: o backend de contas de ponta a ponta como root (a
+  troca de credencial do `-audit-writer` e o caminho do systemd). Precisa
+  de um teste numa VM Linux como root.
 - O contrato é conferido por
   `TestContract_EveryDocumentedOperationIsServedAndEveryServedRouteIsDocumented`
   e `TestClient_CoversEveryOperationOfTheContractAgainstTheRealBackend`; a

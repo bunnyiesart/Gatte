@@ -230,6 +230,24 @@ optional field only when its feature is listed; `Client` omits optional
 fields left at their zero value. A breaking change becomes `/v2`, served
 beside `/v1` for at least one release.
 
+## The Gatte web front, as an example
+
+`mcp-gateway ui` is a front like any other: `internal/front/gatteweb` builds
+its pages from `pkg/adminapi` calls and serves them through `pkg/frontkit`,
+and a fitness test (`internal/fitness/front_test.go`) holds it to importing
+nothing else of Gatte and to serving through `kit.Serve` only. The operator
+runs it as themselves:
+
+```sh
+mcp-gateway ui [-socket PATH] [-listen 127.0.0.1:8090]
+sudo mcp-gateway ui -manage-users [-accounts-socket PATH]   # also the accounts socket
+```
+
+It reads no `config.toml` and opens no database. It checks the operator
+socket with `whoami` before printing its login link, and with
+`-manage-users` it opens the accounts socket with `NewAccounts`, so a
+socket not served by root is refused before any page exists.
+
 ## Building without a front
 
 `go build -tags nofront ./cmd/mcp-gateway` produces the gateway, the

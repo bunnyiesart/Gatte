@@ -342,11 +342,11 @@ func DrawSegments(segs []adminapi.Segment) template.HTML {
 		case adminapi.SegmentText:
 			b.WriteString(html.EscapeString(escapeVisible(s.Text)))
 		case adminapi.SegmentHidden:
-			b.WriteString(`<mark class="hidden-cp">\u{` + html.EscapeString(strings.TrimPrefix(s.CodePoint, "U+")) + `}</mark>`)
+			b.WriteString(`<mark class="hidden-cp" title="Hidden character">\u{` + html.EscapeString(strings.TrimPrefix(s.CodePoint, "U+")) + `}</mark>`)
 		case adminapi.SegmentInvalidByte:
-			b.WriteString(`<mark class="hidden-cp">\x{` + html.EscapeString(s.Byte) + `}</mark>`)
+			b.WriteString(`<mark class="hidden-cp" title="Hidden character">\x{` + html.EscapeString(s.Byte) + `}</mark>`)
 		default:
-			b.WriteString(`<mark class="hidden-cp">` + html.EscapeString(escapeVisible(s.Text+s.CodePoint+s.Byte)) + `</mark>`)
+			b.WriteString(`<mark class="hidden-cp" title="Hidden character">` + html.EscapeString(escapeVisible(s.Text+s.CodePoint+s.Byte)) + `</mark>`)
 		}
 	}
 	return template.HTML(b.String()) // #nosec G203 -- every piece above is escaped

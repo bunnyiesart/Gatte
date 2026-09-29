@@ -75,7 +75,7 @@ type opEnv struct {
 	// made absolute. Empty only in tests that build an opEnv by hand.
 	configPath string
 	// actor, when set, is who this command's operator rows are attributed
-	// to (the web console sets it); otherwise cliActor decides.
+	// to; otherwise cliActor decides.
 	actor admin.Actor
 }
 

@@ -16,14 +16,14 @@
 {{if not .Diff}}
 <section>
   <h2>Description</h2>
-  <div class="group prose">{{range .Description}}<p>{{range .Segs}}{{if .Hidden}}<mark title="Hidden character">{{.Text}}</mark>{{else}}{{.Text}}{{end}}{{end}}</p>{{end}}</div>
+  <div class="group prose">{{range .Description}}<p>{{.HTML}}</p>{{end}}</div>
 </section>
 
 {{end}}
 {{if .Diff}}
 <section>
   <h2>What changed</h2>
-  <div class="group diff">{{range .Diff}}<div class="line {{.Class}}">{{range .Segs}}{{if .Hidden}}<mark title="Hidden character">{{.Text}}</mark>{{else}}{{.Text}}{{end}}{{end}}</div>{{end}}</div>
+  <div class="group diff">{{range .Diff}}<div class="line {{.Class}}">{{.HTML}}</div>{{end}}</div>
 </section>
 {{end}}
 

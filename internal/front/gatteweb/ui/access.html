@@ -24,7 +24,7 @@
       <span class="lead-icon changed">{{template "warn"}}</span>
       <span class="row-text">
         <span class="row-title mono">{{vis .Subject}}</span>
-        <span class="row-detail">{{vis (dash .Reason)}} · by {{vis .By}} · {{time .At}}</span>
+        <span class="row-detail">{{vis (dash .Reason)}} · by {{vis .BlockedBy}} · {{time .BlockedAt}}</span>
       </span>
       <form method="post" action="{{$.Base}}/access/unblock">
         <input type="hidden" name="csrf" value="{{$csrf}}">

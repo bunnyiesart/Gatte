@@ -30,7 +30,7 @@
 </section>
 
 {{else}}
-<div class="notice" role="note">{{template "dot"}}<p>To add people or change their groups, run the console as root: <code>sudo mcp-gateway ui -manage-users</code>. The normal console can't edit accounts, on purpose.</p></div>
+<div class="notice" role="note">{{template "dot"}}<p>To add people or change their groups, start the console with the accounts socket: <code>sudo mcp-gateway ui -manage-users</code>, or without sudo if you're in the accounts group. The normal console can't edit accounts, on purpose.</p></div>
 {{end}}
 
 <section>
@@ -59,7 +59,7 @@
       {{range .Seen}}
         <tr>
           <td class="t-title" data-label="Person">{{if .Name}}{{vis .Name}} <span class="cell-sub mono">{{vis .Identity}}</span>{{else}}<span class="mono">{{vis .Identity}}</span>{{end}}</td>
-          <td class="muted num t-sub" data-label="Last call">{{time .Last}}</td>
+          <td class="muted num t-sub" data-label="Last call">{{time .LastCall}}</td>
           <td class="num t-hide" data-label="Calls">{{.Calls}}</td>
           <td class="end t-badge">{{if .Blocked}}<span class="badge danger">{{template "warn"}}Blocked</span>{{else}}<form method="post" action="{{$.Base}}/access/block"><input type="hidden" name="csrf" value="{{$csrf}}"><input type="hidden" name="subject" value="{{.Identity}}"><input type="hidden" name="reason" value="from the People page"><button class="btn small">Block</button></form>{{end}}</td>
         </tr>

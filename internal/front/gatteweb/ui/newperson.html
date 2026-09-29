@@ -27,13 +27,13 @@
   <input type="hidden" name="email" value="{{.Email}}">
   <p class="lead-text">What should <b>{{vis .DisplayName}}</b> be able to do?</p>
   <div class="cards">
-    {{range .Groups}}{{$role := index $.Data.Roles .Role}}
+    {{range .Groups}}
     <label class="card">
       <input type="checkbox" name="group" value="{{.Name}}" {{if index $.Data.Chosen .Name}}checked{{end}}>
       <span class="card-check" aria-hidden="true">{{template "check"}}</span>
       <span class="card-title">{{vis .Role}}</span>
-      <span class="card-sub">{{len $role.Tools}} tools · group <span class="mono">{{vis .Name}}</span></span>
-      {{if $role.Tools}}<span class="card-tools">{{range $i, $t := $role.Tools}}{{if lt $i 4}}<span class="mono">{{vis $t}}</span>{{end}}{{end}}{{if gt (len $role.Tools) 4}}<span>+{{sub (len $role.Tools) 4}} more</span>{{end}}</span>{{end}}
+      <span class="card-sub">{{len .Tools}} tools · group <span class="mono">{{vis .Name}}</span></span>
+      {{if .Tools}}<span class="card-tools">{{range $i, $t := .Tools}}{{if lt $i 4}}<span class="mono">{{vis $t}}</span>{{end}}{{end}}{{if gt (len .Tools) 4}}<span>+{{sub (len .Tools) 4}} more</span>{{end}}</span>{{end}}
     </label>
     {{else}}
     <div class="group empty-state"><p><b>No group maps to a role yet.</b> Add one under [group_to_role] in the configuration file.</p></div>

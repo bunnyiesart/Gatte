@@ -10,7 +10,7 @@
     <tbody>
     {{range .Data}}
       <tr>
-        <td data-label="Analyst">{{vis .Analyst}}</td>
+        <td data-label="Analyst">{{vis .AnalystIdentity}}</td>
         <td data-label="Account">{{vis .Account}}</td>
         <td class="muted num" data-label="Since">{{time .WindowStart}}</td>
         <td class="num" data-label="Used">{{.Used}}{{if .Limit}} of {{.Limit}}{{end}}</td>

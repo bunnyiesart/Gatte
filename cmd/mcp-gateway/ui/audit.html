@@ -1,50 +1,51 @@
 {{template "top" .}}
 {{$csrf := .CSRF}}
-<p class="imperative">Every call, refusal and failure is here, written before the call ran.</p>
 {{with .Data}}
-<form class="bench" method="get" action="{{$.Base}}/audit">
-  <label>Analyst <input name="subject" value="{{.Subject}}" spellcheck="false" autocomplete="off"></label>
-  <label>Outcome
-    <select name="outcome">
-      <option value="" {{if eq .Outcome ""}}selected{{end}}>any</option>
-      <option value="allowed" {{if eq .Outcome "allowed"}}selected{{end}}>allowed</option>
-      <option value="denied" {{if eq .Outcome "denied"}}selected{{end}}>denied</option>
-      <option value="failed" {{if eq .Outcome "failed"}}selected{{end}}>failed</option>
-    </select>
-  </label>
-  <label>Newest <input name="limit" type="number" min="1" max="5000" value="{{.Limit}}" class="short"></label>
+<div class="head">
+  <h1>Audit</h1>
+  <p class="sub">Every call, refusal and failure, recorded before the call runs.</p>
+</div>
+
+<form class="toolbar" method="get" action="{{$.Base}}/audit">
+  <input name="subject" value="{{.Subject}}" spellcheck="false" autocomplete="off" placeholder="Analyst" aria-label="Analyst">
+  <select name="outcome" aria-label="Outcome">
+    <option value="" {{if eq .Outcome ""}}selected{{end}}>All outcomes</option>
+    <option value="allowed" {{if eq .Outcome "allowed"}}selected{{end}}>Allowed</option>
+    <option value="denied" {{if eq .Outcome "denied"}}selected{{end}}>Denied</option>
+    <option value="failed" {{if eq .Outcome "failed"}}selected{{end}}>Failed</option>
+  </select>
+  <label class="unit"><input name="limit" type="number" min="1" max="5000" value="{{.Limit}}" class="narrow">rows</label>
   <button class="btn">Filter</button>
 </form>
 
 {{if .Records}}
-<table class="register">
-  <thead><tr><th>Time</th><th>Analyst</th><th>Tool</th><th>Backend</th><th>Outcome</th><th>Reason</th></tr></thead>
-  <tbody>
-  {{range .Records}}
-    <tr>
-      <td class="mono num" data-label="Time">{{time .Timestamp}}</td>
-      <td data-label="Analyst">{{vis .Analyst}}</td>
-      <td class="mono" data-label="Tool">{{vis .Tool}}</td>
-      <td data-label="Backend">{{vis .Upstream}}</td>
-      <td data-label="Outcome"><span class="state {{.Outcome}}">{{.Outcome}}</span></td>
-      <td data-label="Reason">{{vis (dash .Reason)}}</td>
-    </tr>
-  {{end}}
-  </tbody>
-</table>
+<div class="group">
+  <table>
+    <thead><tr><th>Time</th><th>Analyst</th><th>Tool</th><th>Outcome</th><th>Reason</th></tr></thead>
+    <tbody>
+    {{range .Records}}
+      <tr>
+        <td class="muted num" data-label="Time">{{time .Timestamp}}</td>
+        <td data-label="Analyst">{{vis .Analyst}}</td>
+        <td class="mono" data-label="Tool">{{vis .Tool}}</td>
+        <td data-label="Outcome">{{if eq .Outcome "allowed"}}<span class="badge ok">Allowed</span>{{else if eq .Outcome "denied"}}<span class="badge danger">Denied</span>{{else}}<span class="badge danger">Failed</span>{{end}}</td>
+        <td class="muted" data-label="Reason">{{vis (dash .Reason)}}</td>
+      </tr>
+    {{end}}
+    </tbody>
+  </table>
+</div>
 {{else}}
-<p class="empty">No record matches these filters.</p>
+<div class="group empty-state"><p><b>No records match.</b></p></div>
 {{end}}
 {{end}}
 
-<h2>Verify the chain</h2>
-<p class="lead">Each record carries a hash over its own fields and its predecessor's. Verifying
-finds a record edited or deleted without the hashes after it being recomputed. Paste the head
-your SIEM holds to also catch a rewritten or truncated trail.</p>
-<form class="bench" method="post" action="{{$.Base}}/audit/verify">
-  <input type="hidden" name="csrf" value="{{$csrf}}">
-  <label class="wide">Expected head <small>optional, from the SIEM's copy</small>
-    <input name="expect_head" autocomplete="off" spellcheck="false" class="mono"></label>
-  <button class="btn go">Verify</button>
-</form>
+<section>
+  <h2>Verify the trail</h2>
+  <form class="group form" method="post" action="{{$.Base}}/audit/verify">
+    <input type="hidden" name="csrf" value="{{$csrf}}">
+    <label class="field wide"><span>Expected head</span><input name="expect_head" autocomplete="off" spellcheck="false" class="mono" placeholder="Optional: the head your SIEM holds"></label>
+    <div class="form-end"><button class="btn">Verify</button></div>
+  </form>
+</section>
 {{template "bottom" .}}

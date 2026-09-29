@@ -1,53 +1,59 @@
 {{template "top" .}}
-<p class="imperative">Clear what is locked before anything else.</p>
 {{with .Data}}
-<section class="diagram" aria-label="Backends and their tools">
-  {{range $sec := .Sections}}
-  <div class="section">
-    <div class="track {{if not .Signed}}unsigned{{end}}">
-      <span class="section-name">{{vis .Name}}</span>
-      {{if not .Signed}}<span class="section-note">not signed, not served</span>{{end}}
-    </div>
-    <ol class="marks">
-      {{range .Levers}}
-      <li><a class="mark {{.Status}}{{if and $sec.Signed .Usable}} lit{{end}}" href="{{$.Base}}/tools/show?server={{.Server}}&amp;tool={{.Tool}}">
-        <b>{{.N}}</b><span>{{vis .Tool}}</span></a></li>
+<div class="head">
+  <h1>Overview</h1>
+  <p class="sub">{{.Approved}} tools served · {{.Upstreams}} backends · {{.Blocked}} blocked</p>
+</div>
+
+<section>
+  <h2>Needs attention</h2>
+  {{if .Attention}}
+  <ul class="group">
+    {{range .Attention}}
+    <li>
+      {{if eq .Kind "unsigned"}}
+      <a class="row" href="{{$.Base}}/upstreams">
       {{else}}
-      <li class="none">no tool observed</li>
+      <a class="row" href="{{$.Base}}/tools/show?server={{.Server}}&amp;tool={{.Tool}}">
       {{end}}
-    </ol>
-  </div>
-  {{else}}
-  <p class="empty">No backend is registered. Register and sign one in the terminal; its tools appear here once the gateway connects.</p>
-  {{end}}
-  <ul class="legend" aria-label="Legend">
-    <li><i class="mark lit"></i>served: approved, on a signed backend</li>
-    <li><i class="mark"></i>not served: awaiting approval, or its backend is unsigned</li>
-    <li><i class="mark changed"><b></b></i>locked: changed after approval</li>
+        <span class="lead-icon {{.Kind}}">{{if eq .Kind "pending"}}{{template "dot"}}{{else}}{{template "warn"}}{{end}}</span>
+        <span class="row-text">
+          <span class="row-title">{{vis .Title}}</span>
+          <span class="row-detail">{{.Detail}}</span>
+        </span>
+        <span class="row-action">{{if eq .Kind "unsigned"}}View{{else}}Review{{end}}</span>
+        {{template "chev"}}
+      </a>
+    </li>
+    {{end}}
   </ul>
+  {{else}}
+  <div class="group empty-state">
+    <span class="lead-icon ok">{{template "check"}}</span>
+    <p><b>Nothing needs you.</b> Every tool is approved and every backend is signed.</p>
+  </div>
+  {{end}}
 </section>
 
-<p class="statusline">
-  <a href="{{$.Base}}/tools" class="{{if .Changed}}alarm{{end}}"><b>{{.Changed}}</b> changed</a>
-  <a href="{{$.Base}}/tools"><b>{{.Pending}}</b> awaiting approval</a>
-  <a href="{{$.Base}}/tools"><b>{{.Approved}}</b> approved</a>
-  <a href="{{$.Base}}/upstreams" class="{{if .Unsigned}}alarm{{end}}"><b>{{.Upstreams}}</b> backends{{if .Unsigned}}, {{.Unsigned}} unsigned{{end}}</a>
-  <a href="{{$.Base}}/access"><b>{{.Blocked}}</b> blocked</a>
-</p>
-
-<h2>Latest refusals</h2>
-{{if .Denied}}
-<table class="register">
-  <thead><tr><th>Time</th><th>Analyst</th><th>Tool</th><th>Reason</th></tr></thead>
-  <tbody>
-  {{range .Denied}}
-    <tr><td class="mono num" data-label="Time">{{time .Timestamp}}</td><td data-label="Analyst">{{vis .Analyst}}</td><td class="mono" data-label="Tool">{{vis .Tool}}</td><td data-label="Reason">{{vis .Reason}}</td></tr>
+<section>
+  <div class="section-head">
+    <h2>Recent refusals</h2>
+    <a href="{{$.Base}}/audit?outcome=denied">See all</a>
+  </div>
+  {{if .Denied}}
+  <div class="group">
+    <table class="list">
+      <thead><tr><th>Time</th><th>Analyst</th><th>Tool</th><th>Reason</th></tr></thead>
+      <tbody>
+      {{range .Denied}}
+        <tr><td class="muted num t-sub2" data-label="Time">{{time .Timestamp}}</td><td class="t-sub" data-label="Analyst">{{vis .Analyst}}</td><td class="mono t-title" data-label="Tool">{{vis .Tool}}</td><td class="t-badge muted" data-label="Reason">{{vis .Reason}}</td></tr>
+      {{end}}
+      </tbody>
+    </table>
+  </div>
+  {{else}}
+  <p class="muted">No refusals.</p>
   {{end}}
-  </tbody>
-</table>
-<p><a class="more" href="{{$.Base}}/audit?outcome=denied">Every refusal in the audit trail</a></p>
-{{else}}
-<p class="empty">No refusal is on the trail.</p>
-{{end}}
+</section>
 {{end}}
 {{template "bottom" .}}

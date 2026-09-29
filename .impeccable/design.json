@@ -1,682 +1,974 @@
 {
   "schemaVersion": 2,
-  "generatedAt": "2026-09-29T13:58:28+00:00",
+  "generatedAt": "2026-09-29T14:24:17+00:00",
   "title": "Design System: Gatte operator console",
   "extensions": {
     "colorMeta": {
       "ground": {
         "role": "neutral",
-        "displayName": "Frame Black",
-        "canonical": "#07090c",
+        "displayName": "Black Canvas",
+        "canonical": "#f5f5f7",
         "tonalRamp": [
-          "#1c2430",
-          "#313f54",
-          "#465977",
-          "#5a749b",
-          "#7b91b2",
-          "#9eaec7",
-          "#c5cfdd",
-          "#eff2f6"
+          "#22222a",
+          "#3c3c4b",
+          "#56566b",
+          "#70708c",
+          "#9090a6",
+          "#b0b0c0",
+          "#d0d0da",
+          "#f1f1f4"
         ]
       },
-      "iron": {
+      "surface": {
         "role": "neutral",
-        "displayName": "Iron",
-        "canonical": "#0f131a",
-        "tonalRamp": [
-          "#1c2331",
-          "#313d54",
-          "#455778",
-          "#5a719b",
-          "#7a8fb2",
-          "#9eadc7",
-          "#c5cedd",
-          "#eff1f6"
-        ]
-      },
-      "iron-2": {
-        "role": "neutral",
-        "displayName": "Iron, Raised Tone",
-        "canonical": "#161b24",
-        "tonalRamp": [
-          "#1d242f",
-          "#323e52",
-          "#485875",
-          "#5d7298",
-          "#7d8fb0",
-          "#a0adc5",
-          "#c6cedc",
-          "#eff1f5"
-        ]
-      },
-      "rule": {
-        "role": "neutral",
-        "displayName": "Ledger Rule",
-        "canonical": "#252d3a",
-        "tonalRamp": [
-          "#1e242f",
-          "#343f51",
-          "#495973",
-          "#5f7495",
-          "#7f91ae",
-          "#a2aec3",
-          "#c7cfdb",
-          "#eff2f5"
-        ]
-      },
-      "rule-strong": {
-        "role": "neutral",
-        "displayName": "Ledger Rule, Strong",
-        "canonical": "#3a4558",
-        "tonalRamp": [
-          "#1e242e",
-          "#353f50",
-          "#4b5972",
-          "#617494",
-          "#8191ac",
-          "#a3aec2",
-          "#c8cfdb",
-          "#f0f2f5"
-        ]
-      },
-      "plate": {
-        "role": "neutral",
-        "displayName": "Enamel",
-        "canonical": "#e2e9f3",
-        "tonalRamp": [
-          "#162336",
-          "#273d5e",
-          "#375785",
-          "#4871ad",
-          "#6b8fc2",
-          "#93add2",
-          "#becee4",
-          "#edf1f8"
-        ]
-      },
-      "steel": {
-        "role": "neutral",
-        "displayName": "Steel",
-        "canonical": "#98a6ba",
-        "tonalRamp": [
-          "#1f252e",
-          "#35404f",
-          "#4c5b71",
-          "#627693",
-          "#8293ab",
-          "#a3b0c2",
-          "#c8cfda",
-          "#f0f2f5"
-        ]
-      },
-      "dim": {
-        "role": "neutral",
-        "displayName": "Dimmed Steel",
-        "canonical": "#7a889e",
-        "tonalRamp": [
-          "#20252c",
-          "#38404d",
-          "#505b6d",
-          "#67768e",
-          "#8693a7",
-          "#a7b0be",
-          "#cad0d8",
-          "#f0f2f4"
-        ]
-      },
-      "signal": {
-        "role": "primary",
-        "displayName": "Signal Blue",
-        "canonical": "#4d88ff",
-        "tonalRamp": [
-          "#00194c",
-          "#002c85",
-          "#003fbd",
-          "#0051f5",
-          "#2e73ff",
-          "#6699ff",
-          "#a3c2ff",
-          "#e5eeff"
-        ]
-      },
-      "signal-hover": {
-        "role": "primary",
-        "displayName": "Signal Blue, Hover",
-        "canonical": "#6d9dff",
-        "tonalRamp": [
-          "#00194c",
-          "#002c85",
-          "#003ebd",
-          "#0050f5",
-          "#2e73ff",
-          "#6698ff",
-          "#a3c1ff",
-          "#e5eeff"
-        ]
-      },
-      "signal-ink": {
-        "role": "primary",
-        "displayName": "Signal Ink",
-        "canonical": "#050d1f",
-        "tonalRamp": [
-          "#0b1c42",
-          "#123072",
-          "#1a44a2",
-          "#2258d3",
-          "#4b79e2",
-          "#7b9dea",
-          "#b0c4f2",
-          "#e9effb"
-        ]
-      },
-      "signal-text": {
-        "role": "primary",
-        "displayName": "Signal Link Text",
-        "canonical": "#8db4ff",
-        "tonalRamp": [
-          "#001a4c",
-          "#002d85",
-          "#0041bd",
-          "#0054f5",
-          "#2e75ff",
-          "#669aff",
-          "#a3c3ff",
-          "#e5eeff"
-        ]
-      },
-      "board": {
-        "role": "secondary",
-        "displayName": "Night Board Navy",
-        "canonical": "#0a1730",
-        "tonalRamp": [
-          "#0d1e3f",
-          "#17356e",
-          "#214b9c",
-          "#2a61cb",
-          "#5281db",
-          "#80a3e5",
-          "#b3c8ef",
-          "#eaf0fb"
-        ]
-      },
-      "board-2": {
-        "role": "secondary",
-        "displayName": "Board Divider",
-        "canonical": "#0f2142",
-        "tonalRamp": [
-          "#0e1f3e",
-          "#19366c",
-          "#234d9a",
-          "#2d64c7",
-          "#5583d8",
-          "#82a4e3",
-          "#b4c9ee",
-          "#eaf0fa"
-        ]
-      },
-      "board-line": {
-        "role": "secondary",
-        "displayName": "Board Rail",
-        "canonical": "#27437a",
-        "tonalRamp": [
-          "#13203a",
-          "#203764",
-          "#2e4f8f",
-          "#3b66ba",
-          "#6185cc",
-          "#8ba6da",
-          "#b9c9e9",
-          "#ecf0f9"
-        ]
-      },
-      "board-ink": {
-        "role": "secondary",
-        "displayName": "Board Lamp",
-        "canonical": "#d5e2f7",
-        "tonalRamp": [
-          "#0c2040",
-          "#15386f",
-          "#1e4f9f",
-          "#2767ce",
-          "#4f86de",
-          "#7ea6e7",
-          "#b2caf0",
-          "#eaf0fb"
-        ]
-      },
-      "board-dim": {
-        "role": "secondary",
-        "displayName": "Board Lamp, Unlit",
-        "canonical": "#7f93b8",
-        "tonalRamp": [
-          "#1b2331",
-          "#2f3d55",
-          "#435679",
-          "#57709d",
-          "#798eb4",
-          "#9dacc8",
-          "#c4cdde",
-          "#eff1f6"
-        ]
-      },
-      "board-lit-ink": {
-        "role": "secondary",
-        "displayName": "Lit Lamp Ink",
-        "canonical": "#041026",
-        "tonalRamp": [
-          "#071d45",
-          "#0d3378",
-          "#1248ab",
-          "#175ddd",
-          "#427eeb",
-          "#75a0f0",
-          "#acc6f6",
-          "#e8effd"
-        ]
-      },
-      "shelf": {
-        "role": "neutral",
-        "displayName": "Block Shelf Black",
-        "canonical": "#030406",
-        "tonalRamp": [
-          "#1a2233",
-          "#2c3b58",
-          "#3f547e",
-          "#526da3",
-          "#748bb9",
-          "#99aacc",
-          "#c2cce0",
-          "#eef1f6"
-        ]
-      },
-      "day-ground": {
-        "role": "neutral",
-        "displayName": "Frame Black (light theme)",
-        "canonical": "#eef1f6",
-        "tonalRamp": [
-          "#1a2332",
-          "#2e3d57",
-          "#41577b",
-          "#5571a0",
-          "#768eb7",
-          "#9badca",
-          "#c3cedf",
-          "#eef1f6"
-        ]
-      },
-      "day-iron": {
-        "role": "neutral",
-        "displayName": "Iron (light theme)",
+        "displayName": "Graphite Group",
         "canonical": "#ffffff",
         "tonalRamp": [
           "#262626",
-          "#424242",
-          "#5e5e5e",
-          "#7a7a7a",
-          "#969696",
-          "#b2b2b2",
-          "#d1d1d1",
+          "#434343",
+          "#616161",
+          "#7e7e7e",
+          "#9b9b9b",
+          "#b8b8b8",
+          "#d5d5d5",
           "#f2f2f2"
         ]
       },
-      "day-iron-2": {
+      "surface-raised": {
         "role": "neutral",
-        "displayName": "Iron, Raised Tone (light theme)",
-        "canonical": "#f3f5f9",
+        "displayName": "Row Hover",
+        "canonical": "#fafafc",
         "tonalRamp": [
-          "#192233",
-          "#2c3b58",
-          "#3f547e",
-          "#526da3",
-          "#748bb9",
-          "#99aacc",
-          "#c2cce0",
-          "#eef1f7"
+          "#1d1d30",
+          "#333354",
+          "#484879",
+          "#5e5e9d",
+          "#8282b4",
+          "#a6a6ca",
+          "#cbcbe0",
+          "#efeff5"
         ]
       },
-      "day-rule": {
+      "fill": {
         "role": "neutral",
-        "displayName": "Ledger Rule (light theme)",
-        "canonical": "#d2d9e4",
+        "displayName": "Control Fill",
+        "canonical": "rgba(118, 118, 128, 0.12)",
         "tonalRamp": [
-          "#1d2430",
-          "#323f53",
-          "#475976",
-          "#5c7499",
-          "#7c91b1",
-          "#9faec6",
-          "#c6cfdd",
-          "#eff2f5"
+          "#252528",
+          "#414146",
+          "#5d5d64",
+          "#797983",
+          "#97979f",
+          "#b5b5bb",
+          "#d3d3d7",
+          "#f2f2f3"
         ]
       },
-      "day-rule-strong": {
+      "fill-strong": {
         "role": "neutral",
-        "displayName": "Ledger Rule, Strong (light theme)",
-        "canonical": "#aab5c6",
+        "displayName": "Control Fill Strong",
+        "canonical": "rgba(118, 118, 128, 0.2)",
         "tonalRamp": [
-          "#1f252e",
-          "#353f4f",
-          "#4c5a71",
-          "#627593",
-          "#8292ab",
-          "#a3afc2",
-          "#c8cfda",
-          "#f0f2f5"
+          "#252528",
+          "#414146",
+          "#5d5d64",
+          "#797983",
+          "#97979f",
+          "#b5b5bb",
+          "#d3d3d7",
+          "#f2f2f3"
         ]
       },
-      "day-plate": {
+      "ink": {
         "role": "neutral",
-        "displayName": "Enamel (light theme)",
-        "canonical": "#07090c",
+        "displayName": "Ink",
+        "canonical": "#1d1d1f",
         "tonalRamp": [
-          "#1c2430",
-          "#313f54",
-          "#465977",
-          "#5a749b",
-          "#7b91b2",
-          "#9eaec7",
-          "#c5cfdd",
-          "#eff2f6"
+          "#252528",
+          "#414146",
+          "#5d5d64",
+          "#797982",
+          "#97979e",
+          "#b6b6ba",
+          "#d4d4d7",
+          "#f2f2f3"
         ]
       },
-      "day-steel": {
+      "ink-secondary": {
         "role": "neutral",
-        "displayName": "Steel (light theme)",
-        "canonical": "#465265",
+        "displayName": "Secondary Ink",
+        "canonical": "#6e6e73",
         "tonalRamp": [
-          "#1f252d",
-          "#36404e",
-          "#4d5a6f",
-          "#647591",
-          "#8392a9",
-          "#a5afc0",
-          "#c9cfd9",
-          "#f0f2f5"
+          "#252527",
+          "#424245",
+          "#5e5e63",
+          "#7b7b80",
+          "#99999d",
+          "#b6b6ba",
+          "#d4d4d6",
+          "#f2f2f3"
         ]
       },
-      "day-dim": {
+      "ink-tertiary": {
         "role": "neutral",
-        "displayName": "Dimmed Steel (light theme)",
-        "canonical": "#5b6678",
+        "displayName": "Tertiary Ink",
+        "canonical": "#66666b",
         "tonalRamp": [
-          "#21252c",
-          "#39404b",
-          "#515b6b",
-          "#6a768b",
-          "#8893a5",
-          "#a8b0bd",
-          "#cbd0d7",
-          "#f0f2f4"
+          "#252527",
+          "#424245",
+          "#5e5e63",
+          "#7b7b81",
+          "#98989d",
+          "#b6b6ba",
+          "#d4d4d6",
+          "#f2f2f3"
         ]
       },
-      "day-signal": {
+      "separator": {
+        "role": "neutral",
+        "displayName": "Hairline",
+        "canonical": "rgba(60, 60, 67, 0.16)",
+        "tonalRamp": [
+          "#242428",
+          "#404047",
+          "#5b5b66",
+          "#777785",
+          "#9595a0",
+          "#b4b4bc",
+          "#d3d3d7",
+          "#f2f2f3"
+        ]
+      },
+      "accent": {
         "role": "primary",
-        "displayName": "Signal Blue (light theme)",
-        "canonical": "#1d4fc4",
+        "displayName": "System Blue",
+        "canonical": "#0071e3",
         "tonalRamp": [
-          "#0a1b43",
-          "#112f74",
-          "#1842a4",
-          "#2056d5",
-          "#4977e4",
-          "#7a9ceb",
-          "#afc3f3",
-          "#e9eefc"
+          "#00264c",
+          "#004387",
+          "#0060c1",
+          "#007dfb",
+          "#379aff",
+          "#71b8ff",
+          "#abd5ff",
+          "#e6f2ff"
         ]
       },
-      "day-signal-hover": {
+      "accent-hover": {
         "role": "primary",
-        "displayName": "Signal Blue, Hover (light theme)",
-        "canonical": "#173f9e",
+        "displayName": "System Blue Hover",
+        "canonical": "#0077ed",
         "tonalRamp": [
-          "#0a1b43",
-          "#112e74",
-          "#1842a5",
-          "#1f55d6",
-          "#4877e4",
-          "#799bec",
-          "#afc3f3",
-          "#e9eefc"
+          "#00264c",
+          "#004487",
+          "#0061c1",
+          "#007efb",
+          "#379bff",
+          "#71b8ff",
+          "#abd5ff",
+          "#e6f2ff"
         ]
       },
-      "day-signal-ink": {
+      "accent-press": {
         "role": "primary",
-        "displayName": "Signal Ink (light theme)",
+        "displayName": "System Blue Press",
+        "canonical": "#006edb",
+        "tonalRamp": [
+          "#00264c",
+          "#004487",
+          "#0061c1",
+          "#007efb",
+          "#379bff",
+          "#71b8ff",
+          "#abd5ff",
+          "#e6f2ff"
+        ]
+      },
+      "accent-text": {
+        "role": "primary",
+        "displayName": "Blue Ink on Tint",
+        "canonical": "#0062c4",
+        "tonalRamp": [
+          "#00264c",
+          "#004387",
+          "#0061c1",
+          "#007efb",
+          "#379bff",
+          "#71b8ff",
+          "#abd5ff",
+          "#e6f2ff"
+        ]
+      },
+      "accent-soft": {
+        "role": "primary",
+        "displayName": "Blue Wash",
+        "canonical": "rgba(0, 113, 227, 0.1)",
+        "tonalRamp": [
+          "#00264c",
+          "#004387",
+          "#0060c1",
+          "#007dfb",
+          "#379aff",
+          "#71b8ff",
+          "#abd5ff",
+          "#e6f2ff"
+        ]
+      },
+      "on-accent": {
+        "role": "primary",
+        "displayName": "On Blue",
         "canonical": "#ffffff",
         "tonalRamp": [
           "#262626",
-          "#424242",
-          "#5e5e5e",
-          "#7a7a7a",
-          "#969696",
-          "#b2b2b2",
-          "#d1d1d1",
+          "#434343",
+          "#616161",
+          "#7e7e7e",
+          "#9b9b9b",
+          "#b8b8b8",
+          "#d5d5d5",
           "#f2f2f2"
         ]
       },
-      "day-signal-text": {
+      "btn": {
         "role": "primary",
-        "displayName": "Signal Link Text (light theme)",
-        "canonical": "#1a47b0",
+        "displayName": "Button Blue",
+        "canonical": "#0071e3",
         "tonalRamp": [
-          "#0a1b43",
-          "#112f74",
-          "#1842a4",
-          "#2056d5",
-          "#4977e4",
-          "#7a9ceb",
-          "#afc3f3",
-          "#e9eefc"
+          "#00264c",
+          "#004387",
+          "#0060c1",
+          "#007dfb",
+          "#379aff",
+          "#71b8ff",
+          "#abd5ff",
+          "#e6f2ff"
+        ]
+      },
+      "btn-hover": {
+        "role": "primary",
+        "displayName": "Button Blue Hover",
+        "canonical": "#0066cc",
+        "tonalRamp": [
+          "#00264c",
+          "#004387",
+          "#0061c1",
+          "#007efb",
+          "#379bff",
+          "#71b8ff",
+          "#abd5ff",
+          "#e6f2ff"
+        ]
+      },
+      "btn-press": {
+        "role": "primary",
+        "displayName": "Button Blue Press",
+        "canonical": "#005bb5",
+        "tonalRamp": [
+          "#00264c",
+          "#004487",
+          "#0061c1",
+          "#007efb",
+          "#379bff",
+          "#71b8ff",
+          "#abd5ff",
+          "#e6f2ff"
+        ]
+      },
+      "danger-fill": {
+        "role": "neutral",
+        "displayName": "Inverted Alarm Fill",
+        "canonical": "#1d1d1f",
+        "tonalRamp": [
+          "#252528",
+          "#414146",
+          "#5d5d64",
+          "#797982",
+          "#97979e",
+          "#b6b6ba",
+          "#d4d4d7",
+          "#f2f2f3"
+        ]
+      },
+      "danger-ink": {
+        "role": "neutral",
+        "displayName": "Inverted Alarm Ink",
+        "canonical": "#ffffff",
+        "tonalRamp": [
+          "#262626",
+          "#434343",
+          "#616161",
+          "#7e7e7e",
+          "#9b9b9b",
+          "#b8b8b8",
+          "#d5d5d5",
+          "#f2f2f2"
+        ]
+      },
+      "mark-fill": {
+        "role": "neutral",
+        "displayName": "Hidden Mark Fill",
+        "canonical": "#1d1d1f",
+        "tonalRamp": [
+          "#252528",
+          "#414146",
+          "#5d5d64",
+          "#797982",
+          "#97979e",
+          "#b6b6ba",
+          "#d4d4d7",
+          "#f2f2f3"
+        ]
+      },
+      "mark-ink": {
+        "role": "neutral",
+        "displayName": "Hidden Mark Ink",
+        "canonical": "#ffffff",
+        "tonalRamp": [
+          "#262626",
+          "#434343",
+          "#616161",
+          "#7e7e7e",
+          "#9b9b9b",
+          "#b8b8b8",
+          "#d5d5d5",
+          "#f2f2f2"
+        ]
+      },
+      "diff-add": {
+        "role": "primary",
+        "displayName": "Added Line Wash",
+        "canonical": "rgba(0, 113, 227, 0.1)",
+        "tonalRamp": [
+          "#00264c",
+          "#004387",
+          "#0060c1",
+          "#007dfb",
+          "#379aff",
+          "#71b8ff",
+          "#abd5ff",
+          "#e6f2ff"
+        ]
+      },
+      "bar": {
+        "role": "neutral",
+        "displayName": "Frosted Bar",
+        "canonical": "rgba(255, 255, 255, 0.78)",
+        "tonalRamp": [
+          "#262626",
+          "#434343",
+          "#616161",
+          "#7e7e7e",
+          "#9b9b9b",
+          "#b8b8b8",
+          "#d5d5d5",
+          "#f2f2f2"
+        ]
+      },
+      "ground-dark": {
+        "role": "neutral",
+        "displayName": "Black Canvas",
+        "canonical": "#000000",
+        "tonalRamp": [
+          "#262626",
+          "#434343",
+          "#616161",
+          "#7e7e7e",
+          "#9b9b9b",
+          "#b8b8b8",
+          "#d5d5d5",
+          "#f2f2f2"
+        ]
+      },
+      "surface-dark": {
+        "role": "neutral",
+        "displayName": "Graphite Group",
+        "canonical": "#1c1c1e",
+        "tonalRamp": [
+          "#252528",
+          "#414146",
+          "#5d5d64",
+          "#797982",
+          "#97979e",
+          "#b6b6ba",
+          "#d4d4d7",
+          "#f2f2f3"
+        ]
+      },
+      "surface-raised-dark": {
+        "role": "neutral",
+        "displayName": "Row Hover (dark)",
+        "canonical": "#232325",
+        "tonalRamp": [
+          "#252527",
+          "#424245",
+          "#5e5e63",
+          "#7a7a81",
+          "#98989e",
+          "#b6b6ba",
+          "#d4d4d6",
+          "#f2f2f3"
+        ]
+      },
+      "fill-dark": {
+        "role": "neutral",
+        "displayName": "Control Fill (dark)",
+        "canonical": "rgba(118, 118, 128, 0.24)",
+        "tonalRamp": [
+          "#252528",
+          "#414146",
+          "#5d5d64",
+          "#797983",
+          "#97979f",
+          "#b5b5bb",
+          "#d3d3d7",
+          "#f2f2f3"
+        ]
+      },
+      "fill-strong-dark": {
+        "role": "neutral",
+        "displayName": "Control Fill Strong (dark)",
+        "canonical": "rgba(118, 118, 128, 0.36)",
+        "tonalRamp": [
+          "#252528",
+          "#414146",
+          "#5d5d64",
+          "#797983",
+          "#97979f",
+          "#b5b5bb",
+          "#d3d3d7",
+          "#f2f2f3"
+        ]
+      },
+      "ink-dark": {
+        "role": "neutral",
+        "displayName": "Ink (dark)",
+        "canonical": "#f5f5f7",
+        "tonalRamp": [
+          "#22222a",
+          "#3c3c4b",
+          "#56566b",
+          "#70708c",
+          "#9090a6",
+          "#b0b0c0",
+          "#d0d0da",
+          "#f1f1f4"
+        ]
+      },
+      "ink-secondary-dark": {
+        "role": "neutral",
+        "displayName": "Secondary Ink (dark)",
+        "canonical": "#a1a1a6",
+        "tonalRamp": [
+          "#252527",
+          "#424245",
+          "#5e5e63",
+          "#7a7a81",
+          "#98989e",
+          "#b6b6ba",
+          "#d4d4d6",
+          "#f2f2f3"
+        ]
+      },
+      "ink-tertiary-dark": {
+        "role": "neutral",
+        "displayName": "Tertiary Ink (dark)",
+        "canonical": "#9e9ea4",
+        "tonalRamp": [
+          "#252527",
+          "#414146",
+          "#5d5d64",
+          "#7a7a82",
+          "#98989e",
+          "#b6b6ba",
+          "#d4d4d6",
+          "#f2f2f3"
+        ]
+      },
+      "separator-dark": {
+        "role": "neutral",
+        "displayName": "Hairline (dark)",
+        "canonical": "rgba(84, 84, 88, 0.6)",
+        "tonalRamp": [
+          "#252527",
+          "#424245",
+          "#5e5e63",
+          "#7b7b81",
+          "#98989d",
+          "#b6b6ba",
+          "#d4d4d6",
+          "#f2f2f3"
+        ]
+      },
+      "accent-dark": {
+        "role": "primary",
+        "displayName": "System Blue (dark)",
+        "canonical": "#0a84ff",
+        "tonalRamp": [
+          "#00264c",
+          "#004387",
+          "#0060c1",
+          "#007dfb",
+          "#379aff",
+          "#71b8ff",
+          "#abd5ff",
+          "#e6f2ff"
+        ]
+      },
+      "accent-hover-dark": {
+        "role": "primary",
+        "displayName": "System Blue Hover (dark)",
+        "canonical": "#409cff",
+        "tonalRamp": [
+          "#00254c",
+          "#004187",
+          "#005dc1",
+          "#0079fb",
+          "#3797ff",
+          "#71b5ff",
+          "#abd4ff",
+          "#e6f2ff"
+        ]
+      },
+      "accent-press-dark": {
+        "role": "primary",
+        "displayName": "System Blue Press (dark)",
+        "canonical": "#0071e3",
+        "tonalRamp": [
+          "#00264c",
+          "#004387",
+          "#0060c1",
+          "#007dfb",
+          "#379aff",
+          "#71b8ff",
+          "#abd5ff",
+          "#e6f2ff"
+        ]
+      },
+      "accent-text-dark": {
+        "role": "primary",
+        "displayName": "Blue Ink on Tint (dark)",
+        "canonical": "#5aabff",
+        "tonalRamp": [
+          "#00264c",
+          "#004287",
+          "#005fc1",
+          "#007bfb",
+          "#3799ff",
+          "#71b7ff",
+          "#abd4ff",
+          "#e6f2ff"
+        ]
+      },
+      "accent-soft-dark": {
+        "role": "primary",
+        "displayName": "Blue Wash (dark)",
+        "canonical": "rgba(10, 132, 255, 0.18)",
+        "tonalRamp": [
+          "#00264c",
+          "#004387",
+          "#0060c1",
+          "#007dfb",
+          "#379aff",
+          "#71b8ff",
+          "#abd5ff",
+          "#e6f2ff"
+        ]
+      },
+      "on-accent-dark": {
+        "role": "primary",
+        "displayName": "On Blue (dark)",
+        "canonical": "#ffffff",
+        "tonalRamp": [
+          "#262626",
+          "#434343",
+          "#616161",
+          "#7e7e7e",
+          "#9b9b9b",
+          "#b8b8b8",
+          "#d5d5d5",
+          "#f2f2f2"
+        ]
+      },
+      "btn-dark": {
+        "role": "primary",
+        "displayName": "Button Blue (dark)",
+        "canonical": "#0071e3",
+        "tonalRamp": [
+          "#00264c",
+          "#004387",
+          "#0060c1",
+          "#007dfb",
+          "#379aff",
+          "#71b8ff",
+          "#abd5ff",
+          "#e6f2ff"
+        ]
+      },
+      "btn-hover-dark": {
+        "role": "primary",
+        "displayName": "Button Blue Hover (dark)",
+        "canonical": "#0066cc",
+        "tonalRamp": [
+          "#00264c",
+          "#004387",
+          "#0061c1",
+          "#007efb",
+          "#379bff",
+          "#71b8ff",
+          "#abd5ff",
+          "#e6f2ff"
+        ]
+      },
+      "btn-press-dark": {
+        "role": "primary",
+        "displayName": "Button Blue Press (dark)",
+        "canonical": "#005bb5",
+        "tonalRamp": [
+          "#00264c",
+          "#004487",
+          "#0061c1",
+          "#007efb",
+          "#379bff",
+          "#71b8ff",
+          "#abd5ff",
+          "#e6f2ff"
+        ]
+      },
+      "danger-fill-dark": {
+        "role": "neutral",
+        "displayName": "Inverted Alarm Fill",
+        "canonical": "#f5f5f7",
+        "tonalRamp": [
+          "#22222a",
+          "#3c3c4b",
+          "#56566b",
+          "#70708c",
+          "#9090a6",
+          "#b0b0c0",
+          "#d0d0da",
+          "#f1f1f4"
+        ]
+      },
+      "danger-ink-dark": {
+        "role": "neutral",
+        "displayName": "Inverted Alarm Ink",
+        "canonical": "#000000",
+        "tonalRamp": [
+          "#262626",
+          "#434343",
+          "#616161",
+          "#7e7e7e",
+          "#9b9b9b",
+          "#b8b8b8",
+          "#d5d5d5",
+          "#f2f2f2"
+        ]
+      },
+      "mark-fill-dark": {
+        "role": "neutral",
+        "displayName": "Hidden Mark Fill (dark)",
+        "canonical": "#f5f5f7",
+        "tonalRamp": [
+          "#22222a",
+          "#3c3c4b",
+          "#56566b",
+          "#70708c",
+          "#9090a6",
+          "#b0b0c0",
+          "#d0d0da",
+          "#f1f1f4"
+        ]
+      },
+      "mark-ink-dark": {
+        "role": "neutral",
+        "displayName": "Hidden Mark Ink (dark)",
+        "canonical": "#000000",
+        "tonalRamp": [
+          "#262626",
+          "#434343",
+          "#616161",
+          "#7e7e7e",
+          "#9b9b9b",
+          "#b8b8b8",
+          "#d5d5d5",
+          "#f2f2f2"
+        ]
+      },
+      "diff-add-dark": {
+        "role": "primary",
+        "displayName": "Added Line Wash (dark)",
+        "canonical": "rgba(10, 132, 255, 0.2)",
+        "tonalRamp": [
+          "#00264c",
+          "#004387",
+          "#0060c1",
+          "#007dfb",
+          "#379aff",
+          "#71b8ff",
+          "#abd5ff",
+          "#e6f2ff"
+        ]
+      },
+      "bar-dark": {
+        "role": "neutral",
+        "displayName": "Frosted Bar (dark)",
+        "canonical": "rgba(22, 22, 23, 0.78)",
+        "tonalRamp": [
+          "#252527",
+          "#424245",
+          "#5e5e63",
+          "#7b7b80",
+          "#99999d",
+          "#b6b6ba",
+          "#d4d4d6",
+          "#f2f2f3"
         ]
       }
     },
     "typographyMeta": {
       "display": {
         "displayName": "Display",
-        "purpose": "The one page title."
+        "purpose": "Page title, one per page."
+      },
+      "display-mono": {
+        "displayName": "Display Mono",
+        "purpose": "Page title when it is a tool name."
       },
       "headline": {
-        "displayName": "Section Heading",
-        "purpose": "Tracked uppercase steel section headings inside a page."
+        "displayName": "Headline",
+        "purpose": "Section title above a group."
       },
-      "title": {
-        "displayName": "Caption Plate",
-        "purpose": "The page imperative between double rules; button text at 600."
+      "wordmark": {
+        "displayName": "Wordmark",
+        "purpose": "Gatte in the top bar."
       },
       "body": {
         "displayName": "Body",
-        "purpose": "Prose at 15px with tabular numerals; leads hold to 70ch."
+        "purpose": "Rows, cells, buttons, inputs; tabular numerals."
+      },
+      "prose": {
+        "displayName": "Prose",
+        "purpose": "Tool descriptions, 72ch max."
+      },
+      "caption": {
+        "displayName": "Caption",
+        "purpose": "Sentence under an action stating what it does."
       },
       "label": {
-        "displayName": "Plate Label",
-        "purpose": "Column heads, fact terms, state plates."
+        "displayName": "Label",
+        "purpose": "Column heads, badges, fact labels; sentence case."
       },
-      "nameplate": {
-        "displayName": "Nameplate",
-        "purpose": "The wordmark on its enamel plate, once per page."
-      },
-      "mono": {
-        "displayName": "Machine Mono",
-        "purpose": "Identifiers, hashes, timestamps, command output only; definitions on the calc(96ch + 42px) measure."
+      "code": {
+        "displayName": "Code",
+        "purpose": "Schemas, command output, diffs."
       }
     },
     "shadows": [
       {
-        "name": "alarm-frame",
-        "value": "inset 0 0 0 2px var(--plate)",
-        "purpose": "Heavy enamel frame on an alarm cell in the status line; a border, not elevation."
+        "name": "group-lift",
+        "value": "0 1px 2px rgba(0, 0, 0, 0.04), 0 4px 16px rgba(0, 0, 0, 0.04)",
+        "purpose": "Every grouped surface, light mode only; removed in dark."
+      },
+      {
+        "name": "segment-selected",
+        "value": "0 1px 3px rgba(0, 0, 0, 0.12)",
+        "purpose": "Current segment of a segmented control."
+      },
+      {
+        "name": "notice-hairline",
+        "value": "inset 0 0 0 1px var(--sep)",
+        "purpose": "Neutral and error notices on the ground."
+      },
+      {
+        "name": "bar-frost",
+        "value": "backdrop-filter: saturate(180%) blur(20px)",
+        "purpose": "Desktop sticky top bar over the translucent bar fill."
+      },
+      {
+        "name": "focus-ring",
+        "value": "outline: 3px solid color-mix(in srgb, var(--accent) 45%, transparent); outline-offset: 1px",
+        "purpose": "Keyboard focus on links, buttons, rows; inputs use a border plus accent-soft halo instead."
       }
     ],
     "motion": [
       {
-        "name": "lever-throw",
-        "value": "transform 220ms cubic-bezier(0.16, 1, 0.3, 1)",
-        "purpose": "The one authored motion: a frame row hover throws its lever (-8deg normal, -28deg served, -2deg collared). Off under prefers-reduced-motion."
+        "name": "state",
+        "value": "150ms ease-out",
+        "purpose": "Background and color changes on rows, nav, buttons, segments."
       },
       {
-        "name": "state-fade",
-        "value": "150ms ease-out",
-        "purpose": "Colour and border changes on buttons, tabs and marks. Off under prefers-reduced-motion."
+        "name": "press",
+        "value": "transform scale(0.98) 100ms ease-out",
+        "purpose": "Button press."
+      },
+      {
+        "name": "disclosure",
+        "value": "200ms cubic-bezier(0.2, 0.8, 0.2, 1)",
+        "purpose": "Chevron rotation when a details group opens."
+      },
+      {
+        "name": "reduced-motion",
+        "value": "transition: none",
+        "purpose": "All transitions removed under prefers-reduced-motion."
       }
     ],
     "breakpoints": [
       {
-        "name": "narrow",
-        "value": "760px"
+        "name": "phone",
+        "value": "720px",
+        "purpose": "At or below: non-sticky bar, one-row 13px nav, 16px gutters, 28px title, tables become list rows or labelled stacks."
       },
       {
-        "name": "content-max",
-        "value": "1180px"
+        "name": "column",
+        "value": "1080px",
+        "purpose": "Max content width of bar and main column."
       }
     ]
   },
   "components": [
     {
-      "name": "Go Button",
+      "name": "Primary Button",
       "kind": "button",
-      "refersTo": "button-go",
-      "description": "The only signal-blue control: the action, named with what it pins.",
-      "html": "<button class=\"ds-btn ds-btn-go\">Approve sha256:bacc0f9a701c</button>",
-      "css": ":host{--ground:#07090c;--iron:#0f131a;--iron-2:#161b24;--rule:#252d3a;--rule-strong:#3a4558;--plate:#e2e9f3;--steel:#98a6ba;--dim:#7a889e;--signal:#4d88ff;--signal-hover:#6d9dff;--signal-ink:#050d1f;--signal-text:#8db4ff;--board:#0a1730;--board-2:#0f2142;--board-line:#27437a;--board-ink:#d5e2f7;--board-dim:#7f93b8;--board-lit-ink:#041026;--shelf:#030406;--sans:system-ui,-apple-system,'Segoe UI',Roboto,'Helvetica Neue',sans-serif;--mono:ui-monospace,'SF Mono','Cascadia Mono',Menlo,Consolas,monospace;--radius:3px;} .ds-btn{display:inline-flex;align-items:center;min-height:36px;padding:7px 16px;border:1px solid var(--rule-strong);border-radius:var(--radius);background:var(--iron);color:var(--plate);font:600 0.875rem/1.2 var(--sans);letter-spacing:0.02em;text-decoration:none;cursor:pointer;transition:background-color 150ms ease-out,border-color 150ms ease-out,color 150ms ease-out;} .ds-btn:hover{border-color:var(--plate);} .ds-btn:active{background:var(--plate);color:var(--ground);} .ds-btn:focus-visible{outline:2px solid var(--signal);outline-offset:2px;} .ds-btn-go{background:var(--signal);border-color:var(--signal);color:var(--signal-ink);} .ds-btn-go:hover{background:var(--signal-hover);border-color:var(--signal-hover);color:var(--signal-ink);} .ds-btn-go:active{background:var(--plate);border-color:var(--plate);color:var(--ground);}"
+      "refersTo": "button-primary",
+      "description": "The one action a view exists for; Button Blue pill with a white label.",
+      "html": "<button class=\"ds-btn ds-btn-primary\">Approve this version</button>",
+      "css": ".ds-btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 36px; padding: 8px 18px; border: 0; border-radius: 999px; font: 500 15px/1.2 -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', 'Segoe UI', Roboto, sans-serif; letter-spacing: -0.01em; cursor: pointer; transition: background-color 150ms ease-out, transform 100ms ease-out; } .ds-btn:active { transform: scale(0.98); } .ds-btn:focus-visible { outline: 3px solid color-mix(in srgb, var(--accent, #0071e3) 45%, transparent); outline-offset: 1px; } .ds-btn-primary { background: var(--btn, #0071e3); color: var(--on-accent, #ffffff); } .ds-btn-primary:hover { background: var(--btn-hover, #0066cc); } .ds-btn-primary:active { background: var(--btn-press, #005bb5); }"
     },
     {
-      "name": "Default Button",
+      "name": "Secondary Button",
       "kind": "button",
-      "refersTo": "button",
-      "description": "Iron lever for navigation and neutral actions; inverts when pressed.",
-      "html": "<a class=\"ds-btn\" href=\"#\">Back to tools</a>",
-      "css": ":host{--ground:#07090c;--iron:#0f131a;--iron-2:#161b24;--rule:#252d3a;--rule-strong:#3a4558;--plate:#e2e9f3;--steel:#98a6ba;--dim:#7a889e;--signal:#4d88ff;--signal-hover:#6d9dff;--signal-ink:#050d1f;--signal-text:#8db4ff;--board:#0a1730;--board-2:#0f2142;--board-line:#27437a;--board-ink:#d5e2f7;--board-dim:#7f93b8;--board-lit-ink:#041026;--shelf:#030406;--sans:system-ui,-apple-system,'Segoe UI',Roboto,'Helvetica Neue',sans-serif;--mono:ui-monospace,'SF Mono','Cascadia Mono',Menlo,Consolas,monospace;--radius:3px;} .ds-btn{display:inline-flex;align-items:center;min-height:36px;padding:7px 16px;border:1px solid var(--rule-strong);border-radius:var(--radius);background:var(--iron);color:var(--plate);font:600 0.875rem/1.2 var(--sans);letter-spacing:0.02em;text-decoration:none;cursor:pointer;transition:background-color 150ms ease-out,border-color 150ms ease-out,color 150ms ease-out;} .ds-btn:hover{border-color:var(--plate);} .ds-btn:active{background:var(--plate);color:var(--ground);} .ds-btn:focus-visible{outline:2px solid var(--signal);outline-offset:2px;} "
+      "refersTo": "button-secondary",
+      "description": "Every other action; grey pill with Blue Ink on Tint label.",
+      "html": "<button class=\"ds-btn ds-btn-secondary\">Unblock</button>",
+      "css": ".ds-btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 36px; padding: 8px 18px; border: 0; border-radius: 999px; font: 500 15px/1.2 -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', 'Segoe UI', Roboto, sans-serif; letter-spacing: -0.01em; cursor: pointer; transition: background-color 150ms ease-out, transform 100ms ease-out; } .ds-btn:active { transform: scale(0.98); } .ds-btn:focus-visible { outline: 3px solid color-mix(in srgb, var(--accent, #0071e3) 45%, transparent); outline-offset: 1px; } .ds-btn-secondary { background: var(--fill, rgba(118,118,128,0.12)); color: var(--accent-text, #0062c4); } .ds-btn-secondary:hover { background: var(--fill-strong, rgba(118,118,128,0.2)); }"
     },
     {
-      "name": "Stop Button",
+      "name": "Destructive Button",
       "kind": "button",
-      "refersTo": "button-stop",
-      "description": "Enamel lever for Block and Revoke.",
-      "html": "<button class=\"ds-btn ds-btn-stop\">Block</button>",
-      "css": ":host{--ground:#07090c;--iron:#0f131a;--iron-2:#161b24;--rule:#252d3a;--rule-strong:#3a4558;--plate:#e2e9f3;--steel:#98a6ba;--dim:#7a889e;--signal:#4d88ff;--signal-hover:#6d9dff;--signal-ink:#050d1f;--signal-text:#8db4ff;--board:#0a1730;--board-2:#0f2142;--board-line:#27437a;--board-ink:#d5e2f7;--board-dim:#7f93b8;--board-lit-ink:#041026;--shelf:#030406;--sans:system-ui,-apple-system,'Segoe UI',Roboto,'Helvetica Neue',sans-serif;--mono:ui-monospace,'SF Mono','Cascadia Mono',Menlo,Consolas,monospace;--radius:3px;} .ds-btn{display:inline-flex;align-items:center;min-height:36px;padding:7px 16px;border:1px solid var(--rule-strong);border-radius:var(--radius);background:var(--iron);color:var(--plate);font:600 0.875rem/1.2 var(--sans);letter-spacing:0.02em;text-decoration:none;cursor:pointer;transition:background-color 150ms ease-out,border-color 150ms ease-out,color 150ms ease-out;} .ds-btn:hover{border-color:var(--plate);} .ds-btn:active{background:var(--plate);color:var(--ground);} .ds-btn:focus-visible{outline:2px solid var(--signal);outline-offset:2px;} .ds-btn-stop{background:var(--plate);border-color:var(--plate);color:var(--ground);} .ds-btn-stop:hover{background:var(--ground);color:var(--plate);}"
+      "refersTo": "button-destructive",
+      "description": "Revoke, block: the Alarm Fill pill, never red.",
+      "html": "<button class=\"ds-btn ds-btn-destructive\">Revoke approval</button>",
+      "css": ".ds-btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 36px; padding: 8px 18px; border: 0; border-radius: 999px; font: 500 15px/1.2 -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', 'Segoe UI', Roboto, sans-serif; letter-spacing: -0.01em; cursor: pointer; transition: background-color 150ms ease-out, transform 100ms ease-out; } .ds-btn:active { transform: scale(0.98); } .ds-btn:focus-visible { outline: 3px solid color-mix(in srgb, var(--accent, #0071e3) 45%, transparent); outline-offset: 1px; } .ds-btn-destructive { background: var(--danger-bg, #1d1d1f); color: var(--danger-text, #ffffff); } .ds-btn-destructive:hover { opacity: 0.86; }"
     },
     {
-      "name": "Block Shelf",
+      "name": "Status Badges",
+      "kind": "chip",
+      "refersTo": "badge-approved",
+      "description": "Approved (blue wash, check), pending (grey, dashed circle), changed (alarm fill, warning).",
+      "html": "<span class=\"ds-badge ds-ok\"><svg class=\"ds-glyph\" viewBox=\"0 0 16 16\" width=\"16\" height=\"16\" aria-hidden=\"true\"><circle cx=\"8\" cy=\"8\" r=\"7.25\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\"/><path d=\"M4.8 8.2l2.1 2.1 4.3-4.6\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.6\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/></svg>Approved</span> <span class=\"ds-badge\"><svg class=\"ds-glyph\" viewBox=\"0 0 16 16\" width=\"16\" height=\"16\" aria-hidden=\"true\"><circle cx=\"8\" cy=\"8\" r=\"7.25\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-dasharray=\"2.6 2.4\"/></svg>Needs review</span> <span class=\"ds-badge ds-danger\"><svg class=\"ds-glyph\" viewBox=\"0 0 16 16\" width=\"16\" height=\"16\" aria-hidden=\"true\"><path d=\"M8 1.6l6.9 12.2H1.1z\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linejoin=\"round\"/><path d=\"M8 6v3.6\" stroke=\"currentColor\" stroke-width=\"1.6\" stroke-linecap=\"round\"/><circle cx=\"8\" cy=\"11.7\" r=\"0.9\" fill=\"currentColor\"/></svg>Changed</span>",
+      "css": ".ds-badge { display: inline-flex; align-items: center; gap: 5px; padding: 3px 10px 3px 8px; border-radius: 999px; font: 600 12px/1.47 -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', 'Segoe UI', Roboto, sans-serif; white-space: nowrap; background: var(--fill, rgba(118,118,128,0.12)); color: var(--text-2, #6e6e73); } .ds-badge .ds-glyph { width: 13px; height: 13px; flex: none; } .ds-ok { background: var(--accent-soft, rgba(0,113,227,0.1)); color: var(--accent-text, #0062c4); } .ds-danger { background: var(--danger-bg, #1d1d1f); color: var(--danger-text, #ffffff); }"
+    },
+    {
+      "name": "Attention Row",
+      "kind": "card",
+      "refersTo": "list-row",
+      "description": "Grouped list with hairline-separated rows: lead icon, title and detail, blue action word, chevron.",
+      "html": "<ul class=\"ds-group\"><li><a class=\"ds-row\" href=\"#\"><span class=\"ds-lead ds-lead-danger\"><svg class=\"ds-glyph\" viewBox=\"0 0 16 16\" width=\"16\" height=\"16\" aria-hidden=\"true\"><path d=\"M8 1.6l6.9 12.2H1.1z\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linejoin=\"round\"/><path d=\"M8 6v3.6\" stroke=\"currentColor\" stroke-width=\"1.6\" stroke-linecap=\"round\"/><circle cx=\"8\" cy=\"11.7\" r=\"0.9\" fill=\"currentColor\"/></svg></span><span class=\"ds-row-text\"><span class=\"ds-row-title\">logsearch · search_events</span><span class=\"ds-row-detail\">Changed after approval</span></span><span class=\"ds-row-action\">Review</span><svg viewBox=\"0 0 8 14\" width=\"8\" height=\"14\" aria-hidden=\"true\" class=\"ds-chev\"><path d=\"M1 1l6 6-6 6\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.6\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/></svg></a></li><li><a class=\"ds-row\" href=\"#\"><span class=\"ds-lead\"><svg class=\"ds-glyph\" viewBox=\"0 0 16 16\" width=\"16\" height=\"16\" aria-hidden=\"true\"><circle cx=\"8\" cy=\"8\" r=\"7.25\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-dasharray=\"2.6 2.4\"/></svg></span><span class=\"ds-row-text\"><span class=\"ds-row-title\">threatintel · lookup_ioc</span><span class=\"ds-row-detail\">New tool, not yet approved</span></span><span class=\"ds-row-action\">Review</span><svg viewBox=\"0 0 8 14\" width=\"8\" height=\"14\" aria-hidden=\"true\" class=\"ds-chev\"><path d=\"M1 1l6 6-6 6\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.6\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/></svg></a></li></ul>",
+      "css": ".ds-group { margin: 0; padding: 0; list-style: none; background: var(--surface, #ffffff); border-radius: 12px; overflow: hidden; box-shadow: 0 1px 2px rgba(0,0,0,0.04), 0 4px 16px rgba(0,0,0,0.04); font: 400 15px/1.47 -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', 'Segoe UI', Roboto, sans-serif; letter-spacing: -0.01em; } .ds-group > li + li { border-top: 1px solid var(--sep, rgba(60,60,67,0.16)); } .ds-row { display: flex; align-items: center; gap: 14px; padding: 14px 18px; color: var(--text, #1d1d1f); text-decoration: none; transition: background-color 150ms ease-out; } .ds-row:hover { background: var(--surface-2, #fafafc); } .ds-row:active { background: var(--fill, rgba(118,118,128,0.12)); } .ds-row:focus-visible { outline: 3px solid color-mix(in srgb, var(--accent, #0071e3) 45%, transparent); } .ds-lead { display: grid; place-items: center; flex: none; width: 32px; height: 32px; border-radius: 8px; background: var(--fill, rgba(118,118,128,0.12)); color: var(--text-2, #6e6e73); } .ds-lead-danger { background: var(--danger-bg, #1d1d1f); color: var(--danger-text, #ffffff); } .ds-row-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; } .ds-row-title { font-weight: 600; } .ds-row-detail { color: var(--text-2, #6e6e73); font-size: 14px; } .ds-row-action { color: var(--accent, #0071e3); font-size: 14px; } .ds-chev { flex: none; color: var(--text-3, #66666b); } .ds-glyph { width: 16px; height: 16px; }"
+    },
+    {
+      "name": "Segmented Control",
       "kind": "nav",
-      "refersTo": "tab",
-      "description": "Nameplate and plate-tabs; the current tab is inverted, never blue.",
-      "html": "<header class=\"ds-shelf\"><a class=\"ds-nameplate\" href=\"#\"><span>Gatte</span></a><nav class=\"ds-tabs\"><a href=\"#\" aria-current=\"page\">Overview</a><a href=\"#\">Tools</a><a href=\"#\">Access</a><a href=\"#\">Audit</a></nav></header>",
-      "css": ":host{--ground:#07090c;--iron:#0f131a;--iron-2:#161b24;--rule:#252d3a;--rule-strong:#3a4558;--plate:#e2e9f3;--steel:#98a6ba;--dim:#7a889e;--signal:#4d88ff;--signal-hover:#6d9dff;--signal-ink:#050d1f;--signal-text:#8db4ff;--board:#0a1730;--board-2:#0f2142;--board-line:#27437a;--board-ink:#d5e2f7;--board-dim:#7f93b8;--board-lit-ink:#041026;--shelf:#030406;--sans:system-ui,-apple-system,'Segoe UI',Roboto,'Helvetica Neue',sans-serif;--mono:ui-monospace,'SF Mono','Cascadia Mono',Menlo,Consolas,monospace;--radius:3px;} .ds-shelf{display:flex;align-items:center;gap:28px;flex-wrap:wrap;padding:14px 32px;background:var(--shelf);border-bottom:1px solid var(--rule);font-family:var(--sans);} .ds-nameplate{display:inline-flex;padding:3px;border:1px solid var(--plate);border-radius:var(--radius);text-decoration:none;} .ds-nameplate span{padding:3px 12px 2px;background:var(--plate);color:var(--shelf);font-weight:800;font-size:13px;letter-spacing:0.32em;text-transform:uppercase;} .ds-nameplate:hover span{background:var(--signal);color:var(--signal-ink);} .ds-tabs{display:flex;gap:6px;flex-wrap:wrap;} .ds-tabs a{padding:5px 11px 4px;border:1px solid var(--rule);border-radius:var(--radius);color:var(--steel);text-decoration:none;font-size:12px;font-weight:650;letter-spacing:0.12em;text-transform:uppercase;transition:border-color 150ms ease-out,color 150ms ease-out;} .ds-tabs a:hover{border-color:var(--steel);color:var(--plate);} .ds-tabs a:focus-visible{outline:2px solid var(--signal);outline-offset:2px;} .ds-tabs a[aria-current]{background:var(--plate);border-color:var(--plate);color:var(--shelf);}"
+      "refersTo": "segmented-control",
+      "description": "Filters as links in a grey track; the current segment is lifted white.",
+      "html": "<nav class=\"ds-seg\" aria-label=\"Filter\"><a href=\"#\" aria-current=\"page\">All <span>12</span></a><a href=\"#\">Needs review <span>2</span></a><a href=\"#\">Approved <span>10</span></a></nav>",
+      "css": ".ds-seg { display: inline-flex; gap: 2px; padding: 2px; border-radius: 9px; background: var(--fill, rgba(118,118,128,0.12)); font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', 'Segoe UI', Roboto, sans-serif; } .ds-seg a { padding: 5px 14px; border-radius: 7px; color: var(--text, #1d1d1f); font-size: 13px; font-weight: 500; text-decoration: none; transition: background-color 150ms ease-out; } .ds-seg a span { color: var(--text-2, #6e6e73); margin-left: 4px; } .ds-seg a:hover { background: var(--fill, rgba(118,118,128,0.12)); } .ds-seg a[aria-current] { background: var(--surface, #ffffff); box-shadow: 0 1px 3px rgba(0,0,0,0.12); } .ds-seg a:focus-visible { outline: 3px solid color-mix(in srgb, var(--accent, #0071e3) 45%, transparent); }"
     },
     {
-      "name": "Bench Field",
+      "name": "Text Field",
       "kind": "input",
       "refersTo": "input",
-      "description": "Stacked uppercase label with a hint; signal caret and focus.",
-      "html": "<label class=\"ds-label\">Subject <small>the token's sub, as the audit trail shows it</small><input class=\"ds-input\" autocomplete=\"off\"></label>",
-      "css": ":host{--ground:#07090c;--iron:#0f131a;--iron-2:#161b24;--rule:#252d3a;--rule-strong:#3a4558;--plate:#e2e9f3;--steel:#98a6ba;--dim:#7a889e;--signal:#4d88ff;--signal-hover:#6d9dff;--signal-ink:#050d1f;--signal-text:#8db4ff;--board:#0a1730;--board-2:#0f2142;--board-line:#27437a;--board-ink:#d5e2f7;--board-dim:#7f93b8;--board-lit-ink:#041026;--shelf:#030406;--sans:system-ui,-apple-system,'Segoe UI',Roboto,'Helvetica Neue',sans-serif;--mono:ui-monospace,'SF Mono','Cascadia Mono',Menlo,Consolas,monospace;--radius:3px;} .ds-label{display:flex;flex-direction:column;gap:5px;font:700 0.75rem/1.5 var(--sans);letter-spacing:0.08em;text-transform:uppercase;color:var(--steel);} .ds-label small{font-weight:400;letter-spacing:0;text-transform:none;color:var(--dim);} .ds-input{min-height:36px;min-width:240px;padding:6px 10px;border:1px solid var(--rule-strong);border-radius:var(--radius);background:var(--ground);color:var(--plate);font:400 0.9375rem/1.3 var(--sans);caret-color:var(--signal);} .ds-input:hover{border-color:var(--steel);} .ds-input:focus-visible{border-color:var(--signal);outline:2px solid var(--signal);outline-offset:0;}"
+      "description": "Borderless grey field that turns white with a blue border and wash halo on focus.",
+      "html": "<label class=\"ds-field\"><span>Subject</span><input class=\"ds-input\" placeholder=\"As shown in the audit trail\"></label>",
+      "css": ".ds-field { display: flex; flex-direction: column; gap: 6px; font: 500 13px/1.47 -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', 'Segoe UI', Roboto, sans-serif; color: var(--text-2, #6e6e73); } .ds-input { min-height: 36px; padding: 7px 12px; border: 1px solid transparent; border-radius: 8px; background: var(--fill, rgba(118,118,128,0.12)); color: var(--text, #1d1d1f); font: 400 15px/1.3 -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', 'Segoe UI', Roboto, sans-serif; letter-spacing: -0.01em; caret-color: var(--accent, #0071e3); } .ds-input::placeholder { color: var(--text-3, #66666b); } .ds-input:focus-visible { background: var(--surface, #ffffff); border-color: var(--accent, #0071e3); outline: 3px solid var(--accent-soft, rgba(0,113,227,0.1)); outline-offset: 0; }"
     },
     {
-      "name": "State Plates",
-      "kind": "chip",
-      "refersTo": "state-plate",
-      "description": "The state grammar in the register: outline, dash, inversion.",
-      "html": "<span class=\"ds-state ds-approved\">approved</span> <span class=\"ds-state ds-pending\">pending</span> <span class=\"ds-state ds-danger\">locked, changed</span>",
-      "css": ":host{--ground:#07090c;--iron:#0f131a;--iron-2:#161b24;--rule:#252d3a;--rule-strong:#3a4558;--plate:#e2e9f3;--steel:#98a6ba;--dim:#7a889e;--signal:#4d88ff;--signal-hover:#6d9dff;--signal-ink:#050d1f;--signal-text:#8db4ff;--board:#0a1730;--board-2:#0f2142;--board-line:#27437a;--board-ink:#d5e2f7;--board-dim:#7f93b8;--board-lit-ink:#041026;--shelf:#030406;--sans:system-ui,-apple-system,'Segoe UI',Roboto,'Helvetica Neue',sans-serif;--mono:ui-monospace,'SF Mono','Cascadia Mono',Menlo,Consolas,monospace;--radius:3px;} .ds-state{display:inline-block;padding:1px 8px;border-radius:2px;font:700 0.6875rem/1.5 var(--sans);letter-spacing:0.1em;text-transform:uppercase;border:1px solid var(--rule-strong);color:var(--steel);white-space:nowrap;} .ds-approved{border-color:var(--plate);color:var(--plate);} .ds-pending{border-style:dashed;} .ds-danger{background:var(--plate);border-color:var(--plate);color:var(--ground);}"
+      "name": "Top Bar",
+      "kind": "nav",
+      "refersTo": "top-bar",
+      "description": "Frosted 52px bar: wordmark and plain-text nav; current item takes the control fill.",
+      "html": "<header class=\"ds-bar\"><div class=\"ds-bar-inner\"><a class=\"ds-wordmark\" href=\"#\">Gatte</a><nav><a href=\"#\" aria-current=\"page\">Overview</a><a href=\"#\">Tools</a><a href=\"#\">Access</a><a href=\"#\">Audit</a><a href=\"#\">Backends</a><a href=\"#\">Quota</a></nav></div></header>",
+      "css": ".ds-bar { background: var(--bar, rgba(255,255,255,0.78)); border-bottom: 1px solid var(--sep, rgba(60,60,67,0.16)); -webkit-backdrop-filter: saturate(180%) blur(20px); backdrop-filter: saturate(180%) blur(20px); } .ds-bar-inner { display: flex; align-items: center; gap: 32px; padding: 0 24px; height: 52px; } .ds-wordmark { font: 600 19px/1 -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Helvetica Neue', sans-serif; letter-spacing: -0.02em; color: var(--text, #1d1d1f); text-decoration: none; } .ds-bar nav { display: flex; gap: 4px; } .ds-bar nav a { padding: 6px 12px; border-radius: 8px; color: var(--text-2, #6e6e73); font: 400 14px/1.47 -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', 'Segoe UI', Roboto, sans-serif; text-decoration: none; white-space: nowrap; transition: background-color 150ms ease-out, color 150ms ease-out; } .ds-bar nav a:hover { color: var(--text, #1d1d1f); background: var(--fill, rgba(118,118,128,0.12)); } .ds-bar nav a[aria-current] { color: var(--text, #1d1d1f); font-weight: 600; background: var(--fill, rgba(118,118,128,0.12)); } .ds-bar nav a:focus-visible { outline: 3px solid color-mix(in srgb, var(--accent, #0071e3) 45%, transparent); }"
     },
     {
-      "name": "Caption Plate",
+      "name": "Danger Notice",
       "kind": "custom",
-      "refersTo": "typography.title",
-      "description": "The page imperative, lettered between double rules; never boxed.",
-      "html": "<p class=\"ds-imperative\">Clear what is locked before anything else.</p>",
-      "css": ":host{--ground:#07090c;--iron:#0f131a;--iron-2:#161b24;--rule:#252d3a;--rule-strong:#3a4558;--plate:#e2e9f3;--steel:#98a6ba;--dim:#7a889e;--signal:#4d88ff;--signal-hover:#6d9dff;--signal-ink:#050d1f;--signal-text:#8db4ff;--board:#0a1730;--board-2:#0f2142;--board-line:#27437a;--board-ink:#d5e2f7;--board-dim:#7f93b8;--board-lit-ink:#041026;--shelf:#030406;--sans:system-ui,-apple-system,'Segoe UI',Roboto,'Helvetica Neue',sans-serif;--mono:ui-monospace,'SF Mono','Cascadia Mono',Menlo,Consolas,monospace;--radius:3px;} .ds-imperative{display:table;margin:12px 0 22px;padding:5px 0 4px;border-top:3px double var(--rule-strong);border-bottom:3px double var(--rule-strong);font:650 0.875rem/1.5 var(--sans);letter-spacing:0.01em;color:var(--plate);}"
+      "refersTo": "notice-danger",
+      "description": "Alarm Fill notice with the warning glyph and a bold lead sentence.",
+      "html": "<div class=\"ds-notice\" role=\"alert\"><svg class=\"ds-glyph\" viewBox=\"0 0 16 16\" width=\"16\" height=\"16\" aria-hidden=\"true\"><path d=\"M8 1.6l6.9 12.2H1.1z\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linejoin=\"round\"/><path d=\"M8 6v3.6\" stroke=\"currentColor\" stroke-width=\"1.6\" stroke-linecap=\"round\"/><circle cx=\"8\" cy=\"11.7\" r=\"0.9\" fill=\"currentColor\"/></svg><p><b>This tool changed after it was approved.</b> It isn't served until you approve the new version.</p></div>",
+      "css": ".ds-notice { display: flex; gap: 12px; align-items: flex-start; padding: 14px 18px; border-radius: 12px; background: var(--danger-bg, #1d1d1f); color: var(--danger-text, #ffffff); font: 400 15px/1.47 -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', 'Segoe UI', Roboto, sans-serif; letter-spacing: -0.01em; } .ds-notice p { margin: 0; } .ds-notice b { font-weight: 600; } .ds-notice .ds-glyph { flex: none; width: 16px; height: 16px; margin-top: 2px; }"
     },
     {
-      "name": "Diagram Board",
+      "name": "Disclosure",
       "kind": "custom",
-      "refersTo": "diagram-board",
-      "description": "Night-navy board: one track per backend, numbered lever marks unlit, lit, locked.",
-      "html": "<div class=\"ds-board\"><div class=\"ds-sec\"><span class=\"ds-name\">threatintel</span><ol class=\"ds-marks\"><li><a class=\"ds-mark ds-lit\" href=\"#\"><b>7</b>lookup_hash</a></li><li><a class=\"ds-mark\" href=\"#\"><b>3</b>search_docs</a></li><li><a class=\"ds-mark ds-changed\" href=\"#\"><b>8</b>lookup_ip</a></li></ol></div></div>",
-      "css": ":host{--ground:#07090c;--iron:#0f131a;--iron-2:#161b24;--rule:#252d3a;--rule-strong:#3a4558;--plate:#e2e9f3;--steel:#98a6ba;--dim:#7a889e;--signal:#4d88ff;--signal-hover:#6d9dff;--signal-ink:#050d1f;--signal-text:#8db4ff;--board:#0a1730;--board-2:#0f2142;--board-line:#27437a;--board-ink:#d5e2f7;--board-dim:#7f93b8;--board-lit-ink:#041026;--shelf:#030406;--sans:system-ui,-apple-system,'Segoe UI',Roboto,'Helvetica Neue',sans-serif;--mono:ui-monospace,'SF Mono','Cascadia Mono',Menlo,Consolas,monospace;--radius:3px;} .ds-board{padding:22px 24px 16px;background:var(--board);border:1px solid var(--board-line);border-radius:var(--radius);color:var(--board-ink);font-family:var(--sans);} .ds-sec{display:grid;grid-template-columns:minmax(150px,220px) 1fr;gap:16px;align-items:center;} .ds-name{font:700 0.875rem var(--mono);letter-spacing:0.04em;} .ds-marks{position:relative;display:flex;flex-wrap:wrap;gap:10px;margin:0;padding:6px 0;list-style:none;} .ds-marks::before{content:'';position:absolute;left:0;right:0;top:50%;height:2px;background:var(--board-line);} .ds-marks li{position:relative;} .ds-mark{display:inline-flex;align-items:center;gap:8px;padding:4px 10px 4px 4px;background:var(--board);border:1px solid var(--board-line);border-radius:var(--radius);color:var(--board-dim);text-decoration:none;font:0.8125rem var(--mono);transition:border-color 150ms ease-out,color 150ms ease-out;} .ds-mark b{min-width:26px;padding:1px 5px;text-align:center;border:1px solid currentColor;border-radius:2px;font-size:0.75rem;} .ds-mark:hover{border-color:var(--board-ink);color:var(--board-ink);} .ds-mark:focus-visible{outline:2px solid var(--signal);outline-offset:2px;} .ds-lit{background:var(--board-ink);border-color:var(--board-ink);color:var(--board-lit-ink);} .ds-lit b{border-color:var(--board-lit-ink);} .ds-changed{padding:3px 9px 3px 2px;gap:6px;border:2px solid var(--board-ink);color:var(--board-ink);font-weight:700;} .ds-changed::before{content:'';display:inline-block;width:12px;height:18px;margin-left:3px;border:1px solid currentColor;border-radius:1px;background:repeating-linear-gradient(135deg,currentColor 0 1.5px,transparent 1.5px 4px);}"
-    },
-    {
-      "name": "Lever Frame Row",
-      "kind": "custom",
-      "refersTo": "register-table",
-      "description": "Register row with a lever; hovering the row throws it (220ms), collared when locked.",
-      "html": "<table class=\"ds-frame\"><tbody><tr><td><span class=\"ds-lever\"></span><b>2</b></td><td>casemgmt.list_cases</td></tr><tr><td><span class=\"ds-lever ds-reverse\"></span><b>7</b></td><td>threatintel.lookup_hash</td></tr><tr><td><span class=\"ds-lever ds-locked\"></span><b>8</b></td><td>threatintel.lookup_ip</td></tr></tbody></table>",
-      "css": ":host{--ground:#07090c;--iron:#0f131a;--iron-2:#161b24;--rule:#252d3a;--rule-strong:#3a4558;--plate:#e2e9f3;--steel:#98a6ba;--dim:#7a889e;--signal:#4d88ff;--signal-hover:#6d9dff;--signal-ink:#050d1f;--signal-text:#8db4ff;--board:#0a1730;--board-2:#0f2142;--board-line:#27437a;--board-ink:#d5e2f7;--board-dim:#7f93b8;--board-lit-ink:#041026;--shelf:#030406;--sans:system-ui,-apple-system,'Segoe UI',Roboto,'Helvetica Neue',sans-serif;--mono:ui-monospace,'SF Mono','Cascadia Mono',Menlo,Consolas,monospace;--radius:3px;} .ds-frame{border-collapse:collapse;background:var(--iron);border:1px solid var(--rule);color:var(--plate);font:0.8125rem var(--mono);} .ds-frame td{padding:9px 14px;border-bottom:1px solid var(--rule);} .ds-frame tr:hover td{background:var(--iron-2);} .ds-lever{display:inline-block;position:relative;width:6px;height:24px;margin-right:12px;vertical-align:middle;border-radius:3px 3px 1px 1px;background:var(--dim);transform-origin:50% 100%;transition:transform 220ms cubic-bezier(0.16,1,0.3,1);} .ds-lever::before{content:'';position:absolute;left:-3px;top:-4px;width:12px;height:8px;border-radius:2px;background:inherit;} .ds-reverse{background:var(--plate);transform:rotate(-22deg);} .ds-locked{background:var(--plate);} .ds-locked::after{content:'';position:absolute;left:-4px;right:-4px;top:9px;height:9px;border:1px solid var(--plate);border-radius:1px;background:repeating-linear-gradient(135deg,var(--plate) 0 2px,var(--ground) 2px 4px);} .ds-frame tr:hover .ds-lever{transform:rotate(-8deg);} .ds-frame tr:hover .ds-reverse{transform:rotate(-28deg);} .ds-frame tr:hover .ds-locked{transform:rotate(-2deg);} @media (prefers-reduced-motion: reduce){.ds-lever{transition:none;}}"
-    },
-    {
-      "name": "Collar Alert",
-      "kind": "card",
-      "refersTo": "register-table",
-      "description": "Locked-definition alert: enamel frame with a hatched collar band.",
-      "html": "<div class=\"ds-collar\" role=\"alert\"><b>Locked: changed after approval.</b><p>A definition an operator already approved was replaced. The diff is at the end.</p></div>",
-      "css": ":host{--ground:#07090c;--iron:#0f131a;--iron-2:#161b24;--rule:#252d3a;--rule-strong:#3a4558;--plate:#e2e9f3;--steel:#98a6ba;--dim:#7a889e;--signal:#4d88ff;--signal-hover:#6d9dff;--signal-ink:#050d1f;--signal-text:#8db4ff;--board:#0a1730;--board-2:#0f2142;--board-line:#27437a;--board-ink:#d5e2f7;--board-dim:#7f93b8;--board-lit-ink:#041026;--shelf:#030406;--sans:system-ui,-apple-system,'Segoe UI',Roboto,'Helvetica Neue',sans-serif;--mono:ui-monospace,'SF Mono','Cascadia Mono',Menlo,Consolas,monospace;--radius:3px;} .ds-collar{position:relative;padding:22px 18px 14px;border:1px solid var(--plate);border-radius:var(--radius);background:var(--iron);color:var(--plate);font:15px/1.5 var(--sans);} .ds-collar::before{content:'';position:absolute;left:0;right:0;top:0;height:8px;background:repeating-linear-gradient(135deg,var(--plate) 0 3px,var(--iron) 3px 7px);} .ds-collar b{display:block;font-size:0.9375rem;} .ds-collar p{margin:6px 0 0;color:var(--steel);}"
+      "refersTo": "group",
+      "description": "Technical detail behind a native details group; chevron rotates on open.",
+      "html": "<details class=\"ds-details\"><summary>Input schema<svg viewBox=\"0 0 8 14\" width=\"8\" height=\"14\" aria-hidden=\"true\" class=\"ds-chev\"><path d=\"M1 1l6 6-6 6\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.6\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/></svg></summary><pre>{ \"type\": \"object\", \"properties\": { \"query\": { \"type\": \"string\" } } }</pre></details>",
+      "css": ".ds-details { background: var(--surface, #ffffff); border-radius: 12px; overflow: hidden; box-shadow: 0 1px 2px rgba(0,0,0,0.04), 0 4px 16px rgba(0,0,0,0.04); font: 400 15px/1.47 -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', 'Segoe UI', Roboto, sans-serif; } .ds-details summary { display: flex; align-items: center; justify-content: space-between; padding: 14px 18px; cursor: pointer; list-style: none; font-weight: 500; color: var(--text, #1d1d1f); } .ds-details summary::-webkit-details-marker { display: none; } .ds-details summary:hover { background: var(--surface-2, #fafafc); } .ds-details summary:focus-visible { outline: 3px solid color-mix(in srgb, var(--accent, #0071e3) 45%, transparent); } .ds-details .ds-chev { color: var(--text-3, #66666b); transition: transform 200ms cubic-bezier(0.2, 0.8, 0.2, 1); } .ds-details[open] .ds-chev { transform: rotate(90deg); } .ds-details pre { margin: 0; padding: 0 18px 16px; font: 400 13px/1.6 ui-monospace, 'SF Mono', Menlo, monospace; white-space: pre-wrap; }"
     }
   ],
   "narrative": {
-    "northStar": "The Signal Box",
-    "overview": "The console is a railway signal box: a black enamel lever frame, iron panels, a navy illuminated diagram board, enamelled plates with tracked capital lettering. Its doctrine is interlocking. A lever cannot be pulled unless the route shown is the route locked, and a tool cannot be approved unless the fingerprint shown is the one advertised. Every surface serves that one act: see what is locked, read the definition as a model will, pull exactly one lever for exactly one fingerprint.\n\nIt is dense and ruled, not airy. Tables are the train register book: ruled ledger lines and tabular numerals throughout. Colour is almost absent; the palette is blue and black shades only, and the only chromatic blue that carries meaning is signal blue, which means \"you can act.\" Danger is never a new hue: it is inversion, a heavier frame, and the diagonal hatch of a lever collar. The world refuses the KPI-card admin dashboard: no metric tiles, no badges in colour, no shadows lifting cards off a page.\n\nThe system runs under hard constraints that are part of its character: server-rendered HTML with no JavaScript, one embedded stylesheet, Content-Security-Policy `default-src 'none'; style-src 'self'` (so no external fonts or assets, no inline styles), and light and dark themes from `prefers-color-scheme` alone.",
+    "northStar": "The Settings Pane, Done Carefully",
+    "overview": "The console is the Apple category standard with App Store Connect as the bar: the familiar grouped-list idiom, executed at full craft rather than reinvented. An operator lands on a large page title, a \"Needs attention\" group with one row per item, and a chevron to act. Everything technical (schemas, fingerprints, command output) waits behind a disclosure until asked for. There is no metaphor to learn; the interface is the settings pane an operator already knows.\n\nDensity is calm, not sparse: 15px body text, 14px by 18px rows, 40px between sections, a 1080px column. Color is almost entirely neutral grey and white (or black and near-black in dark mode), with one system blue reserved for actions, links and the \"approved\" state. Danger is never red: the brand is blue and black, so a changed tool, an unsigned backend, a refusal or a destructive action is a solid near-black fill in light mode and an inverted near-white fill in dark mode. Maximum contrast carries the alarm that hue would carry elsewhere.\n\nThe page runs under `default-src 'none'; style-src 'self'`: one stylesheet, system faces, no JavaScript, no images. Every glyph is a small authored inline SVG; every interaction is a link, a form post or a native `<details>`. Light and dark follow `prefers-color-scheme` with no toggle.",
     "keyCharacteristics": [
-      "Blue and black shades only; signal blue reserved for action.",
-      "One strict state grammar drawn in enamel, outline, dash, hatch and inversion; never in hue.",
-      "A night-navy diagram board that keeps its night in both themes.",
-      "Tracked uppercase lettering for plates, tabs, headings and column heads; mono only for machine strings.",
-      "A single authored motion: the lever throw."
+      "Apple system faces (SF via `-apple-system`), display cut for titles, text cut for body.",
+      "White grouped surfaces on a light grey ground; `#1c1c1e` groups on black in dark mode.",
+      "Hairline separators between rows, never boxes around them.",
+      "One accent, system blue, for actions, links and the approved state.",
+      "Danger as a solid near-black (light) or near-white (dark) fill, never red.",
+      "Pill buttons, segmented control for filters, disclosures for anything technical.",
+      "Frosted sticky bar on desktop; list rows on phones."
     ],
     "rules": [
       {
-        "name": "The Signal Rule",
-        "body": "Signal blue is for actions only: `.go` buttons, links, focus, caret, selection. No state, count, badge or alarm is ever blue. If it is blue and pressing it does nothing, it is wrong.",
+        "name": "The One Blue Rule",
+        "body": "System blue means \"you can act here\" or \"this is approved\". It is never decoration, never a heading color, never a background panel.",
         "section": "colors"
       },
       {
-        "name": "The Blue-and-Black Rule",
-        "body": "Brand commitment: every colour is a blue or a black shade. There is no red, amber or green, including for danger, errors or success.",
+        "name": "The Black Alarm Rule",
+        "body": "Danger is the ink color turned into a fill: near-black in light, near-white in dark, always with the warning glyph. Red, orange and yellow do not exist in this system.",
         "section": "colors"
       },
       {
-        "name": "The Night Board Rule",
-        "body": "The diagram board keeps its navy night in the light theme too. Only the frame and panels change with the scheme.",
+        "name": "The Tint Needs Deeper Ink Rule",
+        "body": "Blue text on any tinted or grey fill uses `accent-text`, never `accent`. `accent` is for text sitting directly on a white or black surface.",
         "section": "colors"
       },
       {
-        "name": "The Machine String Rule",
-        "body": "Mono is only for what a machine wrote or will read: identifiers, hashes, timestamps and command output. Human prose, labels and buttons stay in the sans, even inside a mono block (`.measure > *` resets to sans).",
+        "name": "The Sentence Case Rule",
+        "body": "Labels, badges, column heads and buttons are sentence case at normal tracking. Nothing in the console is uppercase or letter-spaced.",
         "section": "typography"
       },
       {
-        "name": "The Fingerprint Measure Rule",
-        "body": "Definitions, their alert and their facts share one fixed measure: one fingerprint line in mono, `calc(96ch + 42px)`, exactly \"  observed fingerprint sha256:\" plus 64 hex. Never wider, never fluid.",
+        "name": "The Machine Text Is Mono Rule",
+        "body": "If a value is an identifier the gateway matches on, it is set in mono; human descriptions never are.",
         "section": "typography"
       },
       {
-        "name": "The Ruled, Not Lifted Rule",
-        "body": "Separation comes from rules and tone. Nothing floats; a panel is iron on frame black with a hairline.",
+        "name": "The Dark Is Flat Rule",
+        "body": "No shadows in dark mode; surfaces separate by tone alone.",
         "section": "elevation"
-      },
-      {
-        "name": "The One Grammar Rule",
-        "body": "State is drawn with fill, outline, dash, hatch and inversion only, never with a new colour and never with signal blue.",
-        "section": "components"
       }
     ],
     "dos": [
-      "Do reserve signal blue for buttons that act, links, focus, caret and selection.",
-      "Do draw every state with the one grammar: fill (served), outline (approved), dash (pending), frame plus hatch (danger), inversion (pressed/current), dimmed steel (disabled).",
-      "Do set definitions and their alerts on the fixed fingerprint measure, `calc(96ch + 42px)`.",
-      "Do use mono only for identifiers, hashes, timestamps and command output, and tabular numerals everywhere.",
-      "Do keep the diagram board night-navy in both themes, and theme everything else through `prefers-color-scheme`.",
-      "Do put one imperative per page on a caption plate between double rules.",
-      "Do use lab names (casemgmt, logsearch, docsearch, threatintel) and RFC 5737/2606 stand-ins in every example."
+      "**Do** take every color from the custom properties in `app.css`; light and dark swap only there, via `prefers-color-scheme`.",
+      "**Do** use `accent-text` for blue text or glyphs on `accent-soft` or `fill`, and `btn` for primary button fills.",
+      "**Do** express danger with the Alarm Fill pair and the warning glyph, and pending with Control Fill and the dashed circle.",
+      "**Do** put new content in 12px white groups divided by 1px hairlines, with 14px by 18px rows.",
+      "**Do** keep one primary pill per view, and a caption under each consequential action that says exactly what it does.",
+      "**Do** hide schemas, fingerprints and command output behind `<details>` disclosures.",
+      "**Do** draw any new glyph as an authored inline SVG on the 16px, 1.5-stroke, round-cap grid.",
+      "**Do** give every data table phone behavior: list rows for lists, labelled stacks otherwise."
     ],
     "donts": [
-      "Don't introduce any hue outside blue and black shades; no red, amber or green for danger or success.",
-      "Don't colour a state, count or alarm signal blue.",
-      "Don't box the caption plate or give it a fill; it must never read as a control.",
-      "Don't mark the current tab with signal blue; inversion only.",
-      "Don't add drop shadows or lifted cards; rules and tone carry depth.",
-      "Don't add JavaScript, inline styles, external fonts or assets, or a second stylesheet.",
-      "Don't author any motion other than the lever throw, and never without a reduced-motion off switch.",
-      "Don't build KPI cards or metric tiles; counts live in the status line and the register."
+      "**Don't** use red, orange, yellow or green for any state; the palette is blue and black shades.",
+      "**Don't** add a second accent hue or use blue for decoration, headings or panels.",
+      "**Don't** add JavaScript, inline styles, web fonts, images or icon fonts; the CSP forbids them.",
+      "**Don't** set labels, badges or buttons in uppercase or with letter-spacing.",
+      "**Don't** add shadows in dark mode or heavier shadows in light mode than the group lift.",
+      "**Don't** put borders around rows or cards; separate with hairlines and tone.",
+      "**Don't** use real deployment names, hosts or paths in examples; use casemgmt, logsearch, docsearch, threatintel and RFC 5737 / RFC 2606 stand-ins."
     ]
   }
 }

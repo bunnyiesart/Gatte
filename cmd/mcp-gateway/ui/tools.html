@@ -1,27 +1,39 @@
 {{template "top" .}}
-<p class="imperative">Review before you pull. Approving pins one fingerprint, nothing more.</p>
-<p class="lead">Every tool a backend advertises starts here, unserved, until someone reviews its
-definition and approves that exact fingerprint, and it is served only while its backend's entry
-is signed. A locked tool changed after it was approved: it stays out of service until its diff
-is read and approved again.</p>
-{{if .Data}}
-<table class="frame">
-  <thead><tr><th class="num">Lever</th><th>Tool</th><th>State</th><th>Fingerprint</th><th>Updated</th><th><span class="sr">Action</span></th></tr></thead>
-  <tbody>
-  {{range .Data}}
-    <tr class="{{.Status}}">
-      <td class="num" data-label="Lever"><span class="lever {{.Status}}{{if .Usable}} reverse{{end}}" aria-hidden="true"></span><b>{{.N}}</b></td>
-      <td data-label="Tool"><span class="plate">{{vis .Server}}<i>.</i>{{vis .Tool}}</span></td>
-      <td data-label="State"><span class="state {{.Status}}">{{if eq .Status "changed"}}locked, changed{{else}}{{.Status}}{{end}}</span></td>
-      <td class="mono" data-label="Fingerprint">{{short .ObservedHash}}</td>
-      <td class="mono num" data-label="Updated">{{time .UpdatedAt}}</td>
-      <td class="act"><a class="btn {{if ne .Status "approved"}}go{{end}}" href="{{$.Base}}/tools/show?server={{.Server}}&amp;tool={{.Tool}}">Review</a></td>
-    </tr>
-  {{end}}
-  </tbody>
-</table>
-{{else if not .Error}}
-<p class="empty">No tool has been observed yet. Tools appear once the gateway connects to a
-registered, signed backend.</p>
+{{with .Data}}
+<div class="head">
+  <h1>Tools</h1>
+  <p class="sub">A tool is served only after you approve it.</p>
+</div>
+
+<nav class="segmented" aria-label="Filter">
+  <a href="{{$.Base}}/tools" {{if eq .Show ""}}aria-current="page"{{end}}>All <span>{{index .Counts "all"}}</span></a>
+  <a href="{{$.Base}}/tools?show=review" {{if eq .Show "review"}}aria-current="page"{{end}}>Needs review <span>{{index .Counts "review"}}</span></a>
+  <a href="{{$.Base}}/tools?show=approved" {{if eq .Show "approved"}}aria-current="page"{{end}}>Approved <span>{{index .Counts "approved"}}</span></a>
+</nav>
+
+{{if .Tools}}
+<div class="group">
+  <table class="list">
+    <thead><tr><th>Tool</th><th>Backend</th><th>Status</th><th>Updated</th><th><span class="sr">Open</span></th></tr></thead>
+    <tbody>
+    {{range .Tools}}
+      <tr>
+        <td class="t-title" data-label="Tool"><a class="cell-link mono" href="{{$.Base}}/tools/show?server={{.Server}}&amp;tool={{.Tool}}">{{vis .Tool}}</a></td>
+        <td class="muted t-sub" data-label="Backend">{{vis .Server}}</td>
+        <td class="t-badge" data-label="Status">{{template "status" .Status}}</td>
+        <td class="muted num t-hide" data-label="Updated">{{time .UpdatedAt}}</td>
+        <td class="end">{{template "chev"}}</td>
+      </tr>
+    {{end}}
+    </tbody>
+  </table>
+</div>
+{{else if not $.Error}}
+<div class="group empty-state">
+  <p>{{if eq .Show "review"}}<b>Nothing to review.</b> Every tool is approved.{{else}}<b>No tools yet.</b> They appear once the gateway connects to a signed backend.{{end}}</p>
+</div>
+{{end}}
 {{end}}
 {{template "bottom" .}}
+
+{{define "status"}}{{if eq . "changed"}}<span class="badge danger">{{template "warn"}}Changed</span>{{else if eq . "pending"}}<span class="badge pending">{{template "dot"}}Needs review</span>{{else}}<span class="badge ok">{{template "check"}}Approved</span>{{end}}{{end}}

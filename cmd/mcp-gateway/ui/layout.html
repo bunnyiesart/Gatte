@@ -3,33 +3,35 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="color-scheme" content="dark light">
-<title>{{.Title}} · Gatte console</title>
+<meta name="color-scheme" content="light dark">
+<title>{{.Title}} · Gatte</title>
 <link rel="stylesheet" href="{{$.Base}}/app.css">
 </head>
 <body>
-<header class="shelf">
-  <a class="nameplate" href="{{$.Base}}/"><span>Gatte</span></a>
-  <nav class="tabs" aria-label="Console">
-    <a href="{{$.Base}}/" {{if eq .Nav "overview"}}aria-current="page"{{end}}>Overview</a>
-    <a href="{{$.Base}}/tools" {{if eq .Nav "tools"}}aria-current="page"{{end}}>Tools</a>
-    <a href="{{$.Base}}/access" {{if eq .Nav "access"}}aria-current="page"{{end}}>Access</a>
-    <a href="{{$.Base}}/audit" {{if eq .Nav "audit"}}aria-current="page"{{end}}>Audit</a>
-    <a href="{{$.Base}}/upstreams" {{if eq .Nav "upstreams"}}aria-current="page"{{end}}>Backends</a>
-    <a href="{{$.Base}}/quota" {{if eq .Nav "quota"}}aria-current="page"{{end}}>Quota</a>
-  </nav>
+<header class="bar">
+  <div class="bar-inner">
+    <a class="wordmark" href="{{$.Base}}/">Gatte</a>
+    <nav aria-label="Console">
+      <a href="{{$.Base}}/" {{if eq .Nav "overview"}}aria-current="page"{{end}}>Overview</a>
+      <a href="{{$.Base}}/tools" {{if eq .Nav "tools"}}aria-current="page"{{end}}>Tools</a>
+      <a href="{{$.Base}}/access" {{if eq .Nav "access"}}aria-current="page"{{end}}>Access</a>
+      <a href="{{$.Base}}/audit" {{if eq .Nav "audit"}}aria-current="page"{{end}}>Audit</a>
+      <a href="{{$.Base}}/upstreams" {{if eq .Nav "upstreams"}}aria-current="page"{{end}}>Backends</a>
+      <a href="{{$.Base}}/quota" {{if eq .Nav "quota"}}aria-current="page"{{end}}>Quota</a>
+    </nav>
+  </div>
 </header>
 <main>
-<h1>{{.Title}}</h1>
-{{if .Error}}<pre class="fault">{{vistext .Error}}</pre>{{end}}
+{{if .Error}}<div class="notice error" role="alert">{{template "warn"}}<pre>{{vistext .Error}}</pre></div>{{end}}
 {{end}}
 
 {{define "bottom"}}
 </main>
-<footer class="foot">
-  <span class="mono">{{.Config}}</span>
-  <span>Every lever here is the <code>mcp-gateway</code> command of the same name.</span>
-</footer>
 </body>
 </html>
 {{end}}
+
+{{define "chev"}}<svg class="chev" viewBox="0 0 8 14" width="8" height="14" aria-hidden="true"><path d="M1 1l6 6-6 6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>{{end}}
+{{define "check"}}<svg class="glyph" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><circle cx="8" cy="8" r="7.25" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M4.8 8.2l2.1 2.1 4.3-4.6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>{{end}}
+{{define "warn"}}<svg class="glyph" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M8 1.6l6.9 12.2H1.1z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M8 6v3.6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><circle cx="8" cy="11.7" r="0.9" fill="currentColor"/></svg>{{end}}
+{{define "dot"}}<svg class="glyph" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><circle cx="8" cy="8" r="7.25" fill="none" stroke="currentColor" stroke-width="1.5" stroke-dasharray="2.6 2.4"/></svg>{{end}}

@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -35,7 +36,7 @@ import (
 	"github.com/bunnyiesart/Gatte/internal/store"
 )
 
-// schemaKeys is the v1 schema, written out by hand rather than derived
+// schemaKeys is the record schema, written out by hand rather than derived
 // from the struct. Deriving it would make the test agree with whatever the
 // struct says, including a field somebody added yesterday that carries an
 // upstream error string -- which is the exact failure this test exists to
@@ -824,5 +825,43 @@ func TestHeartbeatDoesNotDisturbTheChain(t *testing.T) {
 	}
 	if after := h.rowCount(); after != rows {
 		t.Errorf("audit_records went from %d to %d rows; a heartbeat must write nothing durable", rows, after)
+	}
+}
+
+// TestEmittedLineCarriesTheAnalystNameOnlyWhenNamed (design/adr/0037):
+// analyst_name is the one key a record line may omit, and it is omitted
+// exactly when the record has no name -- so the SIEM can show who a UUID
+// subject is, while `caller` stays the attribution.
+func TestEmittedLineCarriesTheAnalystNameOnlyWhenNamed(t *testing.T) {
+	h := newHarness(t)
+	named := rec("casemgmt.list_cases", audit.OutcomeAllowed, "")
+	named.AnalystName = "Ana Lyst"
+	unnamed := rec("casemgmt.get_case", audit.OutcomeAllowed, "")
+	for _, r := range []audit.Record{named, unnamed} {
+		if err := h.rec.Record(context.Background(), r); err != nil {
+			t.Fatalf("Record: %v", err)
+		}
+	}
+
+	got := h.decoded()
+	if len(got) != 2 {
+		t.Fatalf("emitted %d lines, want 2", len(got))
+	}
+	if got[0]["analyst_name"] != "Ana Lyst" {
+		t.Errorf("analyst_name = %#v, want %q", got[0]["analyst_name"], "Ana Lyst")
+	}
+	if got[0]["caller"] != "sub-analyst-1" {
+		t.Errorf("caller = %#v; the subject stays the attribution", got[0]["caller"])
+	}
+	keys := slices.Sorted(maps.Keys(got[0]))
+	want := slices.Sorted(slices.Values(append(slices.Clone(schemaKeys), "analyst_name")))
+	if !slices.Equal(keys, want) {
+		t.Errorf("named line key set = %v, want exactly %v", keys, want)
+	}
+	if v, present := got[1]["analyst_name"]; present {
+		t.Errorf("analyst_name is present as %#v on an unnamed line -- it must be absent", v)
+	}
+	if got[1]["prev_hash"] != got[0]["hash"] || got[1]["hash"] != h.head() {
+		t.Error("the named line's hash is not the one the chain continues from")
 	}
 }

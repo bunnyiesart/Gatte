@@ -31,7 +31,7 @@ func decode(t *testing.T, b []byte) map[string]any {
 }
 
 // TestMessageCarriesEveryRecordField puts a distinct sentinel in each of
-// audit.Record's seven fields and requires each one to come out under its
+// audit.Record's eight fields and requires each one to come out under its
 // exact GELF key.
 //
 // This is the positive control for the mapping, and the real failure mode
@@ -41,6 +41,7 @@ func decode(t *testing.T, b []byte) map[string]any {
 func TestMessageCarriesEveryRecordField(t *testing.T) {
 	r := audit.Record{
 		AnalystIdentity: "sentinel-analyst",
+		AnalystName:     "sentinel-name",
 		Tool:            "sentinel.tool",
 		TargetUpstream:  "sentinel-upstream",
 		Timestamp:       time.Date(2026, 9, 14, 3, 11, 7, 500000000, time.UTC),
@@ -57,6 +58,7 @@ func TestMessageCarriesEveryRecordField(t *testing.T) {
 
 	want := map[string]string{
 		"_analyst_identity": "sentinel-analyst",
+		"_analyst_name":     "sentinel-name",
 		"_tool":             "sentinel.tool",
 		"_target_upstream":  "sentinel-upstream",
 		"_outcome":          "denied",
@@ -107,12 +109,12 @@ func TestMessageOmitsEmptyOptionalFields(t *testing.T) {
 		TargetUpstream:  "threatintel",
 		Timestamp:       time.Now(),
 		Outcome:         audit.OutcomeAllowed,
-		// Reason and SourceAddress deliberately empty.
+		// Reason, SourceAddress and AnalystName deliberately empty.
 	}
 
 	m := decode(t, mustEncode(t, r))
 
-	for _, key := range []string{"_reason", "_source_address"} {
+	for _, key := range []string{"_reason", "_source_address", "_analyst_name"} {
 		if v, present := m[key]; present {
 			t.Errorf("%s is present as %#v -- it must be absent, not empty", key, v)
 		}

@@ -22,6 +22,14 @@
       <button class="btn small">End gateway maintenance</button>
     </form>
   </div>
+  <form class="group form" method="post" action="{{$.Base}}/upstreams/maintenance/on">
+    <input type="hidden" name="csrf" value="{{$csrf}}">
+    <input type="hidden" name="scope" value="gateway">
+    <label class="field wide"><span>Notice to analysts</span><input name="message" required maxlength="200" autocomplete="off" value="{{.Gateway.Message}}"></label>
+    <label class="field"><span>Until (UTC, optional)</span><input name="until" autocomplete="off" placeholder="2h or 2026-09-29T15:00" value="{{formend .Gateway.Until .Gateway.UntilPassed}}"></label>
+    <div class="form-end"><button class="btn small">Update gateway maintenance</button></div>
+  </form>
+  <p class="caption">Updating keeps when the maintenance started. Clear the end to take it back.</p>
   {{else}}
   <form class="group form" method="post" action="{{$.Base}}/upstreams/maintenance/on">
     <input type="hidden" name="csrf" value="{{$csrf}}">
@@ -79,6 +87,16 @@
         <input type="hidden" name="scope" value="upstream">
         <input type="hidden" name="upstream" value="{{.Name}}">
         <button class="btn small">End maintenance</button>
+      </form>
+    </li>
+    <li class="row">
+      <form class="form" method="post" action="{{$.Base}}/upstreams/maintenance/on">
+        <input type="hidden" name="csrf" value="{{$csrf}}">
+        <input type="hidden" name="scope" value="upstream">
+        <input type="hidden" name="upstream" value="{{.Name}}">
+        <label class="field wide"><span>Message to analysts</span><input name="message" required maxlength="200" autocomplete="off" value="{{$m.Message}}"></label>
+        <label class="field"><span>Until (UTC, optional)</span><input name="until" autocomplete="off" placeholder="2h or 2026-09-29T15:00" value="{{formend $m.Until $m.UntilPassed}}"></label>
+        <div class="form-end"><button class="btn small">Update maintenance</button></div>
       </form>
       {{else}}
       <form class="form" method="post" action="{{$.Base}}/upstreams/maintenance/on">

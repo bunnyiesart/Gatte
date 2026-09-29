@@ -254,10 +254,14 @@ With the features `backend_health` and `maintenance` (contract 1.1.0,
   `"` and `\` are allowed, and the gateway quotes the message where it
   puts it inside its own text. `until` is a forecast: nothing ends by itself, so a
   front should show `until_passed` loudly.
-- `cause` (`process_gone`, `not_brought_up`, `held_back`) is for the
-  operator only; analysts are told the state, never why. `held_back` means
-  the gateway is not dialing anything new (the quota policy and the registry
-  disagree): `down` stays `down` until an operator fixes that.
+- `cause` (`process_gone`, `not_brought_up`, `held_back`, `not_listed`)
+  is for the operator only; analysts are told the state, never why.
+  `held_back` means the gateway is not dialing anything new (the quota
+  policy and the registry disagree): `down` stays `down` until an operator
+  fixes that. It is also the cause of a backend found dead while dials are
+  held back, so `state` is derived from `cause` alone. `not_listed` is a
+  re-dialled process whose tool list has not been read yet: it takes no
+  call, so it is `reconnecting`, not `up`. The set is open.
 - Localise on `Attention.kind` (`backend_unavailable`,
   `backend_maintenance`, `gateway_maintenance`, `serve_not_reporting`) and
   on `state`, like every other key.

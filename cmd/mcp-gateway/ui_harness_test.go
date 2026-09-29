@@ -110,6 +110,18 @@ func newUIFront(t *testing.T, e opTestEnv, manage bool) *uiHarness {
 		h.accSock = uiServeBackend(t, e, adminapi.SocketAccounts)
 		acc = adminapi.New(h.accSock, adminapi.WithFront("ui"))
 	}
+	return startUIFront(t, h, acc)
+}
+
+// newUIFrontOn starts the console over whatever serves the operator socket
+// at sock: a stand-in for an older or a different backend.
+func newUIFrontOn(t *testing.T, sock string) *uiHarness {
+	t.Helper()
+	return startUIFront(t, &uiHarness{opSock: sock}, nil)
+}
+
+func startUIFront(t *testing.T, h *uiHarness, acc *adminapi.Client) *uiHarness {
+	t.Helper()
 	kit, err := frontkit.New(frontkit.Config{Listen: "127.0.0.1:0"})
 	if err != nil {
 		t.Fatal(err)

@@ -120,7 +120,7 @@ func runStatus(t *testing.T, info admin.ConnectInfo, fixture string, flags ...st
 		if err := os.WriteFile(fx, []byte(fixture), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		fake := "#!/bin/sh\necho \"$@\" >> '" + log + "'\ncase \"$1\" in\n  mcp) cat '" + fx + "' ;;\n  -p) echo 'casemgmt: up since 2026-09-29T08:00:03Z.' ;;\nesac\nexit 0\n"
+		fake := strings.ReplaceAll(strings.ReplaceAll(fakeClaude, "@LOG@", log), "@FIXTURE@", fx)
 		if err := os.WriteFile(filepath.Join(bin, "claude"), []byte(fake), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -130,6 +130,13 @@ func runStatus(t *testing.T, info admin.ConnectInfo, fixture string, flags ...st
 		t.Fatal(err)
 	}
 	cmd := exec.Command("/bin/sh", append([]string{script}, flags...)...)
+	// Run from a checkout, as an analyst does: its project settings and
+	// hooks must not be what Claude Code loads for the script.
+	repo := filepath.Join(dir, "repo")
+	if err := os.MkdirAll(filepath.Join(repo, ".claude"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cmd.Dir = repo
 	// Only bin: no claude on the PATH unless the test put one there.
 	cmd.Env = []string{"HOME=" + home, "PATH=" + bin}
 	out, err := cmd.CombinedOutput()
@@ -140,8 +147,47 @@ func runStatus(t *testing.T, info admin.ConnectInfo, fixture string, flags ...st
 		t.Fatal(err)
 	}
 	args, _ := os.ReadFile(log)
+	realRepo, _ := filepath.EvalSymlinks(repo)
+	for _, line := range strings.Split(string(args), "\n") {
+		if strings.HasPrefix(line, "cwd="+repo+" ") || strings.HasPrefix(line, "cwd="+realRepo+" ") {
+			t.Errorf("claude ran in the analyst's current directory: %q", line)
+		}
+	}
 	return statusRun{code: code, out: string(out), args: string(args)}
 }
+
+// fakeClaude stands in for Claude Code 2.1.285. It logs where it ran and
+// with what, prints the fixture for "mcp get", and parses -p the way the
+// real one does: --allowedTools takes every argument after it that is not
+// an option, so a prompt placed after it is read as a tool name and -p has
+// no prompt.
+const fakeClaude = `#!/bin/sh
+echo "cwd=$(pwd) $*" >> '@LOG@'
+if [ "$1" = mcp ]; then
+  cat '@FIXTURE@'
+  exit 0
+fi
+prompt=
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --allowedTools|--allowed-tools)
+      shift
+      while [ $# -gt 0 ]; do
+        case "$1" in -*) break ;; esac
+        shift
+      done ;;
+    --setting-sources) shift 2 ;;
+    -*) shift ;;
+    *) prompt=$1; shift ;;
+  esac
+done
+if [ -z "$prompt" ]; then
+  echo 'Error: Input must be provided either through stdin or as a prompt argument when using --print' >&2
+  exit 1
+fi
+echo 'casemgmt: up since 2026-09-29T08:00:03Z.'
+exit 0
+`
 
 func TestStatusScript_TellsUnreachableFromNeedsLoginFromUp(t *testing.T) {
 	up := httptest.NewServer(gatteStub())
@@ -237,6 +283,71 @@ func TestStatusScript_BackendsCallsGatteStatusAsTheClientNamesIt(t *testing.T) {
 	}
 	if !strings.Contains(r.args, "--allowedTools mcp__gatte__gatte_status") || !strings.Contains(r.out, "casemgmt: up") || !strings.Contains(r.out, "model") {
 		t.Fatalf("claude called with %q; output:\n%s", r.args, r.out)
+	}
+	// Only the analyst's own settings: no project's permissions or hooks.
+	if !strings.Contains(r.args, "--setting-sources user") {
+		t.Errorf("claude -p called with %q, want --setting-sources user", r.args)
+	}
+}
+
+// Without -backends the check does not look at the backends, so a pass
+// must not read as "everything is fine": it says Gatte itself is fine and
+// how to see the backends.
+func TestStatusScript_APassWithoutBackendsPointsToThem(t *testing.T) {
+	up := httptest.NewServer(gatteStub())
+	defer up.Close()
+	r := runStatus(t, statusInfo(up.URL), claudeGetConnected)
+	if r.code != 0 || !strings.Contains(r.out, "gatte-status -backends") || !strings.Contains(r.out, "gatte.status") {
+		t.Fatalf("exit %d; the pass does not point to the backends:\n%s", r.code, r.out)
+	}
+	text, _, _ := admin.RenderStatusScript(statusInfo(up.URL), "linux")
+	if strings.Contains(text, "0 all good") {
+		t.Error("the header still calls exit 0 \"all good\" although backends are not checked")
+	}
+}
+
+// The PowerShell version, which cannot run here: Claude Code is called
+// from a directory of the script's own, never under
+// $ErrorActionPreference = 'Stop' (Windows PowerShell 5.1 turns a native
+// command's stderr into a terminating error there), and -p gets its
+// prompt before the list option.
+func TestStatusScript_PowerShellCallsClaudeSafely(t *testing.T) {
+	ps, _, err := admin.RenderStatusScript(statusInfo("https://mcp.example.internal"), "windows")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(ps, "\r\n")
+	pref, pushed, calls := "", false, 0
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "$ErrorActionPreference = ") {
+			pref = strings.TrimPrefix(trimmed, "$ErrorActionPreference = ")
+		}
+		if strings.HasPrefix(trimmed, "Push-Location") {
+			pushed = true
+		}
+		if strings.HasPrefix(trimmed, "Pop-Location") {
+			pushed = false
+		}
+		if !strings.Contains(line, "& claude") {
+			continue
+		}
+		calls++
+		if pref != "'Continue'" {
+			t.Errorf("line %d runs claude under $ErrorActionPreference = %s: %s", i+1, pref, trimmed)
+		}
+		if !pushed {
+			t.Errorf("line %d runs claude from the analyst's current directory: %s", i+1, trimmed)
+		}
+		if strings.Contains(line, " -p ") {
+			p, a := strings.Index(line, "\"Call "), strings.Index(line, "--allowedTools")
+			if p < 0 || a < 0 || p > a || !strings.Contains(line, "--setting-sources user") {
+				t.Errorf("line %d: the prompt must come before --allowedTools, with --setting-sources user: %s", i+1, trimmed)
+			}
+		}
+	}
+	if calls != 2 {
+		t.Errorf("found %d claude calls in the ps1, want 2", calls)
 	}
 }
 

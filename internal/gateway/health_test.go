@@ -609,3 +609,94 @@ func TestDispatch_AReDialledConnectionIsNotCalledBeforeItIsListed(t *testing.T) 
 		t.Errorf("the rewritten tool was called %d time(s)", after-before)
 	}
 }
+
+// A re-dialled connection that no Refresh has listed yet takes no call
+// (above), and so it is not up either: every surface -- the call, gatte.status,
+// the heartbeat's counts, the row the management backend reads and the
+// trail -- says reconnecting, since the real moment it went down, until the
+// listing. A listing that fails without the process being gone (a slow
+// start, a timeout) keeps it there.
+func TestHealth_AReDialledConnectionIsReconnectingEverywhereUntilListed(t *testing.T) {
+	h := liveAndApproved(t)
+	h.killBackend("casemgmt")
+	_ = h.refresh() // found dead at fixedAt
+	h.reviveBackend("casemgmt")
+	later := fixedAt.Add(time.Minute)
+	h.gw.now = func() time.Time { return later }
+	_ = h.reconcile() // the new process is adopted, not yet listed
+	up := h.dialer.upstream("casemgmt")
+	up.mu.Lock()
+	up.listErr = fmt.Errorf("stdio: upstream %q: list tools: %w", "casemgmt", context.DeadlineExceeded)
+	up.mu.Unlock()
+	_ = h.refresh() // its listing times out: still not listed
+
+	notYet := func(when string) {
+		t.Helper()
+		var ue *UnavailableError
+		if _, err := h.dispatch("casemgmt.list_cases"); !errors.As(err, &ue) || ue.State != StateReconnecting || !ue.Since.Equal(fixedAt) {
+			t.Errorf("%s: Dispatch = %v (%+v), want reconnecting since %v", when, err, ue, fixedAt)
+		}
+		if st := h.stateOf("casemgmt"); st.State != StateReconnecting || !st.Since.Equal(fixedAt) {
+			t.Errorf("%s: gatte.status = %+v, want reconnecting since %v", when, st, fixedAt)
+		}
+		if s := h.gw.Status(); s.BackendsUp != 0 || s.BackendsReconnecting != 1 {
+			t.Errorf("%s: Status = %+v, want 0 up and 1 reconnecting", when, s)
+		}
+		if rows, err := h.health.Backends(context.Background()); err != nil || len(rows) != 1 || rows[0].Live {
+			t.Errorf("%s: backend_health = %+v, %v; want casemgmt not live", when, rows, err)
+		}
+		rows := h.healthRows()
+		if last := rows[len(rows)-1].Reason; last != reasonBackendDownPrefix+": "+string(health.CauseProcessGone) {
+			t.Errorf("%s: last (backend health) row %q, want the down row still the last", when, last)
+		}
+	}
+	notYet("after the re-dial")
+
+	up.mu.Lock()
+	up.listErr = nil
+	up.mu.Unlock()
+	_ = h.refresh() // listed: now it is up
+	if st := h.stateOf("casemgmt"); st.State != StateUp || !st.Since.Equal(later) {
+		t.Errorf("after the listing: gatte.status = %+v, want up since %v", st, later)
+	}
+	if s := h.gw.Status(); s.BackendsUp != 1 || s.BackendsReconnecting != 0 {
+		t.Errorf("after the listing: Status = %+v, want 1 up", s)
+	}
+	rows := h.healthRows()
+	if last := rows[len(rows)-1].Reason; last != reasonBackendUpPrefix+" "+fixedAt.Format(time.RFC3339) {
+		t.Errorf("after the listing: last (backend health) row %q, want the up row", last)
+	}
+	if _, err := h.dispatch("casemgmt.list_cases"); err != nil {
+		t.Errorf("after the listing: Dispatch = %v", err)
+	}
+}
+
+// A death found between rounds while dials are held back is down for
+// every surface: the caller, gatte.status and the row the management
+// backend derives its state from all agree that an operator has to act.
+// The trail still says what happened: the process went.
+func TestHealth_ADeathFoundWhileHeldBackIsDownForTheConsolesToo(t *testing.T) {
+	h := newThreatintelQuotaHarness(t, "threatintel.lookup_ip", "casemgmt.list_cases")
+	h.deregister("threatintel")
+	_ = h.reconcile() // the fleet is frozen; casemgmt is still live
+	h.killBackend("casemgmt")
+	_ = h.refresh() // found dead between rounds
+
+	if st := h.stateOf("casemgmt"); st.State != StateDown {
+		t.Errorf("gatte.status = %+v, want down", st)
+	}
+	var rec *health.BackendRecord
+	rows, err := h.health.Backends(context.Background())
+	for i := range rows {
+		if rows[i].Backend == "casemgmt" {
+			rec = &rows[i]
+		}
+	}
+	if err != nil || rec == nil || rec.Live || rec.Cause != health.CauseHeldBack || !rec.NextAttempt.IsZero() {
+		t.Errorf("backend_health = %+v, %v; want casemgmt not live, held_back, no next attempt", rows, err)
+	}
+	trail := h.healthRows()
+	if last := trail[len(trail)-1]; last.TargetUpstream != "casemgmt" || last.Reason != reasonBackendDownPrefix+": "+string(health.CauseProcessGone) {
+		t.Errorf("last (backend health) row = %s %q, want casemgmt's process_gone", last.TargetUpstream, last.Reason)
+	}
+}

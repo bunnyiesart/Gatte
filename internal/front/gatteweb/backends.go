@@ -89,7 +89,31 @@ func maintenanceTitle(scope, upstream string) string {
 	return frontkit.VisibleText(upstream)
 }
 
+// formUntil is an announced end as the update form carries it back: RFC
+// 3339 in UTC, or empty when there is none or it has passed (the backend
+// refuses an end in the past, and the operator is told it passed).
+func formUntil(until *time.Time, passed bool) string {
+	if until == nil || passed {
+		return ""
+	}
+	return until.UTC().Format(time.RFC3339)
+}
+
+// maintenanceServed answers 404 and reports false when the backend does
+// not list the maintenance feature: the page shows no form then, and a
+// POST that arrives anyway is not forwarded.
+func (f *Front) maintenanceServed(w http.ResponseWriter, r *http.Request) bool {
+	if _, maintenance := f.features(r.Context()); !maintenance {
+		http.NotFound(w, r)
+		return false
+	}
+	return true
+}
+
 func (f *Front) maintenanceOn(w http.ResponseWriter, r *http.Request) {
+	if !f.maintenanceServed(w, r) {
+		return
+	}
 	scope, upstream := r.PostForm.Get("scope"), r.PostForm.Get("upstream")
 	title := "Maintenance of " + maintenanceTitle(scope, upstream)
 	until, ok := untilOf(r.PostForm.Get("until"), time.Now())
@@ -104,6 +128,9 @@ func (f *Front) maintenanceOn(w http.ResponseWriter, r *http.Request) {
 }
 
 func (f *Front) maintenanceOff(w http.ResponseWriter, r *http.Request) {
+	if !f.maintenanceServed(w, r) {
+		return
+	}
 	scope, upstream := r.PostForm.Get("scope"), r.PostForm.Get("upstream")
 	res, err := f.op.EndMaintenance(r.Context(), adminapi.MaintenanceTarget{Scope: scope, Upstream: upstream})
 	f.showResult(w, "upstreams", "End the maintenance of "+maintenanceTitle(scope, upstream), "/upstreams", actionResult(res.ActionResult, err))

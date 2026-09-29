@@ -410,7 +410,9 @@ outcome:denied` and close on the `allowed` row of the same backend.
 **Planned maintenance.** `upstream maintenance on NAME -message TEXT`
 answers that backend's calls with your message, without calling it, from
 the next call on and until `off`; its tools stay listed. `-until` only
-announces the end. `maintenance on` for the whole gateway is a notice, not
+announces the end. Running `on` again changes the message; without
+`-until` it keeps the end already announced, and `-until none` takes it
+back. `maintenance on` for the whole gateway is a notice, not
 a block: calls are still served, and text results and `gatte.status` carry
 it. The message goes in front of analysts and their models: one line, at
 most 200 characters, no hidden characters. Each on and off is an operator
@@ -432,9 +434,12 @@ Gatte" (exit 1: VPN, DNS, route) from TLS (2), from "Gatte or the proxy in
 front of it is not serving" (3, including a closed port on a host that
 answers), from "Gatte is up and Claude Code is not signed in" (4: run
 `/mcp`), using only the public protected-resource metadata, the MCP
-endpoint's 401 challenge and `claude mcp get`. `gatte-status -backends`
-also asks Claude Code to call `gatte.status`, at the cost of one model
-request. There is no `/healthz`: those two public answers already prove
+endpoint's 401 challenge and `claude mcp get`. Exit 0 says Gatte itself
+is fine, not that every backend is: `gatte-status -backends` also asks
+Claude Code to call `gatte.status`, at the cost of one model request.
+Claude Code is always run from the script's own temporary directory, and
+`-p` with only the user's settings, so a checkout the analyst stands in
+cannot load its hooks or its own MCP servers into the check. There is no `/healthz`: those two public answers already prove
 DNS, network, TLS, proxy and the process, and per-backend state needs the
 caller's identity.
 
@@ -470,7 +475,7 @@ link locally.
 | Tools | Review a definition with hidden characters escaped and the diff coloured, then approve that exact fingerprint, or revoke. |
 | Access | Block or unblock an analyst, with a reason that goes in the trail. |
 | Audit | Filter the trail by analyst and outcome, and verify the hash chain against your SIEM's head. |
-| Backends | What is registered and signed, each backend's state (up, reconnecting, down, in maintenance), since when and why, and a form to start or end the maintenance of one backend or of the whole gateway, with the message analysts read and an optional end time. |
+| Backends | What is registered and signed, each backend's state (up, reconnecting, down, in maintenance), since when and why, and a form to start, update (filled with the current message and end) or end the maintenance of one backend or of the whole gateway, with the message analysts read and an optional end time. |
 | Quota | Read-only: what each analyst has spent. |
 
 Every button is the management API's action of the same name, the one the

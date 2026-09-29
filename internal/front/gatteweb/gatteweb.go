@@ -85,6 +85,7 @@ func New(o Options) (*Front, error) {
 		"sub":     func(a, b int) int { return a - b },
 		"state":   stateLabel,
 		"since":   showTimePtr,
+		"formend": formUntil,
 	}).ParseFS(assets, "ui/*.html")
 	if err != nil {
 		return nil, fmt.Errorf("gatteweb: templates: %w", err)

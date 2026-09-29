@@ -1659,7 +1659,7 @@ func (g *Gateway) Refresh(ctx context.Context) error {
 		}
 		candidates[name] = got.routes
 		g.recordListing(name, got.routes)
-		g.markListed(name, conns[name])
+		events = append(events, g.markListed(name, conns[name]))
 	}
 	for _, name := range names {
 		failures = append(failures, perUpstream[name]...)
@@ -3465,7 +3465,7 @@ func (g *Gateway) Status() Status {
 		switch {
 		case b.live:
 			up++
-		case g.heldBack:
+		case b.cause == health.CauseHeldBack:
 			down++
 		default:
 			reconnecting++
@@ -3508,7 +3508,14 @@ func (g *Gateway) markGone(name string, up Upstream) *healthEvent {
 	if g.servable != nil && !g.servable[name] {
 		return nil
 	}
-	return g.observeLive(name, false, health.CauseProcessGone, false, g.now())
+	ev := g.observeLive(name, false, health.CauseProcessGone, false, g.now())
+	// While dials are held back nobody will re-dial it: it is down, not
+	// reconnecting, for the caller and for the consoles alike, which read
+	// the state from this cause. The row still says what happened.
+	if b, ok := g.health[name]; ok && g.heldBack {
+		b.cause = health.CauseHeldBack
+	}
+	return ev
 }
 
 // servableNotConnected lists, sorted, the servable backends conns has no

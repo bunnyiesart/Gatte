@@ -46,7 +46,7 @@
       <thead><tr><th>Time</th><th>Analyst</th><th>Tool</th><th>Reason</th></tr></thead>
       <tbody>
       {{range .Denied}}
-        <tr><td class="muted num t-sub2" data-label="Time">{{time .Timestamp}}</td><td class="t-sub" data-label="Analyst">{{vis .Analyst}}</td><td class="mono t-title" data-label="Tool">{{vis .Tool}}</td><td class="t-badge muted" data-label="Reason">{{vis .Reason}}</td></tr>
+        <tr><td class="muted num t-sub2" data-label="Time">{{time .Timestamp}}</td><td class="t-sub" data-label="Analyst">{{if .AnalystName}}{{vis .AnalystName}}{{else}}<span class="mono">{{vis .Analyst}}</span>{{end}}</td><td class="mono t-title" data-label="Tool">{{vis .Tool}}</td><td class="t-badge muted" data-label="Reason">{{vis .Reason}}</td></tr>
       {{end}}
       </tbody>
     </table>

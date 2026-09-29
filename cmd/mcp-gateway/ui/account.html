@@ -1,0 +1,43 @@
+{{template "top" .}}
+{{$csrf := .CSRF}}{{$base := .Base}}
+<a class="back" href="{{$base}}/people"><svg viewBox="0 0 8 14" width="8" height="14" aria-hidden="true"><path d="M7 1L1 7l6 6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>People</a>
+{{with .Data}}{{with $d := .}}{{with .Account}}
+<div class="head">
+  <h1>{{vis .DisplayName}}</h1>
+  <p class="sub"><span class="mono">{{vis .Username}}</span>{{if .Email}} · {{vis .Email}}{{end}}{{if .Disabled}} · <span class="badge">Disabled</span>{{end}}</p>
+</div>
+
+<section>
+  <h2>Groups</h2>
+  <form class="group form" method="post" action="{{$base}}/people/groups">
+    <input type="hidden" name="csrf" value="{{$csrf}}">
+    <input type="hidden" name="username" value="{{.Username}}">
+    <fieldset class="field wide checks">
+      <legend class="sr">Groups</legend>
+      {{range $d.Groups}}<label class="check"><input type="checkbox" name="group" value="{{.Name}}" {{if index $d.Has .Name}}checked{{end}}><span>{{vis .Name}}</span><small>{{vis .Role}}</small></label>{{end}}
+    </fieldset>
+    <div class="form-end"><button class="btn primary">Save groups</button></div>
+  </form>
+  <p class="caption">Takes effect at their next sign-in, once the identity provider reloads its users file.</p>
+</section>
+
+<section>
+  <h2>Account</h2>
+  <ul class="group">
+    <li class="row">
+      <span class="row-text"><span class="row-title">New password</span><span class="row-detail">Replaces the password with a one-time one, shown once.</span></span>
+      <form method="post" action="{{$base}}/people/reset"><input type="hidden" name="csrf" value="{{$csrf}}"><input type="hidden" name="username" value="{{.Username}}"><button class="btn small">Reset password</button></form>
+    </li>
+    <li class="row">
+      {{if .Disabled}}
+      <span class="row-text"><span class="row-title">Disabled</span><span class="row-detail">They can't sign in.</span></span>
+      <form method="post" action="{{$base}}/people/enable"><input type="hidden" name="csrf" value="{{$csrf}}"><input type="hidden" name="username" value="{{.Username}}"><button class="btn small">Enable</button></form>
+      {{else}}
+      <span class="row-text"><span class="row-title">Disable</span><span class="row-detail">Stops new sign-ins. To cut off a session already open, also block them in Access.</span></span>
+      <form method="post" action="{{$base}}/people/disable"><input type="hidden" name="csrf" value="{{$csrf}}"><input type="hidden" name="username" value="{{.Username}}"><button class="btn small destructive">Disable</button></form>
+      {{end}}
+    </li>
+  </ul>
+</section>
+{{end}}{{end}}{{end}}
+{{template "bottom" .}}

@@ -110,6 +110,11 @@ type UpstreamServer struct {
 // a security control.
 var safeUpstreamName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]*$`)
 
+// ReservedName is the upstream name no registry entry may take, in any
+// case: it is the namespace of the tools the gateway serves itself
+// (design/adr/0041 item 5).
+const ReservedName = "gatte"
+
 // Validate checks that s satisfies the registry's entry contract:
 //
 //   - Name must be non-empty, must not contain the namespace separator,
@@ -156,6 +161,16 @@ func (s UpstreamServer) Validate() error {
 	}
 	if !safeUpstreamName.MatchString(s.Name) {
 		return fmt.Errorf("%w: name %q must be letters, digits, '_' and '-', starting with a letter or digit", ErrInvalid, s.Name)
+	}
+	// The gateway's own namespace (design/adr/0041 item 5): gatte.status is
+	// a tool the gateway serves itself, so no backend may register under
+	// the name its tools would share. Compared without case, because a
+	// "Gatte.status" beside "gatte.status" is the confusion the reservation
+	// exists to prevent. Connect and Reconcile re-apply Validate to every
+	// entry read back, so a row written into the database by hand is
+	// refused too.
+	if strings.EqualFold(s.Name, ReservedName) {
+		return fmt.Errorf("%w: name %q is reserved for the gateway's own tools (gatte.status)", ErrInvalid, s.Name)
 	}
 
 	switch s.Transport {

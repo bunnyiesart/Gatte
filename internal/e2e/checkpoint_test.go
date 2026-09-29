@@ -457,6 +457,7 @@ func TestCheckpoint_CredentialInjectionAndNoLeak(t *testing.T) {
 	if err != nil {
 		t.Fatalf("tools/list: %v", err)
 	}
+	listed.Tools = backendTools(t, listed.Tools)
 	if len(listed.Tools) != len(upstreams) {
 		var names []string
 		for _, tl := range listed.Tools {
@@ -604,6 +605,7 @@ func TestCheckpoint_RoleLimitsWhatIsReachable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("n1 tools/list: %v", err)
 	}
+	n1Tools.Tools = backendTools(t, n1Tools.Tools)
 	if len(n1Tools.Tools) != 1 || n1Tools.Tools[0].Name != "threatintel.threatintel_credcheck" {
 		t.Errorf("n1 saw %+v, want only threatintel.threatintel_credcheck", n1Tools.Tools)
 	}
@@ -618,6 +620,7 @@ func TestCheckpoint_RoleLimitsWhatIsReachable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("lead tools/list: %v", err)
 	}
+	leadTools.Tools = backendTools(t, leadTools.Tools)
 	if len(leadTools.Tools) != 2 {
 		t.Errorf("lead saw %d tools, want 2", len(leadTools.Tools))
 	}
@@ -1025,6 +1028,25 @@ func callRows(rows []audit.Record) []audit.Record {
 		if r.AnalystIdentity != "(gateway)" {
 			out = append(out, r)
 		}
+	}
+	return out
+}
+
+// backendTools asserts the built-in gatte.status is listed, as it is for
+// every caller (design/adr/0041 item 5), and returns the backends' tools.
+func backendTools(t *testing.T, tools []*mcp.Tool) []*mcp.Tool {
+	t.Helper()
+	var out []*mcp.Tool
+	found := false
+	for _, tl := range tools {
+		if tl.Name == gateway.GatteStatusTool {
+			found = true
+			continue
+		}
+		out = append(out, tl)
+	}
+	if !found {
+		t.Errorf("tools/list does not carry %s", gateway.GatteStatusTool)
 	}
 	return out
 }

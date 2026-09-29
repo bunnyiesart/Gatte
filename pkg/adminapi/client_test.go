@@ -22,6 +22,7 @@ import (
 	"github.com/bunnyiesart/Gatte/internal/audit"
 	auditsqlite "github.com/bunnyiesart/Gatte/internal/audit/sqlite"
 	"github.com/bunnyiesart/Gatte/internal/config"
+	healthsqlite "github.com/bunnyiesart/Gatte/internal/health/sqlite"
 	"github.com/bunnyiesart/Gatte/internal/idp"
 	"github.com/bunnyiesart/Gatte/internal/idp/autheliafile"
 	"github.com/bunnyiesart/Gatte/internal/quarantine"
@@ -57,7 +58,7 @@ func newBackend(t *testing.T) backend {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { db.Close() })
-	for _, m := range []func(*sql.DB) error{auditsqlite.Migrate, quarantinesqlite.Migrate, quotasqlite.Migrate, accesssqlite.Migrate} {
+	for _, m := range []func(*sql.DB) error{auditsqlite.Migrate, quarantinesqlite.Migrate, quotasqlite.Migrate, accesssqlite.Migrate, healthsqlite.Migrate} {
 		if err := m(db); err != nil {
 			t.Fatal(err)
 		}
@@ -80,7 +81,7 @@ func newBackend(t *testing.T) backend {
 	tools := quarantinesqlite.New(db)
 	svc, err := admin.New(admin.Deps{
 		Config: func() (*config.Config, error) { return cfg, nil },
-		Tools:  tools, Blocks: accesssqlite.New(db), Trail: trail, Quota: quotasqlite.New(db),
+		Tools:  tools, Blocks: accesssqlite.New(db), Trail: trail, Quota: quotasqlite.New(db), Maintenance: healthsqlite.New(db),
 		Record:   func(ctx context.Context, _ *config.Config, rec audit.Record) error { return trail.Record(ctx, rec) },
 		Accounts: func(c *config.Config) (idp.Directory, error) { return autheliafile.New(c.IdP.UsersFile), nil },
 		IsBusy:   store.IsBusy,
@@ -177,6 +178,18 @@ func TestClient_CoversEveryOperationOfTheContractAgainstTheRealBackend(t *testin
 	do("verifyAudit", err)
 	_, err = op.ListUpstreams(ctx)
 	do("listUpstreams", err)
+	started, err := op.StartMaintenance(ctx, adminapi.MaintenanceRequest{Scope: adminapi.ScopeGateway, Message: `Atualização do "Gatte"`})
+	do("startMaintenance", err)
+	if err == nil && (!started.Changed || started.Maintenance == nil || started.Maintenance.SetBy != "(operator:alice)") {
+		t.Errorf("startMaintenance = %+v", started)
+	}
+	listed, err := op.ListMaintenance(ctx)
+	do("listMaintenance", err)
+	if err == nil && (listed.Gateway == nil || listed.Gateway.Message != `Atualização do "Gatte"`) {
+		t.Errorf("listMaintenance = %+v", listed)
+	}
+	_, err = op.EndMaintenance(ctx, adminapi.MaintenanceTarget{Scope: adminapi.ScopeGateway})
+	do("endMaintenance", err)
 	_, err = op.QuotaUsage(ctx, adminapi.QuotaQuery{})
 	do("quotaUsage", err)
 	_, err = op.People(ctx)

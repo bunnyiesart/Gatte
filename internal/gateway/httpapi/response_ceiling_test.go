@@ -27,7 +27,6 @@ package httpapi
 
 import (
 	"encoding/json"
-	"errors"
 	"net/http"
 	"strings"
 	"testing"
@@ -35,11 +34,6 @@ import (
 	"github.com/bunnyiesart/Gatte/internal/audit"
 	"github.com/bunnyiesart/Gatte/internal/gateway"
 )
-
-// errUpstreamBroke is the "something else went wrong entirely" control: a
-// failure of a completely different class, whose client-facing answer must
-// be byte-identical to the size refusal's.
-var errUpstreamBroke = errors.New("backend closed the pipe mid-answer")
 
 // oversizedContent builds a well-formed content-block array comfortably
 // over gateway.DefaultMaxResultBytes, with a canary inside it.
@@ -111,14 +105,22 @@ func TestOversizedResultIsRefusedAndTheCallerIsToldNothingAboutIt(t *testing.T) 
 		}
 	}
 
-	// The same call, failing for a completely different internal reason,
-	// must produce the same bytes. The tool name is the only caller-varying
-	// value errors.go permits, and it is identical here anyway.
-	h.dialer.upstream("casemgmt").result = gateway.Result{}
-	h.dialer.upstream("casemgmt").callErr = errUpstreamBroke
-	_, broke := h.rawCall(toolListCases)
-	if refused != broke {
-		t.Errorf("a result refused for size is distinguishable from a broken backend:\n  size:   %q\n  broken: %q", refused, broke)
+	// The same call, refused by the gateway for a completely different
+	// reason, must produce the same bytes. The tool name is the only
+	// caller-varying value errors.go permits, and it is identical here
+	// anyway.
+	//
+	// Until design/adr/0041 the comparison was with a backend that broke.
+	// That one now has a text of its own ("the backend failed this call"),
+	// deliberately: a refusal the GATEWAY decided -- size, schema, an
+	// unrepresentable result -- stays the constant internal error, since
+	// for a result too large the fault can be the request's (ADR-0041
+	// item 1). What stays hidden is the ceiling, not that the backend is
+	// not at fault.
+	h.dialer.upstream("casemgmt").result = gateway.Result{Content: json.RawMessage(`[{"type":"no-such-content-type"}]`)}
+	_, unrepresentable := h.rawCall(toolListCases)
+	if refused != unrepresentable {
+		t.Errorf("a result refused for size is distinguishable from another gateway refusal:\n  size:            %q\n  unrepresentable: %q", refused, unrepresentable)
 	}
 }
 

@@ -98,6 +98,26 @@ var table = []route{
 		v, err := s.o.Service.Upstreams(r.Context())
 		return 200, v, err
 	}},
+	{Route{"GET", "/v1/maintenance", "listMaintenance", opSock}, func(s *Server, r *request) (int, any, error) {
+		v, err := s.o.Service.ListMaintenance(r.Context())
+		return 200, v, err
+	}},
+	{Route{"POST", "/v1/maintenance/on", "startMaintenance", opSock}, func(s *Server, r *request) (int, any, error) {
+		var req adminapi.MaintenanceRequest
+		if err := r.decode(&req); err != nil {
+			return 0, nil, err
+		}
+		v, err := s.o.Service.StartMaintenance(r.Context(), r.actor, req)
+		return 200, v, err
+	}},
+	{Route{"POST", "/v1/maintenance/off", "endMaintenance", opSock}, func(s *Server, r *request) (int, any, error) {
+		var req adminapi.MaintenanceTarget
+		if err := r.decode(&req); err != nil {
+			return 0, nil, err
+		}
+		v, err := s.o.Service.EndMaintenance(r.Context(), r.actor, req)
+		return 200, v, err
+	}},
 	{Route{"GET", "/v1/quota", "quotaUsage", opSock}, func(s *Server, r *request) (int, any, error) {
 		q := r.URL.Query()
 		qq := adminapi.QuotaQuery{Analyst: q.Get("analyst"), Account: q.Get("account")}
@@ -194,12 +214,15 @@ func whoami(s *Server, r *request) (int, any, error) {
 	return 200, adminapi.WhoAmI{
 		APIVersions:     []string{"v1"},
 		ContractVersion: adminapi.ContractVersion,
-		Features:        []string{},
-		GatewayVersion:  s.o.GatewayVersion,
-		Socket:          s.o.Socket,
-		ConfigPath:      s.o.ConfigPath,
-		Operator:        adminapi.Operator{UID: r.peer.uid, Name: r.peer.name, Identity: admin.OperatorIdentity(r.peer.name), Via: r.peer.via},
-		Front:           r.front,
+		// backend_health (health on overview and upstreams) is not served
+		// yet, so it is not listed: a front asks for a feature, not a
+		// version.
+		Features:       []string{adminapi.FeatureMaintenance},
+		GatewayVersion: s.o.GatewayVersion,
+		Socket:         s.o.Socket,
+		ConfigPath:     s.o.ConfigPath,
+		Operator:       adminapi.Operator{UID: r.peer.uid, Name: r.peer.name, Identity: admin.OperatorIdentity(r.peer.name), Via: r.peer.via},
+		Front:          r.front,
 	}, nil
 }
 

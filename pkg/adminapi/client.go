@@ -230,6 +230,26 @@ func (c *Client) BlockSubject(ctx context.Context, r BlockRequest) (BlockResult,
 	return v, c.do(ctx, http.MethodPost, "/v1/access/block", nil, r, &v)
 }
 
+// ListMaintenance returns the maintenance in force (feature maintenance).
+func (c *Client) ListMaintenance(ctx context.Context) (MaintenanceList, error) {
+	var v MaintenanceList
+	return v, c.do(ctx, http.MethodGet, "/v1/maintenance", nil, nil, &v)
+}
+
+// StartMaintenance puts one backend, or the gateway, in planned
+// maintenance (feature maintenance).
+func (c *Client) StartMaintenance(ctx context.Context, r MaintenanceRequest) (MaintenanceResult, error) {
+	var v MaintenanceResult
+	return v, c.do(ctx, http.MethodPost, "/v1/maintenance/on", nil, r, &v)
+}
+
+// EndMaintenance ends one backend's, or the gateway's, maintenance
+// (feature maintenance).
+func (c *Client) EndMaintenance(ctx context.Context, r MaintenanceTarget) (MaintenanceResult, error) {
+	var v MaintenanceResult
+	return v, c.do(ctx, http.MethodPost, "/v1/maintenance/off", nil, r, &v)
+}
+
 // UnblockSubject lifts a block.
 func (c *Client) UnblockSubject(ctx context.Context, r BlockRequest) (BlockResult, error) {
 	var v BlockResult

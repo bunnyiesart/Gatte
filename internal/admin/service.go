@@ -26,6 +26,7 @@ import (
 	"github.com/bunnyiesart/Gatte/internal/access"
 	"github.com/bunnyiesart/Gatte/internal/audit"
 	"github.com/bunnyiesart/Gatte/internal/config"
+	"github.com/bunnyiesart/Gatte/internal/health"
 	"github.com/bunnyiesart/Gatte/internal/idp"
 	"github.com/bunnyiesart/Gatte/internal/quarantine"
 	"github.com/bunnyiesart/Gatte/internal/quota"
@@ -57,8 +58,11 @@ type Deps struct {
 	Config func() (*config.Config, error)
 	Tools  quarantine.Store
 	Blocks access.BlockStore
-	Trail  Trail
-	Quota  quota.Reader
+	// Maintenance is where planned maintenance is written
+	// (design/adr/0041); the gateway reads it per call.
+	Maintenance health.MaintenanceStore
+	Trail       Trail
+	Quota       quota.Reader
 	// Upstreams lists the registry with each entry's signature state and
 	// network, the way `upstream list -json` computes them.
 	Upstreams func(ctx context.Context, cfg *config.Config) ([]adminapi.Upstream, error)

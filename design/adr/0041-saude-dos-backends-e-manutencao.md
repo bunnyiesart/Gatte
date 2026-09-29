@@ -1,9 +1,18 @@
 # 0041. Saúde dos backends e manutenção: dizer ao modelo que o servidor caiu
 
-**Status:** Proposed — 29 set 2026. Desenho; passa a Accepted no commit que
-entrega a implementação, e as notas de correção nas ADRs 0012, 0020, 0021,
-0024 e 0040 entram nesse mesmo commit, porque até lá as frases delas ainda
-são verdadeiras.
+**Status:** Accepted — 29 set 2026, em etapas. O núcleo entrou primeiro,
+com as notas de correção nas ADRs 0012, 0020, 0021, 0024 e 0040: a máquina
+de estados e a lista estável no `internal/gateway` (itens 1 e 4), o
+resultado honesto e o `503` constante no `httpapi` (itens 2, 3 e 8,
+primeira parte), o `gatte.status` com nome reservado e as instructions
+(item 5), a manutenção persistida em `internal/health/sqlite`, lida por
+chamada e escrita pela API de gestão (item 6, com as três rotas do
+contrato 1.1.0 e a feature `maintenance`), as linhas de transição e o
+batimento versão 5 (item 7). Ficam para as etapas seguintes, e até lá não
+existem: o CLI (`upstream maintenance`, `maintenance`, e o `deregister`
+apagando manutenção, saúde e listagem), o `health` no `Overview` e nos
+`Upstreams` (feature `backend_health`), os fronts, o `gatte-status` do
+script de conexão (item 8a) e a receita de re-medição em `lab/README.md`.
 
 ## Contexto
 
@@ -384,6 +393,14 @@ falha de escrita e um restart com o backend fora, e sai no log.
 Nada é `Observe`ado: uma definição lida do store não é uma observação e não
 mexe na quarentena. A definição servida é a que um humano aprovou **e** a
 que o backend anunciou na última listagem viva, as duas com o mesmo hash.
+
+**A conexão re-discada espera a listagem.** O `Reconcile` fecha a conexão
+morta (ou de especificação mudada) e adota a nova com as rotas mantidas;
+essas rotas foram aprovadas para o que o processo **anterior** anunciava.
+Até o `Refresh` da mesma rodada listar a conexão nova e passar o que ela
+anuncia pela quarentena, uma chamada é respondida como `reconnecting` e
+nada é discado — senão uma tool reescrita pelo processo novo rodaria sob a
+definição aprovada da antiga antes de virar `changed`.
 
 **Nada ressuscita.** Uma tool `pending` ou `changed` não é `Usable` e não
 entra. Uma tool aprovada que o backend deixou de anunciar não está na última
@@ -905,91 +922,88 @@ escreve na trilha (ADR-0017).
 ## Compliance
 
 - [x] Automatizável? Sim.
-- Testes a escrever, cada um visto **falhando no código de hoje** antes da
-  implementação quando o comportamento é novo. Os nomes abaixo são o sufixo
-  do teste; a implementação os escreve com o prefixo de teste do Go e troca
-  esta lista pelos nomes reais (o `TestCitedTestsExist` só aceita nome que
-  existe).
+- Testes, cada um visto **falhando antes da implementação** quando o
+  comportamento é novo (por comportamento, ou por não compilar quando usa a
+  API nova). Os do núcleo, já escritos:
   - `internal/gateway`:
-    `Refresh_ADeadBackendsApprovedToolsStayListed`,
-    `Connect_BootWithABackendDownListsItsStoredApprovedTools`,
-    `Refresh_StableListingNeverResurrectsAPendingOrChangedTool`,
-    `Refresh_StableListingNeedsAKeptDefinition`,
-    `Refresh_StableListingOmitsAToolTheBackendStoppedAnnouncing` (aprovada,
-    retirada do `tools/list` do backend, backend cai: não volta à lista),
-    `Connect_BootStableListingComesFromTheLastLiveListing` (a tabela
-    `backend_listing`, não a quarentena inteira),
-    `Connect_BootWithABackendNeverListedHasNoStableRoutes`,
-    `Reconcile_StableListingEndsWhenTheEntryIsRemovedOrUnsigned`,
-    `Dispatch_ADownBackendAnswersUnavailableNotInternal`,
-    `Dispatch_UnavailableOnlyAfterAuthorizeAndQuarantine`,
-    `Dispatch_AGoneMarkedConnectionIsNotCalled`,
-    `Dispatch_InFlightDeathAnswersReconnectingAndKeepsTheFailedRow` (fixa a
-    escolha do item 3: texto de `reconnecting`, não `internal error`),
-    `Dispatch_ABackendErrorOrTimeoutAnswersBackendFailedWithoutItsText`,
-    `Dispatch_MaintenanceAnswersWithoutDialingOrDebiting`,
-    `Dispatch_UnreadableMaintenanceServesNormally`,
-    `Dispatch_UnavailableCarriesNoUpstreamText` (upstream que devolve a
-    credencial no erro),
-    `Health_ReconnectingUnlessDialsAreHeldBack`,
-    `Health_TransitionsAreAuditedOncePerTransition`,
-    `Health_FirstObservationPerProcessIsAudited`,
-    `Status_CountsBackendStates`; e as razões novas em
+    `TestRefresh_ADeadBackendsApprovedToolsStayListed`,
+    `TestConnect_BootWithABackendDownListsItsStoredApprovedTools`,
+    `TestRefresh_StableListingNeverResurrectsAPendingOrChangedTool`,
+    `TestRefresh_StableListingOmitsAToolTheBackendStoppedAnnouncing`,
+    `TestRefresh_StableListingNeedsAKeptDefinition`,
+    `TestConnect_BootStableListingComesFromTheLastLiveListing`,
+    `TestConnect_BootWithABackendNeverListedHasNoStableRoutes`,
+    `TestReconcile_StableListingEndsWhenTheEntryIsRemovedOrUnsigned`,
+    `TestDispatch_ADownBackendAnswersUnavailableNotInternal`,
+    `TestDispatch_UnavailableOnlyAfterAuthorizeAndQuarantine`,
+    `TestDispatch_AGoneMarkedConnectionIsNotCalled`,
+    `TestDispatch_AReDialledConnectionIsNotCalledBeforeItIsListed`,
+    `TestDispatch_InFlightDeathAnswersReconnectingAndKeepsTheFailedRow`,
+    `TestDispatch_ABackendErrorOrTimeoutAnswersBackendFailedWithoutItsText`,
+    `TestDispatch_MaintenanceAnswersWithoutDialingOrDebiting`,
+    `TestDispatch_UnreadableMaintenanceServesNormally`,
+    `TestDispatch_UnavailableCarriesNoUpstreamText`,
+    `TestDispatch_GatewayMaintenanceIsANoticeNotABlock`,
+    `TestHealth_ReconnectingUnlessDialsAreHeldBack`,
+    `TestHealth_TransitionsAreAuditedOncePerTransition`,
+    `TestHealth_FirstObservationPerProcessIsAudited`,
+    `TestHealth_StateIsWrittenForTheManagementBackend`,
+    `TestStatus_CountsBackendStates`,
+    `TestGatteStatus_ReportsOnlyTheNamedBackendsAndIsAuditedOnce`,
+    `TestGatteStatus_ABlockedSubjectIsRefused`; e as razões novas em
     `TestAuditReasons_AreAStableWireContract`.
   - `internal/gateway/httpapi`:
-    `DownBackendCallIsAnIsErrorResultWithTheFixedText`,
-    `MaintenanceMessageIsQuotedSoItCannotCloseTheQuote` (mensagem com `"` e
-    `\`, no texto honesto, no aviso e na razão da trilha),
-    `AnalystSeesExactlyTheMaintenanceFieldsItMay` (`message`, `until`,
-    `until_passed`, `started_at` como `since`; nunca `set_by` nem `set_at`),
-    `GatewayBuiltResultsCarryTheOriginMetaAndUpstreamResultsLoseIt`,
-    `AnUpstreamResultImitatingTheHonestTextPassesAsData`,
-    `UngrantedCallerOfADownBackendStillGetsUnknownTool` (byte a byte),
-    `GatteStatusIsAlwaysServedAndShowsOnlyTheCallersBackends` (com um caso
-    em que a única tool concedida de um backend tem schema que o
-    `getServer` descarta: o backend não aparece),
-    `GatteStatusStructuredContentExplainsItself` (o `note` constante e a
-    manutenção do gateway em `gateway.message`),
-    `GatteStatusForACallerWithNoTools`,
-    `GatteStatusIsAuditedOnce`,
-    `InitializeCarriesTheInstructions` (primeira frase, menos de 1.024),
-    `InstructionsAreTheSameConstantDuringGatewayMaintenance`,
-    `GatewayMaintenanceNoticeIsAppendedToTextAndHonestResults` (e não entra
-    no `structuredContent` de um upstream),
-    `SuspendedFleetAnswers503WithTheConstantText` (texto exato, e o mesmo
-    corpo para `ErrQuarantineUnavailable` no `ListTools`).
-  - `internal/registry`: `Validate_RefusesTheReservedNameGatte`.
-  - `internal/health/sqlite`: migração idempotente, ida e volta da
-    manutenção, recusa de mensagem com controle, code point escondido,
-    quebra de linha ou mais de 200 runas (200 runas acentuadas passam, 201
-    não), de `until` no passado ou além de 90 dias; aceite de `"` e `\`;
-    `on` repetido com outra mensagem mantém `started_at` e move `set_at`;
-    `backend_listing` reescrita na mesma transação que `backend_health`.
-  - `internal/audit/jsonl`: o esquema exato do batimento na versão 5 e a
-    prova de que ele não nomeia backend.
-  - `internal/admin` e `adminhttp`: manutenção on/off com linha de operador,
-    repetição `changed: false`, `not_found`, `invalid_argument`; overview
-    com `serve` `not_reporting`; upstream com `health`; e os dois testes de
-    contrato que já existem
+    `TestDownBackendCallIsAnIsErrorResultWithTheFixedText`,
+    `TestDownBackendCallIsAnIsErrorResultWithTheFixedTextExactly`,
+    `TestBackendFailedIsAnIsErrorResultWithoutItsText`,
+    `TestMaintenanceMessageIsQuotedSoItCannotCloseTheQuote`,
+    `TestAnalystSeesExactlyTheMaintenanceFieldsItMay`,
+    `TestGatewayBuiltResultsCarryTheOriginMetaAndUpstreamResultsLoseIt`,
+    `TestAnUpstreamResultImitatingTheHonestTextPassesAsData`,
+    `TestUngrantedCallerOfADownBackendStillGetsUnknownTool` (byte a byte),
+    `TestGatteStatusIsAlwaysServed`,
+    `TestGatteStatusIsAlwaysServedAndShowsOnlyTheCallersBackends` (com o
+    caso da tool descartada pelo `getServer`),
+    `TestGatteStatusStructuredContentExplainsItself`,
+    `TestGatteStatusForACallerWithNoTools`,
+    `TestGatteStatusIsAuditedOnce`,
+    `TestInitializeCarriesTheInstructions`,
+    `TestInstructionsAreUnder1024AndStateless`,
+    `TestInstructionsAreTheSameConstantDuringGatewayMaintenance`,
+    `TestGatewayMaintenanceNoticeIsAppendedToTextAndHonestResults`,
+    `TestSuspendedFleetAnswers503WithTheConstantText` e
+    `TestBrokenQuarantineIsTheConstant503` (o mesmo corpo para o store de
+    aprovações ilegível).
+  - `internal/registry`: `TestValidate_RefusesTheReservedNameGatte`.
+  - `internal/health/sqlite`: `TestMaintenance_StartEndRoundTrip`
+    (`started_at` mantido, `set_at` movido), `TestMaintenance_SurvivesARestart`,
+    `TestValidateMessage` (200 runas acentuadas passam, 201 não; controle,
+    código escondido e quebra de linha recusados; `"` e `\` aceitos),
+    `TestValidateUntil`, `TestWriteState_HealthAndListingInOneTransaction`,
+    `TestForget_RemovesEveryTraceOfAName`; e a migração no
+    `TestEveryAdapterMigrationIsWiredIntoTheCompositionRoot`.
+  - `internal/audit/jsonl`: `TestHeartbeatCarriesExactlyTheDeclaredSchema`
+    (versão 5) e `TestHeartbeatCarriesBackendStateCounts`.
+  - `internal/admin`: `TestMaintenance_OnOffWithOperatorRows`,
+    `TestMaintenance_RefusesWhatItCannotPutInFrontOfAModel`,
+    `TestMaintenance_TheRowIsInForceEvenWhenTheTrailFails`; e os dois de
+    contrato
     (`TestContract_EveryDocumentedOperationIsServedAndEveryServedRouteIsDocumented`,
     `TestClient_CoversEveryOperationOfTheContractAgainstTheRealBackend`),
-    que falham a partir do commit deste desenho e passam quando as rotas
-    entram.
-  - `cmd/mcp-gateway`: `upstream maintenance`, `maintenance`,
-    `deregister` apagando manutenção, saúde e `backend_listing`; script de
-    conexão instalando o `gatte-status` sh e PowerShell sem segredo e com
-    valores entre aspas, o `.ps1` com CA validando pelo `X509Chain` e o
-    thumbprint (sem `Invoke-WebRequest`), o `PATH` do usuário por
-    `SetEnvironmentVariable` e não `setx`, e a allowlist do passo 4 como
-    `mcp__NOME__gatte_status`; o `gatte-status` sh rodado contra um servidor
-    de teste (200 + 401 → 0; **porta fechada → 3**, Gatte parado, não rede;
-    nome que não resolve → 1; 503 com corpo → 3 e o corpo sem controle) e
-    contra um `claude` falso que imprime as saídas do `claude mcp get`
-    2.1.285 do Contexto, item 8 (`Connected` → 0, `Needs authentication` →
-    4, `Failed to connect` + `HTTP 503` → 3 com o corpo, `Failed to connect`
-    + `ECONNREFUSED` → 5), sempre com código de saída 0 do `claude`.
-  - `internal/front/gatteweb`: Backends com estado e formulário com CSRF;
-    Overview com aviso do gateway e `serve` sem reportar.
+    que falhavam desde o commit do desenho.
+- Testes das etapas seguintes, ainda por escrever: overview com `serve`
+  `not_reporting` e upstream com `health`; `cmd/mcp-gateway`:
+  `upstream maintenance`, `maintenance`, `deregister` apagando manutenção,
+  saúde e `backend_listing`; o script de conexão instalando o `gatte-status`
+  sh e PowerShell sem segredo e com valores entre aspas, o `.ps1` com CA
+  validando pelo `X509Chain` e o thumbprint (sem `Invoke-WebRequest`), o
+  `PATH` do usuário por `SetEnvironmentVariable` e não `setx`, e a allowlist
+  do passo 4 como `mcp__NOME__gatte_status`; o `gatte-status` sh rodado
+  contra um servidor de teste (200 + 401 → 0; **porta fechada → 3**; nome
+  que não resolve → 1; 503 com corpo → 3 e o corpo sem controle) e contra um
+  `claude` falso com as saídas do `claude mcp get` 2.1.285 do Contexto,
+  item 8; `internal/front/gatteweb`: Backends com estado e formulário com
+  CSRF, Overview com aviso do gateway e `serve` sem reportar.
 - Quando roda: a cada build/CI (`make ci`).
 
 ## Notas
@@ -997,7 +1011,8 @@ escreve na trilha (ADR-0017).
 - Autor: bunnyiesart + Claude, 29 set 2026, a partir da medição com o
   Claude Code 2.1.285 descrita no Contexto (servidor de sonda, API falsa,
   configuração temporária; nada tocou a configuração real).
-- Correções a fazer no commit da implementação: ADR-0024 (as rotas de um
+- Correções feitas no commit do núcleo (menos a receita do `lab/README.md`,
+  que fica para a etapa seguinte): ADR-0024 (as rotas de um
   backend morto não são mais podadas, e a lista estável vem da última
   listagem viva; a conexão marcada não recebe mais chamadas; a chamada em
   voo e a falha do backend não são mais `internal error` para o chamador);

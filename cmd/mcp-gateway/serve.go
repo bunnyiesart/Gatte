@@ -25,6 +25,7 @@ import (
 	"github.com/bunnyiesart/Gatte/internal/config"
 	"github.com/bunnyiesart/Gatte/internal/gateway"
 	"github.com/bunnyiesart/Gatte/internal/gateway/httpapi"
+	healthsqlite "github.com/bunnyiesart/Gatte/internal/health/sqlite"
 	"github.com/bunnyiesart/Gatte/internal/quarantine"
 	quarantinesqlite "github.com/bunnyiesart/Gatte/internal/quarantine/sqlite"
 	"github.com/bunnyiesart/Gatte/internal/quota"
@@ -435,6 +436,13 @@ func buildServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) (
 		// reason.
 		MaxConcurrentCallsPerAnalyst: cfg.Response.MaxConcurrentCallsOrDefault(),
 		Logger:                       logger,
+		// Backend health and planned maintenance (design/adr/0041): the
+		// Gateway reads maintenance per call and writes what it observes,
+		// over the same file the management backend reads it from.
+		Maintenance:   healthsqlite.New(db),
+		State:         healthsqlite.New(db),
+		RoundInterval: cfg.Quarantine.RefreshEvery(),
+		Boot:          stack.boot,
 	})
 	if err != nil {
 		return fail(err)
@@ -869,7 +877,18 @@ func (s *serveStack) heartbeat(ctx context.Context, logger *slog.Logger) {
 	}
 	blCancel()
 
+	// Backend states ride the beat too (design/adr/0041 item 7): counts
+	// only, and -1 / unknown when the maintenance table is unreadable.
+	mCtx, mCancel := context.WithTimeout(ctx, refreshTimeout)
+	inMaintenance, gatewayMaintenance := s.gateway.MaintenanceCounts(mCtx)
+	mCancel()
+
 	attrs := []any{
+		slog.Int("backends_up", st.BackendsUp),
+		slog.Int("backends_reconnecting", st.BackendsReconnecting),
+		slog.Int("backends_down", st.BackendsDown),
+		slog.Int("backends_maintenance", inMaintenance),
+		slog.String("gateway_maintenance", gatewayMaintenance),
 		slog.Uint64("allowed", st.Allowed),
 		slog.Uint64("denied", st.Denied),
 		slog.Uint64("failed", st.Failed),
@@ -900,6 +919,12 @@ func (s *serveStack) heartbeat(ctx context.Context, logger *slog.Logger) {
 		Suspended: st.Suspended,
 		Pending:   backlog.Pending,
 		Changed:   backlog.Changed,
+
+		BackendsUp:           st.BackendsUp,
+		BackendsReconnecting: st.BackendsReconnecting,
+		BackendsDown:         st.BackendsDown,
+		BackendsMaintenance:  inMaintenance,
+		GatewayMaintenance:   gatewayMaintenance,
 	})
 	attrs = append(attrs,
 		slog.String("chain", hb.Chain),

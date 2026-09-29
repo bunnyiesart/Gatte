@@ -44,6 +44,23 @@ linhas. Quem contar linhas para saber "quantas chamadas houve" contará
 errado. Está documentado no tipo e na saída da CLI, e é o motivo de
 `Outcome` nunca ter tido zero value utilizável.
 
+> **CORREÇÃO — 29 set 2026 (ADR-0041).** A trilha ganhou formas de linha que
+> este ADR não previa. (1) Uma chamada concedida e aprovada cujo backend
+> está fora ou em manutenção é recusada **antes** da vaga e da quota, sem
+> discar, e escreve uma única linha `denied` do analista, com razão
+> `backend unavailable: reconnecting`, `backend unavailable: down` ou
+> `backend in maintenance` e target o backend. (2) `gatte.status` escreve uma
+> linha `allowed` do analista, tool `gatte.status`, target `(gateway)`, por
+> chamada. (3) O gateway escreve linhas `(gateway)`, tool `(backend health)`,
+> só em transição de vida: `denied` para `backend down: <causa>` e
+> `backend removed: no longer servable per the registry`, e — pela primeira
+> vez — **`allowed`** para `backend up: first observed` e `backend up: down
+> since <instante>`. Contar chamadas continua sendo contar `allowed`, agora
+> excluindo as linhas `(gateway)` (os contadores do batimento contam
+> linhas, e contam essas). (4) A chamada em voo que morre e a que o backend
+> falha seguem o par `allowed` + `failed` daqui; mudou o que o chamador
+> recebe, não a trilha.
+
 ### 2. Falha de autenticação é auditada, com identidade que não mente
 
 Registro com `Outcome` `denied` e `AnalystIdentity` marcada como

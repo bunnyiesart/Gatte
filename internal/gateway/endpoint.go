@@ -19,6 +19,7 @@ import (
 
 	"github.com/bunnyiesart/Gatte/internal/access"
 	"github.com/bunnyiesart/Gatte/internal/audit"
+	"github.com/bunnyiesart/Gatte/internal/health"
 	"github.com/bunnyiesart/Gatte/internal/quarantine"
 	"github.com/bunnyiesart/Gatte/internal/quota"
 	"github.com/bunnyiesart/Gatte/internal/registry"
@@ -488,6 +489,24 @@ type Config struct {
 	//
 	// Nothing written here ever contains a resolved credential value.
 	Logger *slog.Logger
+
+	// Maintenance is read on every call that reaches the availability step
+	// (design/adr/0041 item 6). Optional: nil means nothing is ever in
+	// maintenance. Read fail-open -- an unreadable table serves as if
+	// empty -- because it is an availability notice, not access control.
+	Maintenance health.MaintenanceReader
+	// State receives what this process observes about its backends, for
+	// the management backend (another process) and for the stable listing
+	// of the next boot (ADR-0041 items 4 and 7). Optional: nil keeps it in
+	// memory only. A write failure is logged and changes nothing served.
+	State health.StateStore
+	// RoundInterval is the maintenance loop's interval, from which a
+	// caller is told roughly when the next reconnect attempt is. Optional:
+	// zero leaves next_attempt unknown.
+	RoundInterval time.Duration
+	// Boot is when this process started, for the serve status row.
+	// Optional; defaults to the time New runs.
+	Boot time.Time
 }
 
 // Gateway is the Gateway Endpoint: one MCP surface in front of every
@@ -623,6 +642,33 @@ type Gateway struct {
 	// confirmed. ListTools and Dispatch say which one it is.
 	suspended bool
 	closed    bool
+
+	// Backend health (design/adr/0041). maint and state are the ports;
+	// the rest is guarded by mu.
+	maint         health.MaintenanceReader
+	state         health.StateStore
+	roundInterval time.Duration
+	boot          time.Time
+	// health is the fact of life of every servable backend.
+	health map[string]*backendHealth
+	// servable is the set of the most recent round, nil before the first.
+	servable map[string]bool
+	// heldBack is the quota freeze of the most recent round: no dial is
+	// scheduled, so a backend that is not live is down, not reconnecting.
+	heldBack bool
+	// lastRound is when the most recent round started.
+	lastRound time.Time
+	// listing is each backend's last successful live listing, the source of
+	// its stable routes while it is not live; dirtyListing marks the ones
+	// not yet written. listingLoaded is guarded by refreshMu.
+	listing       map[string][]health.ListedTool
+	dirtyListing  map[string]bool
+	listingLoaded bool
+	// unlisted holds each connection Reconcile adopted that no Refresh has
+	// listed yet. Its routes, if any, are the kept ones of the process it
+	// replaced, approved for what THAT process announced; until the new
+	// one is observed it receives no call (design/adr/0041 item 4).
+	unlisted map[string]Upstream
 }
 
 // upstreamRoutes is what one upstream's advertised tool list earned it: the
@@ -772,7 +818,20 @@ func New(cfg Config) (*Gateway, error) {
 		return nil, fmt.Errorf("gateway: generating the credential-digest key: %w", err)
 	}
 
+	boot := cfg.Boot
+	if boot.IsZero() {
+		boot = now()
+	}
+
 	return &Gateway{
+		maint:          cfg.Maintenance,
+		state:          cfg.State,
+		roundInterval:  cfg.RoundInterval,
+		boot:           boot,
+		health:         map[string]*backendHealth{},
+		listing:        map[string][]health.ListedTool{},
+		dirtyListing:   map[string]bool{},
+		unlisted:       map[string]Upstream{},
 		credKey:        credKey,
 		creds:          map[string]map[string]string{},
 		sigRefused:     map[string]string{},
@@ -929,6 +988,13 @@ func (g *Gateway) Connect(ctx context.Context) error {
 	}
 	g.forgetSignatures(entries)
 
+	// The last live listings, once per process, for a backend that is down
+	// at this boot (design/adr/0041 item 4); and this is a round.
+	g.loadListings(ctx)
+	g.mu.Lock()
+	g.lastRound = g.now()
+	g.mu.Unlock()
+
 	// Each ready entry is brought up and listed in its own goroutine, all
 	// under ctx, and handed to the quarantine as soon as it answers. Done
 	// one after another, as it used to be, a backend whose dial or
@@ -968,9 +1034,30 @@ func (g *Gateway) Connect(ctx context.Context) error {
 		routed := g.routesFor(ctx, got.entry.Name, got.defs)
 		candidates[got.entry.Name] = routed.routes
 		perUpstream[got.entry.Name] = append(perUpstream[got.entry.Name], routed.failures...)
+		if !routed.unmeasured {
+			g.recordListing(got.entry.Name, routed.routes)
+		}
 	}
 	for _, name := range slices.Sorted(maps.Keys(perUpstream)) {
 		failures = append(failures, perUpstream[name]...)
+	}
+	// A ready entry that did not come up keeps its stable listing: what it
+	// last announced, still approved at the same fingerprint (ADR-0041
+	// item 4). One never listed by a serve of this version has none.
+	readyNames := make([]string, 0, len(ready))
+	dialedAll := make(map[string]bool, len(ready))
+	for _, entry := range ready {
+		readyNames = append(readyNames, entry.Name)
+		dialedAll[entry.Name] = true
+		if _, up := conns[entry.Name]; up {
+			continue
+		}
+		if stable := g.stableRoutesFor(ctx, entry.Name); len(stable.routes) > 0 {
+			candidates[entry.Name] = stable.routes
+		} else {
+			g.log.WarnContext(ctx, "gateway: upstream is down at boot and has no stable listing; its tools are not listed until it comes back",
+				slog.String("upstream", entry.Name))
+		}
 	}
 
 	routes, conflicts := mergeRoutes(candidates)
@@ -993,6 +1080,8 @@ func (g *Gateway) Connect(ctx context.Context) error {
 	if closedDuringConnect := g.swap(conns, dialed, routes); closedDuringConnect {
 		return ErrClosed
 	}
+	g.writeHealthEvents(ctx, g.settleHealth(readyNames, nil, false, dialedAll, g.now()))
+	g.persistHealth(ctx, true)
 	return errors.Join(failures...)
 }
 
@@ -1154,6 +1243,9 @@ func (g *Gateway) Reconcile(ctx context.Context) error {
 	}
 
 	live, dialed := g.fleetSnapshot()
+	g.mu.Lock()
+	g.lastRound = g.now()
+	g.mu.Unlock()
 
 	var failures []error
 
@@ -1251,6 +1343,11 @@ func (g *Gateway) Reconcile(ctx context.Context) error {
 	slices.Sort(wantNames)
 
 	var remove []string
+	// drop is the part of remove that also loses its routes: a backend that
+	// is no longer servable. One closed to be re-dialled -- changed entry,
+	// dead process -- keeps them, so a call in the gap is answered with its
+	// state and not "unknown tool" (design/adr/0041 item 4).
+	drop := map[string]bool{}
 	for _, name := range liveNames {
 		entry, ok := want[name]
 		switch {
@@ -1263,6 +1360,7 @@ func (g *Gateway) Reconcile(ctx context.Context) error {
 			// subprocesses. Already logged above.
 		case !ok:
 			remove = append(remove, name)
+			drop[name] = true
 			g.log.InfoContext(ctx, "gateway: upstream is no longer servable per the registry; closing it",
 				slog.String("upstream", name))
 		case specChanged(dialed[name], entry):
@@ -1284,7 +1382,17 @@ func (g *Gateway) Reconcile(ctx context.Context) error {
 	// process is executing a specification the operator has replaced, and
 	// serving it for the length of a dial is exactly the stale-decision
 	// window ADR-0004 rejected.
-	if closedDuringReconcile := g.retire(remove); closedDuringReconcile {
+	// The routes of a servable backend that is not live stay too (its
+	// stable listing), and those of one that left servable go now, whether
+	// or not it was connected.
+	g.mu.RLock()
+	for _, rt := range g.routes {
+		if _, still := want[rt.route.upstream]; !still && !unmeasured[rt.route.upstream] {
+			drop[rt.route.upstream] = true
+		}
+	}
+	g.mu.RUnlock()
+	if closedDuringReconcile := g.retire(remove, drop); closedDuringReconcile {
 		return ErrClosed
 	}
 
@@ -1349,6 +1457,12 @@ func (g *Gateway) Reconcile(ctx context.Context) error {
 	if closedDuringReconcile := g.adopt(add, addEntries); closedDuringReconcile {
 		return ErrClosed
 	}
+	tried := make(map[string]bool, len(toDial))
+	for _, name := range toDial {
+		tried[name] = true
+	}
+	g.writeHealthEvents(ctx, g.settleHealth(wantNames, func(name string) bool { return unmeasured[name] }, frozen, tried, g.now()))
+	g.persistHealth(ctx, false)
 	return errors.Join(failures...)
 }
 
@@ -1455,6 +1569,7 @@ func (g *Gateway) Refresh(ctx context.Context) error {
 
 	candidates := map[string]map[string]routedTool{}
 	var failures []error
+	var events []*healthEvent
 
 	// Every upstream is asked at once, and each answer is handed to the
 	// quarantine as it arrives. Asked one after another under the one ctx,
@@ -1495,9 +1610,15 @@ func (g *Gateway) Refresh(ctx context.Context) error {
 			// by the next Reconcile -- this function closes nothing, by
 			// the rule stated in its own doc comment.
 			if errors.Is(err, ErrUpstreamGone) {
-				g.markGone(name, conns[name])
+				events = append(events, g.markGone(name, conns[name]))
 				g.log.ErrorContext(ctx, "gateway: upstream process is gone; it will be closed and re-dialled on the next reconciliation",
 					slog.String("upstream", name), slog.String("detail", err.Error()))
+				// Dead is not "could not measure": its stable listing is
+				// what it serves until it is back (ADR-0041 item 4).
+				if stable := g.stableRoutesFor(ctx, name); !stable.unmeasured {
+					candidates[name] = stable.routes
+					continue
+				}
 			}
 			kept := routesOf(previous, name)
 			// Two different situations, and the log used to describe both
@@ -1537,9 +1658,22 @@ func (g *Gateway) Refresh(ctx context.Context) error {
 			continue
 		}
 		candidates[name] = got.routes
+		g.recordListing(name, got.routes)
+		g.markListed(name, conns[name])
 	}
 	for _, name := range names {
 		failures = append(failures, perUpstream[name]...)
+	}
+	// A servable backend with no connection -- down, or being re-dialled --
+	// is listed from its stable listing (design/adr/0041 item 4). A
+	// quarantine that cannot be read keeps what it had, by the rule above.
+	for _, name := range g.servableNotConnected(conns) {
+		stable := g.stableRoutesFor(ctx, name)
+		if stable.unmeasured {
+			candidates[name] = routesOf(previous, name)
+			continue
+		}
+		candidates[name] = stable.routes
 	}
 
 	routes, conflicts := mergeRoutes(candidates)
@@ -1553,6 +1687,8 @@ func (g *Gateway) Refresh(ctx context.Context) error {
 	if closedDuringRefresh := g.swapRoutes(routes); closedDuringRefresh {
 		return ErrClosed
 	}
+	g.writeHealthEvents(ctx, events)
+	g.persistHealth(ctx, true)
 	return errors.Join(failures...)
 }
 
@@ -2036,6 +2172,20 @@ func (g *Gateway) Dispatch(ctx context.Context, c Caller, namespacedTool string,
 		return Result{}, err
 	}
 
+	// Availability (design/adr/0041 item 2). After Authorize and the
+	// quarantine, so only a caller who may call this approved tool learns
+	// the state of its backend -- anybody else got the answer above, byte
+	// for byte what it was. Before the slot and the quota, so a call that
+	// never leaves the process spends neither. A backend in maintenance, or
+	// with no live connection, is answered with its state and not dialled.
+	maint, _ := g.readMaintenance(ctx)
+	now := g.now()
+	gwNotice := gatewayNotice(maint, now)
+	if ue := g.availability(rt.route.upstream, up, maint, now); ue != nil {
+		g.auditRefusal(ctx, c, namespacedTool, rt.route.upstream, ue.reason())
+		return Result{}, ue
+	}
+
 	// The per-analyst concurrency cap (design/adr/0035), fail-fast.
 	//
 	// After admit, for the reason the quota is: a quarantined tool must
@@ -2116,11 +2266,31 @@ func (g *Gateway) Dispatch(ctx context.Context, c Caller, namespacedTool string,
 		// first: Refresh runs on a tick, and this runs whenever somebody
 		// works. Recording it here means the repair starts from the next
 		// reconciliation rather than from the next listing.
-		if errors.Is(err, ErrUpstreamGone) {
-			g.markGone(rt.route.upstream, up)
+		gone := errors.Is(err, ErrUpstreamGone)
+		if gone {
+			if ev := g.markGone(rt.route.upstream, up); ev != nil {
+				g.writeHealthEvents(ctx, []*healthEvent{ev})
+				g.persistHealth(ctx, false)
+			}
 		}
 		g.auditFailure(ctx, c, namespacedTool, rt.route.upstream, err)
-		return Result{}, fmt.Errorf("gateway: call %q: %w", namespacedTool, err)
+		// What the caller is told is built from the gateway's own state and
+		// never from err, which is the backend's (ADR-0041 items 2 and 3):
+		// the backend died during this call, or it failed it.
+		switch {
+		case gone:
+			g.mu.RLock()
+			next := g.nextAttempt()
+			g.mu.RUnlock()
+			return Result{}, &UnavailableError{Backend: rt.route.upstream, State: StateReconnecting, Since: now,
+				NextAttempt: next, Gateway: gwNotice, cause: ErrUpstreamGone}
+		case errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil:
+			return Result{}, &BackendFailedError{Backend: rt.route.upstream, Gateway: gwNotice, cause: context.DeadlineExceeded}
+		case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded), errors.Is(err, ErrInternal):
+			return Result{}, fmt.Errorf("gateway: call %q: %w", namespacedTool, err)
+		default:
+			return Result{}, &BackendFailedError{Backend: rt.route.upstream, Gateway: gwNotice, cause: ErrBackendFailed}
+		}
 	}
 	// Step 7, added by design/adr/0014: the backend answered, and what it
 	// answered with is checked before it is handed on. A result over the
@@ -2147,6 +2317,9 @@ func (g *Gateway) Dispatch(ctx context.Context, c Caller, namespacedTool string,
 		g.auditFailure(ctx, c, namespacedTool, rt.route.upstream, err)
 		return Result{}, fmt.Errorf("gateway: call %q: %w", namespacedTool, err)
 	}
+	// After the checks and the scrub, so the notice counts against nothing
+	// and never enters structuredContent (ADR-0041 item 6).
+	scrubbed.Notice = gwNotice
 	return scrubbed, nil
 }
 
@@ -3072,11 +3245,18 @@ func (g *Gateway) forgetSignatures(entries []registry.UpstreamServer) {
 // to gatewayActor, outcome denied, with no source address. Detached from
 // the caller's cancellation like every other audit write.
 func (g *Gateway) auditEvent(ctx context.Context, tool, upstream, reason string) {
+	g.auditGatewayRow(ctx, tool, upstream, audit.OutcomeDenied, reason)
+}
+
+// auditGatewayRow is auditEvent with the outcome chosen: a backend coming
+// back is the gateway serving something again, which is allowed
+// (design/adr/0041 item 7).
+func (g *Gateway) auditGatewayRow(ctx context.Context, tool, upstream string, outcome audit.Outcome, reason string) {
 	writeCtx, cancel := auditWriteCtx(ctx)
 	defer cancel()
 	c := Caller{Identity: access.Identity{Subject: gatewayActor}}
-	if err := g.record(writeCtx, c, tool, upstream, audit.OutcomeDenied, reason); err != nil {
-		g.log.ErrorContext(ctx, "gateway: quarantine or signature event was not audited",
+	if err := g.record(writeCtx, c, tool, upstream, outcome, reason); err != nil {
+		g.log.ErrorContext(ctx, "gateway: an event about the gateway itself was not audited",
 			slog.String("tool", tool), slog.String("upstream", upstream),
 			slog.String("reason", reason), slog.String("detail", err.Error()))
 	}
@@ -3187,8 +3367,8 @@ func classifyFailure(err error) string {
 }
 
 // lookup returns the route for a namespaced name and the live connection
-// serving it, both read under one lock so they cannot come from different
-// generations of the routing table.
+// serving it -- nil when there is none -- both read under one lock so they
+// cannot come from different generations of the routing table.
 func (g *Gateway) lookup(name string) (routedTool, Upstream, bool) {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
@@ -3197,11 +3377,10 @@ func (g *Gateway) lookup(name string) (routedTool, Upstream, bool) {
 	if !ok {
 		return routedTool{}, nil, false
 	}
-	up, ok := g.conns[rt.route.upstream]
-	if !ok {
-		return routedTool{}, nil, false
-	}
-	return rt, up, true
+	// A route with no connection is a servable backend that is not live,
+	// listed from its stable listing (design/adr/0041 item 4): the caller
+	// gets its state at the availability step, not "unknown tool".
+	return rt, g.conns[rt.route.upstream], true
 }
 
 // snapshot copies the routing table so a listing can iterate it without
@@ -3263,6 +3442,12 @@ type Status struct {
 	// not be read. A gateway can be up, answering, and suspended -- see
 	// ADR-0020 item 3.
 	Suspended bool
+	// BackendsUp, BackendsReconnecting and BackendsDown count the servable
+	// backends by their state of life (design/adr/0041 item 7). Maintenance
+	// is not a state of life and is counted apart (MaintenanceCounts).
+	BackendsUp           int
+	BackendsReconnecting int
+	BackendsDown         int
 }
 
 // Status returns the current counters and fleet state.
@@ -3275,15 +3460,29 @@ type Status struct {
 func (g *Gateway) Status() Status {
 	g.mu.RLock()
 	upstreams, tools, suspended := len(g.conns), len(g.routes), g.suspended
+	var up, reconnecting, down int
+	for _, b := range g.health {
+		switch {
+		case b.live:
+			up++
+		case g.heldBack:
+			down++
+		default:
+			reconnecting++
+		}
+	}
 	g.mu.RUnlock()
 
 	return Status{
-		Allowed:   g.allowed.Load(),
-		Denied:    g.denied.Load(),
-		Failed:    g.failed.Load(),
-		Upstreams: upstreams,
-		Tools:     tools,
-		Suspended: suspended,
+		Allowed:              g.allowed.Load(),
+		Denied:               g.denied.Load(),
+		Failed:               g.failed.Load(),
+		Upstreams:            upstreams,
+		Tools:                tools,
+		Suspended:            suspended,
+		BackendsUp:           up,
+		BackendsReconnecting: reconnecting,
+		BackendsDown:         down,
 	}
 }
 
@@ -3292,16 +3491,39 @@ func (g *Gateway) Status() Status {
 // The connection is stored, not just the name -- see the gone field. A
 // marker for an upstream that is no longer live is dropped rather than
 // kept: it describes a process nobody is talking to any more.
-func (g *Gateway) markGone(name string, up Upstream) {
+//
+// It is also the moment the backend stops being live (design/adr/0041
+// item 1): the connection receives no more calls, and the transition row
+// is returned for the caller to write once no lock is held.
+func (g *Gateway) markGone(name string, up Upstream) *healthEvent {
 	if up == nil {
-		return
+		return nil
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if live, ok := g.conns[name]; !ok || live != up {
-		return
+		return nil
 	}
 	g.gone[name] = up
+	if g.servable != nil && !g.servable[name] {
+		return nil
+	}
+	return g.observeLive(name, false, health.CauseProcessGone, false, g.now())
+}
+
+// servableNotConnected lists, sorted, the servable backends conns has no
+// connection for.
+func (g *Gateway) servableNotConnected(conns map[string]Upstream) []string {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	var out []string
+	for name := range g.servable {
+		if _, ok := conns[name]; !ok {
+			out = append(out, name)
+		}
+	}
+	slices.Sort(out)
+	return out
 }
 
 // takeGone reports whether the live connection for name is the one that was
@@ -3386,8 +3608,8 @@ func (g *Gateway) suspend() {
 //
 // It reports whether the Gateway was closed meanwhile, in which case Close
 // has already reaped everything and there is nothing left to do.
-func (g *Gateway) retire(names []string) (closedDuringReconcile bool) {
-	if len(names) == 0 {
+func (g *Gateway) retire(names []string, dropRoutes map[string]bool) (closedDuringReconcile bool) {
+	if len(names) == 0 && len(dropRoutes) == 0 {
 		return false
 	}
 
@@ -3405,9 +3627,10 @@ func (g *Gateway) retire(names []string) (closedDuringReconcile bool) {
 		delete(g.dialed, name)
 		delete(g.creds, name)
 		delete(g.gone, name)
+		delete(g.unlisted, name)
 	}
 	for tool, rt := range g.routes {
-		if slices.Contains(names, rt.route.upstream) {
+		if dropRoutes[rt.route.upstream] {
 			delete(g.routes, tool)
 		}
 	}
@@ -3440,6 +3663,7 @@ func (g *Gateway) adopt(add map[string]Upstream, entries map[string]registry.Ups
 	for name, up := range add {
 		g.conns[name] = up
 		g.dialed[name] = entries[name]
+		g.unlisted[name] = up
 	}
 	g.mu.Unlock()
 	return false

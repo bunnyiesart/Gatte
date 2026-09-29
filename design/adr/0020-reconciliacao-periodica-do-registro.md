@@ -171,6 +171,16 @@ lados, no log a cada tick e na resposta ao cliente. Em `httpapi` isso cai em
 `classInternal` (500), que é distinto de "não existe essa tool" e não revela
 nada sobre o inventário.
 
+> **CORREÇÃO — 29 set 2026 (ADR-0041 item 8).** Não é mais `500`. Toda falha
+> do `ListTools` depois da admissão — a suspensão e o store de aprovações
+> ilegível, do mesmo jeito — responde `503` com um corpo constante: `Gatte is
+> temporarily unable to serve tools. This is not a problem with your request;
+> retry in a few minutes or tell the user.`
+> (`TestSuspendedFleetAnswers503WithTheConstantText`,
+> `TestBrokenQuarantineIsTheConstant503`). Continua distinto de "não existe
+> essa tool", continua sem dizer qual parte está mal, e agora diz ao cliente
+> que é passageiro.
+
 ### 5. O retry curto é o intervalo curto, e mora no laço
 
 Suspenso, o laço passa a tentar a cada `registryRetryEvery` (5 s) em vez do

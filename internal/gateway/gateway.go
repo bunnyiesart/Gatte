@@ -163,6 +163,10 @@ type Result struct {
 	// IsError reports a tool-level error (the call reached the tool and
 	// the tool refused), as distinct from a transport or routing failure.
 	IsError bool
+	// Notice is the whole gateway's planned maintenance, when there is one
+	// (design/adr/0041 item 6). The gateway sets it, never an upstream;
+	// the serving adapter appends it as a text block of its own.
+	Notice *MaintenanceNotice
 }
 
 // Upstream is a live connection to one backend MCP server.

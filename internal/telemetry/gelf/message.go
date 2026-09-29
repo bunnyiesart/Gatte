@@ -135,6 +135,13 @@ func (e encoder) encode(r audit.Record) ([]byte, error) {
 	if r.Reason != "" {
 		m["_reason"] = r.Reason
 	}
+	if r.AnalystName != "" {
+		// Display only, next to _analyst_identity and never instead of it
+		// (design/adr/0037): a stream or alert that attributes keys on
+		// the identity, because a renamed user shows the new name only on
+		// new messages.
+		m["_analyst_name"] = r.AnalystName
+	}
 	if r.SourceAddress != "" {
 		// Passed through byte for byte, never re-parsed. The leftmost
 		// X-Forwarded-For entry is client-controlled (nginx appends with

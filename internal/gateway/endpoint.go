@@ -2850,10 +2850,17 @@ func (g *Gateway) record(ctx context.Context, c Caller, tool, upstream string, o
 		// Subject, not Name: the IdP's stable identifier is what the trail
 		// attributes to, since a display name can change under it.
 		AnalystIdentity: c.Identity.Subject,
-		Tool:            tool,
-		TargetUpstream:  upstream,
-		Timestamp:       g.now(),
-		Outcome:         outcome,
+		// Name beside it, for the reader only (design/adr/0037). Every row
+		// this system writes for a caller passes through here, so this is
+		// the one place it is set. Rows nobody authenticated for -- the
+		// gateway's own events, an unauthenticated request -- build a
+		// Caller with no Name and so carry none; DisplayName also drops a
+		// name that only repeats the subject.
+		AnalystName:    audit.DisplayName(c.Identity.Subject, c.Identity.Name),
+		Tool:           tool,
+		TargetUpstream: upstream,
+		Timestamp:      g.now(),
+		Outcome:        outcome,
 		// The reason is recorded even though the caller is never told it.
 		// That asymmetry is the point: an operator reading the trail needs
 		// to know *why* a call was blocked, while a caller who could tell

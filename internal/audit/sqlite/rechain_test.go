@@ -23,7 +23,7 @@ func rechain(t *testing.T, db *sql.DB) {
 	t.Helper()
 
 	rows, err := db.Query(`
-SELECT id, analyst_identity, tool, target_upstream, timestamp, outcome, reason, source_address
+SELECT id, analyst_identity, tool, target_upstream, timestamp, outcome, reason, source_address, analyst_name
 FROM audit_records ORDER BY id ASC`)
 	if err != nil {
 		t.Fatalf("rechain: query: %v", err)
@@ -37,7 +37,7 @@ FROM audit_records ORDER BY id ASC`)
 		var rr row
 		var ts, outcome string
 		if err := rows.Scan(&rr.id, &rr.rec.AnalystIdentity, &rr.rec.Tool, &rr.rec.TargetUpstream,
-			&ts, &outcome, &rr.rec.Reason, &rr.rec.SourceAddress); err != nil {
+			&ts, &outcome, &rr.rec.Reason, &rr.rec.SourceAddress, &rr.rec.AnalystName); err != nil {
 			rows.Close()
 			t.Fatalf("rechain: scan: %v", err)
 		}

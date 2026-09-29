@@ -77,7 +77,11 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
+	"unicode/utf8"
+
+	"github.com/bunnyiesart/Gatte/internal/visible"
 )
 
 // ErrInvalid is returned when a Record fails Validate.
@@ -140,6 +144,54 @@ type Record struct {
 	// on account of a field that says nothing about the call itself. See
 	// Validate.
 	SourceAddress string
+	// AnalystName is the caller's human-readable name as the IdP stated it
+	// at the time of the call (design/adr/0037-nome-do-analista-na-trilha.md).
+	//
+	// It is DISPLAY ONLY. AnalystIdentity stays the attribution: the IdP's
+	// subject is stable, while the name is a claim the IdP may let a user
+	// change, so nothing -- no access decision, no block, no filter, no
+	// match of any kind -- may be keyed on this field. It exists because
+	// Authelia issues the subject as a UUID, and a SIEM that shows only
+	// that answers "who was it?" with a lookup somewhere else.
+	//
+	// Empty when the name says nothing the subject does not (no name, or
+	// the IdP's fallback to the subject itself), for every row nobody
+	// authenticated for, and for every row written before the field
+	// existed. Set it through DisplayName, never by hand. It is covered by
+	// the chain; see Canonical for how that leaves older rows' hashes
+	// untouched.
+	AnalystName string
+}
+
+// MaxAnalystNameBytes bounds AnalystName. A name is a label for a human
+// reading a row, and a bound keeps an IdP claim from sizing the row -- or
+// the GELF message, which has a hard ceiling of its own.
+const MaxAnalystNameBytes = 256
+
+// DisplayName returns the AnalystName a record for this caller should
+// carry: name trimmed, "" when it is empty or is the subject itself (the
+// OIDC adapter falls back to the subject so a log line always has a
+// label), every code point internal/visible would hide written visibly,
+// and the result cut on a rune boundary to MaxAnalystNameBytes.
+//
+// It never fails and never rejects: the name is display only, so a name
+// that cannot be stored as given is stored as something readable instead
+// of refusing -- and thereby making unauditable -- the analyst's call.
+func DisplayName(subject, name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" || name == subject {
+		return ""
+	}
+	name = visible.Escape(name)
+	if len(name) <= MaxAnalystNameBytes {
+		return name
+	}
+	const ellipsis = "…"
+	cut := MaxAnalystNameBytes - len(ellipsis)
+	for cut > 0 && !utf8.RuneStart(name[cut]) {
+		cut--
+	}
+	return name[:cut] + ellipsis
 }
 
 // Outcome is what happened to a call.
@@ -204,6 +256,9 @@ func (o Outcome) Valid() bool {
 //   - Timestamp must not be the zero value (time.Time{}).
 //
 // SourceAddress is deliberately not on that list; see the field.
+// AnalystName is optional too, but when set it must fit
+// MaxAnalystNameBytes and hold only valid UTF-8 that internal/visible
+// would not escape.
 //
 // Validate returns ErrInvalid, wrapped with a description of every rule
 // that failed (not just the first one encountered), on any violation; it
@@ -230,6 +285,18 @@ func (r Record) Validate() error {
 	if !r.Outcome.Valid() {
 		errs = append(errs, fmt.Errorf("outcome %q is not one of %q, %q, %q",
 			r.Outcome, OutcomeAllowed, OutcomeDenied, OutcomeFailed))
+	}
+	// Optional, but bounded and visible when present. It is the one field
+	// taken from a claim the user may be able to edit, and it is printed
+	// to operators' terminals and shipped to the SIEM; a newline in it
+	// could forge the look of a second row. DisplayName produces a value
+	// that always passes -- this is the backstop for any other writer.
+	if len(r.AnalystName) > MaxAnalystNameBytes {
+		errs = append(errs, fmt.Errorf("analyst name is %d bytes, over the %d-byte bound",
+			len(r.AnalystName), MaxAnalystNameBytes))
+	}
+	if !utf8.ValidString(r.AnalystName) || visible.Hidden(r.AnalystName) > 0 {
+		errs = append(errs, errors.New("analyst name holds invalid UTF-8 or characters that do not display"))
 	}
 
 	if len(errs) == 0 {
@@ -262,7 +329,17 @@ type Recorder interface {
 // field, so canonical bytes produced here can never be mistaken for -- or
 // replayed into -- another context that happens to use the same TLV shape.
 // The signer package carries its own tag for the same reason.
-const chainTag = "mcp-gateway/audit/chain/v1"
+//
+// There are two, and which one a record uses is decided by the record
+// (design/adr/0037). A record with no AnalystName -- every row written
+// before that field existed, and every row since that has no name to
+// carry -- encodes exactly as it always did under chainTag. A named record
+// is encoded under chainTagNamed with the name appended, so its bytes can
+// never coincide with any v1 encoding, and no stored hash had to change.
+const (
+	chainTag      = "mcp-gateway/audit/chain/v1"
+	chainTagNamed = "mcp-gateway/audit/chain/v2"
+)
 
 // GenesisHash is the previous-hash value the first record in a chain links
 // from. It is the empty string rather than a hash of nothing, so "this
@@ -285,9 +362,25 @@ const GenesisHash = ""
 // The timestamp is encoded as RFC3339 with nanoseconds, matching how the
 // sqlite adapter stores it, so a record hashes the same before it is
 // written and after it is read back.
+//
+// # Why a named record has its own tag instead of an always-present field
+//
+// Appending AnalystName to every encoding, empty or not, would have
+// re-hashed every record already on disk, and every trail written before
+// ADR-0037 would have stopped verifying -- indistinguishable, to
+// `audit -verify`, from tampering. So the v1 encoding is frozen as it was:
+// an unnamed record produces the same bytes it always did. A named record
+// switches to chainTagNamed and carries the name as one more
+// length-prefixed field after SourceAddress. Erasing a stored name, or
+// adding one to an unnamed row, changes the tag and so the hash: the
+// name is covered either way.
 func Canonical(r Record) []byte {
+	tag := chainTag
+	if r.AnalystName != "" {
+		tag = chainTagNamed
+	}
 	var buf []byte
-	buf = appendField(buf, chainTag)
+	buf = appendField(buf, tag)
 	buf = appendField(buf, r.AnalystIdentity)
 	buf = appendField(buf, r.Tool)
 	buf = appendField(buf, r.TargetUpstream)
@@ -295,6 +388,9 @@ func Canonical(r Record) []byte {
 	buf = appendField(buf, string(r.Outcome))
 	buf = appendField(buf, r.Reason)
 	buf = appendField(buf, r.SourceAddress)
+	if r.AnalystName != "" {
+		buf = appendField(buf, r.AnalystName)
+	}
 	return buf
 }
 

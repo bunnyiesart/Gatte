@@ -400,7 +400,12 @@ func TestSIEMSinkCarriesNoGroupClaims(t *testing.T) {
 
 	// "soc-n1" is the group claim newLeakHarness gives the analyst, and
 	// "n1-triage" is the role it maps to. Neither is a line field.
-	for _, forbidden := range []string{"soc-n1", "n1-triage", "Ana Lyst"} {
+	//
+	// The display name used to be on this list. Since design/adr/0037 it is
+	// a declared field, analyst_name, beside caller -- a decision recorded
+	// there, not a leak -- and TestEmittedLineCarriesTheAnalystNameOnlyWhenNamed
+	// pins where it goes. The heartbeat still must not carry it; see below.
+	for _, forbidden := range []string{"soc-n1", "n1-triage"} {
 		if strings.Contains(h.sink(), forbidden) {
 			t.Fatalf("LEAK: the emitted JSONL contains %q:\n%s", forbidden, h.sink())
 		}

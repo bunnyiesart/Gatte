@@ -39,7 +39,8 @@ CREATE TABLE IF NOT EXISTS audit_records (
 	timestamp        TEXT NOT NULL,
 	outcome          TEXT NOT NULL DEFAULT '',
 	reason           TEXT NOT NULL DEFAULT '',
-	source_address   TEXT NOT NULL DEFAULT ''
+	source_address   TEXT NOT NULL DEFAULT '',
+	analyst_name     TEXT NOT NULL DEFAULT ''
 );
 
 CREATE INDEX IF NOT EXISTS idx_audit_records_timestamp
@@ -69,6 +70,10 @@ CREATE INDEX IF NOT EXISTS idx_audit_records_timestamp
 		`ALTER TABLE audit_records ADD COLUMN source_address TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE audit_records ADD COLUMN prev_hash TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE audit_records ADD COLUMN hash TEXT NOT NULL DEFAULT ''`,
+		// design/adr/0037. '' is also what every existing row's hash was
+		// computed over: an unnamed record encodes as chain v1, so rows
+		// migrated in keep verifying without being touched.
+		`ALTER TABLE audit_records ADD COLUMN analyst_name TEXT NOT NULL DEFAULT ''`,
 	} {
 		if _, err := db.Exec(col); err != nil && !isDuplicateColumn(err) {
 			return fmt.Errorf("audit/sqlite: migrate: %w", err)
@@ -140,7 +145,7 @@ func backfillChain(db *sql.DB) error {
 	//
 	// Reproduced in TestMigrate_DeletingChainMetaDoesNotResignATamperedTrail.
 	cur, err := tx.Query(`
-SELECT id, analyst_identity, tool, target_upstream, timestamp, outcome, reason, source_address
+SELECT id, analyst_identity, tool, target_upstream, timestamp, outcome, reason, source_address, analyst_name
 FROM audit_records WHERE hash = '' ORDER BY id ASC`)
 	if err != nil {
 		return fmt.Errorf("audit/sqlite: migrate: scan for backfill: %w", err)
@@ -149,7 +154,7 @@ FROM audit_records WHERE hash = '' ORDER BY id ASC`)
 		var r row
 		var ts, outcome string
 		if err := cur.Scan(&r.id, &r.rec.AnalystIdentity, &r.rec.Tool, &r.rec.TargetUpstream,
-			&ts, &outcome, &r.rec.Reason, &r.rec.SourceAddress); err != nil {
+			&ts, &outcome, &r.rec.Reason, &r.rec.SourceAddress, &r.rec.AnalystName); err != nil {
 			cur.Close()
 			return fmt.Errorf("audit/sqlite: migrate: scan for backfill: %w", err)
 		}
@@ -280,12 +285,12 @@ func (r *Recorder) RecordChained(ctx context.Context, rec audit.Record) (audit.C
 	link := audit.ChainLink{Prev: prev, Hash: audit.ChainHash(prev, rec)}
 
 	const stmt = `
-INSERT INTO audit_records (analyst_identity, tool, target_upstream, timestamp, outcome, reason, source_address, prev_hash, hash)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO audit_records (analyst_identity, tool, target_upstream, timestamp, outcome, reason, source_address, analyst_name, prev_hash, hash)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `
 	if _, err := conn.ExecContext(ctx, stmt,
 		rec.AnalystIdentity, rec.Tool, rec.TargetUpstream, rec.Timestamp.Format(timeLayout),
-		string(rec.Outcome), rec.Reason, rec.SourceAddress,
+		string(rec.Outcome), rec.Reason, rec.SourceAddress, rec.AnalystName,
 		link.Prev, link.Hash); err != nil {
 		return audit.ChainLink{}, fmt.Errorf("audit/sqlite: record: %w", err)
 	}
@@ -317,7 +322,7 @@ func (r *Recorder) VerifyChain(ctx context.Context) (audit.ChainCheck, error) {
 	}
 
 	rows, err := r.db.QueryContext(ctx, `
-SELECT id, analyst_identity, tool, target_upstream, timestamp, outcome, reason, source_address, prev_hash, hash
+SELECT id, analyst_identity, tool, target_upstream, timestamp, outcome, reason, source_address, analyst_name, prev_hash, hash
 FROM audit_records ORDER BY id ASC`)
 	if err != nil {
 		return audit.ChainCheck{}, fmt.Errorf("audit/sqlite: verify: %w", err)
@@ -331,7 +336,7 @@ FROM audit_records ORDER BY id ASC`)
 		var rec audit.Record
 		var ts, outcome, storedPrev, storedHash string
 		if err := rows.Scan(&id, &rec.AnalystIdentity, &rec.Tool, &rec.TargetUpstream,
-			&ts, &outcome, &rec.Reason, &rec.SourceAddress, &storedPrev, &storedHash); err != nil {
+			&ts, &outcome, &rec.Reason, &rec.SourceAddress, &rec.AnalystName, &storedPrev, &storedHash); err != nil {
 			return audit.ChainCheck{}, fmt.Errorf("audit/sqlite: verify: scan: %w", err)
 		}
 		rec.Timestamp, err = time.Parse(timeLayout, ts)
@@ -408,7 +413,7 @@ FROM audit_records ORDER BY id ASC`)
 // this does not touch.
 func (r *Recorder) List(ctx context.Context) ([]audit.Record, error) {
 	const stmt = `
-SELECT analyst_identity, tool, target_upstream, timestamp, outcome, reason, source_address
+SELECT analyst_identity, tool, target_upstream, timestamp, outcome, reason, source_address, analyst_name
 FROM audit_records
 ORDER BY id ASC
 `
@@ -422,7 +427,7 @@ ORDER BY id ASC
 	for rows.Next() {
 		var rec audit.Record
 		var ts, outcome string
-		if err := rows.Scan(&rec.AnalystIdentity, &rec.Tool, &rec.TargetUpstream, &ts, &outcome, &rec.Reason, &rec.SourceAddress); err != nil {
+		if err := rows.Scan(&rec.AnalystIdentity, &rec.Tool, &rec.TargetUpstream, &ts, &outcome, &rec.Reason, &rec.SourceAddress, &rec.AnalystName); err != nil {
 			return nil, fmt.Errorf("audit/sqlite: list: scan: %w", err)
 		}
 		rec.Timestamp, err = time.Parse(timeLayout, ts)

@@ -140,6 +140,10 @@ func (g *Gateway) recordPanic(ctx context.Context, c Caller, tool, upstream stri
 	)
 	if strings.TrimSpace(c.Identity.Subject) == "" {
 		c.Identity.Subject = unauthenticatedIdentity
+		// No subject, so nothing a name could be attached to
+		// (design/adr/0037): the row must not name someone it cannot
+		// attribute to.
+		c.Identity.Name = ""
 	}
 	// When the store is what panicked, writing this row panics again, in a
 	// deferred function nothing above recovers. That second panic is caught

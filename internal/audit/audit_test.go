@@ -191,6 +191,7 @@ func TestCanonical_EveryFieldIsCovered(t *testing.T) {
 		{"Outcome", func(r *Record) { r.Outcome = OutcomeDenied }},
 		{"Reason", func(r *Record) { r.Reason = "forbidden" }},
 		{"SourceAddress", func(r *Record) { r.SourceAddress = "10.0.0.9" }},
+		{"AnalystName", func(r *Record) { r.AnalystName = "Ana Lyst" }},
 	} {
 		t.Run(tc.field, func(t *testing.T) {
 			base := chainRec()

@@ -812,16 +812,24 @@ components:
     Maintenance:
       type: object
       description: |
-        One maintenance row (design/adr/0041 §6). `message` and `until` reach
-        analysts and their models (the call result, `gatte.status`, the
-        server instructions); `set_by` and `set_at` never do.
-      required: [message, set_by, set_at]
+        One maintenance row (design/adr/0041 §6). Exactly `message`,
+        `until`, `until_passed` and `started_at` (shown as the maintenance's
+        `since`) reach analysts and their models, through the call result
+        and `gatte.status`; `set_by` and `set_at` never do. The server
+        instructions carry no maintenance.
+      required: [message, started_at, set_by, set_at]
       properties:
         message:
           type: string
           minLength: 1
           maxLength: 200
-          description: One line, no control characters and no hidden code points (refused, not escaped).
+          description: |
+            1 to 200 Unicode code points (runes), which is how JSON Schema
+            counts `maxLength`; one line; no control characters and no
+            hidden code points (refused, not escaped). `"` and `\` are
+            allowed: where the gateway puts the message inside its own
+            text it quotes it Go-style, so the message cannot close the
+            quote. Here it is the operator's text as written.
         until:
           type: string
           format: date-time
@@ -832,13 +840,20 @@ components:
         until_passed:
           type: boolean
           description: true when `until` is set and in the past.
+        started_at:
+          type: string
+          format: date-time
+          description: When the `startMaintenance` that opened this maintenance ran. A repeated `startMaintenance` with another message or `until` does not move it. Shown to analysts as the maintenance's `since`.
         set_by:
           type: string
-          description: The operator row identity, e.g. `(operator:alice)`.
-        set_at: {type: string, format: date-time}
+          description: The operator identity of the last change, e.g. `(operator:alice)`. Operator only.
+        set_at:
+          type: string
+          format: date-time
+          description: When the row last changed. Operator only.
     MaintenanceScope:
       type: string
-      description: '`upstream`: one backend, named in `upstream`. `gateway`: a notice on every call result; calls are still served.'
+      description: '`upstream`: one backend, named in `upstream`. `gateway`: a notice on text-only and unavailable call results and in `gatte.status`; calls are still served.'
       enum: [upstream, gateway]
     MaintenanceRequest:
       type: object
@@ -851,7 +866,7 @@ components:
           description: Required for scope `upstream`, refused for `gateway`. Must be a registered backend (`not_found` otherwise).
         message:
           type: string
-          description: 1 to 200 characters after trimming; one line; no control characters or hidden code points (`invalid_argument`, `details.field` = `message`).
+          description: 1 to 200 Unicode code points (runes) after trimming; one line; no control characters or hidden code points (`invalid_argument`, `details.field` = `message`). `"` and `\` are allowed.
         until:
           type: string
           format: date-time
@@ -1335,11 +1350,13 @@ paths:
       description: |
         Takes effect on the gateway's next call, without a restart. For a
         backend, its calls are answered with the maintenance text and not
-        dialed; for the gateway, every call result gets a notice and calls
+        dialed; for the gateway, text-only and unavailable call results get a
+        notice (and `gatte.status` reports it), and calls
         are still served. The row is written first and recorded second: if
         the trail fails, the maintenance is in force and `recorded` is
         false. The same message and `until` again answers `changed: false`;
-        another message or `until` replaces the row and writes a row.
+        another message or `until` replaces `message`, `until`, `set_by` and
+        `set_at`, keeps `started_at`, and writes a row.
       parameters: [{$ref: '#/components/parameters/GatteFront'}]
       requestBody:
         required: true

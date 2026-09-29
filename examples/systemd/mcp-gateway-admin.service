@@ -1,0 +1,24 @@
+# Started by mcp-gateway-admin.socket; runs as the gateway's service
+# account and exits after -idle with no request.
+[Unit]
+Description=Gatte management API, operator socket
+Requires=mcp-gateway-admin.socket
+After=network.target
+
+[Service]
+Type=simple
+User=mcpgw
+Group=mcpgw
+ExecStart=/usr/local/bin/mcp-gateway admin -config /etc/mcp-gateway/config.toml -idle 5m
+# The database directory, and the [audit.siem] file if it is elsewhere.
+ReadWritePaths=/var/lib/mcp-gateway
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+# No listener but the socket; INET only for a [telemetry] GELF sink, if any.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native

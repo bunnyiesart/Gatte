@@ -496,12 +496,32 @@ max_bytes = 1048576
 # [idp] -- contas do IdP pelo console (ADR-0038)
 # ===========================================================================
 # Caminho absoluto do banco de usuarios do backend de arquivo do Authelia.
-# So o `sudo mcp-gateway ui -manage-users` le e escreve este arquivo; o
+# So processos root leem e escrevem este arquivo (`mcp-gateway admin -accounts`,
+# e `sudo mcp-gateway ui -manage-users` enquanto o front nao fala com a API); o
 # servico nunca o abre, e o usuario de servico nunca deve poder escreve-lo.
 # Vazio (o padrao) desliga a edicao de contas.
 #
 # [idp]
 # users_file = "/etc/authelia/users_database.yml"
+
+
+# ===========================================================================
+# [admin] -- API de gestao (ADR-0040)
+# ===========================================================================
+# O `mcp-gateway admin` fala so por socket UNIX. Quem conecta e quem o
+# kernel diz; o grupo e o modo do arquivo do socket sao a barreira, e estes
+# nomes sao a segunda checagem.
+#
+#   operator_group -- o grupo do socket do operador; um par fora dele (que
+#                     nao seja root nem o usuario de servico) e recusado.
+#   account_group  -- delega a edicao de contas a um grupo, sem sudo. So vale
+#                     com o socket de contas desse grupo e 0660
+#                     (SocketGroup/SocketMode da unidade); um desencontro
+#                     impede o backend de subir.
+#
+# [admin]
+# operator_group = "gatte-operators"
+# account_group  = "gatte-accounts"
 
 
 # ===========================================================================

@@ -64,6 +64,7 @@ type Config struct {
 	Upstreams  Upstreams  `toml:"upstreams"`
 	IdP        IdP        `toml:"idp"`
 	Connect    Connect    `toml:"connect"`
+	Admin      Admin      `toml:"admin"`
 
 	// Roles defines what each role may call. Order is irrelevant.
 	Roles []Role `toml:"role"`
@@ -1337,6 +1338,21 @@ type IdP struct {
 	// empty is what ships. Only `mcp-gateway ui -manage-users`, run as
 	// root, reads or writes it; the service account is never given access.
 	UsersFile string `toml:"users_file"`
+}
+
+// Admin is the management API's access (design/adr/0040 §1). The socket
+// file's group and mode are the barrier; these name the groups the backend
+// checks against as well.
+type Admin struct {
+	// OperatorGroup, when set, is the group a peer of the operator socket
+	// must have (unless it is root or the service account), as the kernel
+	// reports the peer's groups. Normally "gatte-operators", the socket
+	// file's group.
+	OperatorGroup string `toml:"operator_group"`
+	// AccountGroup delegates account editing to a group without sudo. It
+	// takes effect only with the accounts socket file of that group and
+	// 0660; the backend refuses a mismatch at startup.
+	AccountGroup string `toml:"account_group"`
 }
 
 // Connect is what the console's connect scripts put on an analyst's

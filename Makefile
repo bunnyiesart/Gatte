@@ -1,4 +1,4 @@
-.PHONY: require-devtools race-noskip ci build test test-race vet lint fmt-check check lab-build lab-probe devtools
+.PHONY: require-devtools race-noskip ci nofront cross-vet build test test-race vet lint fmt-check check lab-build lab-probe devtools
 
 build:
 	go build -o bin/mcp-gateway ./cmd/mcp-gateway
@@ -276,7 +276,25 @@ race-noskip:
 	fi; \
 	rm -f "$$log"; echo "race-noskip: all packages ok, no data race, no skipped test"
 
+# nofront is the binary without any web front (design/adr/0040 §6): it
+# must build, vet and pass the command's tests, including the one that says
+# `ui` is absent. The serve, admin and CLI tests run again under the tag.
+nofront: export PATH := $(GOPATH_BIN):$(PATH)
+nofront:
+	go vet -tags nofront ./...
+	go build -tags nofront -o /dev/null ./cmd/mcp-gateway
+	go test -count=1 -tags nofront ./cmd/mcp-gateway/
+
+# cross-vet type-checks the build-tagged peer-credential code for the
+# systems it is written for, from whatever host runs the gate: a Linux-only
+# file that does not compile would otherwise be found on the jail host.
+cross-vet:
+	GOOS=linux GOARCH=amd64 go vet ./...
+	GOOS=linux GOARCH=386 go vet ./internal/peercred/
+	GOOS=freebsd GOARCH=amd64 go vet ./...
+	GOOS=darwin GOARCH=arm64 go vet ./internal/peercred/
+
 # ci is check with skips turned into failures. Use it in a pipeline; use
 # check at a desk.
-ci: require-devtools fmt-check vet lint build race-noskip
-	@echo "ci: fmt, vet, lint, build and the full suite under -race passed, with no test skipped."
+ci: require-devtools fmt-check vet lint build nofront cross-vet race-noskip
+	@echo "ci: fmt, vet, lint, build, the nofront build, cross-vet and the full suite under -race passed, with no test skipped."

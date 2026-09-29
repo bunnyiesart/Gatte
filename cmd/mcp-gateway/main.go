@@ -17,6 +17,8 @@
 //	audit                     read the Audit Trail
 //	quota list|usage          per-analyst quota: the policy, and the counters
 //	access block|unblock|list per-analyst kill switch
+//	admin                     the management API, over a UNIX socket
+//	ui                        the web console (not in a -tags nofront build)
 //	version
 //
 // Exit codes follow the convention the rest of this project's tooling
@@ -60,6 +62,12 @@ func main() {
 // run is main's testable body: it returns an exit code rather than
 // calling os.Exit, so the whole dispatch can be exercised by tests.
 func run(args []string, stdout, stderr io.Writer) int {
+	return runWithStdin(args, os.Stdin, stdout, stderr)
+}
+
+// runWithStdin is run with the standard input made explicit, for the one
+// command that reads it (admin -audit-writer).
+func runWithStdin(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		usage(stderr)
 		return exitCannotRun
@@ -81,6 +89,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return cmdQuota(rest, stdout, stderr)
 	case "access":
 		return cmdAccess(rest, stdout, stderr)
+	case "admin":
+		return cmdAdmin(rest, stdin, stdout, stderr)
 	case "ui":
 		return cmdUI(rest, stdout, stderr)
 	case "version":
@@ -110,6 +120,7 @@ Commands:
   audit        Read the audit trail.
   quota        Show the declared limits and what each analyst has spent.
   access       Block or unblock one analyst at once, or list who is blocked.
+  admin        Serve the management API on a UNIX socket (for the fronts).
   ui           Serve the operator console as a web page on loopback.
   version      Print the build version.
 

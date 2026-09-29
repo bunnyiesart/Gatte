@@ -1,0 +1,16 @@
+# The management API's accounts socket (design/adr/0040 §1). Root only;
+# to delegate accounts to a group, see mcp-gateway-admin-accounts.socket.d/.
+[Unit]
+Description=Gatte management API, accounts socket
+
+[Socket]
+ListenStream=/run/mcp-gateway-admin/accounts/accounts.sock
+Accept=no
+DirectoryMode=0755
+SocketUser=root
+SocketGroup=root
+SocketMode=0600
+RemoveOnStop=yes
+
+[Install]
+WantedBy=sockets.target

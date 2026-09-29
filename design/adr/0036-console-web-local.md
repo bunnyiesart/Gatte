@@ -30,6 +30,11 @@ dependência nova. Fora da máquina, o acesso é por `ssh -L`.
 
 ### 2. Cada botão é o comando de mesmo nome
 
+*Revisto por `0040`:* os comandos de mesmo nome chamam agora o serviço de
+gestão (`internal/admin`), o mesmo que responde no socket do `mcp-gateway
+admin`; a página ainda o chama no próprio processo até virar cliente da API
+(`0040` §6), e as defesas desta seção viraram a biblioteca `pkg/frontkit`.
+
 Aprovar chama `runToolApproveFingerprint`, bloquear chama `runAccessBlock`,
 verificar a trilha chama `runAuditVerify`, e as listas são os `-json` de
 `tool list`, `access list`, `audit`, `upstream list` e `quota usage`. A
@@ -107,7 +112,9 @@ Na ordem em que a requisição as encontra:
   `http://localhost`), e o gosec aponta isso (G124); a proteção dele é
   `HttpOnly` e `SameSite=Strict`.
 - Não resolve: quem aprovou uma tool continua fora da trilha (`0032`), e a
-  página não julga o texto pelo operador.
+  página não julga o texto pelo operador. *Revisto por `0040`:* aprovar e
+  revogar passam a gravar `(tool approve)` e `(tool revoke)`, pelo CLI, pela
+  página e pela API.
 
 ## Testes
 

@@ -8,15 +8,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"slices"
 	"strings"
 	"time"
 
-	"github.com/bunnyiesart/Gatte/internal/access"
+	"github.com/bunnyiesart/Gatte/internal/admin"
 	"github.com/bunnyiesart/Gatte/internal/config"
 	"github.com/bunnyiesart/Gatte/internal/gateway"
 	"github.com/bunnyiesart/Gatte/internal/quarantine"
 	"github.com/bunnyiesart/Gatte/internal/visible"
+	"github.com/bunnyiesart/Gatte/pkg/adminapi"
 )
 
 // cmdTool implements "mcp-gateway tool": list quarantined tools, or
@@ -234,7 +234,6 @@ func toolApprove(args []string, stdout, stderr io.Writer) int {
 // by the Get below, so a discovery cycle landing between that read and the
 // write cannot get a definition baselined that nobody was shown.
 func runToolApproveFingerprint(e *opEnv, server, tool, reviewed string) int {
-	q := e.tools()
 	reviewed = strings.TrimPrefix(strings.TrimSpace(reviewed), "sha256:")
 
 	// Read the state first. Approve returns the state *after* the
@@ -302,15 +301,26 @@ func runToolApproveFingerprint(e *opEnv, server, tool, reviewed string) int {
 	// decision rather than a keystroke.
 	printGrantCoverage(e.stdout, e.cfg.Roles, server, tool)
 
-	after, err := q.ApproveFingerprint(e.ctx(), server, tool, before.ObservedHash)
-	if errors.Is(err, quarantine.ErrFingerprintMoved) {
+	svc, err := e.service()
+	if err != nil {
+		fmt.Fprintf(e.stderr, "%v\n", err)
+		return exitCannotRun
+	}
+	actor, err := e.operator()
+	if err != nil {
+		fmt.Fprintf(e.stderr, "%v\n", err)
+		return exitCannotRun
+	}
+	res, err := svc.ApproveTool(e.ctx(), actor, adminapi.ApproveRequest{Server: server, Tool: tool, Fingerprint: before.ObservedHash})
+	if adminapi.IsCode(err, adminapi.CodeFingerprintMoved) || adminapi.IsCode(err, adminapi.CodeFingerprintMismatch) {
 		fmt.Fprintf(e.stderr, "NOT approved: %s changed while this command ran -- it is no longer advertising\nsha256:%s. Run `mcp-gateway tool show` and review it again.\n", name, before.ObservedHash)
 		return exitProblem
 	}
 	if err != nil {
-		fmt.Fprintf(e.stderr, "quarantine: approving %s: %v\n", name, err)
+		fmt.Fprintf(e.stderr, "quarantine: approving %s: %v\n", name, cliErrText(err))
 		return exitCannotRun
 	}
+	after := res.Tool
 
 	switch before.Status {
 	case quarantine.StatusPending:
@@ -339,12 +349,17 @@ func runToolApproveFingerprint(e *opEnv, server, tool, reviewed string) int {
 		fmt.Fprintf(e.stdout, "Re-approved %s at sha256:%s.\n", name, after.ApprovedHash)
 	}
 
-	if !after.Usable() {
+	if !after.Usable {
 		// Should not happen: Approved() sets the baseline to the observed
 		// fingerprint. If it does, the operator must not be left believing
 		// the tool is now being served.
 		fmt.Fprintf(e.stdout, "\nWARNING: %s is still NOT usable after approval (status %s, approved %q,\nobserved %q). The gateway will keep refusing it. This is a bug -- report it.\n",
 			name, after.Status, after.ApprovedHash, after.ObservedHash)
+		return exitProblem
+	}
+	if !res.Recorded {
+		fmt.Fprintf(e.stderr, "\n%s IS APPROVED, but the audit trail could not record it: %s\nRecord it by hand before anything else.\n",
+			name, warningText(res.ActionResult, adminapi.WarnAuditWriteFailed))
 		return exitProblem
 	}
 	return exitOK
@@ -402,18 +417,29 @@ func runToolRevoke(e *opEnv, server, tool string) int {
 		return exitOK
 	}
 
-	after, err := q.Revoke(e.ctx(), server, tool)
+	svc, err := e.service()
+	if err != nil {
+		fmt.Fprintf(e.stderr, "%v\n", err)
+		return exitCannotRun
+	}
+	actor, err := e.operator()
+	if err != nil {
+		fmt.Fprintf(e.stderr, "%v\n", err)
+		return exitCannotRun
+	}
+	res, err := svc.RevokeTool(e.ctx(), actor, adminapi.ToolRef{Server: server, Tool: tool})
 	switch {
-	case errors.Is(err, quarantine.ErrChangedIsNotRevocable):
+	case adminapi.IsCode(err, adminapi.CodeChangedNotRevocable):
 		// Refused, and the message has to explain a refusal that sounds
 		// unhelpful until you know what `changed` is holding. See
 		// quarantine.Tool.Revoked.
 		fmt.Fprintf(e.stderr, "%s is CHANGED, and a changed tool cannot be revoked.\n\nIt is already not being served, so revoking would stop nothing. What it\nwould do is relabel the entry as pending -- as though this tool were merely\nnew and unreviewed -- and that would erase the one record the gateway keeps\nof a definition being replaced after a human approved it. That record is\nwhat makes the rug pull visible in:\n\n    %s -server %s\n\nIf the new definition is legitimate, approve it (which re-baselines to it).\nIf it is not, leave the tool exactly as it is: changed, unusable, and\nvisible.\n", name, e.cmd("tool list"), server)
 		return exitProblem
 	case err != nil:
-		fmt.Fprintf(e.stderr, "quarantine: revoking %s: %v\n", name, err)
+		fmt.Fprintf(e.stderr, "quarantine: revoking %s: %v\n", name, cliErrText(err))
 		return exitCannotRun
 	}
+	after := res.Tool
 
 	fmt.Fprintf(e.stdout, "Revoked %s.\n\n", name)
 	tw := opTable(e.stdout)
@@ -441,11 +467,16 @@ then, and approve that fingerprint:
     %s -fingerprint SHA256 %s %s
 `, e.cmd("tool show"), server, tool, e.cmd("tool approve"), server, tool)
 
-	if after.Usable() {
+	if after.Usable {
 		// Should not happen: Revoked() returns a pending tool and pending is
 		// never usable. Say so loudly rather than let an operator believe a
 		// tool stopped being served when it did not.
 		fmt.Fprintf(e.stdout, "\nWARNING: %s is still usable after being revoked (status %s). The gateway\nwill keep serving it. This is a bug -- report it.\n", name, after.Status)
+		return exitProblem
+	}
+	if !res.Recorded {
+		fmt.Fprintf(e.stderr, "\n%s IS REVOKED, but the audit trail could not record it: %s\nRecord it by hand before anything else.\n",
+			name, warningText(res.ActionResult, adminapi.WarnAuditWriteFailed))
 		return exitProblem
 	}
 	return exitOK
@@ -512,19 +543,7 @@ it?" at the same time (design/adr/0016).`
 // the console to fail at the job it exists for.
 func printGrantCoverage(w io.Writer, roles []config.Role, server, tool string) {
 	name := gateway.Namespaced(server, tool)
-
-	type coverage struct{ role, how string }
-	var covers []coverage
-	wildcard := false
-	for _, r := range roles {
-		if !(access.Role{Name: r.Name, Tools: r.Tools, Grants: r.Grants}).Allows(name) {
-			continue
-		}
-		how, viaWildcard := grantReason(r, name)
-		wildcard = wildcard || viaWildcard
-		covers = append(covers, coverage{role: r.Name, how: how})
-	}
-
+	covers := admin.CallableBy(roles, server, tool)
 	if len(covers) == 0 {
 		fmt.Fprintf(w, "\nNo configured role covers %s. Approving it makes the definition servable;\nit does not make it callable by anyone. Granting it is a separate edit, to a\n[[role]] in the configuration file.\n", name)
 		return
@@ -533,41 +552,15 @@ func printGrantCoverage(w io.Writer, roles []config.Role, server, tool string) {
 	fmt.Fprintf(w, "\nApproving %s makes it callable by every analyst in %s:\n\n",
 		name, opPlural(len(covers), "this role", "these roles"))
 	width := 0
+	wildcard := false
 	for _, c := range covers {
-		width = max(width, len(c.role))
+		width = max(width, len(c.Role))
+		wildcard = wildcard || c.Wildcard
 	}
 	for _, c := range covers {
-		fmt.Fprintf(w, "  %-*s  %s\n", width, c.role, c.how)
+		fmt.Fprintf(w, "  %-*s  %s\n", width, c.Role, c.How)
 	}
 	if wildcard {
 		fmt.Fprintf(w, "\n%s\n", wildcardApprovalNotice)
 	}
-}
-
-// grantReason describes which line of the configuration file covers name,
-// and whether it does so through a wildcard.
-//
-// It walks the grants the way access.Role.Allows walks them -- cutting at
-// the backend key plus the separator, refusing an empty remainder -- so
-// that the sentence printed beside a role names the clause that actually
-// matched. "granted" is the honest fallback: the caller has already
-// established that the role allows this tool, and a reason this function
-// cannot reconstruct must not turn into a claim about which line did it.
-func grantReason(r config.Role, name string) (string, bool) {
-	if slices.Contains(r.Tools, name) {
-		return fmt.Sprintf("tools = [%q]", name), false
-	}
-	for backend, ids := range r.Grants {
-		rest, ok := strings.CutPrefix(name, backend+gateway.NameSeparator)
-		if !ok || rest == "" {
-			continue
-		}
-		if slices.Contains(ids, access.GrantAll) {
-			return fmt.Sprintf("[role.grants] %s = [%q]   <- wildcard", backend, access.GrantAll), true
-		}
-		if slices.Contains(ids, rest) {
-			return fmt.Sprintf("[role.grants] %s names %q", backend, rest), false
-		}
-	}
-	return "granted", false
 }

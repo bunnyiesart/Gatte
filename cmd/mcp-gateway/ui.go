@@ -1,3 +1,5 @@
+//go:build !nofront
+
 // Operator Console -- "ui": the same console as a page in a browser, on
 // loopback (design/adr/0036-console-web-local.md).
 //
@@ -52,6 +54,7 @@ import (
 	"time"
 
 	"github.com/bunnyiesart/Gatte/internal/access"
+	"github.com/bunnyiesart/Gatte/internal/admin"
 	"github.com/bunnyiesart/Gatte/internal/audit"
 	"github.com/bunnyiesart/Gatte/internal/config"
 	"github.com/bunnyiesart/Gatte/internal/idp"
@@ -331,6 +334,7 @@ func (s *uiServer) uiRun(fn func(*opEnv) int) (stdout, stderr string, code int) 
 	var out, errb bytes.Buffer
 	e := *s.base
 	e.stdout, e.stderr = &out, &errb
+	e.actor = admin.Actor{Name: s.operator, Front: "ui"}
 	// Loaded for every action, as a CLI command loads it for every run:
 	// this process may live for hours, and grants, signers and quota
 	// budgets change in the file.
@@ -594,7 +598,7 @@ func (s *uiServer) toolShowPage(w http.ResponseWriter, r *http.Request) {
 			rv.Shown = false
 			return exitProblem
 		}
-		obsLines, hidden := definitionLines(observed)
+		_, hidden := definitionLines(observed)
 		rv.Hidden = hidden
 		for _, l := range strings.Split(observed.Description, "\n") {
 			rv.Description = append(rv.Description, uiReviewLine{Segs: uiSegments(visible.Escape(l))})
@@ -603,8 +607,7 @@ func (s *uiServer) toolShowPage(w http.ResponseWriter, r *http.Request) {
 		rv.OutputSchema = uiSchema(observed.OutputSchema)
 		if t.ApprovedHash != "" && t.ApprovedHash != t.ObservedHash {
 			if approved, err := e.tools().Definition(e.ctx(), t.ApprovedHash); err == nil {
-				appLines, _ := definitionLines(approved)
-				rv.Diff = uiDiffHunks(lineDiff(appLines, obsLines), 1)
+				rv.Diff = uiDiffHunks(reviewDiff(approved, observed), 1)
 			}
 		}
 		return exitOK
@@ -753,10 +756,9 @@ func (s *uiServer) accessUnblock(w http.ResponseWriter, r *http.Request) { s.acc
 // the operator row cannot otherwise tell a browser from a terminal.
 func (s *uiServer) accessChange(w http.ResponseWriter, r *http.Request, block bool) {
 	subject := r.PostForm.Get("subject")
-	note := "[ui]"
-	if reason := strings.TrimSpace(r.PostForm.Get("reason")); reason != "" {
-		note += " " + reason
-	}
+	reason := strings.TrimSpace(r.PostForm.Get("reason"))
+	// The service tags the row [ui] from the actor uiRun sets.
+	note := "[ui] " + reason
 	verb := "Unblock"
 	if block {
 		verb = "Block"
@@ -772,9 +774,9 @@ func (s *uiServer) accessChange(w http.ResponseWriter, r *http.Request, block bo
 	}
 	out, errText, code := s.uiRun(func(e *opEnv) int {
 		if block {
-			return runAccessBlock(e, s.operator, subject, note)
+			return runAccessBlock(e, s.operator, subject, reason)
 		}
-		return runAccessUnblock(e, s.operator, subject, note)
+		return runAccessUnblock(e, s.operator, subject, reason)
 	})
 	s.showResult(w, "access", action, "/access", out, errText, code)
 }

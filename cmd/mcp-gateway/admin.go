@@ -21,6 +21,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"log/slog"
@@ -66,10 +67,13 @@ request that config.toml, [idp] users_file and every directory above them
 are root's and closed to group and others.
 
 Under systemd the socket comes from the .socket unit (examples/systemd/)
-and the process exits after -idle with no request. Elsewhere give -socket;
+and the process exits after -idle (default 5m) with no request. In the
+foreground it never exits unless -idle is given. Elsewhere give -socket;
 its directory, and every one above it, must be root's and not writable by
 group or others (the operator socket's own directory may be the service
 account's). Default -socket-mode is 0600, or 0660 with -socket-group.
+Either way an operator socket open to others, or of a group other than
+[admin] operator_group, refuses to start.
 
 Default sockets:
   operator  `+adminapi.DefaultOperatorSocket+`
@@ -84,7 +88,7 @@ func cmdAdmin(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	socket := fs.String("socket", "", "socket path, in the foreground (default: the one for the mode)")
 	group := fs.String("socket-group", "", "the socket file's group")
 	modeFlag := fs.String("socket-mode", "", "the socket file's mode: 0600, or 0660 with -socket-group")
-	idle := fs.Duration("idle", adminhttp.DefaultIdle, "exit after this long with no request; 0 never exits")
+	idle := fs.Duration("idle", adminhttp.DefaultIdle, "exit after this long with no request; 0 never exits (default 0 in the foreground)")
 	if code, ok := opParse(fs, args, stdout, stderr, adminUsage); !ok {
 		return code
 	}
@@ -115,10 +119,12 @@ func cmdAdmin(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		abs = *configPath
 	}
 	logger := newLogger(stderr)
+	idleF := idleFlag{d: *idle}
+	fs.Visit(func(f *flag.Flag) { idleF.set = idleF.set || f.Name == "idle" })
 	if *accounts {
-		return runAdminAccounts(abs, *socket, policy, *idle, logger, stderr)
+		return runAdminAccounts(abs, *socket, policy, idleF, logger, stderr)
 	}
-	return runAdminOperator(abs, *socket, policy, *idle, logger, stderr)
+	return runAdminOperator(abs, *socket, policy, idleF, logger, stderr)
 }
 
 // adminSocketPolicy builds the foreground socket policy from the flags.
@@ -142,26 +148,28 @@ func adminSocketPolicy(group, mode string, operator bool) (adminhttp.SocketPolic
 	return p, nil
 }
 
-// adminListener is the socket systemd passed, or one made at path.
-func adminListener(path, def string, p adminhttp.SocketPolicy) (net.Listener, error) {
+// adminListener is the socket systemd passed (activated), or one made at
+// path.
+func adminListener(path, def string, p adminhttp.SocketPolicy) (net.Listener, bool, error) {
 	ls, err := adminhttp.Activated()
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	switch len(ls) {
 	case 0:
 	case 1:
-		return ls[0], nil
+		return ls[0], true, nil
 	default:
 		for _, l := range ls {
 			_ = l.Close()
 		}
-		return nil, fmt.Errorf("systemd passed %d sockets; one unit serves one socket", len(ls))
+		return nil, false, fmt.Errorf("systemd passed %d sockets; one unit serves one socket", len(ls))
 	}
 	if path == "" {
 		path = def
 	}
-	return adminhttp.Listen(path, p)
+	ln, err := adminhttp.Listen(path, p)
+	return ln, false, err
 }
 
 // groupID resolves a configured group name, nil when none is configured.
@@ -181,7 +189,7 @@ func groupID(name string) (*uint32, error) {
 	return &id, nil
 }
 
-func runAdminOperator(configPath, socket string, p adminhttp.SocketPolicy, idle time.Duration, logger *slog.Logger, stderr io.Writer) int {
+func runAdminOperator(configPath, socket string, p adminhttp.SocketPolicy, idle idleFlag, logger *slog.Logger, stderr io.Writer) int {
 	cfg, ok := loadConfig(configPath, stderr)
 	if !ok {
 		return exitCannotRun
@@ -202,16 +210,53 @@ func runAdminOperator(configPath, socket string, p adminhttp.SocketPolicy, idle 
 		fmt.Fprintf(stderr, "%v\n", err)
 		return exitCannotRun
 	}
-	ln, err := adminListener(socket, adminapi.DefaultOperatorSocket, p)
+	ln, activated, err := adminListener(socket, adminapi.DefaultOperatorSocket, p)
 	if err != nil {
 		fmt.Fprintf(stderr, "admin: %v\n", err)
 		return exitCannotRun
 	}
+	if err := checkOperatorSocket(ln, opGID); err != nil {
+		_ = ln.Close()
+		fmt.Fprintf(stderr, "admin: %v\n", err)
+		return exitCannotRun
+	}
 	return serveAdmin(ln, adminhttp.Options{Socket: adminapi.SocketOperator, Service: svc, ServiceUID: uint32(adminGeteuid()),
-		OperatorGID: opGID, Idle: idle, Log: logger, ConfigPath: configPath, GatewayVersion: version()}, logger, stderr)
+		OperatorGID: opGID, Idle: idle.of(activated), Log: logger, ConfigPath: configPath, GatewayVersion: version()}, logger, stderr)
 }
 
-func runAdminAccounts(configPath, socket string, p adminhttp.SocketPolicy, idle time.Duration, logger *slog.Logger, stderr io.Writer) int {
+// checkOperatorSocket holds the operator socket file, however it was
+// handed over (systemd or -socket), to design/adr/0040 §1.
+func checkOperatorSocket(ln net.Listener, operatorGID *uint32) error {
+	gid, mode, path, err := adminhttp.SocketFileOf(ln)
+	if err == nil {
+		err = adminhttp.CheckOperatorFile(gid, mode, operatorGID)
+	}
+	if err != nil {
+		return fmt.Errorf("%s: %v", path, err)
+	}
+	return nil
+}
+
+// idleFlag is -idle and whether it was given.
+type idleFlag struct {
+	d   time.Duration
+	set bool
+}
+
+func (f idleFlag) of(activated bool) time.Duration { return adminIdle(f.d, f.set, activated) }
+
+// adminIdle is how long the backend waits with no request before exiting.
+// Idle exit is for a socket-activated backend, which systemd starts again
+// on the next connection; in the foreground nobody would, and closing the
+// listener removes the socket, so there it never exits unless -idle says.
+func adminIdle(flag time.Duration, set, activated bool) time.Duration {
+	if set || activated {
+		return flag
+	}
+	return 0
+}
+
+func runAdminAccounts(configPath, socket string, p adminhttp.SocketPolicy, idle idleFlag, logger *slog.Logger, stderr io.Writer) int {
 	loadCfg := admin.RootConfig(configPath, adminhttp.RootOnly, config.Load)
 	cfg, err := loadCfg()
 	if err != nil {
@@ -243,7 +288,7 @@ func runAdminAccounts(configPath, socket string, p adminhttp.SocketPolicy, idle 
 		fmt.Fprintf(stderr, "%v\n", err)
 		return exitCannotRun
 	}
-	ln, err := adminListener(socket, adminapi.DefaultAccountsSocket, p)
+	ln, activated, err := adminListener(socket, adminapi.DefaultAccountsSocket, p)
 	if err != nil {
 		fmt.Fprintf(stderr, "admin: %v\n", err)
 		return exitCannotRun
@@ -258,7 +303,7 @@ func runAdminAccounts(configPath, socket string, p adminhttp.SocketPolicy, idle 
 		return exitCannotRun
 	}
 	return serveAdmin(ln, adminhttp.Options{Socket: adminapi.SocketAccounts, Service: svc, ServiceUID: serviceUID,
-		Idle: idle, Log: logger, ConfigPath: configPath, GatewayVersion: version()}, logger, stderr)
+		Idle: idle.of(activated), Log: logger, ConfigPath: configPath, GatewayVersion: version()}, logger, stderr)
 }
 
 func serveAdmin(ln net.Listener, o adminhttp.Options, logger *slog.Logger, stderr io.Writer) int {

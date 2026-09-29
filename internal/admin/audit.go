@@ -35,32 +35,13 @@ func (s *Service) Audit(ctx context.Context, q adminapi.AuditQuery) (adminapi.Au
 		limit = DefaultAuditLimit
 	}
 	limit = min(limit, MaxAuditLimit)
-	all, err := s.d.Trail.ChainOrder(ctx)
+	recs, more, err := s.d.Trail.Page(ctx, audit.TrailQuery{Before: q.Before, Since: q.Since, Subject: q.Subject, Outcome: q.Outcome, Source: q.Source, Limit: limit})
 	if err != nil {
 		return adminapi.AuditPage{}, s.storeErr("audit trail", err)
 	}
-	page := adminapi.AuditPage{Records: []adminapi.AuditRecord{}, Limit: limit}
-	var picked []adminapi.AuditRecord
-	for i := len(all) - 1; i >= 0; i-- {
-		pos := i + 1
-		r := all[i]
-		if q.Before > 0 && pos >= q.Before {
-			continue
-		}
-		if !q.Since.IsZero() && r.Timestamp.Before(q.Since) ||
-			q.Subject != "" && r.AnalystIdentity != q.Subject ||
-			q.Outcome != "" && string(r.Outcome) != q.Outcome ||
-			q.Source != "" && r.SourceAddress != q.Source {
-			continue
-		}
-		if len(picked) == limit {
-			page.More = true
-			break
-		}
-		picked = append(picked, RecordOf(pos, r))
-	}
-	for i := len(picked) - 1; i >= 0; i-- {
-		page.Records = append(page.Records, picked[i])
+	page := adminapi.AuditPage{Records: []adminapi.AuditRecord{}, Limit: limit, More: more}
+	for i := len(recs) - 1; i >= 0; i-- {
+		page.Records = append(page.Records, RecordOf(recs[i].Position, recs[i].Record))
 	}
 	if page.More && len(page.Records) > 0 {
 		page.NextBefore = page.Records[0].Position

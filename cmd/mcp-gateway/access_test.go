@@ -559,3 +559,21 @@ func TestAccessUsage_NamesEveryFlag(t *testing.T) {
 		requireContains(t, buf.String(), want, "access usage")
 	}
 }
+
+// TestAccessBlock_TheEarlyCheckValidatesTheReasonTheServiceStores: the
+// reason stored carries the actor's tag ("[cli env] "), so a reason that
+// fits alone and not with the tag is refused before anything is opened,
+// not after.
+func TestAccessBlock_TheEarlyCheckValidatesTheReasonTheServiceStores(t *testing.T) {
+	old := cliLoginUID
+	cliLoginUID = func() (uint32, bool) { return 0, false }
+	t.Cleanup(func() { cliLoginUID = old })
+	t.Setenv("SUDO_USER", "operator1")
+	missing := filepath.Join(t.TempDir(), "no-such-config.toml")
+	reason := strings.Repeat("r", 254)
+	code, _, stderr := runCLI("access", "block", "-config", missing, "-reason", reason, "sub-analyst-1")
+	requireExit(t, code, exitCannotRun, "access block with a reason too long once tagged")
+	if !strings.Contains(stderr, "reason is longer than") || strings.Contains(stderr, "no-such-config") {
+		t.Fatalf("the reason was not refused before the configuration was opened:\n%s", stderr)
+	}
+}

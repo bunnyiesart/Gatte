@@ -267,7 +267,7 @@ func (s *Server) routes() *http.ServeMux {
 			p := hr.Context().Value(peerKey{}).(*peer)
 			front := hr.Header.Get(adminapi.FrontHeader)
 			req := &request{Request: hr, w: w, peer: p, front: front,
-				actor: admin.Actor{Name: p.name, Via: p.via, Front: front}}
+				actor: admin.Actor{Name: p.name, Via: p.via, Front: front, Root: p.uid == 0}}
 			status, body, err := rt.h(s, req)
 			if err != nil {
 				writeErr(w, err)

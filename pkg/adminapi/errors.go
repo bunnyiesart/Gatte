@@ -31,6 +31,7 @@ const (
 	CodeInternal              = "internal"
 	CodeConfigUnavailable     = "config_unavailable"
 	CodeStoreBusy             = "store_busy"
+	CodeAccountNotManaged     = "account_not_managed"
 )
 
 // codeStatus is the HTTP status each known code travels with.
@@ -57,6 +58,7 @@ var codeStatus = map[string]int{
 	CodeInternal:              http.StatusInternalServerError,
 	CodeConfigUnavailable:     http.StatusServiceUnavailable,
 	CodeStoreBusy:             http.StatusServiceUnavailable,
+	CodeAccountNotManaged:     http.StatusForbidden,
 }
 
 // StatusOf returns the HTTP status of a known code, 500 otherwise.

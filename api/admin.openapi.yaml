@@ -169,7 +169,8 @@ components:
             Code-specific facts. Known keys: `field` (invalid_argument),
             `observed_fingerprint` (fingerprint_required, fingerprint_mismatch,
             fingerprint_moved), `status` (fingerprint_mismatch), `username`
-            (account_exists, not_found), `group` (group_not_mapped), `socket`
+            (account_exists, not_found, account_not_managed), `group`
+            (group_not_mapped, account_not_managed), `socket`
             (wrong_socket: the socket that serves this route), `path` and
             `problem` (config_unavailable: the file or directory that failed
             the check, and `not_root_owned`, `group_or_other_writable`,
@@ -191,6 +192,7 @@ components:
         | peer_unattributable | 403 | the kernel's peer uid has no account name |
         | forbidden_peer | 403 | peer not allowed on this socket (group, or the service account on the account socket) |
         | browser_request_refused | 403 | request carried Origin or Cookie |
+        | account_not_managed | 403 | the account has no group, or one outside `[group_to_role]`; only a root peer may change it |
         | not_found | 404 | no such tool, account or block |
         | unknown_route | 404 | no such route in this backend (older backend, or wrong path) |
         | wrong_socket | 404 | the route is served by the other socket; `details.socket` names it |
@@ -1346,7 +1348,10 @@ paths:
       tags: [accounts]
       x-gatte-socket: [accounts]
       summary: Replace the password with a generated one-time password. Writes `(account reset password)`.
-      description: Safe to repeat; each call invalidates the previous one-time password, so only the last answer's password works.
+      description: |
+        Safe to repeat; each call invalidates the previous one-time password, so only the last answer's password works.
+        Groups, disable, enable and reset-password reach only accounts Gatte manages (at least one group, every one
+        in `[group_to_role]`) unless the peer is root; any other account is `account_not_managed`.
       parameters:
         - {$ref: '#/components/parameters/Username'}
         - {$ref: '#/components/parameters/GatteFront'}

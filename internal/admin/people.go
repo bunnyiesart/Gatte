@@ -3,7 +3,6 @@ package admin
 import (
 	"context"
 	"sort"
-	"strings"
 
 	"github.com/bunnyiesart/Gatte/internal/config"
 	"github.com/bunnyiesart/Gatte/internal/quota"
@@ -53,7 +52,7 @@ func (s *Service) People(ctx context.Context) (adminapi.People, error) {
 	if err := need(s.d.Trail != nil, "audit trail"); err != nil {
 		return p, err
 	}
-	recs, err := s.d.Trail.ChainOrder(ctx)
+	seen, err := s.d.Trail.Analysts(ctx)
 	if err != nil {
 		return p, s.storeErr("audit trail", err)
 	}
@@ -65,28 +64,8 @@ func (s *Service) People(ctx context.Context) (adminapi.People, error) {
 			}
 		}
 	}
-	seen := map[string]*adminapi.Seen{}
-	for _, rec := range recs {
-		id := rec.AnalystIdentity
-		// (gateway), (operator:x), (unauthenticated): not people.
-		if id == "" || strings.HasPrefix(id, "(") {
-			continue
-		}
-		v := seen[id]
-		if v == nil {
-			v = &adminapi.Seen{Identity: id, Blocked: blocked[id]}
-			seen[id] = v
-		}
-		v.Calls++
-		if rec.Timestamp.After(v.LastCall) {
-			v.LastCall = rec.Timestamp
-		}
-		if rec.AnalystName != "" {
-			v.Name = rec.AnalystName
-		}
-	}
-	for _, v := range seen {
-		p.Seen = append(p.Seen, *v)
+	for _, a := range seen {
+		p.Seen = append(p.Seen, adminapi.Seen{Identity: a.Identity, Name: a.Name, Calls: a.Calls, LastCall: a.LastCall, Blocked: blocked[a.Identity]})
 	}
 	sort.Slice(p.Seen, func(i, j int) bool { return p.Seen[i].LastCall.After(p.Seen[j].LastCall) })
 	return p, nil

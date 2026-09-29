@@ -535,3 +535,32 @@ type ChainVerifier interface {
 	// reports the first mismatch.
 	VerifyChain(ctx context.Context) (ChainCheck, error)
 }
+
+// TrailQuery selects one page of the trail for the management API
+// (design/adr/0040): the newest Limit records at a chain position below
+// Before (0: no bound) that match every filter set.
+type TrailQuery struct {
+	Before  int
+	Since   time.Time
+	Subject string
+	Outcome string
+	Source  string
+	Limit   int
+}
+
+// PositionedRecord is a record with its 1-based chain position, the
+// position VerifyChain reports.
+type PositionedRecord struct {
+	Position int
+	Record   Record
+}
+
+// AnalystSeen is one analyst's summary on the trail: how many rows carry
+// the identity, the timestamp of the newest of them, and the newest name
+// written with it.
+type AnalystSeen struct {
+	Identity string
+	Name     string
+	Calls    int
+	LastCall time.Time
+}

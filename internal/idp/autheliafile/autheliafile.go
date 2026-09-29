@@ -172,9 +172,23 @@ func (f *File) write(doc *yaml.Node) error {
 	if err := tmp.Chmod(st.Mode().Perm()); err != nil {
 		return fail(err)
 	}
-	if sys, ok := st.Sys().(*syscall.Stat_t); ok {
-		if err := tmp.Chown(int(sys.Uid), int(sys.Gid)); err != nil && !errors.Is(err, os.ErrPermission) {
-			return fail(err)
+	if uid, gid, ok := ownerOf(st); ok {
+		if err := chownFile(tmp, int(uid), int(gid)); err != nil {
+			if !errors.Is(err, os.ErrPermission) {
+				return fail(err)
+			}
+			// Without the privilege to hand the file over, the rewrite is
+			// fine only when the new file already has the original's owner
+			// and group (the process owns the file). Otherwise the IdP,
+			// reading it through its group (root:www 0640), would lose it
+			// at its next reload while the change looked applied.
+			tst, serr := tmp.Stat()
+			if serr != nil {
+				return fail(serr)
+			}
+			if tu, tg, tok := ownerOf(tst); !tok || tu != uid || tg != gid {
+				return fail(fmt.Errorf("cannot keep the owner %d:%d of %s (%v); refusing to replace it with a file the identity provider may not read (the accounts backend needs CAP_CHOWN)", uid, gid, f.path, err))
+			}
 		}
 	}
 	if _, err := tmp.Write(buf.Bytes()); err != nil {
@@ -192,6 +206,18 @@ func (f *File) write(doc *yaml.Node) error {
 		return fmt.Errorf("idp users file: %w", err)
 	}
 	return nil
+}
+
+// chownFile and ownerOf are variables so a test can stand in for a process
+// without CAP_CHOWN.
+var chownFile = func(f *os.File, uid, gid int) error { return f.Chown(uid, gid) }
+
+var ownerOf = func(fi os.FileInfo) (uint32, uint32, bool) {
+	sys, ok := fi.Sys().(*syscall.Stat_t)
+	if !ok {
+		return 0, 0, false
+	}
+	return sys.Uid, sys.Gid, true
 }
 
 func mapValue(m *yaml.Node, key string) *yaml.Node {

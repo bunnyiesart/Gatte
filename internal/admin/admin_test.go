@@ -538,3 +538,125 @@ func TestAudit_PagesByPosition(t *testing.T) {
 		t.Fatalf("limit not clamped: %+v, %v", p, err)
 	}
 }
+
+// addForeignAccounts appends to the users file two accounts Gatte does not
+// manage: one with a group outside [group_to_role] (an IdP admin of other
+// applications) and one with no group at all.
+func (h *harness) addForeignAccounts(t *testing.T) {
+	t.Helper()
+	hash, err := idp.HashPassword("lab-only")
+	if err != nil {
+		t.Fatal(err)
+	}
+	extra := strings.NewReplacer("LAB_HASH", hash, "PWKEY", "pass"+"word").Replace(`  sso-admin:
+    disabled: false
+    displayname: "SSO Admin"
+    PWKEY: "LAB_HASH"
+    email: sso-admin@example.org
+    groups:
+      - blue-ir
+      - idp-admins
+  plain:
+    disabled: false
+    displayname: "Plain"
+    PWKEY: "LAB_HASH"
+    email: plain@example.org
+    groups: []
+`)
+	f, err := os.OpenFile(h.usersFile, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString(extra); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestAccounts_ADelegatedOperatorReachesOnlyAccountsGatteManages is
+// design/adr/0040 §1: a member of [admin] account_group, who is not root,
+// resets, disables and regroups only accounts whose every group is in
+// [group_to_role]. An IdP account with another group, or none, is out of
+// reach: resetting it would hand over a login to every other application
+// behind the IdP.
+func TestAccounts_ADelegatedOperatorReachesOnlyAccountsGatteManages(t *testing.T) {
+	h := newHarness(t)
+	h.addForeignAccounts(t)
+	before, _ := os.ReadFile(h.usersFile)
+	for _, user := range []string{"sso-admin", "plain"} {
+		res, err := h.svc.ResetAccountPassword(context.Background(), alice, user)
+		requireCode(t, err, adminapi.CodeAccountNotManaged)
+		if res.OneTimePassword != "" {
+			t.Fatalf("reset of %s handed over a password", user)
+		}
+		_, err = h.svc.SetAccountDisabled(context.Background(), alice, user, true)
+		requireCode(t, err, adminapi.CodeAccountNotManaged)
+		_, err = h.svc.SetAccountGroups(context.Background(), alice, user, adminapi.GroupsRequest{Groups: []string{"blue-ir"}})
+		requireCode(t, err, adminapi.CodeAccountNotManaged)
+	}
+	after, _ := os.ReadFile(h.usersFile)
+	if !bytes.Equal(before, after) {
+		t.Fatal("the users file was written for an account Gatte does not manage")
+	}
+	if rows := h.rows(t); len(rows) != 0 {
+		t.Fatalf("refused changes were recorded: %+v", rows)
+	}
+	// A managed account is still reachable.
+	if res, err := h.svc.ResetAccountPassword(context.Background(), alice, "ana"); err != nil || res.OneTimePassword == "" {
+		t.Fatalf("reset of a managed account: %+v, %v", res, err)
+	}
+}
+
+// failingChainOrder is a trail whose whole-table read fails: the pages the
+// fronts load routinely must not need it.
+type failingChainOrder struct{ *auditsqlite.Recorder }
+
+func (failingChainOrder) ChainOrder(context.Context) ([]audit.Record, error) {
+	return nil, errors.New("the whole trail was read into memory")
+}
+
+// TestAuditAndPeople_DoNotReadTheWholeTrail: GET /v1/audit and /v1/people
+// page and aggregate in the database; neither materialises every row.
+func TestAuditAndPeople_DoNotReadTheWholeTrail(t *testing.T) {
+	h := newHarness(t)
+	now := time.Now().UTC()
+	for i := 0; i < 3; i++ {
+		if err := h.trail.Record(context.Background(), audit.Record{AnalystIdentity: "ana", AnalystName: "Ana", Tool: "casemgmt.list_cases", TargetUpstream: "casemgmt",
+			Timestamp: now.Add(time.Duration(i) * time.Second), Outcome: audit.OutcomeAllowed}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	svc, err := admin.New(admin.Deps{
+		Config: func() (*config.Config, error) { return h.cfg, nil },
+		Tools:  h.tools, Blocks: h.blocks, Trail: failingChainOrder{h.trail},
+		Record: func(context.Context, *config.Config, audit.Record) error { return nil },
+		IsBusy: store.IsBusy,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := svc.Audit(context.Background(), adminapi.AuditQuery{Limit: 1})
+	if err != nil || len(p.Records) != 1 || p.Records[0].Position != 3 || !p.More {
+		t.Fatalf("audit page %+v, %v", p, err)
+	}
+	people, err := svc.People(context.Background())
+	if err != nil || len(people.Seen) != 1 || people.Seen[0].Calls != 3 || people.Seen[0].Name != "Ana" || !people.Seen[0].LastCall.Equal(now.Add(2*time.Second)) {
+		t.Fatalf("people %+v, %v", people, err)
+	}
+}
+
+// TestAccounts_ARootPeerReachesEveryAccount: root could edit the users
+// file anyway, and design/adr/0038 let it; the limit is the delegation's.
+func TestAccounts_ARootPeerReachesEveryAccount(t *testing.T) {
+	h := newHarness(t)
+	h.addForeignAccounts(t)
+	root := admin.Actor{Name: "alice", Via: "root", Front: "api", Root: true}
+	if res, err := h.svc.ResetAccountPassword(context.Background(), root, "sso-admin"); err != nil || res.OneTimePassword == "" {
+		t.Fatalf("root reset of an unmanaged account: %+v, %v", res, err)
+	}
+	if _, err := h.svc.SetAccountDisabled(context.Background(), root, "plain", true); err != nil {
+		t.Fatalf("root disable of an account with no group: %v", err)
+	}
+}

@@ -37,7 +37,7 @@ const (
 )
 
 // uiRecordName is the display name a record carries, when it carries one.
-func uiRecordName(audit.Record) string { return "" }
+func uiRecordName(r audit.Record) string { return r.AnalystName }
 
 // enableAccounts turns on the account pages over dir. Called only by the
 // root -manage-users command, and by tests.

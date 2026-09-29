@@ -187,3 +187,18 @@ func TestUI_ManageUsersRefusesAConsoleThatIsNotRoot(t *testing.T) {
 		t.Fatalf("refusal does not say why: %s", stderr.String())
 	}
 }
+
+func TestUI_PeopleAndAuditShowTheNameNextToTheSubject(t *testing.T) {
+	e, s, cookie, _ := newPeopleTest(t, false)
+	rec := audit.Record{AnalystIdentity: "95f757fe-0c7b-4272", AnalystName: "Ana Souza", Tool: "logsearch.search_relative",
+		TargetUpstream: "logsearch", Outcome: audit.OutcomeAllowed, Timestamp: time.Now().UTC()}
+	if err := e.auditTrail().Record(context.Background(), rec); err != nil {
+		t.Fatal(err)
+	}
+	for _, page := range []string{"/people", "/audit"} {
+		body := uiDo(s, "GET", page, nil, cookie, nil).Body.String()
+		if !strings.Contains(body, "Ana Souza") || !strings.Contains(body, "95f757fe-0c7b-4272") {
+			t.Errorf("GET %s does not show the name next to the subject", page)
+		}
+	}
+}

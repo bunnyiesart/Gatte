@@ -18,12 +18,15 @@ type overviewData struct {
 	Approved, Upstreams int
 	Blocked             int
 	Denied              []adminapi.AuditRecord
+	// Health is what the backend answered with feature backend_health,
+	// nil from an older backend or when it could not be read.
+	Health *adminapi.Health
 }
 
 func (f *Front) overview(w http.ResponseWriter, r *http.Request) {
 	ov, err := f.op.Overview(r.Context())
 	d := overviewData{Attention: ov.Attention, Approved: ov.Counts.ApprovedUsable, Upstreams: ov.Counts.Upstreams,
-		Blocked: ov.Counts.Blocked, Denied: ov.RecentDenied}
+		Blocked: ov.Counts.Blocked, Denied: ov.RecentDenied, Health: ov.Health}
 	errs := []string{}
 	if err != nil {
 		errs = append(errs, errText(err))
@@ -266,13 +269,7 @@ func verifyResult(v adminapi.VerifyResult, err error) result {
 	return r
 }
 
-// ---- upstreams and quota (read-only: registering and signing stay in
-// the terminal, because signing needs root's key)
-
-func (f *Front) upstreamsPage(w http.ResponseWriter, r *http.Request) {
-	list, err := f.op.ListUpstreams(r.Context())
-	f.render(w, "upstreams", "Backends", page{Data: list.Upstreams, Error: errText(err)})
-}
+// ---- quota (read-only)
 
 func (f *Front) quotaPage(w http.ResponseWriter, r *http.Request) {
 	list, err := f.op.QuotaUsage(r.Context(), adminapi.QuotaQuery{})

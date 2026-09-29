@@ -88,6 +88,55 @@ suite using `mcp.NewInMemoryTransports()` for fast unit-level coverage; the
 probe binary above is the true end-to-end check, same as it was for every
 third-party candidate below).
 
+## Re-measuring what Claude Code does with Gatte's answers (design/adr/0041)
+
+ADR-0041 rests on eight behaviours of the client, measured with Claude Code
+2.1.285 (its *Contexto*, items 1 to 8): what reaches the model from a
+JSON-RPC error, from an `isError` result, from a result with
+`structuredContent`, from the `initialize` instructions and from a 503 body;
+that the tool list is read once per session; that `.` in a tool name is
+shown as `_`; and what `claude mcp get NAME` prints and exits with in each
+state. `gatte-status` and the texts of `internal/gateway/httpapi/errors.go`
+depend on items 6, 7 and 8. They belong to the client and change with it,
+so they are measured again **before** the supported Claude Code version
+changes. The measurement is throwaway and is not CI.
+
+1. **A probe server.** A few lines of `github.com/modelcontextprotocol/go-sdk`
+   (the version in `go.mod`), stateless like `httpapi`, on
+   `127.0.0.1:PORT/mcp`, with `ServerOptions.Instructions` set to a marker
+   sentence and one tool per behaviour: one returning a JSON-RPC error with
+   a marker in `message` and another in `data`; one returning `isError:
+   true` with two text blocks; one with an `outputSchema` returning
+   `structuredContent {"n":3}`, the same JSON as text, and a second text
+   block with a marker; one named `gatte.status`; and a switch that makes
+   every POST answer `503` with a body unlike the status text (e.g.
+   `probe-body-4711`), and one that closes the port.
+2. **A fake Anthropic API.** An HTTP server on loopback that records every
+   `/v1/messages` request body to a file and answers with a canned
+   `tool_use` of the tool under test, then with an `end_turn` text. Point
+   Claude Code at it with `ANTHROPIC_BASE_URL=http://127.0.0.1:PORT2` and a
+   dummy `ANTHROPIC_API_KEY`.
+3. **A throwaway configuration.** `HOME` and `CLAUDE_CONFIG_DIR` set to a
+   temporary directory, `claude mcp add --transport http --scope user
+   probe http://127.0.0.1:PORT/mcp`. Nothing touches your real
+   configuration or a real gateway.
+4. **Read the recorded requests.** For each tool: the `tool_result` the
+   model received (item 1: only `error.message`; item 2: every text block;
+   item 6: only the `structuredContent`); the system text (item 4: the
+   instructions, cut at 2,048 characters); the tool names (item 7:
+   `mcp__probe__gatte_status`, and a `tool_use` with the dot refused). With
+   the 503 switch on mid-session, the `tool_result` text (item 5: the body
+   after `Error POSTing to endpoint: `); count the `tools/list` requests the
+   probe server saw (item 3: one per session).
+5. **`claude mcp get probe`** with the server up, with a 401 challenge and
+   no login, with the 503 switch on and with the port closed: record the
+   `Status:` and `Issue:` lines and the exit code (item 8). These are the
+   fixtures of `internal/admin/connect_status_test.go`; update them there
+   when they change, and `gatte-status` with them.
+
+If a behaviour changed, the ADR's *Contexto* is corrected first, then the
+code that relies on it.
+
 ## The rest of this file: the original (Python/Docker) evaluation harness
 
 Everything below documents the harness and results from evaluating six

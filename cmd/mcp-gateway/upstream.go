@@ -31,6 +31,8 @@ func cmdUpstream(args []string, stdout, stderr io.Writer) int {
 		return upstreamRegister(rest, stdout, stderr)
 	case "deregister":
 		return upstreamDeregister(rest, stdout, stderr)
+	case "maintenance":
+		return upstreamMaintenance(rest, stdout, stderr)
 	case "-h", "--help", "help":
 		upstreamUsage(stdout)
 		return exitOK
@@ -51,6 +53,10 @@ func upstreamUsage(w io.Writer) {
                                 -image NAME@sha256:HEX [-arg PODMAN-FLAG ...]
                                 [-env VARNAME ...]
   mcp-gateway upstream deregister [-config FILE] NAME
+  mcp-gateway upstream maintenance on|off [-config FILE] NAME [-message TEXT] [-until T]
+
+"upstream maintenance" announces planned maintenance of one backend; see
+"mcp-gateway maintenance -h".
 
 Registering does not sign. Run "mcp-gateway sign NAME" afterwards, or the
 gateway will not trust the entry.
@@ -556,6 +562,16 @@ func runUpstreamDeregister(e *opEnv, name string) int {
 		cleaned += n
 		fmt.Fprintf(e.stdout, "%d quarantine %s removed with it, so a future upstream registered under\nthis name starts from pending and has to be approved on its own -- an\nidentical-looking replacement does not inherit the review this one had.\n",
 			n, opPlural(n, "entry was", "entries were"))
+	}
+
+	// The maintenance, health and last live listing (design/adr/0041) are
+	// keyed by name too. None of them vouches for anything, but a name
+	// registered again would come up "in maintenance" with another
+	// backend's message, or listed with another backend's tools while it
+	// is down.
+	if err := e.health().Forget(e.ctx(), name); err != nil {
+		fmt.Fprintf(e.stderr, "\nWARNING: the maintenance and health state under %q was NOT removed: %v\nClear it before reusing %q: a backend registered under the name would inherit it.\n", name, err, name)
+		return exitProblem
 	}
 
 	if registryHadIt {

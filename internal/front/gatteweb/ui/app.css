@@ -146,7 +146,7 @@ a.row:active, tbody tr:active { background: var(--fill); }
   display: grid; place-items: center; flex: none; width: 32px; height: 32px; border-radius: 8px;
   background: var(--fill); color: var(--text-2);
 }
-.lead-icon.changed, .lead-icon.unsigned { background: var(--danger-bg); color: var(--danger-text); }
+.lead-icon.changed, .lead-icon.unsigned, .lead-icon.backend_unavailable, .lead-icon.serve_not_reporting { background: var(--danger-bg); color: var(--danger-text); }
 .lead-icon.ok { background: var(--accent-soft); color: var(--accent-text); }
 .empty-state { display: flex; align-items: center; gap: 14px; padding: 20px 18px; }
 .empty-state p { margin: 0; color: var(--text-2); }

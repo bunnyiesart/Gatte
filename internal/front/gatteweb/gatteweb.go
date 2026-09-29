@@ -83,6 +83,8 @@ func New(o Options) (*Front, error) {
 		"initial": initial,
 		"dict":    dict,
 		"sub":     func(a, b int) int { return a - b },
+		"state":   stateLabel,
+		"since":   showTimePtr,
 	}).ParseFS(assets, "ui/*.html")
 	if err != nil {
 		return nil, fmt.Errorf("gatteweb: templates: %w", err)
@@ -122,6 +124,8 @@ func (f *Front) routes() *http.ServeMux {
 	mux.HandleFunc("POST /people/enable", f.accountEnable)
 	mux.HandleFunc("POST /people/reset", f.accountReset)
 	mux.HandleFunc("GET /upstreams", f.upstreamsPage)
+	mux.HandleFunc("POST /upstreams/maintenance/on", f.maintenanceOn)
+	mux.HandleFunc("POST /upstreams/maintenance/off", f.maintenanceOff)
 	mux.HandleFunc("GET /quota", f.quotaPage)
 	mux.HandleFunc("GET /app.css", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/css; charset=utf-8")

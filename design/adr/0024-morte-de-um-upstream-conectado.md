@@ -104,6 +104,28 @@ fechasse a substituta dela, numa rodada em que aquele upstream tivesse sido
 re-discado por outro motivo. O que se guarda é o objeto `Upstream`, e o
 `Reconcile` só age se a conexão viva ainda for aquela.
 
+> **CORREÇÃO — 29 set 2026 (ADR-0041).** Três frases desta seção e das
+> Consequências deixaram de valer. (1) As rotas de um backend morto **não
+> são mais podadas** enquanto a entrada seguir servível: o `retire` de uma
+> conexão morta ou de especificação mudada mantém as rotas, e o `Refresh`
+> monta as do backend não vivo a partir da **última listagem viva** dele
+> (em memória, e na tabela `backend_listing` para o arranque), com a
+> definição aprovada guardada e as regras da quarentena intactas; só uma
+> entrada que sai do registro ou perde a assinatura perde as rotas, como
+> antes. (2) "Os dois apenas marcam" continua valendo para o fechamento,
+> mas a marca agora tem efeito imediato: a conexão marcada **não recebe
+> mais chamadas** (`TestDispatch_AGoneMarkedConnectionIsNotCalled`), e a
+> chamada é respondida com o estado do backend. Pela mesma razão, a conexão
+> nova que o `Reconcile` adota no lugar dela também não recebe chamada até
+> o `Refresh` listá-la: as rotas mantidas foram aprovadas para o que o
+> processo **anterior** anunciava, e uma tool reescrita pelo novo rodaria
+> antes de a quarentena vê-la
+> (`TestDispatch_AReDialledConnectionIsNotCalledBeforeItIsListed`). (3) Para o chamador, a
+> chamada em voo que volta com `ErrUpstreamGone` e a que o backend falha
+> **não são mais `internal error`**: a primeira recebe o texto de
+> `reconnecting` e a segunda o de "falha do backend", os dois montados só
+> com estado do gateway; a trilha segue `allowed` + `failed` como aqui.
+
 ### 4. Isto não é a reconexão que o GAB-20 recusou, e o argumento é verificável
 
 O GAB-20 recusou duas coisas, e nenhuma é esta:
@@ -152,6 +174,12 @@ diferentes.
   afirmava que a assinatura de uma morte no SIEM seria esse número caindo;
   é falso, e o sinal está no log e na trilha (`upstream gone`), não no
   contador.
+
+  > **CORREÇÃO — 29 set 2026 (ADR-0041).** "Não no contador" deixou de
+  > valer: `upstreams` continua não caindo, mas o batimento (versão 5)
+  > ganhou `backends_up`, `backends_reconnecting` e `backends_down`, e a
+  > morte vira uma linha `(backend health)` `denied` na trilha, escrita só
+  > na transição.
 
 ## Compliance
 

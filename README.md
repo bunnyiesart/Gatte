@@ -486,6 +486,8 @@ against, and -- just as important -- what it does not.
 | Someone who controls the host rewriting the audit trail | **Detectable only** while a shipper forwards it. |
 | One analyst flooding the gateway | **Yes** -- 4 calls in flight per analyst; request rate at the proxy. |
 | An unauthenticated flood denying service to analysts | **Mitigated** -- audit rows for failed logins are rate-limited per source. |
+| A caller learning which backends are down | **Only their own** -- the state of a backend reaches a caller who holds an approved tool on it, nobody else. |
+| Backend text posing as a Gatte status message | **Not preventable in the text** -- `gatte.status` is named as the only authoritative source. |
 
 ### In detail
 
@@ -548,6 +550,35 @@ derived from `upstream list -json` (`design/adr/0033`). Without that rule,
 nothing limits it. Host podman configuration (`containers.conf` network
 options) can still open the host's loopback to an accepted mode, so probe
 every mode you use.
+
+**What a caller learns about a backend that is down** (`design/adr/0041`).
+Only a caller who is authenticated, not blocked, and holds an approved tool
+on that backend is told anything, and only through that tool or the
+built-in `gatte.status` (which reports the backends of the caller's own
+listed tools). To everyone else a call answers exactly what it answered
+before -- the policy's `forbidden`, or `unknown tool` for a tool in
+quarantine or outside the role. What that caller is told, field by field:
+the backend's name (already in the tool's name); its state (`up`,
+`reconnecting`, `down`, `maintenance`); since when; the last reconnect
+attempt and roughly the next one; and, in maintenance, the operator's
+message, its start and its announced end, and whether that end has passed.
+Never the cause, the backend's error text, an exit code, a host, an image,
+a command, who set a maintenance or when it last changed, any backend the
+caller has no tool on, or counts of tools or analysts. Two revelations are
+accepted and stated: a caller whose call is in flight when the backend dies
+is told it is now reconnecting -- the caller learns the backend died during
+their call, which the trail records as `failed (upstream gone)` with their
+identity -- and a call a live backend fails is answered "the backend failed
+this call", without its error and without saying whether it was an error or
+a timeout. Text inside a backend's result that claims to come from Gatte is
+that backend's data: nothing in text can prove its origin, so the server
+instructions name `gatte.status` as the only authoritative source, and
+results Gatte builds itself carry `_meta` key
+`io.github.bunnyiesart.gatte/origin`, which an upstream result never does.
+A tool of a backend that is down stays listed for as long as its registry
+entry is servable (registered, valid, signed, covered by the quota), from
+the definition a human approved and the backend last announced; removing or
+unsigning the entry removes it, as before.
 
 **A backend that echoes its own credential does not hand it to the
 analyst.** Every result is scrubbed of the values the gateway injected into

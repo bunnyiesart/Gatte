@@ -248,8 +248,18 @@ func (h *leakHarness) dispatch(secret string) {
 	if !strings.Contains(h.upstream.argsSeen(), secret) {
 		h.t.Fatal("the upstream never received the secret in its arguments -- nothing below would prove anything")
 	}
-	if !strings.Contains(err.Error(), secret) {
-		h.t.Fatal("the error returned to the caller does not carry the secret -- the leak this test looks for was never created")
+	// The leak source is the backend's error, which carries the secret (see
+	// echoUpstream). Until design/adr/0041 the error returned to the caller
+	// wrapped it, and this control asserted that; now the caller gets a
+	// *gateway.BackendFailedError built from the gateway's state alone, so
+	// the control is that the backend failed the call -- and the secret is
+	// in neither the error nor, below, the sink.
+	var failed *gateway.BackendFailedError
+	if !errors.As(err, &failed) {
+		h.t.Fatalf("dispatch error = %v, want the backend-failed answer: the backend's error was never produced", err)
+	}
+	if strings.Contains(err.Error(), secret) {
+		h.t.Fatal("LEAK: the error returned to the caller carries the backend's secret")
 	}
 }
 

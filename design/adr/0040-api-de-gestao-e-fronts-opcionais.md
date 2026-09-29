@@ -327,6 +327,16 @@ existe.
 Remover, renomear ou mudar o sentido de um campo é `/v2`, servido ao lado de
 `/v1` por pelo menos uma versão.
 
+> **CORREÇÃO — 29 set 2026 (ADR-0041).** O contrato está em `1.1.0`, e
+> `features` deixou de ser vazio: o backend lista `maintenance` e serve
+> `GET /v1/maintenance`, `POST /v1/maintenance/on` e
+> `POST /v1/maintenance/off`, que escrevem as linhas de operador
+> `(maintenance on)` e `(maintenance off)` (grava primeiro, registra depois,
+> `recorded: false` se a trilha falhar). `not_found` passou a valer também
+> para um backend não registrado numa manutenção. `backend_health` (`health`
+> no `Overview` e em cada `Upstream`) está no contrato e **ainda não é
+> servido**, por isso ainda não aparece em `features`.
+
 ## O que sai do front e o que fica
 
 | Sai de `ui*.go` para o backend | Fica em cada front (via `frontkit`) |

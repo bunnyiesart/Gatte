@@ -22,7 +22,9 @@ func (h *harness) eventRows() []audit.Record {
 	h.t.Helper()
 	var out []audit.Record
 	for _, r := range h.allAuditRows() {
-		if r.AnalystIdentity == "(gateway)" {
+		// The backend-health rows (design/adr/0041) are the gateway's too,
+		// and are asserted in health_test.go.
+		if r.AnalystIdentity == "(gateway)" && r.Tool != backendHealthTool {
 			out = append(out, r)
 		}
 	}

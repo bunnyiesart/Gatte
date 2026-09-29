@@ -101,6 +101,16 @@ Conjunto fechado, sem `omitempty`, pela mesma regra da linha de auditoria:
 | `tools` | rotas na tabela agora |
 | `suspended` | se a frota está suspensa por registro ilegível (ADR-0020) |
 
+> **CORREÇÃO — 29 set 2026 (ADR-0041 item 7).** O conjunto fechado cresceu
+> duas vezes depois desta tabela: `pending` e `changed` (ADR-0032, versão 3)
+> e, na versão 5, `backends_up`, `backends_reconnecting`, `backends_down`
+> (backends servíveis por estado de vida), `backends_maintenance` (com linha
+> de manutenção; `-1` se a tabela não pôde ser lida) e
+> `gateway_maintenance` (`on`, `off`, `unknown`). Contagens e um sinal,
+> nunca um nome de backend (`TestHeartbeatCarriesBackendStateCounts`). E
+> `allowed` agora inclui as linhas `(backend health)` `allowed` do próprio
+> gateway: são linhas escritas, e este item conta linhas.
+
 **Acumulados desde o arranque, não deltas.** Um batimento perdido não perde
 eventos, e `boot` é o que explica um contador que voltou a zero. Quem quer
 taxa faz a diferença no dashboard, que é onde a janela é escolhida.

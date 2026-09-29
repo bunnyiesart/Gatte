@@ -44,6 +44,7 @@ import (
 	accesssql "github.com/bunnyiesart/Gatte/internal/access/sqlite"
 	"github.com/bunnyiesart/Gatte/internal/audit"
 	auditsql "github.com/bunnyiesart/Gatte/internal/audit/sqlite"
+	healthsql "github.com/bunnyiesart/Gatte/internal/health/sqlite"
 	"github.com/bunnyiesart/Gatte/internal/quarantine"
 	quarantinesql "github.com/bunnyiesart/Gatte/internal/quarantine/sqlite"
 	"github.com/bunnyiesart/Gatte/internal/quota"
@@ -392,6 +393,13 @@ type harness struct {
 	// nil when a test supplied its own quota.Store, since a hand-written
 	// store has nothing to read back.
 	counters quota.Reader
+	// health is the maintenance and backend-health store over the same
+	// database (design/adr/0041): the Gateway reads maintenance and writes
+	// what it observed through it, and a test stands in for the operator.
+	health *healthsql.Store
+	// cfg is what the Gateway was built from, so restart can build the
+	// next process over the same stores.
+	cfg Config
 }
 
 // quotaSetup is the quota half of a harness.
@@ -462,6 +470,9 @@ func newFullHarness(t *testing.T, maxResultBytes int64, q quotaSetup, allowed ..
 	if err := accesssql.Migrate(db); err != nil {
 		t.Fatalf("blocklist migrate: %v", err)
 	}
+	if err := healthsql.Migrate(db); err != nil {
+		t.Fatalf("health migrate: %v", err)
+	}
 
 	policy, err := access.NewPolicy(
 		[]access.Role{{Name: "n1-triage", Tools: allowed}},
@@ -499,9 +510,10 @@ func newFullHarness(t *testing.T, maxResultBytes int64, q quotaSetup, allowed ..
 		audit:      auditsql.New(db),
 		blocks:     accesssql.New(db),
 		counters:   counters,
+		health:     healthsql.New(db),
 	}
 
-	gw, err := New(Config{
+	h.cfg = Config{
 		Registry:       h.reg,
 		Vault:          h.vault,
 		Quarantine:     h.quarantine,
@@ -514,14 +526,36 @@ func newFullHarness(t *testing.T, maxResultBytes int64, q quotaSetup, allowed ..
 		Now:            func() time.Time { return fixedAt },
 		// Discard: these tests assert on returned values and stored rows,
 		// not on log output, and a test run should not spray warnings.
-		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
-	})
+		Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Maintenance:   h.health,
+		State:         h.health,
+		RoundInterval: testRoundInterval,
+	}
+	gw, err := New(h.cfg)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	h.gw = gw
 	t.Cleanup(func() { gw.Close() })
 	return h
+}
+
+// testRoundInterval is the refresh interval the harness's gateway is told
+// it runs on, for next_attempt (design/adr/0041 item 1).
+const testRoundInterval = 5 * time.Minute
+
+// restart closes this Gateway and builds the next process over the same
+// database, fleet and dialer: what a restart of serve looks like, with
+// nothing carried over in memory.
+func (h *harness) restart() {
+	h.t.Helper()
+	_ = h.gw.Close()
+	gw, err := New(h.cfg)
+	if err != nil {
+		h.t.Fatalf("New after restart: %v", err)
+	}
+	h.gw = gw
+	h.t.Cleanup(func() { gw.Close() })
 }
 
 // register adds a stdio upstream to the fake registry, naming the
@@ -2813,6 +2847,13 @@ func TestAuditReasons_AreAStableWireContract(t *testing.T) {
 		{reasonResultSchemaViolation, "result violates output schema"},
 		{reasonUpstreamGone, "upstream gone"},
 		{reasonAuthFlood, "auth failures rate-limited"},
+		{reasonBackendReconnecting, "backend unavailable: reconnecting"},
+		{reasonBackendDown, "backend unavailable: down"},
+		{reasonBackendMaintenance, "backend in maintenance"},
+		{reasonBackendUpFirst, "backend up: first observed"},
+		{reasonBackendDownPrefix, "backend down"},
+		{reasonBackendUpPrefix, "backend up: down since"},
+		{reasonBackendRemoved, "backend removed: no longer servable per the registry"},
 	} {
 		if tc.got != tc.want {
 			t.Errorf("audit reason changed: %q, was %q -- update the SIEM queries and "+
@@ -2828,6 +2869,8 @@ func TestAuditReasons_AreAStableWireContract(t *testing.T) {
 		reasonNotVisible, reasonAuthFailed, reasonUpstreamTimeout, reasonCallCancelled,
 		reasonUpstreamFailed, reasonResultTooLarge, reasonResultSchemaViolation,
 		reasonUpstreamGone, reasonAuthFlood,
+		reasonBackendReconnecting, reasonBackendDown, reasonBackendMaintenance,
+		reasonBackendUpFirst, reasonBackendDownPrefix, reasonBackendUpPrefix, reasonBackendRemoved,
 	} {
 		if r == "" {
 			t.Error("an audit reason is empty: a refusal that says nothing is a refusal nobody can act on")

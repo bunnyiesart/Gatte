@@ -41,6 +41,7 @@ import (
 	accesssqlite "github.com/bunnyiesart/Gatte/internal/access/sqlite"
 	auditsqlite "github.com/bunnyiesart/Gatte/internal/audit/sqlite"
 	"github.com/bunnyiesart/Gatte/internal/config"
+	healthsqlite "github.com/bunnyiesart/Gatte/internal/health/sqlite"
 	quarantinesqlite "github.com/bunnyiesart/Gatte/internal/quarantine/sqlite"
 	quotasqlite "github.com/bunnyiesart/Gatte/internal/quota/sqlite"
 	registrysqlite "github.com/bunnyiesart/Gatte/internal/registry/sqlite"
@@ -135,7 +136,7 @@ Exit codes: 0 ok, 1 ran and found a problem, 2 could not run.
 // openStore opens the SQLite file named by the config and migrates every
 // component's schema.
 //
-// All six migrations live here, together, deliberately: a component
+// All seven migrations live here, together, deliberately: a component
 // whose table is missing fails at the first query, deep inside a request,
 // rather than at startup. Running them all from the composition root
 // means an operator learns about a broken database when they start the
@@ -155,6 +156,7 @@ func openStore(cfg *config.Config) (*sql.DB, error) {
 		"entry signatures":  signersqlite.Migrate,
 		"quota counters":    quotasqlite.Migrate,
 		"blocked subjects":  accesssqlite.Migrate,
+		"backend health":    healthsqlite.Migrate,
 	} {
 		if err := migrate(db); err != nil {
 			db.Close()

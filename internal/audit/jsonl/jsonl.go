@@ -120,7 +120,14 @@ import (
 // `analyst_name`, present only when the record names its analyst. The
 // heartbeat is unchanged in shape; its `v` moves because the two version
 // together.
-const Version = 4
+//
+// 5 (design/adr/0041, 29 Sep 2026): the heartbeat carries
+// `backends_up`, `backends_reconnecting`, `backends_down`,
+// `backends_maintenance` and `gateway_maintenance` -- counts and a flag,
+// never a backend's name. Record lines are unchanged in shape; the
+// `(backend health)` transitions they now also carry are ordinary records
+// (caller `(gateway)`).
+const Version = 5
 
 // Line and Heartbeat type discriminators, as they appear in the `type`
 // field. They are a declared interface: a SIEM query filters on them, so
@@ -320,6 +327,18 @@ type Heartbeat struct {
 	// beat -- never 0, because 0 is the all-clear.
 	Pending int `json:"pending"`
 	Changed int `json:"changed"`
+	// BackendsUp, BackendsReconnecting and BackendsDown count the servable
+	// backends by their state of life (design/adr/0041 item 7); a backend
+	// in maintenance is counted by its life here too. No name: the rule
+	// that keeps identities off a timer keeps the fleet's names off it.
+	BackendsUp           int `json:"backends_up"`
+	BackendsReconnecting int `json:"backends_reconnecting"`
+	BackendsDown         int `json:"backends_down"`
+	// BackendsMaintenance is how many backends have a maintenance row, -1
+	// when the table could not be read for this beat.
+	BackendsMaintenance int `json:"backends_maintenance"`
+	// GatewayMaintenance is "on", "off" or "unknown".
+	GatewayMaintenance string `json:"gateway_maintenance"`
 }
 
 // Sink is where a Line goes.
@@ -530,6 +549,13 @@ type Stats struct {
 	// could not be read. See Heartbeat.
 	Pending int
 	Changed int
+	// The backend state counts and the maintenance, design/adr/0041. See
+	// Heartbeat.
+	BackendsUp           int
+	BackendsReconnecting int
+	BackendsDown         int
+	BackendsMaintenance  int
+	GatewayMaintenance   string
 }
 
 var (
@@ -643,6 +669,15 @@ func (r *Recorder) Heartbeat(ctx context.Context, st Stats) (Heartbeat, error) {
 		Suspended: st.Suspended,
 		Pending:   st.Pending,
 		Changed:   st.Changed,
+
+		BackendsUp:           st.BackendsUp,
+		BackendsReconnecting: st.BackendsReconnecting,
+		BackendsDown:         st.BackendsDown,
+		BackendsMaintenance:  st.BackendsMaintenance,
+		GatewayMaintenance:   st.GatewayMaintenance,
+	}
+	if hb.GatewayMaintenance == "" {
+		hb.GatewayMaintenance = "unknown"
 	}
 	if err := r.sink.EmitHeartbeat(ctx, hb); err != nil {
 		return hb, fmt.Errorf("audit/jsonl: emit heartbeat: %w", err)

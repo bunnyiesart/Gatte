@@ -54,6 +54,7 @@ var heartbeatKeys = []string{
 	"v", "type", "ts", "chain", "boot", "head", "records",
 	"allowed", "denied", "failed", "upstreams", "tools", "suspended",
 	"pending", "changed",
+	"backends_up", "backends_reconnecting", "backends_down", "backends_maintenance", "gateway_maintenance",
 }
 
 const testChain = "gatte-jail-01"
@@ -713,6 +714,30 @@ func TestHeartbeatCarriesTheQuarantineBacklog(t *testing.T) {
 	got := h.decoded()
 	if got[0]["pending"] != float64(3) || got[0]["changed"] != float64(1) {
 		t.Errorf("line pending/changed = %v/%v, want 3/1", got[0]["pending"], got[0]["changed"])
+	}
+}
+
+// TestHeartbeatCarriesBackendStateCounts is design/adr/0041 item 7: how
+// many backends are up, reconnecting, down and in maintenance, and whether
+// the whole gateway is -- counts only, never a backend's name, and -1 /
+// "unknown" when the maintenance table could not be read.
+func TestHeartbeatCarriesBackendStateCounts(t *testing.T) {
+	h := newHarness(t)
+	if jsonl.Version != 5 {
+		t.Errorf("Version = %d, want 5: the heartbeat gained fields", jsonl.Version)
+	}
+	hb, err := h.rec.Heartbeat(context.Background(), jsonl.Stats{Boot: time.Now(), Now: time.Now(),
+		BackendsUp: 3, BackendsReconnecting: 1, BackendsDown: 0, BackendsMaintenance: -1, GatewayMaintenance: "unknown"})
+	if err != nil {
+		t.Fatalf("Heartbeat: %v", err)
+	}
+	if hb.BackendsUp != 3 || hb.BackendsMaintenance != -1 || hb.GatewayMaintenance != "unknown" {
+		t.Errorf("heartbeat = %+v", hb)
+	}
+	got := h.decoded()
+	if got[0]["backends_up"] != float64(3) || got[0]["backends_reconnecting"] != float64(1) || got[0]["backends_down"] != float64(0) ||
+		got[0]["backends_maintenance"] != float64(-1) || got[0]["gateway_maintenance"] != "unknown" {
+		t.Errorf("line = %v", got[0])
 	}
 }
 

@@ -331,7 +331,18 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// distinction away at the last hop.
 	tools, err := h.gateway.ListTools(r.Context(), id)
 	if err != nil {
-		h.fail(w, r, id, "listing tools for caller", err)
+		// Every failure here, after admission, is one 503 with one body
+		// (design/adr/0041 item 8): the suspension and an unreadable
+		// approval store must not be told apart by a caller who may hold no
+		// grant at all, and the client shows the body to the model and the
+		// user, whose first sentence says it is temporary.
+		h.log.LogAttrs(r.Context(), slog.LevelError, "httpapi: request failed",
+			slog.String("subject", id.Subject),
+			slog.String("doing", "listing tools for caller"),
+			slog.String("class", "service-unavailable"),
+			slog.String("detail", err.Error()),
+		)
+		writeServiceUnavailable(w)
 		return
 	}
 
@@ -656,23 +667,6 @@ func sourceAddress(r *http.Request) string {
 	return r.RemoteAddr
 }
 
-// fail writes the generic response for an internal failure and logs the
-// real one.
-//
-// The split is the whole point: the caller gets a fixed string chosen only
-// by the failure's class, and the operator gets the error text, the
-// identity and what was being attempted.
-func (h *Handler) fail(w http.ResponseWriter, r *http.Request, id access.Identity, doing string, err error) {
-	class := classify(err)
-	h.log.LogAttrs(r.Context(), slog.LevelError, "httpapi: request failed",
-		slog.String("subject", id.Subject),
-		slog.String("doing", doing),
-		slog.String("class", class.String()),
-		slog.String("detail", err.Error()),
-	)
-	writeGeneric(w, class)
-}
-
 // ------------------------------------------------------------- MCP surface
 
 // callerContextKey is the (unexported, and therefore unforgeable from
@@ -722,7 +716,9 @@ type caller struct {
 // answer is an empty server, never a permissive one. A caller we cannot
 // identify gets a working MCP session with nothing in it.
 func (h *Handler) getServer(r *http.Request) *mcp.Server {
-	srv := mcp.NewServer(h.impl, &mcp.ServerOptions{Logger: h.log})
+	// The instructions are a constant (design/adr/0041 item 5), the same
+	// for every caller and every state.
+	srv := mcp.NewServer(h.impl, &mcp.ServerOptions{Logger: h.log, Instructions: serverInstructions})
 
 	c, ok := r.Context().Value(callerContextKey{}).(*caller)
 	if !ok || c == nil {
@@ -773,6 +769,11 @@ func (h *Handler) getServer(r *http.Request) *mcp.Server {
 		}
 		served[def.Name] = struct{}{}
 	}
+
+	// After the caller's tools and from the names actually registered, so
+	// gatte.status names no backend this caller's tools/list does not
+	// already show -- not even one whose only tool the SDK refused above.
+	h.registerGatteStatus(r.Context(), srv, c.gwCaller, served)
 
 	// Installed after the registrations so served is complete, and last so
 	// it is the outermost middleware -- it must observe every tools/call,
@@ -925,6 +926,19 @@ func (h *Handler) dispatchTool(c gateway.Caller, namespaced string) mcp.ToolHand
 
 		res, err := h.gateway.Dispatch(ctx, c, namespaced, args)
 		if err != nil {
+			// A backend that cannot take the call, or failed it, is told to
+			// the caller as a tool result with isError -- the one channel a
+			// client hands the model whole -- built from the gateway's state
+			// alone (design/adr/0041 item 2). Everything else stays the
+			// constant JSON-RPC error of its class.
+			if honest := honestResult(err); honest != nil {
+				h.log.LogAttrs(ctx, slog.LevelWarn, "httpapi: tool call answered with the backend's state",
+					slog.String("subject", c.Identity.Subject),
+					slog.String("tool", namespaced),
+					slog.String("error_class", fmt.Sprintf("%T", err)),
+				)
+				return honest, nil
+			}
 			return nil, h.rejectCall(ctx, c.Identity, namespaced, err)
 		}
 		dispatched = true
@@ -934,6 +948,7 @@ func (h *Handler) dispatchTool(c gateway.Caller, namespaced string) mcp.ToolHand
 			return nil, h.rejectCall(ctx, c.Identity, namespaced,
 				fmt.Errorf("upstream result is not representable: %w", err))
 		}
+		appendNotice(out, res.Notice)
 		return out, nil
 	}
 }

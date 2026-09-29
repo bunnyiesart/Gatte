@@ -40,6 +40,7 @@ import (
 	"github.com/bunnyiesart/Gatte/internal/audit"
 	auditsqlite "github.com/bunnyiesart/Gatte/internal/audit/sqlite"
 	"github.com/bunnyiesart/Gatte/internal/config"
+	healthsqlite "github.com/bunnyiesart/Gatte/internal/health/sqlite"
 	"github.com/bunnyiesart/Gatte/internal/idp"
 	"github.com/bunnyiesart/Gatte/internal/idp/autheliafile"
 	"github.com/bunnyiesart/Gatte/internal/store"
@@ -447,8 +448,11 @@ func newAdminService(db *sql.DB, loadCfg func() (*config.Config, error), stderr 
 		Config: loadCfg,
 		Tools:  base.tools(),
 		Blocks: base.blocks(),
-		Trail:  auditsqlite.New(db),
-		Quota:  base.quotaCounters(),
+		// Planned maintenance (design/adr/0041), over the database serve
+		// reads it from on every call.
+		Maintenance: healthsqlite.New(db),
+		Trail:       auditsqlite.New(db),
+		Quota:       base.quotaCounters(),
 		Upstreams: func(ctx context.Context, cfg *config.Config) ([]adminapi.Upstream, error) {
 			return opUpstreams(envFor(cfg))
 		},

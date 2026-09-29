@@ -12,7 +12,7 @@ import "time"
 
 // ContractVersion is the api/admin.openapi.yaml info.version these types
 // implement.
-const ContractVersion = "1.0.0"
+const ContractVersion = "1.1.0"
 
 // Default socket paths (design/adr/0040 §1).
 const (
@@ -540,4 +540,67 @@ type PasswordResult struct {
 	ActionResult
 	Account         Account `json:"account"`
 	OneTimePassword string  `json:"one_time_password"`
+}
+
+// Features a backend lists in WhoAmI.Features since 1.1.0. A front calls an
+// operation of a feature only when the backend lists it.
+const (
+	// FeatureMaintenance: the three /v1/maintenance operations
+	// (design/adr/0041).
+	FeatureMaintenance = "maintenance"
+	// FeatureBackendHealth: `health` on Overview and on each Upstream.
+	FeatureBackendHealth = "backend_health"
+)
+
+// Maintenance scopes.
+const (
+	ScopeUpstream = "upstream"
+	ScopeGateway  = "gateway"
+)
+
+// Maintenance is one maintenance row (design/adr/0041 item 6). Exactly
+// Message, Until, UntilPassed and StartedAt reach analysts; SetBy and SetAt
+// are operator only.
+type Maintenance struct {
+	Message     string     `json:"message"`
+	Until       *time.Time `json:"until,omitempty"`
+	UntilPassed bool       `json:"until_passed,omitempty"`
+	StartedAt   time.Time  `json:"started_at"`
+	SetBy       string     `json:"set_by"`
+	SetAt       time.Time  `json:"set_at"`
+}
+
+// MaintenanceRequest is the body of POST /v1/maintenance/on.
+type MaintenanceRequest struct {
+	Scope    string     `json:"scope"`
+	Upstream string     `json:"upstream,omitempty"`
+	Message  string     `json:"message"`
+	Until    *time.Time `json:"until,omitempty"`
+}
+
+// MaintenanceTarget is the body of POST /v1/maintenance/off.
+type MaintenanceTarget struct {
+	Scope    string `json:"scope"`
+	Upstream string `json:"upstream,omitempty"`
+}
+
+// MaintenanceResult answers a start or an end.
+type MaintenanceResult struct {
+	ActionResult
+	Scope       string       `json:"scope"`
+	Upstream    string       `json:"upstream,omitempty"`
+	Maintenance *Maintenance `json:"maintenance,omitempty"`
+	Previous    *Maintenance `json:"previous,omitempty"`
+}
+
+// UpstreamMaintenance is one backend in maintenance.
+type UpstreamMaintenance struct {
+	Maintenance
+	Upstream string `json:"upstream"`
+}
+
+// MaintenanceList answers GET /v1/maintenance.
+type MaintenanceList struct {
+	Gateway   *Maintenance          `json:"gateway,omitempty"`
+	Upstreams []UpstreamMaintenance `json:"upstreams"`
 }

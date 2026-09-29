@@ -43,6 +43,7 @@ import (
 	"github.com/bunnyiesart/Gatte/internal/audit"
 	auditsql "github.com/bunnyiesart/Gatte/internal/audit/sqlite"
 	"github.com/bunnyiesart/Gatte/internal/gateway"
+	healthsql "github.com/bunnyiesart/Gatte/internal/health/sqlite"
 	"github.com/bunnyiesart/Gatte/internal/quarantine"
 	quarantinesql "github.com/bunnyiesart/Gatte/internal/quarantine/sqlite"
 	"github.com/bunnyiesart/Gatte/internal/quota"
@@ -213,6 +214,9 @@ type harness struct {
 	// blocks is the console's side of the blocklist the Gateway reads
 	// (design/adr/0031), over the same database.
 	blocks access.BlockStore
+	// health is the operator's side of maintenance (design/adr/0041), over
+	// the same database.
+	health *healthsql.Store
 }
 
 // harnessOptions lets one test bend the wiring without every other test
@@ -252,6 +256,10 @@ func newHarnessWith(t *testing.T, opts harnessOptions) *harness {
 	if err := accesssql.Migrate(db); err != nil {
 		t.Fatalf("blocklist migrate: %v", err)
 	}
+	if err := healthsql.Migrate(db); err != nil {
+		t.Fatalf("health migrate: %v", err)
+	}
+	healthStore := healthsql.New(db)
 	blocks := accesssql.New(db)
 	var blocklist access.Blocklist = blocks
 	if opts.blocklist != nil {
@@ -310,16 +318,19 @@ func newHarnessWith(t *testing.T, opts harnessOptions) *harness {
 	}
 
 	gw, err := gateway.New(gateway.Config{
-		Registry:   reg,
-		Vault:      fakeVault{},
-		Quarantine: served,
-		Audit:      trail,
-		Policy:     policy,
-		Blocklist:  blocklist,
-		Quota:      noQuota(t),
-		Dialer:     dialer,
-		Now:        func() time.Time { return time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC) },
-		Logger:     logger,
+		Registry:      reg,
+		Vault:         fakeVault{},
+		Quarantine:    served,
+		Audit:         trail,
+		Policy:        policy,
+		Blocklist:     blocklist,
+		Quota:         noQuota(t),
+		Dialer:        dialer,
+		Now:           func() time.Time { return harnessNow },
+		Logger:        logger,
+		Maintenance:   healthStore,
+		State:         healthStore,
+		RoundInterval: 5 * time.Minute,
 	})
 	if err != nil {
 		t.Fatalf("gateway.New: %v", err)
@@ -357,8 +368,11 @@ func newHarnessWith(t *testing.T, opts harnessOptions) *harness {
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 
-	return &harness{t: t, gw: gw, handler: handler, server: srv, db: db, dialer: dialer, logs: logs, blocks: blocks}
+	return &harness{t: t, gw: gw, handler: handler, server: srv, db: db, dialer: dialer, logs: logs, blocks: blocks, health: healthStore}
 }
+
+// harnessNow is the gateway's clock in these tests.
+var harnessNow = time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
 
 // endpoint is the MCP endpoint: any path that is not the metadata path.
 func (h *harness) endpoint() string { return h.server.URL + "/mcp" }
@@ -444,6 +458,12 @@ func (h *harness) toolNames(cs *mcp.ClientSession) []string {
 	}
 	names := make([]string, 0, len(res.Tools))
 	for _, tool := range res.Tools {
+		// gatte.status is on every server (design/adr/0041 item 5) and is
+		// asserted on its own in health_test.go; the tests using this
+		// helper are about which BACKEND tools a caller is given.
+		if tool.Name == gateway.GatteStatusTool {
+			continue
+		}
 		names = append(names, tool.Name)
 	}
 	slices.Sort(names)
@@ -1009,15 +1029,17 @@ func TestDifferentInternalFailuresLookIdentical(t *testing.T) {
 	}
 }
 
-// TestBrokenQuarantineIsAGenericFiveHundred exercises the internal-error
-// class end to end, over HTTP, with a real failure: the store the Tool
-// Quarantine lives in goes away.
+// TestBrokenQuarantineIsTheConstant503 exercises a ListTools failure end
+// to end, over HTTP, with a real failure: the store the Tool Quarantine
+// lives in goes away.
 //
 // gateway.ListTools fails the whole call rather than returning a short list
 // -- an empty tool list and a broken approval store must not look the same
 // -- and this asserts that distinction survives the last hop, without the
-// SQLite driver's error text going with it.
-func TestBrokenQuarantineIsAGenericFiveHundred(t *testing.T) {
+// SQLite driver's error text going with it. Until design/adr/0041 the
+// answer was the generic 500; it is now the one 503 every ListTools failure
+// after admission answers, suspension included (ADR-0041 item 8).
+func TestBrokenQuarantineIsTheConstant503(t *testing.T) {
 	// The blocklist is kept off the database this test closes, so the
 	// failure it observes is the quarantine's and not the blocklist's,
 	// which is read first (ADR-0031) and has its own test.
@@ -1033,8 +1055,8 @@ func TestBrokenQuarantineIsAGenericFiveHundred(t *testing.T) {
 	}
 
 	res := h.post("/mcp", "Bearer "+tokenAnalyst, initializeBody)
-	if res.StatusCode != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 500 when Tool Quarantine cannot be read", res.StatusCode)
+	if res.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503 when Tool Quarantine cannot be read", res.StatusCode)
 	}
 	got := body(t, res)
 	assertNoLeak(t, got)
@@ -1133,6 +1155,7 @@ func TestToolWithUnusableSchemaIsSkipped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("tools/list: %v", err)
 	}
+	res.Tools = slices.DeleteFunc(res.Tools, func(tool *mcp.Tool) bool { return tool.Name == gateway.GatteStatusTool })
 	if len(res.Tools) != 1 || res.Tools[0].Name != toolListCases {
 		names := make([]string, 0, len(res.Tools))
 		for _, tool := range res.Tools {
@@ -1817,7 +1840,8 @@ func TestQuotaExhaustedIsItsOwnClass(t *testing.T) {
 // connection goroutines (go-sdk v1.8.0 added such a line on the session
 // path), so a plain bytes.Buffer read by the test while the server is still
 // writing is a data race -- caught under -race in
-// TestBrokenQuarantineIsAGenericFiveHundred on 28 Sep 2026.
+// TestBrokenQuarantineIsAGenericFiveHundred (now
+// TestBrokenQuarantineIsTheConstant503) on 28 Sep 2026.
 type lockedBuffer struct {
 	mu  sync.Mutex
 	buf bytes.Buffer

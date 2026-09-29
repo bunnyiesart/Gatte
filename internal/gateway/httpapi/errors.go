@@ -4,8 +4,12 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
+	"strings"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/bunnyiesart/Gatte/internal/access"
 	"github.com/bunnyiesart/Gatte/internal/gateway"
@@ -256,4 +260,147 @@ func jsonRPCError(class failureClass, tool string) error {
 		code = jsonrpc.CodeInvalidRequest
 	}
 	return &jsonrpc.Error{Code: int64(code), Message: class.message()}
+}
+
+// ------------------------------------------------ design/adr/0041: texts
+//
+// Two classes of answer are built here from the gateway's own STATE, never
+// from an error's text: a backend that cannot take a granted, approved call
+// (down, reconnecting, in maintenance, found dead during the call), and a
+// live backend that failed it. They are the only texts on the wire that
+// vary with more than the class, and every value that varies is a field the
+// gateway filled from its own memory or from the operator's validated
+// maintenance row (ADR-0041 item 3). The operator's message is quoted
+// Go-style (strconv.Quote, so accents stay accents) so that no message can
+// close the quote and continue as the gateway's words.
+
+// OriginMetaKey is the reserved _meta key every result the gateway builds
+// itself carries, with the value "gateway". An upstream result never
+// carries it: toCallToolResult forwards no _meta of an upstream at all.
+// A structural marker for clients that read _meta; it proves nothing to a
+// model, which is why the instructions name gatte.status as the only
+// authoritative source (ADR-0041 item 2).
+const OriginMetaKey = "io.github.bunnyiesart.gatte/origin"
+
+// msgServiceUnavailable is the one body of every ListTools failure after
+// admission (ADR-0041 item 8): the suspension and an unreadable approval
+// store answer the same bytes, so the caller learns "temporary" and not
+// which part is unwell. The first sentence is the one a client shows.
+const msgServiceUnavailable = "Gatte is temporarily unable to serve tools. This is not a problem with your request; retry in a few minutes or tell the user."
+
+// notYourRequest is the sentence every unavailability text carries.
+const notYourRequest = "This is not a problem with your request or its arguments: do not change them."
+
+// statusHint closes the unavailability texts.
+const statusHint = "Call gatte.status for the current state of your backends."
+
+// stamp renders an instant the way every text here does: RFC 3339, UTC,
+// seconds.
+func stamp(t time.Time) string { return t.UTC().Format(time.RFC3339) }
+
+// quoteMessage is the operator's text inside the gateway's.
+func quoteMessage(msg string) string { return strconv.Quote(msg) }
+
+// untilPhrase is how a maintenance's announced end reads.
+func untilPhrase(n *gateway.MaintenanceNotice) string {
+	switch {
+	case n.Until.IsZero():
+		return "with no announced end"
+	case n.UntilPassed:
+		return "expected until " + stamp(n.Until) + " (that time has passed; the maintenance has not been ended yet)"
+	default:
+		return "expected until " + stamp(n.Until)
+	}
+}
+
+// unavailableText is the text of an *gateway.UnavailableError.
+func unavailableText(e *gateway.UnavailableError) string {
+	name := strconv.Quote(e.Backend)
+	switch e.State {
+	case gateway.StateMaintenance:
+		m := e.Maintenance
+		if m == nil {
+			m = &gateway.MaintenanceNotice{Since: e.Since}
+		}
+		return fmt.Sprintf("Gatte: the backend %s is in planned maintenance since %s, %s. Operator message: %s. %s Retry after the maintenance, or tell the user. %s",
+			name, stamp(m.Since), untilPhrase(m), quoteMessage(m.Message), notYourRequest, statusHint)
+	case gateway.StateDown:
+		attempt := "no reconnect attempt yet"
+		if !e.LastAttempt.IsZero() {
+			attempt = "last reconnect attempt " + stamp(e.LastAttempt)
+		}
+		return fmt.Sprintf("Gatte: the backend %s is unavailable since %s (%s). Gatte is not reconnecting it automatically; an operator has to act. %s Tell the user. %s",
+			name, stamp(e.Since), attempt, notYourRequest, statusHint)
+	default:
+		var parts []string
+		if e.LastAttempt.IsZero() {
+			parts = append(parts, "no reconnect attempt yet")
+		} else {
+			parts = append(parts, "last attempt "+stamp(e.LastAttempt))
+		}
+		if !e.NextAttempt.IsZero() {
+			parts = append(parts, "next attempt around "+stamp(e.NextAttempt))
+		}
+		return fmt.Sprintf("Gatte: the backend %s is unavailable since %s; Gatte is reconnecting it (%s). %s Retry after the next attempt, or tell the user. %s",
+			name, stamp(e.Since), strings.Join(parts, ", "), notYourRequest, statusHint)
+	}
+}
+
+// backendFailedText is the text of an *gateway.BackendFailedError. It says
+// where, not why: the backend's error is not forwarded, and it may well be
+// `invalid params`, so it does not claim the request is right.
+func backendFailedText(e *gateway.BackendFailedError) string {
+	return fmt.Sprintf("Gatte: the backend %s failed this call. Gatte does not forward the backend's error, so it cannot say why: it may be the backend or the request. If it repeats with a request you believe is correct, tell the user. In gatte.status, \"up\" only means Gatte is connected to the backend.",
+		strconv.Quote(e.Backend))
+}
+
+// gatewayNoticeText is the block appended to results while the whole
+// gateway is in planned maintenance.
+func gatewayNoticeText(n *gateway.MaintenanceNotice) string {
+	return fmt.Sprintf("Gatte notice: the Gatte gateway is in planned maintenance since %s, %s. Operator message: %s. Calls are still being served; if one fails as unavailable, call gatte.status.",
+		stamp(n.Since), untilPhrase(n), quoteMessage(n.Message))
+}
+
+// honestResult is the tool result for a call the gateway answers with a
+// backend's state, or nil when err is not one of the two classes above.
+func honestResult(err error) *mcp.CallToolResult {
+	var (
+		ue   *gateway.UnavailableError
+		bf   *gateway.BackendFailedError
+		text string
+		gw   *gateway.MaintenanceNotice
+	)
+	switch {
+	case errors.As(err, &ue):
+		text, gw = unavailableText(ue), ue.Gateway
+	case errors.As(err, &bf):
+		text, gw = backendFailedText(bf), bf.Gateway
+	default:
+		return nil
+	}
+	res := &mcp.CallToolResult{
+		Meta:    mcp.Meta{OriginMetaKey: "gateway"},
+		Content: []mcp.Content{&mcp.TextContent{Text: text}},
+		IsError: true,
+	}
+	appendNotice(res, gw)
+	return res
+}
+
+// appendNotice adds the gateway's maintenance notice as a last text block.
+// Never into structuredContent: an upstream's output schema governs that.
+func appendNotice(res *mcp.CallToolResult, n *gateway.MaintenanceNotice) {
+	if n == nil {
+		return
+	}
+	res.Content = append(res.Content, &mcp.TextContent{Text: gatewayNoticeText(n)})
+}
+
+// writeServiceUnavailable answers a ListTools failure after admission.
+func writeServiceUnavailable(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Retry-After", "60")
+	w.WriteHeader(http.StatusServiceUnavailable)
+	_, _ = fmt.Fprintln(w, msgServiceUnavailable)
 }

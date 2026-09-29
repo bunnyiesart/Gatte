@@ -258,8 +258,17 @@ func TestReconcile_ChangedEntryIsClosedEvenIfTheRedialFails(t *testing.T) {
 	if n := h.dialer.upstream("casemgmt").closeCount(); n != 1 {
 		t.Errorf("the superseded connection was closed %d times, want 1 even though the replacement would not dial", n)
 	}
-	if got := h.listNames(analyst); len(got) != 0 {
-		t.Errorf("ListTools = %v, want empty: the replaced process must not keep serving", got)
+	// Since design/adr/0041 the tool stays listed -- the entry is still
+	// servable, and dropping it would only turn the answer into "unknown
+	// tool" -- but nothing is served by the replaced process: the call is
+	// answered with the backend's state and reaches no connection.
+	calls := len(h.dialer.upstream("casemgmt").callLog())
+	var ue *UnavailableError
+	if _, err := h.gw.Dispatch(context.Background(), fromAnalyst, "casemgmt.list_cases", json.RawMessage(`{}`)); !errors.As(err, &ue) {
+		t.Errorf("Dispatch after the failed re-dial = %v, want the backend's state", err)
+	}
+	if n := len(h.dialer.upstream("casemgmt").callLog()); n != calls {
+		t.Errorf("the replaced process received %d call(s): it must not keep serving", n-calls)
 	}
 }
 
@@ -656,8 +665,11 @@ func TestStatus_CountsWhatTheTrailRecords(t *testing.T) {
 		t.Errorf("Status counters = {%d allowed, %d denied, %d failed}, trail holds {%d, %d, %d}",
 			got.Allowed, got.Denied, got.Failed, allowed, denied, failed)
 	}
-	if got.Allowed != 2 || got.Failed != 1 {
-		t.Errorf("Status = %+v; want 2 allowed and 1 failed -- a failed call writes BOTH, which is why allowed counts attempts", got)
+	// Three allowed: the two calls, and the gateway's own "backend up:
+	// first observed" row for casemgmt (design/adr/0041 item 7), which is
+	// why a count of calls leaves out the (gateway) rows.
+	if got.Allowed != 3 || got.Failed != 1 {
+		t.Errorf("Status = %+v; want 3 allowed (two calls and the backend's first observation) and 1 failed -- a failed call writes BOTH, which is why allowed counts attempts", got)
 	}
 	if got.Upstreams != 1 || got.Tools != 2 {
 		t.Errorf("Status = %+v, want 1 upstream and 2 routed tools", got)

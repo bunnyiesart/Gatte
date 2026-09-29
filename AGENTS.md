@@ -125,8 +125,17 @@ From `design/adr/0003-security-controls.md`'s explicit "not covered" list:
   stream produces, closed, and re-dialled within one interval — and a
   backend that merely failed to answer is not, which is the harder half.
 
-  **Still open, and not claimed:** no latency or saturation metrics, and no
-  per-upstream health beyond alive-or-gone.
+  **Backend health and maintenance, 29 Sep 2026**
+  (`design/adr/0041-saude-dos-backends-e-manutencao.md`): each servable
+  backend has a state (up, reconnecting, down, maintenance), a granted
+  caller of a backend that is not up gets an `isError` result saying so
+  instead of `internal error`, its approved tools stay listed, the built-in
+  `gatte.status` reports the caller's backends, and every up/down
+  transition is a `(backend health)` row.
+
+  **Still open, and not claimed:** no latency or saturation metrics, and
+  "up" still means only that the gateway holds a live connection to the
+  backend, not that the backend can answer.
 - **Concurrency limit per identity — closed 28 Sep 2026**
   (`design/adr/0035-resiliencia-do-caminho-de-chamada.md`): at most
   `response.max_concurrent_calls_per_analyst` calls in flight per subject

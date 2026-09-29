@@ -1,9 +1,17 @@
 {{template "top" .}}
+{{$title := .Title}}
 {{with .Data}}
 <div class="result">
   <span class="result-icon {{if .OK}}ok{{else}}danger{{end}}">{{if .OK}}{{template "check"}}{{else}}{{template "warn"}}{{end}}</span>
-  <h1>{{.Action}}</h1>
+  <h1>{{$title}}</h1>
   <p class="sub">{{if .OK}}Done.{{else}}{{vistext .Summary}}{{end}}</p>
+  {{if .Secret}}
+  <div class="secret" role="note">
+    <span class="secret-label">One-time password for {{vis .SecretFor}}</span>
+    <code class="secret-value">{{.Secret}}</code>
+    <span class="secret-note">Shown only here, stored only as a hash. Hand it over privately; they should change it at sign-in.</span>
+  </div>
+  {{end}}
   <a class="btn primary" href="{{.Back}}">Done</a>
 </div>
 <details class="group">

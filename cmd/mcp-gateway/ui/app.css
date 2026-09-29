@@ -296,6 +296,37 @@ details > p { padding-bottom: 16px; }
 .result-icon.danger { background: var(--danger-bg); color: var(--danger-text); }
 .result + details { max-width: 720px; margin: 0 auto; }
 
+/* ---- people ---- */
+
+.avatar {
+  display: grid; place-items: center; flex: none; width: 32px; height: 32px; border-radius: 50%;
+  background: var(--accent-soft); color: var(--accent-text); font-weight: 600; font-size: 14px;
+}
+.avatar.off { background: var(--fill); color: var(--text-3); }
+fieldset.field { border: 0; margin: 0; padding: 0; min-width: 0; }
+fieldset.field legend { padding: 0; margin-bottom: 6px; }
+.checks { display: flex; flex-wrap: wrap; gap: 8px; }
+.checks legend { width: 100%; }
+.check {
+  display: inline-flex; align-items: center; gap: 8px; padding: 7px 12px; border-radius: 8px;
+  background: var(--fill); color: var(--text); font-size: 14px; font-weight: 500; cursor: pointer;
+}
+.check small { color: var(--text-2); font-weight: 400; }
+.check input { width: 16px; height: 16px; min-height: 0; margin: 0; accent-color: var(--btn); }
+.check:has(input:checked) { background: var(--accent-soft); }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 0 18px 16px; list-style: none; }
+.chips li { padding: 3px 9px; border-radius: 6px; background: var(--fill); font-size: 12px; }
+details summary .row-text { gap: 2px; }
+.secret {
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+  margin: 8px 0 22px; padding: 18px 24px; border-radius: var(--r);
+  background: var(--surface); box-shadow: inset 0 0 0 1px var(--sep);
+}
+.secret-label { font-size: 13px; color: var(--text-2); }
+.secret-value { padding: 6px 12px; font-size: 20px; letter-spacing: 0.04em; background: var(--fill); user-select: all; }
+.secret-note { max-width: 44ch; font-size: 13px; color: var(--text-2); }
+.row form .btn { white-space: nowrap; }
+
 /* ---- small screens ---- */
 
 @media (max-width: 720px) {

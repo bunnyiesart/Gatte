@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"math"
 	"net"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -61,6 +62,7 @@ type Config struct {
 	Telemetry  Telemetry  `toml:"telemetry"`
 	OCI        OCI        `toml:"oci"`
 	Upstreams  Upstreams  `toml:"upstreams"`
+	IdP        IdP        `toml:"idp"`
 
 	// Roles defines what each role may call. Order is irrelevant.
 	Roles []Role `toml:"role"`
@@ -702,6 +704,10 @@ func (s Signer) TrustedPublicKeys() ([]ed25519.PublicKey, error) {
 func (c *Config) Validate() error {
 	var errs []error
 
+	if c.IdP.UsersFile != "" && !filepath.IsAbs(c.IdP.UsersFile) {
+		errs = append(errs, fmt.Errorf("idp.users_file: %q is not an absolute path", c.IdP.UsersFile))
+	}
+
 	if strings.TrimSpace(c.Listen) == "" {
 		c.Listen = DefaultListen
 	}
@@ -1302,6 +1308,18 @@ func (o OCI) validate() []error {
 
 // Upstreams holds registry-wide policy that is not a property of one
 // entry.
+// IdP names the identity provider's account store, for the one console
+// mode that edits it (design/adr/0038-contas-do-idp-pelo-console.md).
+// Serving never reads it: who may call is decided by the tokens the IdP
+// signs, not by this file.
+type IdP struct {
+	// UsersFile is the Authelia file-backend users database, e.g.
+	// "/etc/authelia/users_database.yml". Empty is the off switch, and
+	// empty is what ships. Only `mcp-gateway ui -manage-users`, run as
+	// root, reads or writes it; the service account is never given access.
+	UsersFile string `toml:"users_file"`
+}
+
 type Upstreams struct {
 	// AllowCredentialedStdio lets a stdio entry that declares credential
 	// variables be registered, signed and dialled. Off by default: a stdio

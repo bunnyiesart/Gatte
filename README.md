@@ -88,6 +88,7 @@ trail with its reason.
 | **Egress** | Network grants are limited to `none` (default), `slirp4netns`, `pasta` or a named podman network. `upstream list -json` shows each backend's network so the host firewall can build its allowlist. | `design/adr/0033` |
 | **Audit** | One hash-chained SQLite record per call, refusal and failure. A JSONL copy for any log shipper and optional GELF straight to Graylog, plus a heartbeat so a dead shipper is noticed. | `design/adr/0012`, `0021`, `0029` |
 | **Resilience** | Per-call time and size ceilings, a per-analyst concurrency cap, a 1 MiB request body cap, JWKS refetch at most every 30 s, and a panic contained to the one call that hit it. | `design/adr/0025`, `0035` |
+| **People** | The console shows roles, their groups and who has used the gateway. Run as root with `-manage-users`, it also edits the identity provider's accounts (Authelia file backend): one-time passwords stored only as argon2id hashes, groups limited to those that map to a role, every change audited. | `design/adr/0038` |
 | **Web console** | `mcp-gateway ui` serves the operator console as a page on loopback: review and approve tools with a coloured diff, block analysts, read and verify the audit trail. Every button is the CLI command of the same name. | `design/adr/0036` |
 | **Quota** | Optional: cap how many calls each analyst spends against one third-party account per window, so a runaway agent loop cannot burn an API budget. | `design/adr/0030` |
 
@@ -411,6 +412,7 @@ link locally.
 | Page | What you do there |
 |---|---|
 | Overview | See what needs attention: changed and pending tools, unsigned backends, blocked analysts, the latest refusals. |
+| People | See each role, the groups that map to it and its tools, and everyone the gateway has seen, with a Block button. With `sudo mcp-gateway ui -manage-users`, also add people at the identity provider, change their groups, disable them or give them a new one-time password (`design/adr/0038`). |
 | Tools | Review a definition with hidden characters escaped and the diff coloured, then approve that exact fingerprint, or revoke. |
 | Access | Block or unblock an analyst, with a reason that goes in the trail. |
 | Audit | Filter the trail by analyst and outcome, and verify the hash chain against your SIEM's head. |

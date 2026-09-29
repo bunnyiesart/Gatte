@@ -44,6 +44,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -53,6 +54,8 @@ import (
 	"github.com/bunnyiesart/Gatte/internal/access"
 	"github.com/bunnyiesart/Gatte/internal/audit"
 	"github.com/bunnyiesart/Gatte/internal/config"
+	"github.com/bunnyiesart/Gatte/internal/idp"
+	"github.com/bunnyiesart/Gatte/internal/idp/autheliafile"
 	"github.com/bunnyiesart/Gatte/internal/quarantine"
 	"github.com/bunnyiesart/Gatte/internal/visible"
 )
@@ -90,6 +93,15 @@ type uiServer struct {
 	pages    *template.Template
 	css      []byte
 	now      func() time.Time
+
+	// accounts is the IdP's account store, set only in the root
+	// -manage-users mode (ui_people.go). Nil means the account pages are
+	// read-only or absent.
+	accounts idp.Directory
+	// ownDB, when set, is the database path whose owner every action
+	// restores (keepDBOwner): a root console must not leave root-owned
+	// SQLite files the service cannot write.
+	ownDB string
 
 	// The one session the login link opens. sessMu guards the three.
 	sessMu    sync.Mutex
@@ -130,6 +142,7 @@ func newUIServer(base *opEnv, listen, operator, token string) (*uiServer, error)
 		"short":   opShortHash,
 		"dash":    opDash,
 		"lines":   uiReviewLines,
+		"initial": uiInitial,
 	}).ParseFS(uiAssets, "ui/*.html")
 	if err != nil {
 		return nil, fmt.Errorf("ui: templates: %w", err)
@@ -163,6 +176,13 @@ func (s *uiServer) Handler() http.Handler {
 	mux.HandleFunc("POST /access/unblock", s.accessUnblock)
 	mux.HandleFunc("GET /audit", s.auditPage)
 	mux.HandleFunc("POST /audit/verify", s.auditVerify)
+	mux.HandleFunc("GET /people", s.peoplePage)
+	mux.HandleFunc("GET /people/account", s.accountPage)
+	mux.HandleFunc("POST /people/add", s.accountAdd)
+	mux.HandleFunc("POST /people/groups", s.accountGroups)
+	mux.HandleFunc("POST /people/disable", s.accountDisable)
+	mux.HandleFunc("POST /people/enable", s.accountEnable)
+	mux.HandleFunc("POST /people/reset", s.accountReset)
 	mux.HandleFunc("GET /upstreams", s.upstreamsPage)
 	mux.HandleFunc("GET /quota", s.quotaPage)
 	mux.HandleFunc("GET /app.css", func(w http.ResponseWriter, _ *http.Request) {
@@ -314,6 +334,11 @@ func (s *uiServer) uiRun(fn func(*opEnv) int) (stdout, stderr string, code int) 
 		e.cfg = cfg
 	}
 	code = fn(&e)
+	if s.ownDB != "" {
+		if err := keepDBOwner(s.ownDB); err != nil {
+			fmt.Fprintf(&errb, "\n%v\n", err)
+		}
+	}
 	return out.String(), errb.String(), code
 }
 
@@ -361,14 +386,17 @@ func (s *uiServer) render(w http.ResponseWriter, tmpl, title string, p page) {
 // result is the page after an action: one plain sentence saying what
 // happened, and what the command printed, kept one click away.
 type result struct {
-	Action  string
 	OK      bool
 	Summary string
 	Output  string
 	Back    string
+	// Secret is a one-time password to hand over, shown on this page only:
+	// never logged, never recorded, never stored in plain text.
+	Secret    string
+	SecretFor string
 }
 
-func (s *uiServer) showResult(w http.ResponseWriter, nav, action, back, stdout, stderr string, code int) {
+func uiResult(stdout, stderr string, code int) result {
 	out := strings.TrimRight(stdout, "\n")
 	if e := strings.TrimRight(stderr, "\n"); e != "" {
 		if out != "" {
@@ -384,7 +412,13 @@ func (s *uiServer) showResult(w http.ResponseWriter, nav, action, back, stdout, 
 			summary = uiFirstLine(stdout)
 		}
 	}
-	s.render(w, "result", action, page{Nav: nav, Data: result{Action: action, OK: code == exitOK, Summary: summary, Output: out, Back: s.basePath() + back}})
+	return result{OK: code == exitOK, Summary: summary, Output: out}
+}
+
+func (r result) withBack(back string) result { r.Back = back; return r }
+
+func (s *uiServer) showResult(w http.ResponseWriter, nav, action, back, stdout, stderr string, code int) {
+	s.render(w, "result", action, page{Nav: nav, Data: uiResult(stdout, stderr, code).withBack(s.basePath() + back)})
 }
 
 func uiFirstLine(text string) string {
@@ -783,6 +817,7 @@ func (s *uiServer) quotaPage(w http.ResponseWriter, r *http.Request) {
 func cmdUI(args []string, stdout, stderr io.Writer) int {
 	fs, configPath := opFlagSet("ui", stderr)
 	listen := fs.String("listen", uiDefaultListen, "loopback address to serve the console on")
+	manage := fs.Bool("manage-users", false, "also edit the identity provider's accounts ([idp] users_file); root only")
 	if code, ok := opParse(fs, args, stdout, stderr, uiUsage); !ok {
 		return code
 	}
@@ -804,6 +839,11 @@ func cmdUI(args []string, stdout, stderr io.Writer) int {
 		if err != nil {
 			fmt.Fprintf(stderr, "%v\n", err)
 			return exitCannotRun
+		}
+		if *manage {
+			if code, ok := uiEnableManage(s, e, stderr); !ok {
+				return code
+			}
 		}
 		ln, err := net.Listen("tcp", *listen)
 		if err != nil {
@@ -873,4 +913,45 @@ func uiEscapeText(s string) string {
 		lines[i] = visible.Escape(l)
 	}
 	return strings.Join(lines, "\n")
+}
+
+// uiGeteuid is os.Geteuid, a variable so the root check is testable from
+// a test that is not root, and one that is.
+var uiGeteuid = os.Geteuid
+
+// uiEnableManage turns on account editing, refusing unless this process is
+// root and the configuration names the IdP's users file
+// (design/adr/0038). The service account must never be able to write the
+// IdP's accounts; a console that runs as it has no such mode at all.
+func uiEnableManage(s *uiServer, e *opEnv, stderr io.Writer) (int, bool) {
+	if uiGeteuid() != 0 {
+		fmt.Fprint(stderr, "-manage-users edits the identity provider's accounts, so it runs only as root:\n\n    sudo mcp-gateway ui -manage-users -config FILE\n\nThe service account is deliberately unable to create accounts: whoever runs code as the gateway\ncould otherwise give themselves any role (design/adr/0038).\n")
+		return exitCannotRun, false
+	}
+	if e.cfg.IdP.UsersFile == "" {
+		fmt.Fprint(stderr, "-manage-users needs [idp] users_file in the configuration file: the path of the identity\nprovider's users database (Authelia file backend).\n")
+		return exitCannotRun, false
+	}
+	dir := autheliafile.New(e.cfg.IdP.UsersFile)
+	if _, err := dir.Accounts(); err != nil {
+		fmt.Fprintf(stderr, "%v\n", err)
+		return exitCannotRun, false
+	}
+	s.enableAccounts(dir)
+	s.ownDB = e.cfg.Database
+	if err := keepDBOwner(s.ownDB); err != nil {
+		fmt.Fprintf(stderr, "%v\n", err)
+		return exitCannotRun, false
+	}
+	return exitOK, true
+}
+
+// uiInitial is the letter an account's avatar shows.
+func uiInitial(names ...string) string {
+	for _, n := range names {
+		for _, r := range strings.TrimSpace(n) {
+			return strings.ToUpper(string(r))
+		}
+	}
+	return "?"
 }

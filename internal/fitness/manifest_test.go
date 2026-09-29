@@ -179,6 +179,9 @@ func TestExternalCorpusIsNotAsserted(t *testing.T) {
 			case ".git", "bin", "node_modules":
 				return filepath.SkipDir
 			}
+			if isAgentWorktrees(root, path) {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		rel, relErr := filepath.Rel(root, path)
@@ -251,6 +254,9 @@ func TestCitedTestsExist(t *testing.T) {
 			case ".git", "bin", "node_modules":
 				return filepath.SkipDir
 			}
+			if isAgentWorktrees(root, path) {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		b, readErr := os.ReadFile(path)
@@ -284,4 +290,13 @@ func TestCitedTestsExist(t *testing.T) {
 			"Either the test was renamed (fix the document) or it was never written (write it).",
 			n, strings.Join(files, ", "))
 	}
+}
+
+// isAgentWorktrees reports whether dir is .claude/worktrees, where agent
+// tooling keeps gitignored worktrees: full copies of this tree on other
+// branches, not part of this checkout. The rest of .claude is tracked
+// (settings.json) and stays walked.
+func isAgentWorktrees(root, dir string) bool {
+	rel, err := filepath.Rel(root, dir)
+	return err == nil && rel == filepath.Join(".claude", "worktrees")
 }

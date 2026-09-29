@@ -76,14 +76,20 @@ com a assinatura ainda válida.
 
 - O invólucro de `0028` §A item 1 ganha seis flags; ver a correção lá.
 - Uma implantação cujas imagens rodam com um uid próprio põe esse uid em
-  `[oci] user`. As quatro imagens da implantação declaram `USER 10001` e
-  não foram rodadas sob `65534:65534`; até isso ser medido, a configuração
-  delas leva `[oci] user = "10001:10001"`.
-- **Não medido:** nenhum `podman run` com este invólucro rodou no host
-  `oci` real. Lá, rootless com cgroup v2, o crun recusa um limite cujo
-  controlador não está delegado ao usuário (muitas vezes `cpu`), e o gateway
-  descarta o stderr, então a falha aparece só como todo upstream `oci` sem
-  dial. Antes do corte, rodar como o usuário do gateway
+  `[oci] user`. A implantação de referência leva `[oci] user =
+  "10001:10001"`: três das quatro imagens declaram `USER 10001` e uma
+  declara `USER 999`, e as quatro respondem ao `initialize` MCP sob
+  `10001:10001` com todas as flags deste ADR.
+- **Medido em 28/09/2026, na VM de teste** (Linux, podman rootless, cgroup
+  v2), com este invólucro: nos quatro containers, `CapEff` e `CapBnd` 0,
+  `NoNewPrivs` 1, uid 10001 no container mapeado para um uid subordinado
+  no host, `pids.max` 256, `memory.max` 384m, 1 CPU. Os containers rodam
+  sob `user@UID.service`, não sob a unit do gateway, então um teto
+  systemd para eles vai num drop-in de `user@.service`. Onde o controlador
+  não está delegado ao usuário (muitas vezes `cpu`), o crun recusa o
+  limite, e o gateway descarta o stderr: a falha aparece só como todo
+  upstream `oci` sem dial. Num host novo, antes do corte, rodar como o
+  usuário do gateway
   `cat /sys/fs/cgroup/user.slice/user-$(id -u).slice/user@$(id -u).service/cgroup.controllers`
   (tem de listar `cpu memory pids`; senão, drop-in `Delegate=cpu memory
   pids` em `user@.service`) e um `podman run` com as flags deste ADR para

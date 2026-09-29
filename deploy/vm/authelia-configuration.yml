@@ -112,6 +112,19 @@ identity_providers:
 
     enable_client_debug_messages: false
 
+    # Short access tokens. Revoking a user here does not shorten a token
+    # already issued, so the access token's lifespan is how long a stolen
+    # one stays good: 10 minutes, and `mcp-gateway access block` in the
+    # gateway closes even that (design/adr/0031). The refresh token lasts
+    # one shift (8h); then the analyst logs in again.
+    lifespans:
+      custom:
+        mcp_short:
+          access_token: '10m'
+          id_token: '10m'
+          refresh_token: '8h'
+          authorize_code: '1m'
+
     claims_policies:
       # Authelia does not put `groups` in an access token unless told to.
       # The default JWT access token carries the registered RFC 9068 claims
@@ -136,6 +149,7 @@ identity_providers:
         public: false
         authorization_policy: 'one_factor'
         claims_policy: 'mcp_gateway'
+        lifespan: 'mcp_short'
 
         # RFC 8707 resource indicator. The gateway is a Resource Server and
         # rejects a token whose `aud` is not exactly this, so this string

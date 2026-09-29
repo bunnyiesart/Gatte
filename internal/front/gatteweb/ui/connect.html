@@ -2,27 +2,27 @@
 <a class="back" href="{{$.Base}}/people"><svg viewBox="0 0 8 14" width="8" height="14" aria-hidden="true"><path d="M7 1L1 7l6 6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>People</a>
 <div class="head">
   <h1>Connect a computer</h1>
-  <p class="sub">{{with .Data}}{{if .Info.Username}}For <b>{{vis .Info.Username}}</b>. {{end}}{{end}}Sets up Claude Code on their machine to use this gateway.</p>
+  <p class="sub">{{with .Data}}{{if .C.Username}}For <b>{{vis .C.Username}}</b>. {{end}}{{end}}Sets up Claude Code on their machine to use this gateway.</p>
 </div>
 {{template "connectpanel" dict "Base" $.Base "P" .Data}}
 {{template "bottom" .}}
 
 {{define "connectpanel"}}{{$base := .Base}}{{with .P}}
-{{if .Info.Ready}}
+{{if .C.Ready}}
 <div class="connect">
   <nav class="os-tabs segmented" aria-label="Their system">
-    <a href="#os-macos">macOS</a><a href="#os-linux">Linux</a><a href="#os-windows">Windows</a>
+    {{range .C.Scripts}}<a href="#os-{{.OS}}">{{vis .Name}}</a>{{end}}
   </nav>
   <div class="os-panels">
-    {{range $os := oslist}}
-    <section class="os-panel" id="os-{{$os.ID}}">
+    {{range $os := .C.Scripts}}
+    <section class="os-panel" id="os-{{$os.OS}}">
       <ol class="steps">
         <li>
           <span class="step-n">1</span>
           <div class="step-body">
             <b>Send them the script</b>
-            <p class="muted">It installs nothing but the Gatte entry in Claude Code{{if $.P.Info.CAPEM}} and the team's certificate authority{{end}}, and it holds no secret.</p>
-            <a class="btn primary" href="{{$base}}/people/connect/script?os={{$os.ID}}&amp;u={{$.P.Info.Username}}">{{template "download"}}Download {{$os.File}}</a>
+            <p class="muted">It installs nothing but the Gatte entry in Claude Code{{if $.P.C.HasCA}} and the team's certificate authority{{end}}, and it holds no secret.</p>
+            <a class="btn primary" href="{{$base}}/people/connect/script?os={{$os.OS}}&amp;u={{$.P.C.Username}}">{{template "download"}}Download {{$os.Filename}}</a>
           </div>
         </li>
         <li>
@@ -30,27 +30,27 @@
           <div class="step-body">
             <b>They run it</b>
             <pre class="code">{{$os.Run}}</pre>
-            {{if and (not $.P.Info.CAPEM) (ne $os.ID "windows")}}<details class="inline"><summary>Or paste one line instead{{template "chev"}}</summary><pre class="code">{{$.P.Command}}</pre></details>{{end}}
+            {{if and (not $.P.C.HasCA) (ne $os.OS "windows")}}<details class="inline"><summary>Or paste one line instead{{template "chev"}}</summary><pre class="code">{{$.P.C.Command}}</pre></details>{{end}}
           </div>
         </li>
         <li>
           <span class="step-n">3</span>
           <div class="step-body">
             <b>They sign in</b>
-            <p class="muted">In a new terminal: run <code>claude</code>, type <code>/mcp</code>, choose <code>{{$.P.Info.Server}}</code>{{if $.P.Info.Username}} and sign in as <code>{{$.P.Info.Username}}</code>{{end}}. The browser opens your identity provider's login.</p>
+            <p class="muted">In a new terminal: run <code>claude</code>, type <code>/mcp</code>, choose <code>{{$.P.C.ServerName}}</code>{{if $.P.C.Username}} and sign in as <code>{{$.P.C.Username}}</code>{{end}}. The browser opens your identity provider's login.</p>
           </div>
         </li>
       </ol>
       <details class="group">
         <summary>See the script{{template "chev"}}</summary>
-        <pre>{{index $.P.Scripts $os.ID}}</pre>
+        <pre>{{$os.Content}}</pre>
       </details>
     </section>
     {{end}}
   </div>
 </div>
 {{else}}
-<div class="notice" role="note">{{template "warn"}}<p><b>Connect scripts aren't set up.</b> {{.Info.Missing}}</p></div>
+<div class="notice" role="note">{{template "warn"}}<p><b>Connect scripts aren't set up.</b> {{.Missing}}</p></div>
 {{end}}
 {{end}}{{end}}
 

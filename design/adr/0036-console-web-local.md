@@ -21,6 +21,13 @@ máquina.
 
 ### 1. Um subcomando, não um serviço
 
+*Revisto por `0040` §6:* o `ui` passou a ser cliente da API de gestão. Roda
+como o próprio operador (membro do grupo do socket do operador), não mais
+como o usuário de serviço, e recebe `-socket` (e, com `-manage-users`,
+`-accounts-socket`) em vez de `-config`: não lê o `config.toml` nem abre o
+banco. O código das páginas está em `internal/front/gatteweb`, e um binário
+compilado com `-tags nofront` não tem console nenhum.
+
 `mcp-gateway ui [-config FILE] [-listen 127.0.0.1:8090]` roda em primeiro
 plano, como o usuário de serviço, igual aos outros comandos do console, e
 termina com Ctrl-C. Não há unit, nem processo sempre ligado, nem porta
@@ -30,10 +37,14 @@ dependência nova. Fora da máquina, o acesso é por `ssh -L`.
 
 ### 2. Cada botão é o comando de mesmo nome
 
-*Revisto por `0040`:* os comandos de mesmo nome chamam agora o serviço de
-gestão (`internal/admin`), o mesmo que responde no socket do `mcp-gateway
-admin`; a página ainda o chama no próprio processo até virar cliente da API
-(`0040` §6), e as defesas desta seção viraram a biblioteca `pkg/frontkit`.
+*Revisto por `0040`:* cada botão é agora a ação de mesmo nome da API de
+gestão, chamada por `pkg/adminapi` no socket do `mcp-gateway admin`; é o
+mesmo serviço (`internal/admin`) que os comandos do CLI chamam. A página
+mostra o que o backend respondeu, e as listas vêm dos endpoints `/v1`. O
+que está abaixo sobre `runToolApproveFingerprint` e os `-json` descreve a
+primeira versão. A linha de operador leva o nome que o kernel dá ao
+processo do `ui`, não mais `operatorName()`, com `[ui]` na razão; e as
+defesas do §3 são as de `pkg/frontkit`, por onde a página serve.
 
 Aprovar chama `runToolApproveFingerprint`, bloquear chama `runAccessBlock`,
 verificar a trilha chama `runAuditVerify`, e as listas são os `-json` de
@@ -117,6 +128,11 @@ Na ordem em que a requisição as encontra:
   página e pela API.
 
 ## Testes
+
+*Revisto por `0040`:* os testes abaixo rodam o console como ele roda, na
+frente de um backend real num socket UNIX temporário e por HTTP de verdade
+(`cmd/mcp-gateway/ui_harness_test.go`); o fim da sessão é testado em
+`pkg/frontkit` (`TestSession_Ends`), onde o relógio mora.
 
 `cmd/mcp-gateway/ui_test.go`: bind fora de loopback recusado; o link de
 login abre uma sessão uma vez só; o cookie sem o caminho da sessão (e o

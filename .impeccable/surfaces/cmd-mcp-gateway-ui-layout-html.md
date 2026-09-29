@@ -1,8 +1,8 @@
 ---
 version: 1
 slug: "cmd-mcp-gateway-ui-layout-html"
-primary_target: "cmd/mcp-gateway/ui/layout.html"
-related_targets: ["cmd/mcp-gateway/ui/app.css","cmd/mcp-gateway/ui/overview.html","cmd/mcp-gateway/ui/tools.html","cmd/mcp-gateway/ui/tool.html"]
+primary_target: "internal/front/gatteweb/ui/layout.html"
+related_targets: ["internal/front/gatteweb/ui/app.css","internal/front/gatteweb/ui/overview.html","internal/front/gatteweb/ui/tools.html","internal/front/gatteweb/ui/tool.html"]
 ---
 
 # Surface: Gatte operator console (`mcp-gateway ui`)

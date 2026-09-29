@@ -16,7 +16,7 @@ func TestNoFrontBuildCarriesNoFront(t *testing.T) {
 		t.Fatalf("go list -tags nofront: %v\n%s", err, files)
 	}
 	got := " " + strings.TrimSpace(string(files)) + " "
-	for _, front := range []string{" ui.go ", " ui_people.go ", " ui_connect.go "} {
+	for _, front := range []string{" ui.go "} {
 		if strings.Contains(got, front) {
 			t.Errorf("the nofront build compiles%s", front)
 		}

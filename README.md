@@ -88,8 +88,8 @@ trail with its reason.
 | **Egress** | Network grants are limited to `none` (default), `slirp4netns`, `pasta` or a named podman network. `upstream list -json` shows each backend's network so the host firewall can build its allowlist. | `design/adr/0033` |
 | **Audit** | One hash-chained SQLite record per call, refusal and failure, naming the analyst by stable subject and, for reading, display name. A JSONL copy for any log shipper and optional GELF straight to Graylog, plus a heartbeat so a dead shipper is noticed. | `design/adr/0012`, `0021`, `0029`, `0037` |
 | **Resilience** | Per-call time and size ceilings, a per-analyst concurrency cap, a 1 MiB request body cap, JWKS refetch at most every 30 s, and a panic contained to the one call that hit it. | `design/adr/0025`, `0035` |
-| **People** | The console shows roles, their groups and who has used the gateway. Run as root with `-manage-users`, it also edits the identity provider's accounts (Authelia file backend): one-time passwords stored only as argon2id hashes, groups limited to those that map to a role, every change audited. | `design/adr/0038` |
-| **Web console** | `mcp-gateway ui` serves the operator console as a page on loopback: review and approve tools with a coloured diff, block analysts, read and verify the audit trail. Every button is the CLI command of the same name. | `design/adr/0036` |
+| **People** | The console shows roles, their groups and who has used the gateway. With `-manage-users` (root's accounts socket: sudo, or a delegated group), it also edits the identity provider's accounts (Authelia file backend): one-time passwords stored only as argon2id hashes, groups limited to those that map to a role, every change audited. | `design/adr/0038` |
+| **Web console** | `mcp-gateway ui` serves the operator console as a page on loopback: review and approve tools with a coloured diff, block analysts, read and verify the audit trail. It is an optional client of the management API, run as the operator; `-tags nofront` builds the binary without it. | `design/adr/0036`, `design/adr/0040` |
 | **Management API** | `mcp-gateway admin` serves the console's operations as versioned JSON (`api/admin.openapi.yaml`) on UNIX sockets only, socket-activated and idle-exiting. The operator is whoever the kernel says connected; account editing is a separate root-only socket. Any front can be built on `pkg/adminapi` and `pkg/frontkit`; `-tags nofront` builds without the web console. | `design/adr/0040` |
 | **Quota** | Optional: cap how many calls each analyst spends against one third-party account per window, so a runaway agent loop cannot burn an API budget. | `design/adr/0030` |
 
@@ -401,11 +401,17 @@ re-approving.
 
 ### The web console
 
-The same console, as a page in your browser:
+The same console, as a page in your browser. It is a client of the
+management API (below): run it as yourself, as a member of the operator
+socket's group, with the backend's socket enabled. It reads no
+configuration file and opens no database, and the audit trail names you
+from the kernel's credentials of the process.
 
 ```sh
-sudo -u mcpgw mcp-gateway ui -config "$CFG"          # listens on 127.0.0.1:8090
+mcp-gateway ui                                       # listens on 127.0.0.1:8090
 # prints: http://127.0.0.1:8090/login?token=...      works once; keep it private
+mcp-gateway ui -socket /run/mcp-gateway-admin/operator/operator.sock   # the default
+sudo mcp-gateway ui -manage-users                    # also the accounts socket (root's)
 ```
 
 On the gateway host itself, open the link. From your own machine, forward the
@@ -415,16 +421,18 @@ link locally.
 | Page | What you do there |
 |---|---|
 | Overview | See what needs attention: changed and pending tools, unsigned backends, blocked analysts, the latest refusals. |
-| People | See each role, the groups that map to it and its tools, and everyone the gateway has seen, with a Block button. With `sudo mcp-gateway ui -manage-users`, also add people at the identity provider, change their groups, disable them or give them a new one-time password (`design/adr/0038`). Adding a person is a three-step assistant that ends with their one-time password and a connect script for macOS, Linux or Windows that sets up Claude Code on their machine (`[connect]`, `design/adr/0039`). |
+| People | See each role, the groups that map to it and its tools, and everyone the gateway has seen, with a Block button. With `sudo mcp-gateway ui -manage-users` (or without sudo, as a member of a delegated `[admin] account_group`), also add people at the identity provider, change their groups, disable them or give them a new one-time password (`design/adr/0038`). Adding a person is a three-step assistant that ends with their one-time password and a connect script for macOS, Linux or Windows that sets up Claude Code on their machine (`[connect]`, `design/adr/0039`). |
 | Tools | Review a definition with hidden characters escaped and the diff coloured, then approve that exact fingerprint, or revoke. |
 | Access | Block or unblock an analyst, with a reason that goes in the trail. |
 | Audit | Filter the trail by analyst and outcome, and verify the hash chain against your SIEM's head. |
 | Backends, Quota | Read-only: what is registered and signed, and what each analyst has spent. |
 
-Every button runs the command of the same name in the table above, with the
-same checks and the same audit rows; the page shows what the command
-printed. Registering and signing stay in the terminal, because signing needs
-root's key. The console runs only while you run it (Ctrl-C stops it) and
+Every button is the management API's action of the same name, the one the
+commands in the table above call too, with the same checks and the same
+audit rows (tagged `[ui]`); the page shows what the backend answered.
+`-manage-users` opens the accounts socket as well and refuses one whose
+server is not root. Registering and signing stay in the terminal, because
+signing needs root's key. The console runs only while you run it (Ctrl-C stops it) and
 binds loopback only. The login link works once and opens one session of up to
 12 hours; for a new one, restart `mcp-gateway ui`. Requests without that
 session, from a non-loopback `Host`, or, for a POST, without the form token or

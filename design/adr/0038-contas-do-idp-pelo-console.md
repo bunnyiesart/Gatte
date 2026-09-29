@@ -27,8 +27,13 @@ quem executa código como o gateway se daria acesso a todas as tools.
 
 *Revisto por `0040`:* a regra passa a ser do socket de contas
 (`mcp-gateway admin -accounts`, só root). As operações abaixo são as do
-serviço de gestão (`internal/admin`), que o console chama no próprio
-processo até virar cliente da API; o `keepDBOwner` sai com essa conversão.
+serviço de gestão (`internal/admin`), que o console chama por esse socket.
+`-manage-users` agora quer dizer "abrir também o socket de contas": com
+`sudo`, ou sem ele para um membro de `[admin] account_group` quando o
+socket é delegado. O console recusa um socket de contas cujo servidor não
+seja root, e o `keepDBOwner` deixou de existir: nenhum processo do console
+abre o banco. O que está abaixo sobre o processo do `ui` ser root descreve
+a primeira versão.
 
 `sudo mcp-gateway ui -manage-users` liga a edição: adicionar uma pessoa,
 trocar seus grupos, desativar, reativar e gerar uma senha nova. O comando
@@ -76,4 +81,5 @@ outras contas, edição só da conta pedida, modo do arquivo e nenhum temporári
 sobrando); `cmd/mcp-gateway/ui_people_test.go` (página People; edição
 inexistente sem `-manage-users`; incluir grava o arquivo, mostra a senha uma
 vez e audita sem ela; grupo sem papel recusado; grupos, desativar, reativar e
-reset; `-manage-users` recusado fora do root).
+reset; `-manage-users` recusado fora do root). *Revisto por `0040`:* o último
+é agora `TestUI_ManageUsersRefusesAnAccountsSocketNotServedByRoot`.

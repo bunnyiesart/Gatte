@@ -496,9 +496,9 @@ max_bytes = 1048576
 # [idp] -- contas do IdP pelo console (ADR-0038)
 # ===========================================================================
 # Caminho absoluto do banco de usuarios do backend de arquivo do Authelia.
-# So processos root leem e escrevem este arquivo (`mcp-gateway admin -accounts`,
-# e `sudo mcp-gateway ui -manage-users` enquanto o front nao fala com a API); o
-# servico nunca o abre, e o usuario de servico nunca deve poder escreve-lo.
+# So um processo root le e escreve este arquivo (`mcp-gateway admin -accounts`);
+# o console (`ui -manage-users`) so chega a ele por esse socket, o servico nunca
+# o abre, e o usuario de servico nunca deve poder escreve-lo.
 # Vazio (o padrao) desliga a edicao de contas.
 #
 # [idp]

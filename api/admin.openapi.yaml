@@ -1,0 +1,1210 @@
+openapi: 3.1.0
+info:
+  title: Gatte management API
+  version: 1.0.0
+  summary: The backend every Gatte front talks to (design/adr/0040).
+  description: |
+    Served by `mcp-gateway admin` over UNIX sockets only. There is no TCP
+    listener. HTTP/1.1, JSON bodies, snake_case fields, times in RFC 3339
+    UTC.
+
+    Two sockets, two processes, two disjoint route sets. Every operation
+    below carries `x-gatte-socket`:
+
+    - `operator`: `/run/mcp-gateway-admin/operator.sock`, served by a
+      process running as the gateway's service account; the file is
+      `root:gatte-operators 0660`.
+    - `accounts`: `/run/mcp-gateway-admin/accounts.sock`, served only by a
+      root process; the file is `root:root 0600` by default.
+
+    A route of the other socket answers 404 `not_found`.
+
+    ## Who the operator is
+
+    The operator is NOT a request field. The backend reads the connecting
+    process's credentials from the kernel (SO_PEERCRED on Linux,
+    LOCAL_PEERCRED / getpeereid on FreeBSD and macOS), maps the uid to a
+    system account name, and records every state change as
+    `(operator:NAME)`. On Linux, when the uid is 0 or the service account,
+    the peer's `/proc/PID/loginuid` names the human instead and the reason
+    gets `[via ACCOUNT]`. `GET /v1/whoami` returns what the backend decided.
+
+    The optional `Gatte-Front` header labels the calling front
+    (`[a-z0-9._-]{1,32}`). It is display only: it becomes the `[ui]`-style
+    tag in an operator row's reason (`[api]` when absent) and decides
+    nothing.
+
+    ## Request rules
+
+    - Bodies are `application/json`, at most 64 KiB; unknown fields are
+      refused (`bad_request`).
+    - A request carrying `Origin` or `Cookie` is refused
+      (`browser_request_refused`): a browser's request must never reach the
+      socket as it is. A web front terminates the browser with
+      `pkg/frontkit` and calls this API itself.
+    - Every request re-reads the configuration file; one that no longer
+      loads refuses the request (`config_unavailable`). State changes are
+      serialised.
+
+    ## Untrusted text
+
+    Fields marked `x-gatte-untrusted: true` carry text written by an MCP
+    backend, an analyst, the IdP or a person typing a form. They are
+    returned raw. A front MUST escape them for its medium AND make hidden
+    code points visible (`frontkit.Visible`, `frontkit.VisibleText`,
+    `frontkit.Segments`).
+
+    ## Versioning
+
+    `/v1` only changes additively: new endpoints, new optional fields, new
+    error codes. A client treats an unknown error code by its HTTP status.
+    Breaking changes go to `/v2`, served beside `/v1` for at least one
+    release.
+  license:
+    name: Apache-2.0
+servers:
+  - url: http://gatte-admin
+    description: Placeholder authority. The transport is a UNIX socket; the Host header is ignored.
+tags:
+  - name: meta
+  - name: overview
+  - name: tools
+  - name: access
+  - name: audit
+  - name: upstreams
+  - name: quota
+  - name: people
+  - name: connect
+  - name: accounts
+    description: Account socket only (root). Identity provider accounts (design/adr/0038).
+components:
+  parameters:
+    GatteFront:
+      name: Gatte-Front
+      in: header
+      required: false
+      description: Label of the calling front, for the operator row's tag. Display only.
+      schema:
+        type: string
+        pattern: '^[a-z0-9._-]{1,32}$'
+    Username:
+      name: username
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/Username'
+  headers:
+    NoStore:
+      description: Always `no-store` on a response that carries a one-time password.
+      schema:
+        type: string
+        const: no-store
+  responses:
+    Error:
+      description: |
+        Any failure. `code` is stable and machine-readable; `message` is
+        one English sentence for a person and may change.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+  schemas:
+    ErrorResponse:
+      type: object
+      required: [error]
+      additionalProperties: false
+      properties:
+        error:
+          $ref: '#/components/schemas/Error'
+    Error:
+      type: object
+      required: [code, message]
+      additionalProperties: false
+      properties:
+        code:
+          $ref: '#/components/schemas/ErrorCode'
+        message:
+          type: string
+          x-gatte-untrusted: true
+        details:
+          type: object
+          description: |
+            Code-specific facts. Known keys: `field` (invalid_argument),
+            `observed_fingerprint` (fingerprint_required, fingerprint_mismatch,
+            fingerprint_moved), `status` (fingerprint_mismatch), `applied`
+            (audit_write_failed: true means the change IS in force),
+            `username` (account_exists, not_found), `group`
+            (group_not_mapped).
+          additionalProperties: true
+    ErrorCode:
+      type: string
+      description: |
+        | code | HTTP | meaning |
+        |---|---|---|
+        | bad_request | 400 | malformed JSON, wrong content type, unknown field, bad query value |
+        | invalid_argument | 400 | a value fails validation; `details.field` names it |
+        | fingerprint_required | 400 | approve without a fingerprint |
+        | group_not_mapped | 400 | group is not a key of `[group_to_role]` |
+        | peer_unattributable | 403 | the kernel's peer uid has no account name |
+        | forbidden_peer | 403 | peer not allowed on this socket (group, or the service account on the account socket) |
+        | browser_request_refused | 403 | request carried Origin or Cookie |
+        | not_found | 404 | no such tool, account, route, or a route of the other socket |
+        | method_not_allowed | 405 | wrong method for the route |
+        | fingerprint_mismatch | 409 | the tool advertises another fingerprint than the one reviewed |
+        | fingerprint_moved | 409 | the definition changed while approving |
+        | definition_unavailable | 409 | the observed definition was not kept; nothing can be approved |
+        | changed_not_revocable | 409 | a changed tool cannot be revoked |
+        | account_exists | 409 | username taken |
+        | payload_too_large | 413 | body over 64 KiB |
+        | connect_not_configured | 404 | `[connect]` is incomplete |
+        | corrupt_state | 500 | a stored row is invalid (unknown status); refused |
+        | audit_write_failed | 500 | the change was made (details.applied) but the trail could not record it |
+        | internal | 500 | anything else |
+        | config_unavailable | 503 | the configuration file does not load |
+        | store_busy | 503 | the database stayed locked through every retry; nothing was written |
+      enum:
+        - bad_request
+        - invalid_argument
+        - fingerprint_required
+        - group_not_mapped
+        - peer_unattributable
+        - forbidden_peer
+        - browser_request_refused
+        - not_found
+        - method_not_allowed
+        - fingerprint_mismatch
+        - fingerprint_moved
+        - definition_unavailable
+        - changed_not_revocable
+        - account_exists
+        - payload_too_large
+        - connect_not_configured
+        - corrupt_state
+        - audit_write_failed
+        - internal
+        - config_unavailable
+        - store_busy
+    Fingerprint:
+      type: string
+      description: Hex SHA-256 of a tool definition, without the `sha256:` prefix. Requests may carry the prefix.
+      pattern: '^[0-9a-f]{64}$'
+    Username:
+      type: string
+      pattern: '^[a-z0-9][a-z0-9._-]{0,63}$'
+    Warning:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          description: e.g. `never_seen`, `no_role_grants`, `wildcard_grant`, `idp_reload`.
+        message:
+          type: string
+          x-gatte-untrusted: true
+    OperatorRow:
+      type: object
+      description: The operator row this action wrote to the audit trail.
+      required: [identity, tool, reason, timestamp]
+      properties:
+        identity:
+          type: string
+          examples: ['(operator:alice)']
+        tool:
+          type: string
+          examples: ['(tool approve)']
+        reason:
+          type: string
+          x-gatte-untrusted: true
+        timestamp:
+          type: string
+          format: date-time
+    ActionResult:
+      type: object
+      description: Common part of every state-changing response.
+      required: [changed, messages]
+      properties:
+        changed:
+          type: boolean
+          description: false when the request was already true (already blocked, already pending); no row is written then.
+        audit:
+          $ref: '#/components/schemas/OperatorRow'
+        warnings:
+          type: array
+          items:
+            $ref: '#/components/schemas/Warning'
+        messages:
+          type: array
+          description: What the CLI would have printed, one line per item, for a "details" disclosure.
+          items:
+            type: string
+            x-gatte-untrusted: true
+    WhoAmI:
+      type: object
+      required: [api_versions, gateway_version, socket, operator, config_path]
+      properties:
+        api_versions:
+          type: array
+          items:
+            type: string
+          examples: [[v1]]
+        gateway_version:
+          type: string
+        socket:
+          type: string
+          enum: [operator, accounts]
+        config_path:
+          type: string
+        operator:
+          type: object
+          required: [uid, name, identity]
+          properties:
+            uid:
+              type: integer
+            name:
+              type: string
+              description: The name the rows are attributed to.
+            identity:
+              type: string
+              examples: ['(operator:alice)']
+            via:
+              type: string
+              description: The shared account the peer ran as, when loginuid named the human (Linux).
+              examples: [root]
+        front:
+          type: string
+          description: The Gatte-Front label as received.
+    Attention:
+      type: object
+      required: [kind, title, detail]
+      properties:
+        kind:
+          type: string
+          enum: [changed, pending, unsigned]
+        title:
+          type: string
+          x-gatte-untrusted: true
+        detail:
+          type: string
+        server:
+          type: string
+          x-gatte-untrusted: true
+        tool:
+          type: string
+          x-gatte-untrusted: true
+        upstream:
+          type: string
+          description: Set for `unsigned`.
+    Overview:
+      type: object
+      required: [attention, counts, recent_denied]
+      properties:
+        attention:
+          type: array
+          description: Changed tools first, then pending, then unsigned backends.
+          items:
+            $ref: '#/components/schemas/Attention'
+        counts:
+          type: object
+          required: [tools, approved_usable, review, upstreams, blocked]
+          properties:
+            tools: {type: integer}
+            approved_usable: {type: integer}
+            review: {type: integer}
+            upstreams: {type: integer}
+            blocked: {type: integer}
+        recent_denied:
+          type: array
+          maxItems: 5
+          items:
+            $ref: '#/components/schemas/AuditRecord'
+        problems:
+          type: array
+          description: Parts of the overview that could not be read; the rest is still returned.
+          items:
+            type: string
+    ToolStatus:
+      type: string
+      enum: [pending, approved, changed]
+    Tool:
+      type: object
+      required: [server, tool, status, usable, approved_hash, observed_hash, first_seen_at, updated_at]
+      properties:
+        server: {type: string, x-gatte-untrusted: true}
+        tool: {type: string, x-gatte-untrusted: true}
+        status: {$ref: '#/components/schemas/ToolStatus'}
+        usable: {type: boolean}
+        approved_hash: {type: string, description: Empty when never approved.}
+        observed_hash: {$ref: '#/components/schemas/Fingerprint'}
+        first_seen_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+    ToolList:
+      type: object
+      required: [tools, counts]
+      properties:
+        tools:
+          type: array
+          items: {$ref: '#/components/schemas/Tool'}
+        counts:
+          type: object
+          required: [all, review, approved]
+          properties:
+            all: {type: integer}
+            review: {type: integer}
+            approved: {type: integer}
+    Definition:
+      type: object
+      required: [fingerprint, kept]
+      properties:
+        fingerprint: {$ref: '#/components/schemas/Fingerprint'}
+        kept:
+          type: boolean
+          description: false when only the hash survives (approved before definitions were stored, design/adr/0032).
+        name: {type: string, x-gatte-untrusted: true}
+        description: {type: string, x-gatte-untrusted: true}
+        input_schema:
+          description: The schema exactly as advertised (JSON value).
+          x-gatte-untrusted: true
+        output_schema:
+          x-gatte-untrusted: true
+        lines:
+          type: array
+          description: The canonical line form the diff is computed over.
+          items: {type: string, x-gatte-untrusted: true}
+        hidden_code_points:
+          type: integer
+          description: How many code points `internal/visible` would escape.
+    DiffLine:
+      type: object
+      required: [op, text]
+      properties:
+        op:
+          type: string
+          enum: [context, add, del, gap]
+        text:
+          type: string
+          x-gatte-untrusted: true
+    RoleCoverage:
+      type: object
+      required: [role, how]
+      properties:
+        role: {type: string}
+        how: {type: string, description: 'e.g. `grant casemgmt: [list_cases]`, `tools: ["casemgmt.*"]`'}
+        wildcard: {type: boolean}
+    ToolReview:
+      type: object
+      description: |
+        Everything an approval decides on, read in ONE read of the entry.
+        `observed.fingerprint` is the value to send to approve.
+      required: [tool, observed, callable_by, review_text]
+      properties:
+        tool: {$ref: '#/components/schemas/Tool'}
+        observed: {$ref: '#/components/schemas/Definition'}
+        approved:
+          description: Present when an approved fingerprint exists and differs from the observed one.
+          $ref: '#/components/schemas/Definition'
+        diff:
+          type: array
+          description: approved (-) to observed (+), changed lines with one line of context, `gap` where unchanged lines were left out.
+          items: {$ref: '#/components/schemas/DiffLine'}
+        callable_by:
+          type: array
+          description: Roles that can call this tool once it is approved. Empty means approving makes it servable but callable by nobody.
+          items: {$ref: '#/components/schemas/RoleCoverage'}
+        review_text:
+          type: string
+          description: The `tool show` text, already escaped by the backend, for a details disclosure.
+    ApproveRequest:
+      type: object
+      required: [server, tool, fingerprint]
+      additionalProperties: false
+      properties:
+        server: {type: string}
+        tool: {type: string}
+        fingerprint:
+          type: string
+          description: The fingerprint the operator was shown (ToolReview.observed.fingerprint). Required; the backend never approves "whatever is advertised now".
+    ApproveResult:
+      allOf:
+        - $ref: '#/components/schemas/ActionResult'
+        - type: object
+          required: [previous_status, tool]
+          properties:
+            previous_status: {$ref: '#/components/schemas/ToolStatus'}
+            previous_baseline: {type: string, description: The approved fingerprint that is no longer accepted (changed tools).}
+            tool: {$ref: '#/components/schemas/Tool'}
+            callable_by:
+              type: array
+              items: {$ref: '#/components/schemas/RoleCoverage'}
+    ToolRef:
+      type: object
+      required: [server, tool]
+      additionalProperties: false
+      properties:
+        server: {type: string}
+        tool: {type: string}
+    RevokeResult:
+      allOf:
+        - $ref: '#/components/schemas/ActionResult'
+        - type: object
+          required: [tool]
+          properties:
+            was_approved_at: {type: string}
+            tool: {$ref: '#/components/schemas/Tool'}
+    Block:
+      type: object
+      required: [subject, blocked_by, blocked_at, reason]
+      properties:
+        subject: {type: string, x-gatte-untrusted: true}
+        blocked_by: {type: string}
+        blocked_at: {type: string, format: date-time}
+        reason: {type: string, x-gatte-untrusted: true}
+    BlockRequest:
+      type: object
+      required: [subject]
+      additionalProperties: false
+      properties:
+        subject:
+          type: string
+          description: The analyst identity exactly as the trail's `analyst_identity` (the token's `sub`).
+        reason:
+          type: string
+          description: Free text; the backend prefixes the front tag, e.g. `[ui] stolen laptop`.
+    BlockResult:
+      allOf:
+        - $ref: '#/components/schemas/ActionResult'
+        - type: object
+          required: [subject]
+          properties:
+            subject: {type: string, x-gatte-untrusted: true}
+    AuditOutcome:
+      type: string
+      enum: [allowed, denied, failed]
+    AuditRecord:
+      type: object
+      required: [timestamp, analyst_identity, tool, target_upstream, outcome]
+      properties:
+        timestamp: {type: string, format: date-time}
+        analyst_identity: {type: string, x-gatte-untrusted: true}
+        analyst_name:
+          type: string
+          x-gatte-untrusted: true
+          description: Display only (design/adr/0037). Never filtered on.
+        tool: {type: string, x-gatte-untrusted: true}
+        target_upstream: {type: string, x-gatte-untrusted: true}
+        outcome: {$ref: '#/components/schemas/AuditOutcome'}
+        reason: {type: string, x-gatte-untrusted: true}
+        source_address: {type: string}
+    AuditPage:
+      type: object
+      required: [records, limit]
+      properties:
+        records:
+          type: array
+          description: The newest `limit` matching records, oldest first.
+          items: {$ref: '#/components/schemas/AuditRecord'}
+        limit:
+          type: integer
+          description: The limit applied (after clamping to 5000).
+        more:
+          type: boolean
+          description: true when older matching records were left out.
+    VerifyRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        expect_head:
+          type: string
+          description: A head recorded somewhere the gateway cannot write (the SIEM). Compared case-insensitively.
+    VerifyResult:
+      type: object
+      description: A tampered or mismatching trail is a 200 with `intact` or `head_matches` false; the verification itself succeeded.
+      required: [intact, count, head, retroactively_chained]
+      properties:
+        intact: {type: boolean}
+        count: {type: integer}
+        head:
+          type: string
+          description: Hex head of the chain; the genesis value when the trail is empty.
+        empty: {type: boolean}
+        retroactively_chained: {type: integer}
+        first_break:
+          type: object
+          properties:
+            position: {type: integer}
+            record: {$ref: '#/components/schemas/AuditRecord'}
+            hash_expected: {type: string}
+            hash_stored: {type: string}
+        head_matches:
+          type: boolean
+          description: Present only when expect_head was sent.
+        siem:
+          type: object
+          description: Present when `[audit.siem]` is configured; where the anchor lives.
+          properties:
+            path: {type: string}
+            chain: {type: string}
+        messages:
+          type: array
+          items: {type: string}
+    Upstream:
+      type: object
+      required: [name, transport, network, env_var_names, signature, created_at, updated_at]
+      properties:
+        name: {type: string}
+        transport: {type: string, enum: [stdio, http, oci]}
+        command: {type: string}
+        args: {type: array, items: {type: string}}
+        url: {type: string}
+        image: {type: string}
+        network: {type: string}
+        network_error: {type: string}
+        env_var_names:
+          type: array
+          description: Names only. No endpoint ever returns a secret value.
+          items: {type: string}
+        signature: {type: string, enum: ['yes', 'no', INVALID], description: '`INVALID`: a signature is stored and does not authenticate the entry.'}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+    QuotaUsage:
+      type: object
+      required: [analyst_identity, account, window_start, used]
+      properties:
+        analyst_identity: {type: string, x-gatte-untrusted: true}
+        account: {type: string}
+        window_start: {type: string, format: date-time}
+        window_end: {type: string, format: date-time}
+        used: {type: integer}
+        limit: {type: integer}
+        remaining: {type: integer}
+    Group:
+      type: object
+      required: [name, role]
+      properties:
+        name: {type: string}
+        role: {type: string}
+    Role:
+      type: object
+      required: [name, groups, tools]
+      properties:
+        name: {type: string}
+        groups:
+          type: array
+          items: {type: string}
+        tools:
+          type: array
+          description: '`backend.tool` names and patterns this role grants, sorted.'
+          items: {type: string}
+    Seen:
+      type: object
+      required: [identity, last_call, calls, blocked]
+      properties:
+        identity: {type: string, x-gatte-untrusted: true}
+        name: {type: string, x-gatte-untrusted: true}
+        last_call: {type: string, format: date-time}
+        calls: {type: integer}
+        blocked: {type: boolean}
+    People:
+      type: object
+      required: [roles, groups, seen]
+      properties:
+        roles:
+          type: array
+          items: {$ref: '#/components/schemas/Role'}
+        groups:
+          type: array
+          description: Every `[group_to_role]` key, sorted.
+          items: {$ref: '#/components/schemas/Group'}
+        seen:
+          type: array
+          description: Analysts the trail has seen, most recent first. Rows in parentheses (gateway, operator, unauthenticated) are left out.
+          items: {$ref: '#/components/schemas/Seen'}
+    ConnectScript:
+      type: object
+      required: [os, name, filename, run, content]
+      properties:
+        os: {type: string, enum: [macos, linux, windows]}
+        name: {type: string, examples: [macOS]}
+        filename: {type: string, examples: [connect-gatte.sh]}
+        run: {type: string, description: The command the analyst runs after downloading.}
+        content: {type: string, description: The whole script. Carries no secret.}
+    Connect:
+      type: object
+      required: [ready]
+      properties:
+        ready: {type: boolean}
+        missing:
+          type: string
+          description: When not ready, what `[connect]` lacks.
+        url: {type: string, examples: ['https://gateway.example.internal/mcp']}
+        client_id: {type: string}
+        callback_port: {type: integer}
+        server_name: {type: string, examples: [gatte]}
+        username: {$ref: '#/components/schemas/Username'}
+        has_ca: {type: boolean}
+        command:
+          type: string
+          description: The one `claude mcp add` line for a machine that needs no CA.
+        scripts:
+          type: array
+          items: {$ref: '#/components/schemas/ConnectScript'}
+    Account:
+      type: object
+      description: An IdP account. The password hash is never returned.
+      required: [username, display_name, groups, disabled]
+      properties:
+        username: {$ref: '#/components/schemas/Username'}
+        display_name: {type: string, x-gatte-untrusted: true}
+        email: {type: string, x-gatte-untrusted: true}
+        groups:
+          type: array
+          items: {type: string}
+        disabled: {type: boolean}
+    AssignableGroup:
+      type: object
+      required: [name, role, tools]
+      properties:
+        name: {type: string}
+        role: {type: string}
+        tools:
+          type: array
+          items: {type: string}
+    AccountDraft:
+      type: object
+      additionalProperties: false
+      properties:
+        display_name: {type: string}
+        username:
+          type: string
+          description: Empty asks the backend to suggest one from display_name.
+        email: {type: string}
+        groups:
+          type: array
+          items: {type: string}
+    AccountCheck:
+      type: object
+      description: The wizard's validation, with no side effect.
+      required: [ok, username, suggested, problems, groups]
+      properties:
+        ok: {type: boolean}
+        username: {type: string}
+        suggested: {type: boolean, description: true when username was derived from display_name.}
+        problems:
+          type: array
+          items:
+            type: object
+            required: [field, code, message]
+            properties:
+              field: {type: string, enum: [display_name, username, email, groups]}
+              code: {type: string, examples: [invalid_argument, account_exists, group_not_mapped]}
+              message: {type: string, x-gatte-untrusted: true}
+        groups:
+          type: array
+          description: The requested groups that map to a role, with the role's tools.
+          items: {$ref: '#/components/schemas/AssignableGroup'}
+    NewAccount:
+      type: object
+      required: [username, display_name, groups]
+      additionalProperties: false
+      properties:
+        username: {$ref: '#/components/schemas/Username'}
+        display_name: {type: string, maxLength: 100}
+        email: {type: string}
+        groups:
+          type: array
+          description: Each must be a key of `[group_to_role]`.
+          items: {type: string}
+    GroupsRequest:
+      type: object
+      required: [groups]
+      additionalProperties: false
+      properties:
+        groups:
+          type: array
+          items: {type: string}
+    AccountResult:
+      allOf:
+        - $ref: '#/components/schemas/ActionResult'
+        - type: object
+          required: [account]
+          properties:
+            account: {$ref: '#/components/schemas/Account'}
+    PasswordResult:
+      allOf:
+        - $ref: '#/components/schemas/ActionResult'
+        - type: object
+          required: [account, one_time_password]
+          properties:
+            account: {$ref: '#/components/schemas/Account'}
+            one_time_password:
+              type: string
+              description: |
+                20 characters, about 117 bits. Returned once, in this response
+                only; stored only as an argon2id hash; never logged, never in
+                the trail. A front shows it once and keeps no copy.
+paths:
+  /v1/whoami:
+    get:
+      operationId: whoAmI
+      tags: [meta]
+      x-gatte-socket: [operator, accounts]
+      summary: API versions, which socket this is, and the operator identity the kernel gave.
+      parameters: [{$ref: '#/components/parameters/GatteFront'}]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/WhoAmI'}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/overview:
+    get:
+      operationId: overview
+      tags: [overview]
+      x-gatte-socket: [operator]
+      summary: What needs attention, the counts, and the latest refusals.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Overview'}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/tools:
+    get:
+      operationId: listTools
+      tags: [tools]
+      x-gatte-socket: [operator]
+      summary: The quarantine entries (`tool list`).
+      parameters:
+        - {name: server, in: query, schema: {type: string}, description: Only this backend.}
+        - name: show
+          in: query
+          schema: {type: string, enum: [all, review, approved], default: all}
+          description: '`review` is every entry not approved; `approved` the rest. `counts` is always over all.'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ToolList'}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/tools/review:
+    get:
+      operationId: reviewTool
+      tags: [tools]
+      x-gatte-socket: [operator]
+      summary: One tool's definitions, diff and role coverage (`tool show`).
+      parameters:
+        - {name: server, in: query, required: true, schema: {type: string}}
+        - {name: tool, in: query, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: OK. When the observed definition was not kept, `observed.kept` is false and approve will answer definition_unavailable.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ToolReview'}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/tools/approve:
+    post:
+      operationId: approveTool
+      tags: [tools]
+      x-gatte-socket: [operator]
+      summary: Approve the fingerprint that was reviewed, and only that one. Writes `(tool approve)`.
+      parameters: [{$ref: '#/components/parameters/GatteFront'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ApproveRequest'}
+      responses:
+        '200':
+          description: Approved, or already approved at exactly this fingerprint (`changed` false).
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApproveResult'}
+        default:
+          description: fingerprint_required, fingerprint_mismatch, fingerprint_moved, definition_unavailable, not_found, corrupt_state, audit_write_failed, store_busy, ...
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorResponse'}
+  /v1/tools/revoke:
+    post:
+      operationId: revokeTool
+      tags: [tools]
+      x-gatte-socket: [operator]
+      summary: Return an approved tool to pending. Writes `(tool revoke)`.
+      parameters: [{$ref: '#/components/parameters/GatteFront'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ToolRef'}
+      responses:
+        '200':
+          description: Revoked, or already pending (`changed` false).
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/RevokeResult'}
+        default:
+          description: changed_not_revocable, not_found, corrupt_state, audit_write_failed, ...
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorResponse'}
+  /v1/access/blocks:
+    get:
+      operationId: listBlocks
+      tags: [access]
+      x-gatte-socket: [operator]
+      summary: The blocklist (`access list`).
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [blocks]
+                properties:
+                  blocks:
+                    type: array
+                    items: {$ref: '#/components/schemas/Block'}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/access/block:
+    post:
+      operationId: blockSubject
+      tags: [access]
+      x-gatte-socket: [operator]
+      summary: Block an analyst from the next request on (design/adr/0031). Writes `(access block)`.
+      description: The block is placed first and recorded second. If the record fails the answer is audit_write_failed with `details.applied` true, and the block stays.
+      parameters: [{$ref: '#/components/parameters/GatteFront'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/BlockRequest'}
+      responses:
+        '200':
+          description: Blocked, or already blocked (`changed` false). Warning `never_seen` when the trail has no row from this subject.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/BlockResult'}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/access/unblock:
+    post:
+      operationId: unblockSubject
+      tags: [access]
+      x-gatte-socket: [operator]
+      summary: Lift a block. Writes `(access unblock)`.
+      parameters: [{$ref: '#/components/parameters/GatteFront'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/BlockRequest'}
+      responses:
+        '200':
+          description: Unblocked, or was not blocked (`changed` false).
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/BlockResult'}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/audit:
+    get:
+      operationId: listAudit
+      tags: [audit]
+      x-gatte-socket: [operator]
+      summary: The trail, filtered (`audit -json`).
+      parameters:
+        - name: limit
+          in: query
+          schema: {type: integer, minimum: 1, default: 200}
+          description: Newest N matching records; clamped to 5000.
+        - {name: since, in: query, schema: {type: string, format: date-time}}
+        - name: subject
+          in: query
+          schema: {type: string}
+          description: Exact match on analyst_identity only, never on analyst_name (design/adr/0037).
+        - {name: outcome, in: query, schema: {$ref: '#/components/schemas/AuditOutcome'}}
+        - {name: source, in: query, schema: {type: string}, description: Exact source address.}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AuditPage'}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/audit/verify:
+    post:
+      operationId: verifyAudit
+      tags: [audit]
+      x-gatte-socket: [operator]
+      summary: Walk the hash chain and, if given, compare the head (`audit -verify`). Writes nothing.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/VerifyRequest'}
+      responses:
+        '200':
+          description: The verification ran; read `intact` and `head_matches`.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/VerifyResult'}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/upstreams:
+    get:
+      operationId: listUpstreams
+      tags: [upstreams]
+      x-gatte-socket: [operator]
+      summary: Registered backends and whether each is signed (`upstream list`). Read only; register, sign and deregister stay in the terminal.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [upstreams]
+                properties:
+                  upstreams:
+                    type: array
+                    items: {$ref: '#/components/schemas/Upstream'}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/quota:
+    get:
+      operationId: quotaUsage
+      tags: [quota]
+      x-gatte-socket: [operator]
+      summary: Quota spend per analyst and account (`quota usage`).
+      parameters:
+        - {name: analyst, in: query, schema: {type: string}}
+        - {name: account, in: query, schema: {type: string}}
+        - {name: since, in: query, schema: {type: string, format: date-time}}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [usage]
+                properties:
+                  usage:
+                    type: array
+                    items: {$ref: '#/components/schemas/QuotaUsage'}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/people:
+    get:
+      operationId: people
+      tags: [people]
+      x-gatte-socket: [operator]
+      summary: Roles with their groups and tools, and who the trail has seen.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/People'}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/connect:
+    get:
+      operationId: connect
+      tags: [connect]
+      x-gatte-socket: [operator]
+      summary: How an analyst connects Claude Code, with the three scripts rendered (design/adr/0039).
+      parameters:
+        - {name: username, in: query, schema: {$ref: '#/components/schemas/Username'}, description: Written into the scripts' comments and final hint.}
+      responses:
+        '200':
+          description: OK. `ready` false with `missing` when `[connect]` is incomplete.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Connect'}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/connect/script:
+    get:
+      operationId: connectScript
+      tags: [connect]
+      x-gatte-socket: [operator]
+      summary: One script as a file.
+      parameters:
+        - {name: os, in: query, required: true, schema: {type: string, enum: [macos, linux, windows]}}
+        - {name: username, in: query, schema: {$ref: '#/components/schemas/Username'}}
+      responses:
+        '200':
+          description: The script. `Content-Disposition` names the file.
+          headers:
+            Content-Disposition:
+              schema: {type: string, examples: ['attachment; filename="connect-gatte.sh"']}
+          content:
+            text/plain:
+              schema: {type: string}
+        default:
+          description: connect_not_configured, invalid_argument (unknown os), ...
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorResponse'}
+  /v1/groups:
+    get:
+      operationId: assignableGroups
+      tags: [accounts]
+      x-gatte-socket: [accounts]
+      summary: The groups an account may be given (keys of `[group_to_role]`), with role and tools.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [groups]
+                properties:
+                  groups:
+                    type: array
+                    items: {$ref: '#/components/schemas/AssignableGroup'}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/accounts:
+    get:
+      operationId: listAccounts
+      tags: [accounts]
+      x-gatte-socket: [accounts]
+      summary: Accounts in `[idp] users_file`.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [accounts]
+                properties:
+                  accounts:
+                    type: array
+                    items: {$ref: '#/components/schemas/Account'}
+        default: {$ref: '#/components/responses/Error'}
+    post:
+      operationId: addAccount
+      tags: [accounts]
+      x-gatte-socket: [accounts]
+      summary: Create an account with a generated one-time password. Writes `(account add)`.
+      parameters: [{$ref: '#/components/parameters/GatteFront'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/NewAccount'}
+      responses:
+        '201':
+          description: Created. Warning `idp_reload` says the IdP applies it when it re-reads the file.
+          headers:
+            Cache-Control: {$ref: '#/components/headers/NoStore'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PasswordResult'}
+        default:
+          description: invalid_argument, group_not_mapped, account_exists, audit_write_failed, ...
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorResponse'}
+  /v1/account-check:
+    post:
+      operationId: checkAccount
+      tags: [accounts]
+      x-gatte-socket: [accounts]
+      summary: Validate a draft and suggest a username. No side effect, nothing recorded.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/AccountDraft'}
+      responses:
+        '200':
+          description: OK, whether or not the draft is valid; read `ok` and `problems`.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AccountCheck'}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/accounts/{username}:
+    get:
+      operationId: getAccount
+      tags: [accounts]
+      x-gatte-socket: [accounts]
+      parameters: [{$ref: '#/components/parameters/Username'}]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Account'}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/accounts/{username}/groups:
+    post:
+      operationId: setAccountGroups
+      tags: [accounts]
+      x-gatte-socket: [accounts]
+      summary: Replace the account's groups. Writes `(account groups)`.
+      parameters:
+        - {$ref: '#/components/parameters/Username'}
+        - {$ref: '#/components/parameters/GatteFront'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/GroupsRequest'}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AccountResult'}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/accounts/{username}/disable:
+    post:
+      operationId: disableAccount
+      tags: [accounts]
+      x-gatte-socket: [accounts]
+      summary: Refuse new logins. Does not end a token already issued (use access block). Writes `(account disable)`.
+      parameters:
+        - {$ref: '#/components/parameters/Username'}
+        - {$ref: '#/components/parameters/GatteFront'}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AccountResult'}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/accounts/{username}/enable:
+    post:
+      operationId: enableAccount
+      tags: [accounts]
+      x-gatte-socket: [accounts]
+      summary: Allow logins again. Writes `(account enable)`.
+      parameters:
+        - {$ref: '#/components/parameters/Username'}
+        - {$ref: '#/components/parameters/GatteFront'}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AccountResult'}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/accounts/{username}/reset-password:
+    post:
+      operationId: resetAccountPassword
+      tags: [accounts]
+      x-gatte-socket: [accounts]
+      summary: Replace the password with a generated one-time password. Writes `(account reset password)`.
+      parameters:
+        - {$ref: '#/components/parameters/Username'}
+        - {$ref: '#/components/parameters/GatteFront'}
+      responses:
+        '200':
+          description: OK
+          headers:
+            Cache-Control: {$ref: '#/components/headers/NoStore'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PasswordResult'}
+        default: {$ref: '#/components/responses/Error'}

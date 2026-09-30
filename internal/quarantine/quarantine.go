@@ -35,6 +35,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"hash"
+	"slices"
+	"strings"
 	"time"
 )
 
@@ -69,6 +71,15 @@ var (
 	// row was edited after it was written. It is refused rather than shown,
 	// because showing it would present an edited text as the approved one.
 	ErrDefinitionMismatch = errors.New("quarantine: stored definition does not match its fingerprint")
+	// ErrReviewSetMoved is returned by ApprovedSet and
+	// Store.ApproveReviewSet when a backend's review set -- which of its
+	// tools wait for review, at which fingerprints -- no longer hashes to
+	// the manifest the operator was shown (design/adr/0043). Nothing is
+	// approved: one tool moving refuses the whole set.
+	ErrReviewSetMoved = errors.New("quarantine: the backend's review set changed since it was reviewed")
+	// ErrReviewSetEmpty is returned by ApprovedSet and
+	// Store.ApproveReviewSet when nothing on the backend waits for review.
+	ErrReviewSetEmpty = errors.New("quarantine: nothing on this backend is waiting for review")
 )
 
 // hashDomainTag is mixed into every Hash as its first length-prefixed
@@ -377,6 +388,104 @@ func (t Tool) ApprovedFingerprint(reviewedHash string, now time.Time) (Tool, err
 	return t.Approved(now), nil
 }
 
+// NeedsReview reports whether t waits for a human: pending (never
+// approved) or changed (approved, then rewritten). It is what the approval
+// queue lists and what a review set is made of; it is not the gate --
+// Usable is.
+func (t Tool) NeedsReview() bool { return t.Status != StatusApproved }
+
+// manifestDomainTag scopes a review-set manifest the way hashDomainTag
+// scopes a tool fingerprint: a manifest can never be confused with, or
+// replayed as, a fingerprint.
+const manifestDomainTag = "mcp-gateway/quarantine/review-set/v1"
+
+// ReviewSet returns the entries of tools that need review (NeedsReview),
+// ordered by tool name: one backend's review set when tools are that
+// backend's entries (design/adr/0043). It never returns nil.
+func ReviewSet(tools []Tool) []Tool {
+	set := []Tool{}
+	for _, t := range tools {
+		if t.NeedsReview() {
+			set = append(set, t)
+		}
+	}
+	slices.SortFunc(set, func(a, b Tool) int { return strings.Compare(a.ToolName, b.ToolName) })
+	return set
+}
+
+// Manifest is the hex SHA-256 of serverName's review set: the backend name,
+// the number of entries and, for each entry in tool-name order, its name,
+// its status, the fingerprint it is advertising and the approved baseline
+// it is compared against. It is what a bulk approval names instead of one
+// fingerprint, and it changes when anything the operator was shown
+// changes: a tool joining or leaving the set, any observed fingerprint,
+// a status, or the baseline a diff was drawn against.
+//
+// Every field is length-prefixed (writeField), like Hash, so no two sets
+// encode to the same bytes. set must be what ReviewSet returned; Manifest
+// sorts its own copy anyway, so an unsorted slice cannot produce a
+// different manifest for the same set.
+func Manifest(serverName string, set []Tool) string {
+	sorted := slices.Clone(set)
+	slices.SortFunc(sorted, func(a, b Tool) int { return strings.Compare(a.ToolName, b.ToolName) })
+	h := sha256.New()
+	writeField(h, []byte(manifestDomainTag))
+	writeField(h, []byte(serverName))
+	var n [8]byte
+	binary.BigEndian.PutUint64(n[:], uint64(len(sorted)))
+	writeField(h, n[:])
+	for _, t := range sorted {
+		writeField(h, []byte(t.ToolName))
+		writeField(h, []byte(t.Status))
+		writeField(h, []byte(t.ObservedHash))
+		writeField(h, []byte(t.ApprovedHash))
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// Approval is one entry of an approved review set: its state before and
+// after.
+type Approval struct {
+	Before, After Tool
+}
+
+// ApprovedSet approves serverName's whole review set, drawn from tools,
+// on the condition that it still hashes to manifest -- the one the
+// operator was shown. It is ApprovedFingerprint for a set: either every
+// entry of the set is approved at the fingerprint it had when reviewed,
+// or ErrReviewSetMoved and nothing is. An empty set is ErrReviewSetEmpty:
+// there is nothing an approval could be of.
+//
+// Entries of tools that belong to another server are ignored, so a caller
+// cannot widen the set by passing more than one backend's entries.
+func ApprovedSet(serverName string, tools []Tool, manifest string, now time.Time) ([]Approval, error) {
+	var mine []Tool
+	for _, t := range tools {
+		if !t.Status.Valid() {
+			return nil, ErrInvalidStatus
+		}
+		if t.ServerName == serverName {
+			mine = append(mine, t)
+		}
+	}
+	set := ReviewSet(mine)
+	if len(set) == 0 {
+		return nil, ErrReviewSetEmpty
+	}
+	if Manifest(serverName, set) != manifest {
+		return nil, ErrReviewSetMoved
+	}
+	out := make([]Approval, 0, len(set))
+	for _, t := range set {
+		after, err := t.ApprovedFingerprint(t.ObservedHash, now)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, Approval{Before: t, After: after})
+	}
+	return out, nil
+}
+
 // Revoked returns the state t transitions to when an operator withdraws
 // their own approval: back to pending, with the approved baseline cleared
 // and the last observation kept.
@@ -497,6 +606,13 @@ type Store interface {
 	// baselined is what the operator was shown (see
 	// Tool.ApprovedFingerprint).
 	ApproveFingerprint(ctx context.Context, serverName, toolName, reviewedHash string) (Tool, error)
+
+	// ApproveReviewSet approves every entry of serverName's review set in
+	// one transaction, per ApprovedSet, and only if the set read inside
+	// that transaction still hashes to manifest. Otherwise it returns
+	// ErrReviewSetMoved (or ErrReviewSetEmpty) and changes nothing
+	// (design/adr/0043). The approvals come back in tool-name order.
+	ApproveReviewSet(ctx context.Context, serverName, manifest string) ([]Approval, error)
 
 	// Revoke returns (serverName, toolName) to pending and returns the
 	// resulting state, per Tool.Revoked -- an operator withdrawing an

@@ -116,6 +116,7 @@ func (f *Front) routes() *http.ServeMux {
 	mux.HandleFunc("POST /access/block", f.accessBlock)
 	mux.HandleFunc("POST /access/unblock", f.accessUnblock)
 	mux.HandleFunc("GET /audit", f.auditPage)
+	mux.HandleFunc("GET /audit/export", f.auditExport)
 	mux.HandleFunc("POST /audit/verify", f.auditVerify)
 	mux.HandleFunc("GET /people", f.peoplePage)
 	mux.HandleFunc("GET /people/account", f.accountPage)
@@ -129,6 +130,8 @@ func (f *Front) routes() *http.ServeMux {
 	mux.HandleFunc("POST /people/disable", f.accountDisable)
 	mux.HandleFunc("POST /people/enable", f.accountEnable)
 	mux.HandleFunc("POST /people/reset", f.accountReset)
+	mux.HandleFunc("POST /people/offboard", f.accountOffboard)
+	mux.HandleFunc("POST /people/delete", f.accountDelete)
 	mux.HandleFunc("GET /upstreams", f.upstreamsPage)
 	mux.HandleFunc("POST /upstreams/maintenance/on", f.maintenanceOn)
 	mux.HandleFunc("POST /upstreams/maintenance/off", f.maintenanceOff)
@@ -201,6 +204,9 @@ type result struct {
 	// Connect, after adding a person or resetting their password, is how
 	// they connect their computer.
 	Connect *connectPanel
+	// Remaining is what the operator still has to do by hand, as the
+	// backend said it (an offboard, design/adr/0046).
+	Remaining []string
 }
 
 // actionResult is the result page of a state change. A change the trail

@@ -55,7 +55,10 @@ type Options struct {
 	// refuses it; the operator socket lets it in past OperatorGID.
 	ServiceUID uint32
 	// OperatorGID, when set ([admin] operator_group), is the group a peer
-	// of the operator socket must have unless it is root or ServiceUID.
+	// of the operator socket must have unless it is root or ServiceUID. On
+	// the accounts socket it decides nothing about who connects: it says
+	// whether the peer is also an operator, which an offboard that blocks
+	// needs (design/adr/0046).
 	OperatorGID *uint32
 	// LookupUser maps a uid to its account name (default: os/user).
 	LookupUser func(uid uint32) (string, error)
@@ -193,7 +196,10 @@ type peer struct {
 	uid  uint32
 	name string
 	via  string
-	err  *adminapi.Error
+	// operator: the peer is root or in OperatorGID, read from the kernel's
+	// groups at accept.
+	operator bool
+	err      *adminapi.Error
 }
 
 type peerKey struct{}
@@ -216,6 +222,7 @@ func (s *Server) identify(c net.Conn) *peer {
 		return p
 	}
 	p.name = name
+	p.operator = cred.UID == 0 || s.o.OperatorGID != nil && cred.HasGroup(*s.o.OperatorGID)
 	switch s.o.Socket {
 	case adminapi.SocketAccounts:
 		if cred.UID == s.o.ServiceUID {

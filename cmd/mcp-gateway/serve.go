@@ -22,7 +22,6 @@ import (
 
 	"github.com/bunnyiesart/Gatte/internal/access"
 	"github.com/bunnyiesart/Gatte/internal/access/oidc"
-	accesssqlite "github.com/bunnyiesart/Gatte/internal/access/sqlite"
 	"github.com/bunnyiesart/Gatte/internal/audit"
 	auditjsonl "github.com/bunnyiesart/Gatte/internal/audit/jsonl"
 	auditsqlite "github.com/bunnyiesart/Gatte/internal/audit/sqlite"
@@ -253,6 +252,9 @@ type serveStack struct {
 	quotaStore quota.Store
 	quotaSelf  quota.SelfReader
 	audit      audit.Recorder
+	// blocks is the blocklist the round sweeps for blocks whose end has
+	// passed (design/adr/0046); nil outside buildServer.
+	blocks expiringBlocks
 }
 
 // close releases every resource the stack holds. It is safe to call more
@@ -468,7 +470,7 @@ func buildServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) (
 		// read-only port; `mcp-gateway access` holds the one that writes,
 		// over the same file, so a block reaches this process on the next
 		// request with nothing to reload.
-		Blocklist: accesssqlite.New(db),
+		Blocklist: stack.blocklist(db),
 		Quota:     quotaGate,
 		Dialer:    newTransportDialer(cfg),
 		// Wiring these is GAB-18 plus ADR-0010, and they are the reason
@@ -917,6 +919,12 @@ func (s *serveStack) round(ctx context.Context, logger *slog.Logger) (next time.
 	driftCtx, driftCancel := context.WithTimeout(ctx, refreshTimeout)
 	s.reportCredentialDrift(driftCtx, logger)
 	driftCancel()
+
+	// A block's end is enforced at admission already; this records it
+	// (design/adr/0046).
+	expireCtx, expireCancel := context.WithTimeout(ctx, refreshTimeout)
+	s.expireBlocks(expireCtx, logger)
+	expireCancel()
 
 	s.heartbeat(ctx, logger)
 

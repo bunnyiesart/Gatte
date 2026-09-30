@@ -12,7 +12,7 @@ import "time"
 
 // ContractVersion is the api/admin.openapi.yaml info.version these types
 // implement.
-const ContractVersion = "1.3.0"
+const ContractVersion = "1.4.0"
 
 // Default socket paths (design/adr/0040 §1).
 const (
@@ -326,6 +326,11 @@ type Block struct {
 	BlockedBy string    `json:"blocked_by"`
 	BlockedAt time.Time `json:"blocked_at"`
 	Reason    string    `json:"reason"`
+	// Until is when the block ends by itself, absent for a block with no
+	// end; Expired says it has, and is no longer enforced. Since 1.4.0,
+	// with FeatureBlockUntil (design/adr/0046).
+	Until   *time.Time `json:"until,omitempty"`
+	Expired bool       `json:"expired,omitempty"`
 }
 
 // BlockList answers GET /v1/access/blocks.
@@ -337,6 +342,9 @@ type BlockList struct {
 type BlockRequest struct {
 	Subject string `json:"subject"`
 	Reason  string `json:"reason,omitempty"`
+	// Until ends the block by itself (block only). Send it only with
+	// FeatureBlockUntil (1.4.0).
+	Until *time.Time `json:"until,omitempty"`
 }
 
 // BlockResult answers a block or an unblock.
@@ -373,6 +381,11 @@ type AuditQuery struct {
 	Outcome string
 	Source  string
 	Before  int
+	// Until (exclusive), Tool and Server: since 1.4.0, with
+	// FeatureAuditFilters (design/adr/0046).
+	Until  time.Time
+	Tool   string
+	Server string
 }
 
 // AuditPage answers GET /v1/audit.

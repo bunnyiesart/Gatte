@@ -42,5 +42,38 @@
     </li>
   </ul>
 </section>
+
+{{if $d.Offboard}}
+<section>
+  <h2>Offboard</h2>
+  <form class="group form" method="post" action="{{$base}}/people/offboard">
+    <input type="hidden" name="csrf" value="{{$csrf}}">
+    <input type="hidden" name="username" value="{{.Username}}">
+    <label class="field wide"><span>Their subject</span>
+      <select name="subject">
+        <option value="">None: they never used the gateway (no block)</option>
+        {{range $d.Seen}}<option value="{{.Identity}}">{{if .Name}}{{vis .Name}} · {{end}}{{vis .Identity}}{{if .Blocked}} (blocked){{end}}</option>{{end}}
+      </select>
+    </label>
+    <label class="field wide"><span>Or type it</span><input name="subject_typed" autocomplete="off" spellcheck="false" class="mono" placeholder="As the audit trail shows it"></label>
+    <label class="field wide"><span>Reason</span><input name="reason" autocomplete="off" placeholder="Who is acting, and why"></label>
+    <div class="form-end"><button class="btn destructive">Offboard</button></div>
+  </form>
+  <p class="caption">Blocks the subject in the gateway, which refuses their next request whatever token they hold, then disables the account. Pick the subject yourself: the names beside them are what the identity provider said, for reading only. Revoking their sessions at the identity provider stays a step by hand; the result page lists it.</p>
+</section>
+{{end}}
+
+{{if $d.Delete}}
+<section>
+  <h2>Delete the account</h2>
+  <form class="group form" method="post" action="{{$base}}/people/delete">
+    <input type="hidden" name="csrf" value="{{$csrf}}">
+    <input type="hidden" name="username" value="{{.Username}}">
+    <label class="check wide"><input type="checkbox" name="confirm" value="yes" required><span>Remove {{vis .Username}} from the identity provider's users file</span></label>
+    <div class="form-end"><button class="btn small destructive">Delete</button></div>
+  </form>
+  <p class="caption">The audit trail keeps every row they wrote. Offboard first: deleting ends no session and places no block.</p>
+</section>
+{{end}}
 {{end}}{{end}}{{end}}
 {{template "bottom" .}}

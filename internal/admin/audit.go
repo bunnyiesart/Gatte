@@ -30,12 +30,16 @@ func (s *Service) Audit(ctx context.Context, q adminapi.AuditQuery) (adminapi.Au
 	if q.Outcome != "" && !audit.Outcome(q.Outcome).Valid() {
 		return adminapi.AuditPage{}, adminapi.NewError(adminapi.CodeBadRequest, "outcome must be allowed, denied or failed").With("field", "outcome")
 	}
+	if !q.Since.IsZero() && !q.Until.IsZero() && !q.Until.After(q.Since) {
+		return adminapi.AuditPage{}, adminapi.NewError(adminapi.CodeBadRequest, "until must be after since").With("field", "until")
+	}
 	limit := q.Limit
 	if limit <= 0 {
 		limit = DefaultAuditLimit
 	}
 	limit = min(limit, MaxAuditLimit)
-	recs, more, err := s.d.Trail.Page(ctx, audit.TrailQuery{Before: q.Before, Since: q.Since, Subject: q.Subject, Outcome: q.Outcome, Source: q.Source, Limit: limit})
+	recs, more, err := s.d.Trail.Page(ctx, audit.TrailQuery{Before: q.Before, Since: q.Since, Until: q.Until,
+		Subject: q.Subject, Outcome: q.Outcome, Source: q.Source, Tool: q.Tool, Server: q.Server, Limit: limit})
 	if err != nil {
 		return adminapi.AuditPage{}, s.storeErr("audit trail", err)
 	}

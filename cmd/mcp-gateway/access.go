@@ -66,7 +66,7 @@ func cmdAccess(args []string, stdout, stderr io.Writer) int {
 
 func accessUsageText(w io.Writer) {
 	fmt.Fprint(w, `Usage:
-  mcp-gateway access block   [-config FILE] [-reason TEXT] SUBJECT
+  mcp-gateway access block   [-config FILE] [-reason TEXT] [-until TIME|DURATION] SUBJECT
   mcp-gateway access unblock [-config FILE] [-reason TEXT] SUBJECT
   mcp-gateway access list    [-config FILE] [-json]
 
@@ -80,6 +80,14 @@ gateway, with no restart, whatever token they present: the caller gets a
 plain 403 "forbidden". "unblock" restores them the same way. Blocks survive
 restarts. A block does NOT revoke anything at the IdP: the token stays valid
 there until it expires, so revoke the session at the IdP too.
+
+-until ends the block by itself (design/adr/0046): an RFC3339 time
+(2026-10-01T08:00:00Z) or a duration from now (8h, 90m). The gateway stops
+refusing the subject at that instant; at its next maintenance round it
+writes an "(access block expired)" row, attributed to (gateway), and
+removes the block. Until then "access list" shows it as expired. A subject
+already blocked keeps the block in force and its end: unblock first to
+change it.
 
 Each block and unblock is recorded in the audit trail as an operator action,
 attributed to SUDO_USER, else USER, else the account running the command.
@@ -97,8 +105,23 @@ took effect but could not be audited), 2 could not run.
 func accessChange(sub string, args []string, stdout, stderr io.Writer) int {
 	fs, configPath := opFlagSet("access "+sub, stderr)
 	reason := fs.String("reason", "", "why, in a few words; recorded in the audit trail and never shown to the analyst")
+	untilFlag := ""
+	if sub == "block" {
+		fs.StringVar(&untilFlag, "until", "", "end the block by itself at this RFC3339 time, or after this duration (8h)")
+	}
 	if code, ok := opParse(fs, args, stdout, stderr, accessUsageText); !ok {
 		return code
+	}
+	var until *time.Time
+	if untilFlag != "" {
+		t, err := parseUntil(untilFlag, time.Now())
+		if err != nil {
+			fmt.Fprintf(stderr, "%v\n", err)
+			return exitCannotRun
+		}
+		if !t.IsZero() {
+			until = &t
+		}
 	}
 	if fs.NArg() != 1 {
 		fmt.Fprintf(stderr, "%s takes exactly one argument: the subject\n\n", sub)
@@ -126,7 +149,7 @@ func accessChange(sub string, args []string, stdout, stderr io.Writer) int {
 	return opRun(*configPath, stdout, stderr, func(e *opEnv) int {
 		e.actor = actor
 		if sub == "block" {
-			return runAccessBlock(e, actor.Name, subject, *reason)
+			return runAccessBlockUntil(e, actor.Name, subject, *reason, until)
 		}
 		return runAccessUnblock(e, actor.Name, subject, *reason)
 	})
@@ -174,12 +197,17 @@ func (e *opEnv) actorNamed(operator string) admin.Actor {
 // incident needs -- and the exit code and the message say the trail does
 // not have it.
 func runAccessBlock(e *opEnv, operator, subject, note string) int {
+	return runAccessBlockUntil(e, operator, subject, note, nil)
+}
+
+// runAccessBlockUntil is runAccessBlock for a block that may end by itself.
+func runAccessBlockUntil(e *opEnv, operator, subject, note string, until *time.Time) int {
 	svc, err := e.service()
 	if err != nil {
 		fmt.Fprintf(e.stderr, "%v\n", err)
 		return exitCannotRun
 	}
-	res, err := svc.Block(e.ctx(), e.actorNamed(operator), adminapi.BlockRequest{Subject: subject, Reason: note})
+	res, err := svc.Block(e.ctx(), e.actorNamed(operator), adminapi.BlockRequest{Subject: subject, Reason: note, Until: until})
 	if err != nil {
 		fmt.Fprintf(e.stderr, "blocklist: %v\n", cliErrText(err))
 		return exitCannotRun
@@ -198,6 +226,10 @@ func runAccessBlock(e *opEnv, operator, subject, note string) int {
 		"token it carries; no restart is needed. This does not revoke anything at the\n"+
 		"IdP: revoke the session there too. Lift it with: %s %s\n",
 		subject, e.cmd("access unblock"), opShellQuote(subject))
+	if until != nil {
+		fmt.Fprintf(e.stdout, "The block ends by itself at %s; the gateway then serves %s again and\n"+
+			"records the expiry as %s at its next round.\n", opTime(*until), subject, admin.AccessBlockExpired)
+	}
 	if res.HasWarning(adminapi.WarnNeverSeen) {
 		fmt.Fprintf(e.stderr, "warning: no request from this subject is on record; check the spelling against %s.\n"+
 			"The block is in force either way.\n", e.cmd("audit"))
@@ -289,10 +321,12 @@ func accessList(args []string, stdout, stderr io.Writer) int {
 
 // accessBlockJSON is the -json shape of one block.
 type accessBlockJSON struct {
-	Subject string    `json:"subject"`
-	By      string    `json:"blocked_by"`
-	At      time.Time `json:"blocked_at"`
-	Reason  string    `json:"reason"`
+	Subject string     `json:"subject"`
+	By      string     `json:"blocked_by"`
+	At      time.Time  `json:"blocked_at"`
+	Reason  string     `json:"reason"`
+	Until   *time.Time `json:"until,omitempty"`
+	Expired bool       `json:"expired,omitempty"`
 }
 
 func runAccessList(e *opEnv, asJSON bool) int {
@@ -301,10 +335,12 @@ func runAccessList(e *opEnv, asJSON bool) int {
 		fmt.Fprintf(e.stderr, "blocklist: %v\n", err)
 		return exitCannotRun
 	}
+	now := time.Now()
 	if asJSON {
 		out := make([]accessBlockJSON, 0, len(blocks))
 		for _, b := range blocks {
-			out = append(out, accessBlockJSON{Subject: b.Subject, By: b.By, At: b.At, Reason: b.Reason})
+			v := admin.BlockOf(b, now)
+			out = append(out, accessBlockJSON{Subject: b.Subject, By: b.By, At: b.At, Reason: b.Reason, Until: v.Until, Expired: v.Expired})
 		}
 		if err := opJSON(e.stdout, out); err != nil {
 			fmt.Fprintf(e.stderr, "writing json: %v\n", err)
@@ -320,14 +356,28 @@ func runAccessList(e *opEnv, asJSON bool) int {
 		return exitOK
 	}
 	tw := opTable(e.stdout)
-	fmt.Fprintln(tw, "SUBJECT\tBLOCKED AT\tBY\tREASON")
+	fmt.Fprintln(tw, "SUBJECT\tBLOCKED AT\tBY\tUNTIL\tREASON")
+	expired := 0
 	for _, b := range blocks {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", b.Subject, opTime(b.At), b.By, opDash(b.Reason))
+		end := "-"
+		if !b.Until.IsZero() {
+			end = opTime(b.Until)
+			if !b.ActiveAt(now) {
+				end += " (EXPIRED)"
+				expired++
+			}
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", b.Subject, opTime(b.At), b.By, end, opDash(b.Reason))
 	}
 	if !opFlushTable(tw, e.stderr) {
 		return exitProblem
 	}
-	fmt.Fprintf(e.stdout, "\n%d %s blocked. Each is refused on every request until unblocked.\n",
-		len(blocks), opPlural(len(blocks), "subject", "subjects"))
+	active := len(blocks) - expired
+	fmt.Fprintf(e.stdout, "\n%d %s blocked. Each is refused on every request until unblocked or until its end.\n",
+		active, opPlural(active, "subject", "subjects"))
+	if expired > 0 {
+		fmt.Fprintf(e.stdout, "%d %s EXPIRED: no longer refused; the gateway records and removes %s at its next round.\n",
+			expired, opPlural(expired, "block has", "blocks have"), opPlural(expired, "it", "them"))
+	}
 	return exitOK
 }

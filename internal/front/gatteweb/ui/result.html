@@ -37,6 +37,12 @@
     <span class="secret-note">Shown only here, stored only as a hash. Hand it over privately.</span>
   </div>
   {{end}}
+  {{if .Remaining}}
+  <section class="left">
+    <h2>Still to do by hand</h2>
+    <ol class="steps">{{range .Remaining}}<li>{{vis .}}</li>{{end}}</ol>
+  </section>
+  {{end}}
   <a class="btn primary" href="{{.Back}}">Done</a>
 </div>
 <details class="group">

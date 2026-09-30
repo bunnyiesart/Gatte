@@ -8,7 +8,9 @@
 //   - `admin -accounts` serves the accounts socket, as root, and never
 //     opens a file of the service account: the audit row of an account
 //     action is written by a short-lived child, `admin -audit-writer`,
-//     running as the database's owner.
+//     running as the database's owner, and the gateway block of an
+//     offboard is placed by another, `admin -block-writer`
+//     (design/adr/0046).
 //
 // Under systemd each is socket-activated (LISTEN_FDS) and exits after
 // -idle with no request; elsewhere it runs in the foreground with -socket.
@@ -87,6 +89,7 @@ func cmdAdmin(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	fs, configPath := opFlagSet("admin", stderr)
 	accounts := fs.Bool("accounts", false, "serve the accounts socket (root only)")
 	writer := fs.Bool("audit-writer", false, "internal: append the one operator row read from standard input, as the database's owner")
+	blockWriter := fs.Bool("block-writer", false, "internal: place the one block read from standard input, as the database's owner")
 	socket := fs.String("socket", "", "socket path, in the foreground (default: the one for the mode)")
 	group := fs.String("socket-group", "", "the socket file's group")
 	modeFlag := fs.String("socket-mode", "", "the socket file's mode: 0600, or 0660 with -socket-group")
@@ -99,6 +102,9 @@ func cmdAdmin(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 	if *writer {
 		return runAuditWriter(*configPath, stdin, stderr)
+	}
+	if *blockWriter {
+		return runBlockWriter(*configPath, stdin, stdout, stderr)
 	}
 	if *accounts && adminGeteuid() != 0 {
 		fmt.Fprint(stderr, "admin -accounts edits the identity provider's accounts, so it runs only as root.\n"+
@@ -279,9 +285,20 @@ func runAdminAccounts(configPath, socket string, p adminhttp.SocketPolicy, idle 
 		fmt.Fprintf(stderr, "[admin] account_group %q: %v\n", cfg.Admin.AccountGroup, err)
 		return exitCannotRun
 	}
+	// Who may also block (an offboard with a subject, design/adr/0046):
+	// root, or a peer of [admin] operator_group.
+	opGID, err := groupID(cfg.Admin.OperatorGroup)
+	if err != nil {
+		fmt.Fprintf(stderr, "[admin] operator_group %q: %v\n", cfg.Admin.OperatorGroup, err)
+		return exitCannotRun
+	}
 	svc, err := admin.New(admin.Deps{
-		Config:   loadCfg,
-		Record:   spawnAuditWriter(configPath, serviceUID, serviceGID),
+		Config: loadCfg,
+		Record: spawnAuditWriter(configPath, serviceUID, serviceGID),
+		// The block of an offboard: placed by a child running as the
+		// database's owner, like the rows, so this root process still
+		// never opens the service account's database.
+		Blocks:   childBlocks{place: spawnBlockWriter(configPath, serviceUID, serviceGID)},
 		Accounts: openDirectory,
 		IsBusy:   store.IsBusy,
 		Log:      logger,
@@ -304,7 +321,7 @@ func runAdminAccounts(configPath, socket string, p adminhttp.SocketPolicy, idle 
 		fmt.Fprintf(stderr, "admin -accounts: %s: %v\n", path, err)
 		return exitCannotRun
 	}
-	return serveAdmin(ln, adminhttp.Options{Socket: adminapi.SocketAccounts, Service: svc, ServiceUID: serviceUID,
+	return serveAdmin(ln, adminhttp.Options{Socket: adminapi.SocketAccounts, Service: svc, ServiceUID: serviceUID, OperatorGID: opGID,
 		Idle: idle.of(activated), Log: logger, ConfigPath: configPath, GatewayVersion: version()}, logger, stderr)
 }
 
@@ -370,34 +387,44 @@ func auditWriterRecord(r audit.Record) auditWriterInput {
 	return auditWriterInput{Identity: r.AnalystIdentity, Tool: r.Tool, Target: r.TargetUpstream, Timestamp: r.Timestamp, Outcome: string(r.Outcome), Reason: r.Reason}
 }
 
-// accountTools are the only rows the audit writer appends.
-var accountTools = map[string]bool{admin.AccountAdd: true, admin.AccountGroups: true, admin.AccountDisable: true, admin.AccountEnable: true, admin.AccountReset: true}
+// accountTools are the only rows the audit writer appends: the accounts
+// socket's actions, and the block of an offboard (design/adr/0046).
+var accountTools = map[string]bool{admin.AccountAdd: true, admin.AccountGroups: true, admin.AccountDisable: true, admin.AccountEnable: true, admin.AccountReset: true,
+	admin.AccountDelete: true, admin.AccountOffboard: true, admin.AccessBlock: true}
 
 // spawnAuditWriter is the accounts backend's Record: a child that runs as
 // the database's owner, with no supplementary groups and an empty
 // environment, receives the row on standard input, appends it and exits.
 func spawnAuditWriter(configPath string, uid, gid uint32) func(context.Context, *config.Config, audit.Record) error {
 	return func(ctx context.Context, _ *config.Config, rec audit.Record) error {
-		exe, err := os.Executable()
-		if err != nil {
-			return err
-		}
 		body, err := json.Marshal(auditWriterRecord(rec))
 		if err != nil {
 			return err
 		}
-		cmd := exec.CommandContext(ctx, exe, "admin", "-audit-writer", "-config", configPath) // #nosec G204 -- this binary
-		cmd.Env = []string{}
-		cmd.Dir = "/"
-		cmd.Stdin = bytes.NewReader(body)
-		var errb bytes.Buffer
-		cmd.Stdout, cmd.Stderr = io.Discard, &errb
-		cmd.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{Uid: uid, Gid: gid, Groups: []uint32{}}}
-		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("audit writer: %v: %s", err, strings.TrimSpace(errb.String()))
-		}
-		return nil
+		_, err = runAdminChild(ctx, configPath, "-audit-writer", uid, gid, body)
+		return err
 	}
+}
+
+// runAdminChild runs this binary's `admin FLAG -config configPath` as uid
+// and gid, with no supplementary groups, an empty environment and / as its
+// directory, feeds it body and returns what it printed.
+func runAdminChild(ctx context.Context, configPath, flag string, uid, gid uint32, body []byte) ([]byte, error) {
+	exe, err := os.Executable()
+	if err != nil {
+		return nil, err
+	}
+	cmd := exec.CommandContext(ctx, exe, "admin", flag, "-config", configPath) // #nosec G204 -- this binary
+	cmd.Env = []string{}
+	cmd.Dir = "/"
+	cmd.Stdin = bytes.NewReader(body)
+	var outb, errb bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &outb, &errb
+	cmd.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{Uid: uid, Gid: gid, Groups: []uint32{}}}
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("%s: %v: %s", strings.ReplaceAll(strings.TrimPrefix(flag, "-"), "-", " "), err, strings.TrimSpace(errb.String()))
+	}
+	return outb.Bytes(), nil
 }
 
 // runAuditWriter appends one operator row read from stdin. It refuses to

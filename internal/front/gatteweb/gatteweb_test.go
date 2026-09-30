@@ -75,3 +75,13 @@ func TestShortImage_KeepsTheNameAndTheStartOfTheDigest(t *testing.T) {
 		t.Fatalf("an image with no digest changed: %q", got)
 	}
 }
+
+func TestImageNameAndDigest_SplitTheShortLabel(t *testing.T) {
+	ref := "localhost/iris-mcp@sha256:3080f9bea75375018d3bc337ffc838897d348bf3e532f4cd17fa95672ff32056"
+	if imageName(ref) != "localhost/iris-mcp" || imageDigest(ref) != "sha256:3080f9bea753…" {
+		t.Fatalf("split = %q + %q", imageName(ref), imageDigest(ref))
+	}
+	if imageDigest("ghcr.io/example/edr-mcp:1.4") != "" {
+		t.Fatal("an image with no digest got one")
+	}
+}

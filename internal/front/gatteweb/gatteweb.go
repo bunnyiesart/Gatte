@@ -80,6 +80,8 @@ func New(o Options) (*Front, error) {
 		"time":    showTime,
 		"short":   shortHash,
 		"image":   shortImage,
+		"imgname": imageName,
+		"imgdig":  imageDigest,
 		"dash":    dash,
 		"initial": initial,
 		"dict":    dict,
@@ -283,6 +285,21 @@ func shortImage(ref string) string {
 		return ref
 	}
 	return name + "@sha256:" + digest[:12] + "…"
+}
+
+// imageName and imageDigest split what shortImage joins, so a narrow cell
+// can put the repository and the digest on their own lines.
+func imageName(ref string) string {
+	name, _, _ := strings.Cut(shortImage(ref), "@")
+	return name
+}
+
+func imageDigest(ref string) string {
+	_, digest, ok := strings.Cut(shortImage(ref), "@")
+	if !ok {
+		return ""
+	}
+	return digest
 }
 
 // initial is the letter an account's avatar shows.

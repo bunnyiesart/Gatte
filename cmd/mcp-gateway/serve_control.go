@@ -59,8 +59,10 @@ func (s *serveStack) announce(ctx context.Context, logger *slog.Logger) {
 }
 
 // handleControl answers every pending request, or reloads on behalf of
-// the signal when there is none. It reports stop when the Gateway closed.
-func (s *serveStack) handleControl(ctx context.Context, logger *slog.Logger) (stop bool) {
+// the signal when there is none. It reports stop when the Gateway closed,
+// and, when it ran a round, how long to rest before the next one (zero
+// when it ran none).
+func (s *serveStack) handleControl(ctx context.Context, logger *slog.Logger) (stop bool, next time.Duration) {
 	var pending []control.Request
 	if s.control != nil {
 		var err error
@@ -90,7 +92,7 @@ func (s *serveStack) handleControl(ctx context.Context, logger *slog.Logger) (st
 				case errors.Is(err, gateway.ErrQuotaMisconfigured):
 					refusal = adminapi.RefusalHeldBack
 				case errors.Is(err, gateway.ErrClosed):
-					return true
+					return true, 0
 				}
 				res := adminapi.ServeRequest{Refusal: refusal, Messages: []string{"Nothing was dropped: " + err.Error()}}
 				s.finish(ctx, logger, r, control.OutcomeRefused, res, fmt.Sprintf("refused (%s): %v", refusal, err))
@@ -109,8 +111,8 @@ func (s *serveStack) handleControl(ctx context.Context, logger *slog.Logger) (st
 		// One round out of turn: it re-dials what was marked, lists it
 		// before it takes a call, and withholds what a new quota plan
 		// leaves undeclared, as every round does.
-		if _, stop = s.round(ctx, logger); stop {
-			return true
+		if next, stop = s.round(ctx, logger); stop {
+			return true, 0
 		}
 	}
 	for _, r := range redials {
@@ -131,7 +133,7 @@ func (s *serveStack) handleControl(ctx context.Context, logger *slog.Logger) (st
 		}
 		s.finish(ctx, logger, r, control.OutcomeApplied, res, reason)
 	}
-	return false
+	return false, next
 }
 
 // reloadConfig re-reads the file serve was started with and applies its

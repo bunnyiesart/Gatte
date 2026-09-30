@@ -774,10 +774,15 @@ func (s *serveStack) refreshLoop(ctx context.Context, logger *slog.Logger) {
 		case <-s.hup:
 			// SIGHUP (design/adr/0044): the operator's pending requests,
 			// or a reload attributed to the signal when there are none.
-			// The timer is left alone: an out-of-turn round does not move
-			// the next scheduled one.
-			if s.handleControl(ctx, logger) {
+			// When they ran a round out of turn, the next one is scheduled
+			// from it, as after any round -- including the short retry of
+			// a suspension that round found.
+			stop, next := s.handleControl(ctx, logger)
+			if stop {
 				return
+			}
+			if next > 0 {
+				timer.Reset(next)
 			}
 			continue
 		}

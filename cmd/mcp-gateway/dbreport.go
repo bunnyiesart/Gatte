@@ -20,6 +20,11 @@ import (
 type dbReport struct {
 	// Schema is the recorded schema version.
 	Schema int
+	// Drift names every trigger, view, index or table of the file that is
+	// extra, missing or different from what this binary's migrations
+	// produce (store.SchemaDrift). A file with drift carries rules of its
+	// own, which no check below would see.
+	Drift []string
 	// Chain is the audit trail's hash chain as VerifyChain found it.
 	Chain audit.ChainCheck
 	// Upstreams is how many entries the registry holds, and the three
@@ -53,6 +58,10 @@ func inspectContent(ctx context.Context, cfg *config.Config, db *sql.DB, r *dbRe
 	}
 	r.Schema = v
 
+	if r.Drift, err = schemaDrift(ctx, db); err != nil {
+		return err
+	}
+
 	e := &opEnv{cfg: cfg, db: db}
 	chain, err := e.auditChain().VerifyChain(ctx)
 	if err != nil {
@@ -84,6 +93,35 @@ func inspectContent(ctx context.Context, cfg *config.Config, db *sql.DB, r *dbRe
 		}
 	}
 	return nil
+}
+
+// schemaDrift compares db, at this binary's schema, with a database this
+// binary's migrations create in memory: the reference is the code, not a
+// file anyone could have edited.
+func schemaDrift(ctx context.Context, db *sql.DB) ([]string, error) {
+	ref, err := openStorePath(":memory:")
+	if err != nil {
+		return nil, fmt.Errorf("the reference schema: %w", err)
+	}
+	defer ref.Close()
+	want, err := store.SchemaShape(ctx, ref)
+	if err != nil {
+		return nil, err
+	}
+	got, err := store.SchemaShape(ctx, db)
+	if err != nil {
+		return nil, err
+	}
+	return store.SchemaDrift(got, want), nil
+}
+
+// driftLine is the drift in one line, escaped: the names come from the file.
+func (r dbReport) driftLine() string {
+	parts := make([]string, 0, len(r.Drift))
+	for _, d := range r.Drift {
+		parts = append(parts, visible.Escape(d))
+	}
+	return "its schema is not the one this binary's migrations produce: " + strings.Join(parts, ", ")
 }
 
 // chainLine is the audit chain in one line, for the three commands' output.

@@ -431,3 +431,36 @@ func TestCheck_OnlineReadsTheDiscoveryDocument(t *testing.T) {
 		t.Errorf("offline: %+v", r)
 	}
 }
+
+// TestCheckSigningKey_ADirectoryTheServiceAccountWritesFails: a key that
+// is root's and 0600 is still replaceable by whoever writes its directory.
+func TestCheckSigningKey_ADirectoryTheServiceAccountWritesFails(t *testing.T) {
+	svc := &svcAccount{Name: "mcpgw", UID: 998, Group: "mcpgw", groups: map[uint32]bool{998: true}}
+	for _, tt := range []struct {
+		name string
+		dir  fileFacts
+		want checkStatus
+	}{
+		{"root's 0700 directory", fileFacts{0, 0, 0o700 | fs.ModeDir}, checkPass},
+		{"root's directory, group mcpgw writable", fileFacts{0, 998, 0o770 | fs.ModeDir}, checkFail},
+		{"the service account's directory", fileFacts{998, 998, 0o700 | fs.ModeDir}, checkFail},
+	} {
+		c := newChecker("", false)
+		c.cfg = &config.Config{Signer: config.Signer{KeyFile: "/k/signing.key"}}
+		c.svc = svc
+		c.stat = func(p string) (fileFacts, error) {
+			if p == "/k" {
+				return tt.dir, nil
+			}
+			return fileFacts{0, 0, 0o600}, nil
+		}
+		c.checkSigningKey()
+		if len(c.results) != 1 || c.results[0].Status != tt.want {
+			t.Errorf("%s: results %+v, want one %s", tt.name, c.results, tt.want)
+			continue
+		}
+		if tt.want == checkFail && !strings.Contains(c.results[0].Fix, "chown root:root") {
+			t.Errorf("%s: fix %q does not say how", tt.name, c.results[0].Fix)
+		}
+	}
+}

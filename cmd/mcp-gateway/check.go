@@ -348,6 +348,21 @@ func (c *checker) checkSigningKey() {
 		return
 	}
 	st, detail, fix := judgeSigningKey(f, c.svc, p)
+	if st == checkPass && c.svc != nil {
+		// The file is root's and unreadable, but a directory the service
+		// account can write lets it put another file under that name: the
+		// next sign, run as root, then signs with a key the service account
+		// chose, or with none at all.
+		dir := filepath.Dir(p)
+		if d, ok := c.statOrResult(name, dir, checkWarn, ""); !ok {
+			return
+		} else if c.svc.canWrite(d) {
+			q := opShellQuote(dir)
+			c.add(name, checkFail, fmt.Sprintf("the service account %s can write %s, and so replace or remove the key in it", c.svc.Name, dir),
+				fmt.Sprintf("keep the key in a directory only root writes: sudo chown root:root %s && sudo chmod 0700 %s, or move it (signer.key_file)", q, q))
+			return
+		}
+	}
 	c.add(name, st, detail, fix)
 }
 
@@ -491,6 +506,12 @@ func (c *checker) checkDatabase(ctx context.Context) ([]registry.UpstreamServer,
 	rep, ok := c.inspectLive(ctx, db, v)
 	if !ok {
 		return nil, false
+	}
+	if len(rep.Drift) > 0 {
+		c.add("database schema objects", checkFail, "the database: "+rep.driftLine(),
+			"stop serve and restore the newest backup that restore accepts (docs/upgrade.md, Rollback); keep this file as evidence")
+	} else {
+		c.add("database schema objects", checkPass, "every table, index and trigger is what this binary's migrations create", "")
 	}
 	if rep.Chain.FirstBreak != nil {
 		c.add("audit trail", checkFail, rep.chainLine(), "mcp-gateway audit -verify prints the record; see design/adr/0015")

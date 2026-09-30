@@ -85,6 +85,7 @@ type backupResult struct {
 	Bytes        int64    `json:"bytes"`
 	SHA256       string   `json:"sha256"`
 	Schema       int      `json:"schema_version"`
+	SchemaDrift  []string `json:"schema_drift"`
 	AuditRecords int      `json:"audit_records"`
 	AuditHead    string   `json:"audit_head"`
 	ChainIntact  bool     `json:"chain_intact"`
@@ -227,7 +228,7 @@ func runBackup(e *opEnv, out string, keep int, asJSON bool, now time.Time) int {
 
 	res := backupResult{
 		File: dest, Bytes: size, SHA256: sum, Schema: rep.Schema,
-		AuditRecords: rep.Chain.Count, AuditHead: rep.Chain.Head, ChainIntact: rep.Chain.Intact(),
+		SchemaDrift: nonNil(rep.Drift), AuditRecords: rep.Chain.Count, AuditHead: rep.Chain.Head, ChainIntact: rep.Chain.Intact(),
 		Upstreams: rep.Upstreams, Invalid: nonNil(rep.Invalid), Pruned: nonNil(pruned),
 		NotIncluded: notInBackup(e),
 	}
@@ -253,6 +254,12 @@ func runBackup(e *opEnv, out string, keep int, asJSON bool, now time.Time) int {
 			"-expect-head takes the head back, and together they say this copy is the one you took.\n")
 	}
 
+	if len(rep.Drift) > 0 {
+		fmt.Fprintf(e.stderr, "\nWARNING: the database this copy was taken from: %s.\n"+
+			"The copy is kept as evidence; restore will refuse it. Compare with a new database's\n"+
+			"schema (sqlite3 FILE .schema) before trusting the live one.\n", rep.driftLine())
+		return exitProblem
+	}
 	if !rep.Chain.Intact() || len(rep.Invalid) > 0 {
 		// Kept: it is a faithful copy of what is there, and what is there is
 		// evidence. But not a copy restore will accept, and the operator
@@ -516,6 +523,13 @@ func runRestoreFrom(e *opEnv, in string, src *os.File, expectHead string, now ti
 // the integrity check.
 func restoreVerdict(e *opEnv, rep dbReport, expectHead string) int {
 	ok := true
+	if len(rep.Drift) > 0 {
+		fmt.Fprintf(e.stderr, "restore: the backup's %s\n"+
+			"A trigger, view or index this binary did not create is a rule the file brings with it (one that\n"+
+			"approves a tool as it is observed, or removes a block as it is placed), and no other check sees it.\n",
+			rep.driftLine())
+		ok = false
+	}
 	if rep.Chain.FirstBreak != nil {
 		fmt.Fprintf(e.stderr, "restore: the backup's audit trail is %s\n", rep.chainLine())
 		ok = false
@@ -533,6 +547,14 @@ func restoreVerdict(e *opEnv, rep dbReport, expectHead string) int {
 	}
 	if !ok {
 		return exitProblem
+	}
+	if expectHead == "" {
+		// The chain has no key: it proves the rows agree with each other,
+		// not that they are the ones this host wrote. A trail rewritten
+		// whole and chained again verifies; only a head kept elsewhere
+		// tells them apart.
+		fmt.Fprint(e.stderr, "note: no -expect-head, so the trail was checked for consistency only. A trail rewritten\n"+
+			"whole and chained again passes that check; the head backup printed, kept off this host, does not.\n")
 	}
 	if len(rep.Unsigned) > 0 {
 		fmt.Fprintf(e.stderr, "note: unsigned entries in the backup (%s); serve does not serve them while signer.require_signed is on.\n",

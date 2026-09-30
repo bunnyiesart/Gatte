@@ -15,7 +15,8 @@ import "strings"
 //   - a cell a spreadsheet would evaluate as a formula -- one starting
 //     with =, +, -, @, a tab or a carriage return, raw or once escaped --
 //     is prefixed with an apostrophe, which spreadsheets take as "this is
-//     text" (CSV injection).
+//     text" (CSV injection). Leading spaces do not hide one: some
+//     spreadsheets trim them on import and then evaluate what follows.
 //
 // Quoting of commas and double quotes is the CSV writer's job
 // (encoding/csv), not this function's.
@@ -28,5 +29,6 @@ func CSVCell(s string) string {
 }
 
 func formulaStart(s string) bool {
+	s = strings.TrimLeft(s, " ")
 	return s != "" && strings.ContainsRune("=+-@\t\r", rune(s[0]))
 }

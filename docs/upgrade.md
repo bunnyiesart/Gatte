@@ -156,8 +156,13 @@ safe choice when unsure: the old binary refuses the file otherwise.
 
 - nothing is listening on `listen` (serve is stopped);
 - the file passes SQLite's integrity check;
-- its schema is one this binary knows;
-- its audit chain verifies, and ends at `-expect-head` when given;
+- its schema is one this binary knows, and its triggers, views, indexes
+  and table columns are exactly what this binary's migrations create (a
+  trigger a file brings with it runs inside the restored gateway, and no
+  other check sees it);
+- its audit chain verifies, and ends at `-expect-head` when given. Give
+  it: the chain has no key, so a trail rewritten whole and chained again
+  verifies, and only the head you kept off the host tells them apart;
 - no registry entry in it carries a signature that fails against this
   configuration's `signer.trusted_keys`.
 

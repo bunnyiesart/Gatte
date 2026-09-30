@@ -101,6 +101,16 @@ silêncio** num host sem `sops` e `age` — o `make test` prepende o
 ferramentas faltam é um v1 cujas provas de processo não rodaram, e isso fica
 escrito no bloco do critério em vez de virar surpresa.
 
+> *Correção, 30 set 2026:* o "9 em `internal/vault/sopsage`" estava errado
+> já em 18 set: medido então sem `sops`, `age` e `age-keygen` no `PATH`,
+> eram **11** em `cmd/mcp-gateway` e **11** em `sopsage` (`CLOSEOUT.md`,
+> Track 4; a ADR-0023 tinha acrescentado quatro testes ao pacote). Medido
+> de novo em 30 set, do mesmo jeito, são 37 em `cmd/mcp-gateway` e 12 em
+> `sopsage`, todos pela falta do `age-keygen`. O número deixou de importar
+> para o critério: desde 28 set `make ci` recusa rodar sem os três binários
+> (`require-devtools`) e falha em qualquer teste pulado (`race-noskip`),
+> nomeando-o, então nenhuma contagem escrita aqui precisa ser confiada.
+
 Nada sobre a jail: o que roda em produção foi provisionado por scripts cuja
 última execução conhecida é de 12 set 2026, antes de cinco ADRs.
 

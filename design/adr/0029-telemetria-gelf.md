@@ -77,6 +77,11 @@ truncado), o texto de erro do upstream, os `args` da chamada e o conteúdo do
 resultado. Vão os sete campos do registro, com os nomes do `mcp-gateway audit
 -json`, mais `host` e `_cliente_soc`.
 
+*Correção, 30 set 2026:* desde a ADR-0037 o registro tem **oito** campos:
+o oitavo, o nome de exibição, vai como `_analyst_name`, só quando diz algo
+que `_analyst_identity` não diz (`internal/telemetry/gelf/message.go`). O
+que nunca entra, acima, não muda.
+
 ## Consequências
 
 - Um host sem shipper pode mandar o trail direto ao Graylog.

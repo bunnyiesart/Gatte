@@ -77,9 +77,12 @@ trail, which usually means a typo, and places the block anyway.
 
 "block" refuses that subject on its very next request to the running
 gateway, with no restart, whatever token they present: the caller gets a
-plain 403 "forbidden". "unblock" restores them the same way. Blocks survive
-restarts. A block does NOT revoke anything at the IdP: the token stays valid
-there until it expires, so revoke the session at the IdP too.
+403 whose body says Gatte refuses requests from this account and that
+signing in again will not change that, with [analyst] contact when it is
+set; it does not say "blocked" or why (design/adr/0042). "unblock"
+restores them the same way. Blocks survive restarts. A block does NOT
+revoke anything at the IdP: the token stays valid there until it expires,
+so revoke the session at the IdP too.
 
 -until ends the block by itself (design/adr/0046): an RFC3339 time
 (2026-10-01T08:00:00Z) or a duration from now (8h, 90m). The gateway stops
@@ -89,12 +92,15 @@ removes the block. Until then "access list" shows it as expired. A subject
 already blocked keeps the block in force and its end: unblock first to
 change it.
 
-Each block and unblock is recorded in the audit trail as an operator action,
-attributed to SUDO_USER, else USER, else the account running the command.
-That is the login account, not necessarily the person: logged in as root
-(or as the service account) every row reads (operator:root), so put who did
-it in -reason. It is attribution, not authentication: whoever can run this
-command can write the database.
+Each block and unblock is recorded in the audit trail as an operator
+action, and its reason says where the name came from: [cli] when the
+kernel said it (on Linux, the loginuid, which survives sudo; [via ACCOUNT]
+is added when the command ran as another account), [cli env] when it came
+from SUDO_USER or, without one, USER, and [cli] again when it is only the
+account running the command. That is the login account, not necessarily
+the person: logged in as root, every row reads (operator:root), so put who
+did it in -reason. It is attribution, not authentication: whoever can run
+this command can write the database.
 
 Exit codes: 0 ok (including "already blocked" and an empty list), 1 ran and
 found a problem (unblocking a subject that is not blocked, or a block that

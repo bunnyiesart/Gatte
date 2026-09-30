@@ -125,8 +125,11 @@ sudo env SOPS_AGE_KEY_FILE=/usr/local/etc/mcp-gateway/age.key \
 ```
 
 Only the operator's shell needs `SOPS_AGE_KEY_FILE`: `serve` sets it itself
-from `vault.age_key_file`. Restart the gateway afterwards -- credentials are
-read at dial time (`deploy/freebsd-jail.md`, "Rotating credentials").
+from `vault.age_key_file`. No restart is needed: `serve` re-reads the vault
+file when it changes (`../design/adr/0023-recarga-do-cofre-quando-o-arquivo-muda.md`),
+but a credential reaches a backend only when it is dialled, so run
+`mcp-gateway upstream redial NAME` for each backend whose value changed
+(`../deploy/freebsd-jail.md`, "Rotating credentials").
 
 Two rules that matter as soon as you have more than one tool:
 
@@ -134,9 +137,10 @@ Two rules that matter as soon as you have more than one tool:
   dimension, so two upstreams that both declare `API_KEY` receive the same
   value (`../design/adr/0018-vault-namespace-e-credencial-compartilhada.md`).
   The gateway reports a shared name at boot; it does not refuse it.
-- **Rotating a value needs a restart** to reach an upstream that is already
-  connected. The gateway logs a warning while a connected upstream is
-  still using the old value (`../deploy/freebsd-jail.md`, "Rotating
+- **Rotating a value needs `upstream redial NAME`** to reach an upstream
+  that is already connected; a restart also works, but restarts every
+  backend. The gateway logs a warning while a connected upstream is still
+  using the old value (`../deploy/freebsd-jail.md`, "Rotating
   credentials").
 
 If a server insists on a generic variable name, keep the unique name in the

@@ -243,6 +243,21 @@ func toolApprove(args []string, stdout, stderr io.Writer) int {
 	})
 }
 
+// isFullSHA256Hex reports whether s is a whole SHA-256 in lowercase hex,
+// the form the quarantine stores. It only chooses the refusal's words: a
+// fingerprint is still approved only when it equals the observed one.
+func isFullSHA256Hex(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if c := s[i]; (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
 // runToolApproveFingerprint approves server.tool at the fingerprint
 // reviewed (with or without the "sha256:" prefix), and only at that one.
 //
@@ -313,6 +328,10 @@ func runToolApproveFingerprint(e *opEnv, server, tool, reviewed string) int {
 	if reviewed == "" {
 		fmt.Fprintf(e.stderr, "\nNOT approved: approving needs -fingerprint, the fingerprint of the definition\nyou reviewed. The definition above is sha256:%s. If it is sound, run:\n\n    %s -fingerprint %s %s %s\n",
 			before.ObservedHash, e.cmd("tool approve"), before.ObservedHash, opShellQuote(server), opShellQuote(tool))
+		return exitProblem
+	}
+	if !isFullSHA256Hex(reviewed) {
+		fmt.Fprintf(e.stderr, "NOT approved: %s is not a full SHA-256 fingerprint (64 lowercase hex characters,\nwith or without \"sha256:\"). The definition above is sha256:%s; copy the whole\nfingerprint, then approve it if the definition is sound.\n", visible.Escape(reviewed), before.ObservedHash)
 		return exitProblem
 	}
 	if reviewed != before.ObservedHash {

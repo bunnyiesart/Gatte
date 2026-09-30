@@ -148,6 +148,11 @@ Gatte: the result of "casemgmt.list_cases" was larger than Gatte's limit of 1048
 Gatte: the backend "logsearch" did not answer this call within Gatte's limit of 60s for one call, so Gatte stopped waiting. This limit is Gatte's, not an error in your arguments, and the backend may still have run the call. A narrower request (a shorter time range, fewer results) may finish in time: retry once with it, and if that also times out, tell the user.
 ```
 
+*Correção, 30 set 2026:* o `60s` deste exemplo é ilustrativo, ao lado de
+textos que usam os padrões de verdade (1 MiB, 4 chamadas). O padrão de
+`response.call_timeout` é **2m** (`DefaultCallTimeout`, ADR-0025), e o
+texto mostra o valor configurado.
+
 ```
 Gatte: your quota on the "virustotal" account is spent: it allows 100 call(s) per analyst every 24h, and this window resets at 2026-10-01T00:00:00Z. Do not retry this tool, or any tool that spends the same account, before then: every such call until the reset is refused the same way and spends nothing. Tell the user when it resets. Tools that do not spend this account keep working.
 ```

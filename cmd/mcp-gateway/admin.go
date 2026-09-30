@@ -68,7 +68,8 @@ service account (root is refused): overview, tools, access, audit,
 backends, quota, people, connect. With -accounts it serves the identity
 provider's accounts and runs only as root; it re-checks before every
 request that config.toml, [idp] users_file and every directory above them
-are root's and closed to group and others.
+are root's, not symbolic links, and not writable by group or others
+(reading is allowed).
 
 Under systemd the socket comes from the .socket unit (examples/systemd/)
 and the process exits after -idle (default 5m) with no request. In the

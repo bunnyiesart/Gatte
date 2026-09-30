@@ -217,6 +217,39 @@ func TestReload_AnInvalidFileChangesNothingAndIsRecordedAsRefused(t *testing.T) 
 	}
 }
 
+// TestReload_AQuotaRefusalReadsAsSeparateSentences: the quota check joins
+// its problems with newlines, and the CLI prints a message on one line, so
+// the refusal read "quota misconfiguredquota account ...". It is one line
+// with its parts apart, in the answer and in the row.
+func TestReload_AQuotaRefusalReadsAsSeparateSentences(t *testing.T) {
+	rs := startServe(t, nil)
+	e := rs.operatorEnv(t)
+	svc, err := e.service()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rs.rewriteConfig(t, func(s string) string {
+		return s + "[[quota.provider]]\nname = \"lookups\"\nupstream = \"threatintel\"\nlimit = 10\nwindow = \"1h\"\ntools = [\"threatintel.lookup_ip\"]\n"
+	})
+	res, err := svc.Reload(context.Background(), alice)
+	if err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	if res.Outcome != adminapi.ServeOutcomeRefused || res.Refusal != adminapi.RefusalQuotaMismatch {
+		t.Fatalf("Reload with a quota account on an unregistered backend = %+v", res)
+	}
+	var out bytes.Buffer
+	printServeRequest(&out, res)
+	for _, text := range append([]string{out.String()}, rowsOf(t, e, admin.ConfigReload)...) {
+		if strings.Contains(text, "misconfiguredquota") || !strings.Contains(text, "quota misconfigured; quota account \"lookups\"") {
+			t.Errorf("the refusal runs its parts together or lost one:\n%s", text)
+		}
+	}
+	if rows := rowsOf(t, e, admin.ConfigReload); len(rows) != 1 || strings.Contains(rows[0], "\n") {
+		t.Fatalf("rows = %q", rows)
+	}
+}
+
 // TestReload_ABareSIGHUPReloadsAndIsAttributedToTheSignal is what
 // `systemctl reload` or `kill -HUP` does with no request filed.
 func TestReload_ABareSIGHUPReloadsAndIsAttributedToTheSignal(t *testing.T) {

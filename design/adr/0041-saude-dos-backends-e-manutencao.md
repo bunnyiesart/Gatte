@@ -323,6 +323,13 @@ provar a origem; o desenho não finge que prova e fecha por três lados:
   devolve o texto honesto palavra por palavra (com a chave de origem no seu
   `_meta`) chega ao chamador sem a chave e sem ser tratado como estado.
 
+  *Correção, 30 set 2026:* o gateway não apaga só essa chave: não repassa
+  **nenhum** `_meta` do nível do resultado de um upstream
+  (`toCallToolResult`, `internal/gateway/httpapi/httpapi.go`, monta o
+  resultado só com `content`, `structuredContent` e `isError`). A chave de
+  origem sai então só nos resultados que o próprio gateway monta, e o que
+  um backend punha no `_meta` do resultado não chega ao cliente.
+
 A trilha: a recusa do passo 4 é uma linha `denied` do analista, com razão
 `backend unavailable: reconnecting`, `backend unavailable: down` ou
 `backend in maintenance`, target o backend. São recusas, como
@@ -675,6 +682,15 @@ o mesmo `until` responde `changed: false`; com outros, atualiza `message`,
 `until`, `set_by` e `set_at`, mantém `started_at`, e grava linha. `off` sem manutenção responde `changed: false`. Backend que não está
 no registro: `not_found`. As duas são `x-gatte-idempotent: true`.
 
+> *Correção, 30 set 2026:* o CLI não passa pelo socket do operador. Ele
+> monta o mesmo `admin.Service` dentro do próprio processo, sobre o banco
+> que abre como a conta de serviço, e atribui a linha a `cliActor()`
+> (`[cli]` quando o nome veio do kernel, `[cli env]` quando veio de
+> `SUDO_USER`/`USER`; ADR-0040 §2), não às credenciais do par no socket. E
+> um `off` sem manutenção em curso responde `changed: false` na API, mas
+> no CLI (`maintenance off`, `upstream maintenance off`) sai com código 1,
+> "ran and found a problem" (`cmd/mcp-gateway/maintenance.go`).
+
 `upstream deregister` apaga também a manutenção e a saúde do nome, pela
 mesma razão do `Forget` da quarentena: um nome registrado de novo não herda
 estado de outro.
@@ -736,6 +752,12 @@ leem essas tabelas; o `serve_status` dá ao front **o `serve` parado**:
 `last_round_at` mais velho que duas vezes o intervalo mais o
 `reconcileTimeout` vira `not_reporting`, que é o que o operador precisa ver
 quando o console abre e o gateway não está lá.
+
+> *Correção, 30 set 2026:* o estado do `serve` tem um terceiro valor. Sem
+> linha nenhuma em `serve_status` (um `serve` que nunca completou uma
+> rodada neste banco) ele é `never_reported`, não `not_reporting`
+> (`serveState`, `internal/admin/health.go`; `adminapi.ServeNeverReported`):
+> os três são `running`, `not_reporting` e `never_reported`.
 
 ### 8. O Gatte inteiro fora
 

@@ -67,6 +67,14 @@ mesma linha. Quem pediu espera a resposta lendo a linha.
 - Um SIGHUP **sem pedido pendente** (`systemctl reload`, `kill -HUP`) é um
   reload atribuído ao sinal: linha `(gateway)` com a marca `[signal]`,
   porque o sinal não diz quem o mandou.
+
+  *Correção, 30 set 2026:* "linha `(gateway)`" quer dizer uma linha
+  `(config reload)` como as outras, só que com o analista `(gateway)` em
+  vez de `(operator:NOME)`, alvo `(gateway)`, e razão começando por
+  `[signal]` (por exemplo `[signal] applied: ...`;
+  `TestReload_ABareSIGHUPReloadsAndIsAttributedToTheSignal`). Não é uma
+  linha de outro nome: quem procura reloads na trilha procura
+  `(config reload)` e encontra os dois.
 - Um pedido que não pôde ser tocado (pid morto, sem permissão) é fechado na
   hora como recusado (`serve_not_rung`) pelo próprio requerente, e a
   resposta é `serve_not_running`: um pedido que ficasse pendente seria

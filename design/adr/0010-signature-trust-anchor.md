@@ -64,6 +64,13 @@ assinaturas" são a mesma permissão. Não há degrau entre uma e outra.
 >   remover a velha é outro restart. Uma chave retirada de `trusted_keys`
 >   continua aceita até o processo reiniciar.
 
+> *Correção, 30 set 2026:* são **oito** esquemas, não cinco: aos cinco de
+> 28 set juntaram-se sujeitos bloqueados (ADR-0031), saúde dos backends
+> (ADR-0041) e pedidos ao `serve` (ADR-0044), todos migrados por
+> `openStore` no mesmo handle (`cmd/mcp-gateway/main.go`). O argumento fica
+> igual. E o `reload` da ADR-0044 não toca `trusted_keys`: acrescentar ou
+> retirar uma chave continua pedindo restart, como está acima.
+
 ## Decisão
 
 **As chaves públicas confiáveis vivem no arquivo de configuração, e a

@@ -59,7 +59,8 @@ func upstreamUsage(w io.Writer) {
   mcp-gateway upstream update [-config FILE] -image NAME@sha256:HEX NAME
   mcp-gateway upstream deregister [-config FILE] NAME
   mcp-gateway upstream maintenance on|off [-config FILE] NAME [-message TEXT] [-until T]
-  mcp-gateway upstream redial [-config FILE] [-wait 2m] NAME
+  mcp-gateway upstream maintenance list [-config FILE] [-json]
+  mcp-gateway upstream redial [-config FILE] [-wait 2m] [-json] NAME
 
 "upstream update" moves an oci entry to a new image digest in place and keeps
 its tool approvals: each one holds only while the new image advertises the

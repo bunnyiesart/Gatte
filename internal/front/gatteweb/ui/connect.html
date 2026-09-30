@@ -21,7 +21,7 @@
           <span class="step-n">1</span>
           <div class="step-body">
             <b>Send them the script</b>
-            <p class="muted">It installs nothing but the Gatte entry in Claude Code{{if $.P.C.HasCA}} and the team's certificate authority{{end}}, and it holds no secret.</p>
+            <p class="muted">It adds the Gatte entry to Claude Code{{if $.P.C.HasCA}}, installs the team's certificate authority{{end}} and installs the <code>gatte-status</code> check, putting it on their PATH ({{if eq $os.OS "windows"}}the user PATH{{else}}a line in their shell profile{{end}}). It holds no secret.</p>
             <a class="btn primary" href="{{$base}}/people/connect/script?os={{$os.OS}}&amp;u={{$.P.C.Username}}">{{template "download"}}Download {{$os.Filename}}</a>
           </div>
         </li>

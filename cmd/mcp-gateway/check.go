@@ -115,7 +115,8 @@ func checkUsage(w io.Writer) {
 
 Checks, before serve is started and without changing anything:
   the configuration loads; the owner and mode of the configuration file, the
-  signing key, the age key, the vault and the database; sops on PATH; the
+  signing key, the age key, the vault and the database; that the service
+  account can append to the SIEM copy ([audit.siem] path); sops on PATH; the
   vault decrypts and holds every credential a registered backend names;
   podman and subordinate ids for oci backends; every registered entry is
   signed by a trusted key; the database's schema is one this binary knows;

@@ -81,7 +81,8 @@ times TWICE the number of analysts.
 There is deliberately no command that lowers a counter. Returning units to
 one analyst does not create requests at the provider, it takes them from
 everybody else. Raising a limit is an edit to the configuration file, a
-review, and a restart.
+review, and "mcp-gateway reload", which applies [quota] to the running
+gateway from its next call (design/adr/0044).
 
 Exit codes: 0 ok, 1 ran and found a problem (nothing to show, or the
 registry and the file disagree), 2 could not run.

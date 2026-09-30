@@ -80,6 +80,12 @@ genérico: qual store falhou não é da conta de quem chama.
 
 Alargar limite é commit, revisão e restart.
 
+> *Correção, 30 set 2026:* desde a ADR-0044 é commit, revisão e
+> `mcp-gateway reload` (ou SIGHUP): o `[quota]` se aplica ao `serve` em
+> execução a partir da próxima chamada, sem restart, e um `[quota]` que
+> discorda do registro é recusado sem mudar nada. O mesmo vale para o
+> "(com restart)" das Consequências.
+
 ### 9. Sem `[quota]`, nada muda
 
 O `quota.Gate` é porta obrigatória de `gateway.Config`; sem nenhum

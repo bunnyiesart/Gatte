@@ -59,11 +59,15 @@ directory, as sign does.
 The copy is the database and nothing else. NOT in it, to be backed up
 separately (backup prints the paths this configuration names): the
 configuration file, the encrypted vault, the age key, the signing key, the
-identity provider's accounts, the SIEM copy of the trail, the proxy's TLS
-material. The age key and the signing key are secrets: keep their copies
+identity provider's accounts, the SIEM copy of the trail, the CA the
+connect scripts hand out (connect.ca_file), the proxy's TLS material, and
+the container images of oci backends. The age key and the signing key are secrets: keep their copies
 offline and apart from the database copies.
 
-restore replaces the database with a backup, with serve stopped. It refuses
+restore replaces the database with a backup, with serve stopped: it
+refuses while anything listens on the configuration's listen address, the
+one serve holds, and it does not look for the management API's sockets, so
+stop those too. It refuses
 unless the file passes SQLite's integrity check, its schema is one this
 binary knows, its audit chain verifies (and ends at -expect-head, when
 given), and no registry entry in it carries a signature that fails against

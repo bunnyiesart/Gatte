@@ -152,6 +152,9 @@ const (
 	// CauseNotListed: a new process is connected but no listing of it has
 	// succeeded yet, so it takes no call (ADR-0041 item 4).
 	CauseNotListed Cause = "not_listed"
+	// CauseRedial: an operator asked for this backend to be dropped and
+	// dialled again (`upstream redial`, design/adr/0044).
+	CauseRedial Cause = "redial"
 )
 
 // BackendRecord is what the gateway process last observed about one

@@ -12,7 +12,7 @@ import "time"
 
 // ContractVersion is the api/admin.openapi.yaml info.version these types
 // implement.
-const ContractVersion = "1.1.0"
+const ContractVersion = "1.2.0"
 
 // Default socket paths (design/adr/0040 §1).
 const (

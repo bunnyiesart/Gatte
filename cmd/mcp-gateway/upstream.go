@@ -33,6 +33,8 @@ func cmdUpstream(args []string, stdout, stderr io.Writer) int {
 		return upstreamDeregister(rest, stdout, stderr)
 	case "maintenance":
 		return upstreamMaintenance(rest, stdout, stderr)
+	case "redial":
+		return upstreamRedial(rest, stdout, stderr)
 	case "-h", "--help", "help":
 		upstreamUsage(stdout)
 		return exitOK
@@ -54,9 +56,12 @@ func upstreamUsage(w io.Writer) {
                                 [-env VARNAME ...]
   mcp-gateway upstream deregister [-config FILE] NAME
   mcp-gateway upstream maintenance on|off [-config FILE] NAME [-message TEXT] [-until T]
+  mcp-gateway upstream redial [-config FILE] [-wait 2m] NAME
 
 "upstream maintenance" announces planned maintenance of one backend; see
-"mcp-gateway maintenance -h".
+"mcp-gateway maintenance -h". "upstream redial" drops the running gateway's
+connection to one backend and dials it again with the vault as it is now;
+see "mcp-gateway reload -h".
 
 Registering does not sign. Run "mcp-gateway sign NAME" afterwards, or the
 gateway will not trust the entry.

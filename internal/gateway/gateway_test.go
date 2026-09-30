@@ -492,13 +492,19 @@ func newFullHarness(t *testing.T, maxResultBytes int64, q quotaSetup, allowed ..
 	}
 	quotaStore := q.store
 	var counters quota.Reader
+	var self quota.SelfReader
 	if quotaStore == nil {
 		real := quotasql.New(db)
-		quotaStore, counters = real, real
+		quotaStore, counters, self = real, real, real
 	}
 	gate, err := quota.NewGate(plan, quotaStore)
 	if err != nil {
 		t.Fatalf("quota.NewGate: %v", err)
+	}
+	if self != nil {
+		// As the composition root wires it: gatte.status reads the
+		// caller's own use through this port (design/adr/0042 item 3).
+		gate = gate.WithSelf(self)
 	}
 
 	h := &harness{

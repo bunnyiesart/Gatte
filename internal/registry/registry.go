@@ -110,6 +110,14 @@ type UpstreamServer struct {
 // a security control.
 var safeUpstreamName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]*$`)
 
+// ValidName reports whether name is one a registry entry may take: the
+// grammar of safeUpstreamName and not the reserved gatte. For callers that
+// name backends without an entry in hand, such as the operator's backend
+// notes in the configuration file (design/adr/0042 item 3).
+func ValidName(name string) bool {
+	return safeUpstreamName.MatchString(name) && !strings.EqualFold(name, ReservedName)
+}
+
 // ReservedName is the upstream name no registry entry may take, in any
 // case: it is the namespace of the tools the gateway serves itself
 // (design/adr/0041 item 5).

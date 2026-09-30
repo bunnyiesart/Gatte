@@ -68,8 +68,8 @@ func TestInitializeCarriesTheInstructions(t *testing.T) {
 	if !strings.HasPrefix(got, "If a Gatte tool call fails saying its backend is unavailable") {
 		t.Errorf("instructions = %q, want the directive first", got)
 	}
-	if len(got) >= 1024 {
-		t.Errorf("instructions are %d bytes, want under 1024", len(got))
+	if got != serverInstructions {
+		t.Errorf("with no contact and no backend notes configured the instructions are %q, want the constant", got)
 	}
 }
 

@@ -19,6 +19,7 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
@@ -83,17 +84,29 @@ func TestARewrittenToolDisappearsFromALiveSessionWithoutARestart(t *testing.T) {
 	if status != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (the refusal travels as a JSON-RPC error)", status)
 	}
-	if !strings.Contains(body, "unknown tool") {
-		t.Errorf("body = %q, want the opaque unknown-tool answer", body)
+	// This analyst was LISTED the tool, so the answer says it is no longer
+	// available to them (design/adr/0042 item 2) -- the words for every
+	// cause, never "review" or "rewritten". Until then this was the SDK's
+	// `unknown tool`, on the argument that "withdrawn from under you" would
+	// tell an attacker mid-rug-pull the gateway noticed. It told them the
+	// same thing already: a tool that answered a minute ago now does not.
+	// What the old text added was a model trying other names for it.
+	wantText, _ := json.Marshal(pulledText(toolListCases))
+	if !strings.Contains(body, string(wantText)) || strings.Contains(body, "review") {
+		t.Errorf("body = %q, want the constant no-longer-available answer", body)
 	}
-	// And it is the SAME answer a name that never existed gets. A caller
-	// who could tell "this tool was withdrawn from under you" from "no such
-	// tool" would learn that the gateway just noticed something about this
-	// backend, which is exactly what an attacker mid-rug-pull wants to know.
+	// A name this analyst was never listed still gets the SDK's bytes, and
+	// so does the rug-pulled tool for a caller who was never listed it:
+	// the memory is per subject and never an oracle for a guessed name.
 	_, absent := h.rawCall(toolNonexistent)
+	if !strings.Contains(absent, `unknown tool \"`+toolNonexistent) {
+		t.Errorf("a name never listed = %q, want the SDK's unknown tool", absent)
+	}
 	normalize := func(s, name string) string { return strings.ReplaceAll(s, name, "<TOOL>") }
-	if a, b := normalize(body, toolListCases), normalize(absent, toolNonexistent); a != b {
-		t.Errorf("a quarantined-by-rug-pull tool is distinguishable from a nonexistent one:\n  rug-pulled: %q\n  nonexistent: %q", a, b)
+	_, neverListed := h.rawCallAs(tokenResponder, toolListCases)
+	_, neverListedAbsent := h.rawCallAs(tokenResponder, toolNonexistent)
+	if a, b := normalize(neverListed, toolListCases), normalize(neverListedAbsent, toolNonexistent); a != b {
+		t.Errorf("to a caller never listed it, a rug-pulled tool is distinguishable from a nonexistent one:\n  rug-pulled: %q\n  nonexistent: %q", a, b)
 	}
 	assertNoLeak(t, body)
 

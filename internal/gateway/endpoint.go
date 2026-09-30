@@ -523,9 +523,12 @@ type Gateway struct {
 	vault      vault.Provider
 	quarantine quarantine.Store
 	audit      audit.Recorder
-	policy     *access.Policy
+	// policy and quota are swapped whole by ApplyPolicy (design/adr/0044):
+	// a call reads one pointer, once, and decides against that policy
+	// from start to finish.
+	policy     atomic.Pointer[access.Policy]
 	blocklist  access.Blocklist
-	quota      *quota.Gate
+	quota      atomic.Pointer[quota.Gate]
 	dialer     Dialer
 	signatures signer.Store
 	verifier   *signer.Verifier
@@ -823,7 +826,7 @@ func New(cfg Config) (*Gateway, error) {
 		boot = now()
 	}
 
-	return &Gateway{
+	g := &Gateway{
 		maint:          cfg.Maintenance,
 		state:          cfg.State,
 		roundInterval:  cfg.RoundInterval,
@@ -839,9 +842,7 @@ func New(cfg Config) (*Gateway, error) {
 		vault:          cfg.Vault,
 		quarantine:     cfg.Quarantine,
 		audit:          cfg.Audit,
-		policy:         cfg.Policy,
 		blocklist:      cfg.Blocklist,
-		quota:          cfg.Quota,
 		dialer:         cfg.Dialer,
 		signatures:     cfg.Signatures,
 		verifier:       cfg.Verifier,
@@ -856,7 +857,10 @@ func New(cfg Config) (*Gateway, error) {
 		gone:           map[string]Upstream{},
 		authLimit:      newAuthLimiter(),
 		routes:         map[string]routedTool{},
-	}, nil
+	}
+	g.policy.Store(cfg.Policy)
+	g.quota.Store(cfg.Quota)
+	return g, nil
 }
 
 // Connect reads the Upstream Registry, brings up every registered backend
@@ -920,7 +924,7 @@ func (g *Gateway) Connect(ctx context.Context) error {
 	// honest -- nothing is served, rather than served with a budget nobody
 	// is counting. See ErrQuotaMisconfigured. With no [[quota.provider]]
 	// block the plan is empty and this is a no-op.
-	if err := CheckQuotaCoverage(g.quota.Plan(), entries); err != nil {
+	if err := CheckQuotaCoverage(g.quota.Load().Plan(), entries); err != nil {
 		g.swap(nil, nil, nil)
 		g.log.ErrorContext(ctx, "gateway: quota policy and upstream registry disagree, serving nothing",
 			slog.String("detail", err.Error()))
@@ -1269,7 +1273,7 @@ func (g *Gateway) Reconcile(ctx context.Context) error {
 	// budgets that declares one of a budgeted entry's variables is spending
 	// that account's credential without a counter, so it is taken out of
 	// the wanted set below, which closes it if it is live.
-	uncounted, coverageErr := quotaCoverage(g.quota.Plan(), entries)
+	uncounted, coverageErr := quotaCoverage(g.quota.Load().Plan(), entries)
 	frozen := coverageErr != nil
 	if frozen {
 		failures = append(failures, coverageErr)
@@ -1962,6 +1966,9 @@ func (g *Gateway) ListTools(ctx context.Context, id access.Identity) ([]ToolDef,
 	}
 
 	routes := g.snapshot()
+	// One policy for the whole listing: a reload landing halfway through
+	// must not produce a list no policy ever granted (design/adr/0044).
+	policy := g.policy.Load()
 
 	names := make([]string, 0, len(routes))
 	for name := range routes {
@@ -1972,7 +1979,7 @@ func (g *Gateway) ListTools(ctx context.Context, id access.Identity) ([]ToolDef,
 	out := make([]ToolDef, 0, len(names))
 	for _, name := range names {
 		rt := routes[name]
-		if err := g.policy.Authorize(id, name); err != nil {
+		if err := policy.Authorize(id, name); err != nil {
 			continue
 		}
 		switch err := g.admit(ctx, rt.route); {
@@ -2156,7 +2163,7 @@ func (g *Gateway) Dispatch(ctx context.Context, c Caller, namespacedTool string,
 		return Result{}, ErrUnknownTool
 	}
 
-	if err := g.policy.Authorize(c.Identity, namespacedTool); err != nil {
+	if err := g.policy.Load().Authorize(c.Identity, namespacedTool); err != nil {
 		g.auditRefusal(ctx, c, namespacedTool, rt.route.upstream, reasonForbidden)
 		return Result{}, err
 	}
@@ -2225,7 +2232,7 @@ func (g *Gateway) Dispatch(ctx context.Context, c Caller, namespacedTool string,
 	// at the backend may well have already spent the provider's quota. The
 	// error is conservative in the right direction. Over-counting protects
 	// the budget; under-counting burns it.
-	if err := g.quota.Admit(ctx, c.Identity.Subject, namespacedTool, g.now()); err != nil {
+	if err := g.quota.Load().Admit(ctx, c.Identity.Subject, namespacedTool, g.now()); err != nil {
 		if errors.Is(err, quota.ErrExhausted) {
 			g.auditRefusal(ctx, c, namespacedTool, rt.route.upstream, reasonQuotaExhausted)
 			// Returned rather than collapsed into ErrUnknownTool, which is
@@ -2817,7 +2824,7 @@ func (g *Gateway) verifyEntry(ctx context.Context, entry registry.UpstreamServer
 // louder than serving with a hole, and the operator's fix is one line in
 // the config file (ADR-0030 decision 11).
 func (g *Gateway) withholdUndeclaredQuotaTools(ctx context.Context, routes map[string]routedTool) []error {
-	undeclared := UndeclaredQuotaTools(g.quota.Plan(), slices.Collect(maps.Keys(routes)))
+	undeclared := UndeclaredQuotaTools(g.quota.Load().Plan(), slices.Collect(maps.Keys(routes)))
 	if len(undeclared) == 0 {
 		return nil
 	}

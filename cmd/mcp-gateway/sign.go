@@ -13,6 +13,7 @@ import (
 	"io/fs"
 	"strings"
 
+	"github.com/bunnyiesart/Gatte/internal/config"
 	"github.com/bunnyiesart/Gatte/internal/registry"
 	"github.com/bunnyiesart/Gatte/internal/signer"
 )
@@ -94,6 +95,8 @@ func cmdSign(args []string, stdout, stderr io.Writer) int {
 	genKey := fs.Bool("generate-key", false,
 		"create a new Ed25519 signing key and exit; requires -out; refuses to overwrite an existing file")
 	keyOut := fs.String("out", "", "with -generate-key: path to write the new key to")
+	all := fs.Bool("all", false, "sign every registered entry not validly signed by this key: unsigned, stale (INVALID), or signed by another key")
+	dryRun := fs.Bool("dry-run", false, "with -all: list what would be signed and sign nothing")
 	if code, ok := opParse(fs, args, stdout, stderr, signUsage); !ok {
 		return code
 	}
@@ -110,6 +113,19 @@ func cmdSign(args []string, stdout, stderr io.Writer) int {
 		}
 		return runGenerateKey(*keyOut, stdout, stderr)
 	}
+	if *all {
+		if fs.NArg() != 0 {
+			fmt.Fprintf(stderr, "sign -all takes no entry name: it signs every entry that needs it\n\n")
+			signUsage(stderr)
+			return exitCannotRun
+		}
+		return signRun(*configPath, stdout, stderr, func(e *opEnv) int { return runSignAll(e, *dryRun) })
+	}
+	if *dryRun {
+		fmt.Fprintf(stderr, "-dry-run goes with -all\n\n")
+		signUsage(stderr)
+		return exitCannotRun
+	}
 	if fs.NArg() != 1 {
 		fmt.Fprintf(stderr, "sign takes exactly one argument: the name of the registry entry to sign\n\n")
 		signUsage(stderr)
@@ -117,7 +133,7 @@ func cmdSign(args []string, stdout, stderr io.Writer) int {
 	}
 	name := fs.Arg(0)
 
-	return opRun(*configPath, stdout, stderr, func(e *opEnv) int {
+	return signRun(*configPath, stdout, stderr, func(e *opEnv) int {
 		return runSign(e, name)
 	})
 }
@@ -125,6 +141,7 @@ func cmdSign(args []string, stdout, stderr io.Writer) int {
 func signUsage(w io.Writer) {
 	fmt.Fprint(w, `Usage:
   mcp-gateway sign [-config FILE] NAME
+  mcp-gateway sign [-config FILE] -all [-dry-run]
   mcp-gateway sign -generate-key -out PATH
 
 Signs the registry entry NAME with the Ed25519 key at signer.key_file, and
@@ -136,6 +153,16 @@ requires a new signature. It covers no secret value, which is why rotating
 a credential never invalidates one.
 
 The key file must be readable by its owner only (chmod 600).
+
+-all signs every registered entry that is not validly signed by this key:
+unsigned, stale (the entry changed after it was signed, shown INVALID) or
+signed by another key -- which is what re-signing after a key rotation
+needs. Each entry signed is printed with the fields its signature covers;
+-dry-run lists them and signs nothing.
+
+Run as root (the key is root's), sign reads the configuration and the key,
+then drops to the owner of the database directory before it opens the
+database, so no -wal or -shm file is left owned by root.
 
 -generate-key creates that key at -out and prints the two configuration
 lines to paste. It reads no configuration file, because the config is not
@@ -204,37 +231,8 @@ func runGenerateKey(path string, stdout, stderr io.Writer) int {
 }
 
 func runSign(e *opEnv, name string) int {
-	keyFile := strings.TrimSpace(e.cfg.Signer.KeyFile)
-	if keyFile == "" {
-		// Not a problem found by a command that ran -- the command cannot
-		// run at all. Signing needs a key, and there is nothing sensible
-		// to default to: generating one here would silently mint a new
-		// trust anchor that nothing else in the deployment knows about.
-		fmt.Fprint(e.stderr, `no signing key is configured: signer.key_file is empty.
-
-Signing requires an Ed25519 private key, in its own owner-only file on this
-host (design/adr/0006-signing-key-and-signature-storage.md item 1). Set it
-in the configuration file:
-
-    [signer]
-    key_file = "/usr/local/etc/mcp-gateway/signing.key"
-
-Create the key with, for example:
-
-    openssl genpkey -algorithm ed25519 -out /usr/local/etc/mcp-gateway/signing.key
-    chmod 600 /usr/local/etc/mcp-gateway/signing.key
-`)
-		return exitCannotRun
-	}
-
-	key, err := signer.LoadKey(keyFile)
-	if err != nil {
-		// LoadKey refuses a group- or world-readable key file, and its
-		// message already says which mode it found and what to chmod. That
-		// is a real misconfiguration on a shared host -- anyone with a
-		// login could sign entries -- so it is surfaced verbatim rather
-		// than summarised. No error from LoadKey contains key material.
-		fmt.Fprintf(e.stderr, "%v\n", err)
+	key, keyFile, ok := e.signingKeyOrLoad()
+	if !ok {
 		return exitCannotRun
 	}
 	s, err := signer.NewSigner(key)
@@ -355,7 +353,8 @@ signer.trusted_keys, and a signature is only evidence relative to a key that
 was trusted in advance (design/adr/0010-signature-trust-anchor.md). Until it
 is listed, `+"`mcp-gateway upstream list`"+` reports this entry as INVALID.
 
-Add this to the configuration file and restart the gateway:
+Add this to the configuration file and restart the gateway (trusted_keys is
+not reloadable: "mcp-gateway reload" says it differs and leaves it alone):
 
     [signer]
     trusted_keys = [
@@ -368,4 +367,52 @@ to define what it spawns should be a diff somebody read.
 `, name, trustedKeyLine(s.PublicKey()), signer.KeyFingerprint(s.PublicKey()))
 	}
 	return exitOK
+}
+
+// loadSigningKey reads signer.key_file, refusing a missing setting or a
+// key file others can read, and says why on stderr.
+func loadSigningKey(cfg *config.Config, stderr io.Writer) (ed25519.PrivateKey, string, bool) {
+	keyFile := strings.TrimSpace(cfg.Signer.KeyFile)
+	if keyFile == "" {
+		// Not a problem found by a command that ran -- the command cannot
+		// run at all. Signing needs a key, and there is nothing sensible
+		// to default to: generating one here would silently mint a new
+		// trust anchor that nothing else in the deployment knows about.
+		fmt.Fprint(stderr, `no signing key is configured: signer.key_file is empty.
+
+Signing requires an Ed25519 private key, in its own owner-only file on this
+host (design/adr/0006-signing-key-and-signature-storage.md item 1). Set it
+in the configuration file:
+
+    [signer]
+    key_file = "/usr/local/etc/mcp-gateway/signing.key"
+
+Create the key with, for example:
+
+    openssl genpkey -algorithm ed25519 -out /usr/local/etc/mcp-gateway/signing.key
+    chmod 600 /usr/local/etc/mcp-gateway/signing.key
+`)
+		return nil, "", false
+	}
+
+	key, err := signer.LoadKey(keyFile)
+	if err != nil {
+		// LoadKey refuses a group- or world-readable key file, and its
+		// message already says which mode it found and what to chmod. That
+		// is a real misconfiguration on a shared host -- anyone with a
+		// login could sign entries -- so it is surfaced verbatim rather
+		// than summarised. No error from LoadKey contains key material.
+		fmt.Fprintf(stderr, "%v\n", err)
+		return nil, "", false
+	}
+	return key, keyFile, true
+}
+
+// signingKeyOrLoad is the key signRun read before it dropped root, or the
+// one signer.key_file names.
+func (e *opEnv) signingKeyOrLoad() (ed25519.PrivateKey, string, bool) {
+	if e.signingKey != nil {
+		return e.signingKey, e.signingKeyFile, true
+	}
+	return loadSigningKey(e.cfg, e.stderr)
 }

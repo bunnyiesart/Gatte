@@ -25,6 +25,7 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -78,6 +79,10 @@ type opEnv struct {
 	// actor, when set, is who this command's operator rows are attributed
 	// to; otherwise cliActor decides.
 	actor admin.Actor
+	// signingKey and signingKeyFile are the key `sign` read as root before
+	// it dropped to the database's owner (design/adr/0044); nil otherwise.
+	signingKey     ed25519.PrivateKey
+	signingKeyFile string
 }
 
 // cmd renders the command an operator should run next, for the hints this

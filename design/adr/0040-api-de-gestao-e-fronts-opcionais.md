@@ -359,6 +359,17 @@ Remover, renomear ou mudar o sentido de um campo é `/v2`, servido ao lado de
 > `manifest_mismatch`. A regra do §3 continua a mesma, para um conjunto:
 > aprova-se só o que foi mostrado.
 
+> **CORREÇÃO — 30 set 2026 (ADR-0044).** O contrato está em `1.3.0`, com a
+> feature `serve_control`: `POST /v1/reload`, `POST /v1/upstreams/redial` e
+> `GET /v1/serve-requests/{id}`, e o código de erro `serve_not_running`. São
+> as primeiras ações que mudam algo na memória do `serve`: o backend grava
+> um pedido no banco, toca o `serve` com SIGHUP no pid que ele registrou e
+> espera a resposta; as linhas `(config reload)` e `(upstream redial)` são
+> escritas pelo `serve`. O backend de gestão continua sem enxergar a memória
+> do `serve` e sem listener novo. O `sign` rodado como root passa a seguir a
+> regra do §1 ("o processo root nunca abre arquivo do usuário de serviço"):
+> vira o dono do diretório do banco antes de abri-lo.
+
 ## O que sai do front e o que fica
 
 | Sai de `ui*.go` para o backend | Fica em cada front (via `frontkit`) |

@@ -63,7 +63,10 @@ of production credentials. Full history: `DEVELOPMENT-LOG.md`.
   `Gateway.Connect` still runs once, at boot, and a running gateway is kept
   in step by `Gateway.Reconcile`, on the same tick as `Refresh`. Read that
   ADR for what one round does and does not do -- in particular that it does
-  not re-dial on a rotated credential, which stays GAB-20's unbuilt half.
+  not re-dial on a rotated credential by itself -- since 30 Sep 2026 the
+  operator does, with `upstream redial NAME`, and `reload` applies roles,
+  groups and quota without a restart
+  (`design/adr/0044-mudar-sem-reiniciar-todo-mundo.md`).
   Between 31 Aug and 15 Sep 2026 the retry half did not exist at all, and
   ADR-0004's correction block keeps that visible.
 

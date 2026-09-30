@@ -22,6 +22,8 @@ import (
 	"github.com/bunnyiesart/Gatte/internal/audit"
 	auditsqlite "github.com/bunnyiesart/Gatte/internal/audit/sqlite"
 	"github.com/bunnyiesart/Gatte/internal/config"
+	"github.com/bunnyiesart/Gatte/internal/control"
+	controlsqlite "github.com/bunnyiesart/Gatte/internal/control/sqlite"
 	healthsqlite "github.com/bunnyiesart/Gatte/internal/health/sqlite"
 	"github.com/bunnyiesart/Gatte/internal/idp"
 	"github.com/bunnyiesart/Gatte/internal/idp/autheliafile"
@@ -58,7 +60,7 @@ func newBackend(t *testing.T) backend {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { db.Close() })
-	for _, m := range []func(*sql.DB) error{auditsqlite.Migrate, quarantinesqlite.Migrate, quotasqlite.Migrate, accesssqlite.Migrate, healthsqlite.Migrate} {
+	for _, m := range []func(*sql.DB) error{auditsqlite.Migrate, quarantinesqlite.Migrate, quotasqlite.Migrate, accesssqlite.Migrate, healthsqlite.Migrate, controlsqlite.Migrate} {
 		if err := m(db); err != nil {
 			t.Fatal(err)
 		}
@@ -79,7 +81,24 @@ func newBackend(t *testing.T) backend {
 		Connect: config.Connect{ClientID: "claude-code", CallbackPort: 33418}}
 	trail := auditsqlite.New(db)
 	tools := quarantinesqlite.New(db)
+	ctl := controlsqlite.New(db)
+	if err := ctl.RecordProcess(context.Background(), control.Process{PID: os.Getpid(), Boot: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
 	svc, err := admin.New(admin.Deps{
+		// A stand-in for serve: ringing it answers every pending request
+		// as applied, the way serve's SIGHUP handler finishes them.
+		Control: ctl,
+		Ring: func(control.Process) error {
+			pending, err := ctl.Pending(context.Background())
+			for _, r := range pending {
+				_ = ctl.Finish(context.Background(), r.ID, control.OutcomeApplied, []byte(`{"recorded":false,"messages":["stand-in"]}`), time.Now(), time.Now())
+			}
+			return err
+		},
+		Upstreams: func(context.Context, *config.Config) ([]adminapi.Upstream, error) {
+			return []adminapi.Upstream{{Name: "casemgmt"}}, nil
+		},
 		Config: func() (*config.Config, error) { return cfg, nil },
 		Tools:  tools, Blocks: accesssqlite.New(db), Trail: trail, Quota: quotasqlite.New(db), Maintenance: healthsqlite.New(db), Health: healthsqlite.New(db),
 		Record:   func(ctx context.Context, _ *config.Config, rec audit.Record) error { return trail.Record(ctx, rec) },
@@ -200,6 +219,21 @@ func TestClient_CoversEveryOperationOfTheContractAgainstTheRealBackend(t *testin
 	}
 	_, err = op.EndMaintenance(ctx, adminapi.MaintenanceTarget{Scope: adminapi.ScopeGateway})
 	do("endMaintenance", err)
+	reloaded, err := op.Reload(ctx)
+	do("reloadConfig", err)
+	if err == nil && (reloaded.State != adminapi.ServeStateDone || reloaded.Outcome != adminapi.ServeOutcomeApplied || reloaded.RequestedBy != "(operator:alice)") {
+		t.Errorf("reloadConfig = %+v", reloaded)
+	}
+	redialed, err := op.RedialUpstream(ctx, adminapi.RedialRequest{Upstream: "casemgmt"})
+	do("redialUpstream", err)
+	if err == nil && (redialed.Kind != adminapi.ServeKindRedial || redialed.Upstream != "casemgmt") {
+		t.Errorf("redialUpstream = %+v", redialed)
+	}
+	again, err := op.ServeRequestByID(ctx, reloaded.ID)
+	do("serveRequest", err)
+	if err == nil && again.ID != reloaded.ID {
+		t.Errorf("serveRequest = %+v", again)
+	}
 	_, err = op.QuotaUsage(ctx, adminapi.QuotaQuery{})
 	do("quotaUsage", err)
 	_, err = op.People(ctx)

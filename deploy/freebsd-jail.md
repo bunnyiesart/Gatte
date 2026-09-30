@@ -565,14 +565,24 @@ edit runs as root because the quick start leaves the file `root:mcpgw`
 from the quick start's step 3 afterwards. Only the operator's shell needs
 `SOPS_AGE_KEY_FILE`: the adapter sets it itself for `serve` (above).
 
-**Then restart the gateway.** This is the part that is easy to miss and
-expensive to get wrong: credentials are resolved at *dial* time and passed
-into the upstream subprocess's environment, so an upstream that is already
-connected keeps using the old value indefinitely. Editing the vault
-changes what the *next* connect will use and nothing else.
+**Then re-dial the backend that uses it** (since 30 Sep 2026,
+`design/adr/0044`):
 
-So until the gateway restarts, "I rotated the credential" means "the old
-credential is still in active use by every connected upstream."
+    sudo -u mcpgw mcp-gateway upstream redial -config /usr/local/etc/mcp-gateway/config.toml NAME
+
+This is the part that is easy to miss and expensive to get wrong:
+credentials are resolved at *dial* time and passed into the upstream
+subprocess's environment, so an upstream that is already connected keeps
+using the old value indefinitely. Editing the vault changes what the
+*next* dial will use and nothing else. `upstream redial` is that next dial
+for one backend: the running gateway drops it, dials it again with the
+vault as it is now, and answers once the new process is listed (its calls
+are answered as reconnecting meanwhile; the other backends are not
+touched). It is recorded as `(upstream redial)`. A restart still works and
+does it for every backend at once.
+
+So until the backend is re-dialled, "I rotated the credential" means "the
+old credential is still in active use by that connected upstream."
 
 **One exception since ADR-0020, and it is not a rotation command.** A
 reconciliation re-dials an upstream whose registry entry CHANGED, and a
@@ -609,22 +619,43 @@ handed at dial time, and logs a warning naming the upstream and the
 variable if they differ:
 
     a credential was rotated in the vault but the connected upstream is
-    STILL USING THE OLD VALUE -- rotation takes effect at the next dial,
-    so restart the gateway to make it real
+    STILL USING THE OLD VALUE -- rotation takes effect at the next dial:
+    run `mcp-gateway upstream redial NAME` for each upstream named (or
+    restart the gateway) to make it real
 
 It compares keyed digests, never values, so nothing derived from a secret
-is kept or logged. **It does not reconnect anything** -- the restart above
-is still the step that makes a rotation real, and the warning exists to
-stop that step being forgotten. A reconnect command was considered and
-deliberately not built: it would need a control channel into the process
-that holds every backend credential, and SIGHUP is not the cheap version
-here because this service runs under `daemon -r` (see the pidfile note in
-`deploy/gateway-jail/mcp_gateway`).
+is kept or logged. **It does not reconnect anything** -- `upstream redial`
+(or a restart) is still the step that makes a rotation real, and the
+warning exists to stop that step being forgotten. The reconnect command
+this paragraph used to call deliberately unbuilt exists since 30 Sep 2026
+(`design/adr/0044`), and its control channel is not a listener: the
+request is a row in the gateway's database and SIGHUP is only the
+doorbell, sent to the pid `serve` recorded there -- not to the `daemon -r`
+supervisor in `${pidfile}`, which is why `service mcp_gateway reload`
+runs `mcp-gateway reload` instead of rc.subr's default.
 
 ### The Ed25519 signing key (ADR-0006)
 
-Replace the key file, then **re-sign every registry entry** with
-`mcp-gateway sign NAME`. Entries signed with the old key will not verify
-against the new one, and with `require_signed` on (the default) they will
-not be served. `sign` tells you when it replaced a signature made by a
-different key -- if you did not just rotate, find out whose key that was.
+It takes **two restarts**, because `signer.trusted_keys` is deliberately
+not reloadable (`design/adr/0044`: `mcp-gateway reload` names it when it
+differs and leaves it alone):
+
+1. Generate the new key at a new path (`mcp-gateway sign -generate-key
+   -out .../signing-2.key`) and add its `trusted_keys` line **beside** the
+   old one. Restart the gateway: from here both keys are trusted.
+2. Point `signer.key_file` at the new key -- only `sign` reads it, on every
+   run, so this needs no restart -- and re-sign everything at once with
+   `mcp-gateway sign -all` (`-dry-run` first lists what it will sign).
+   Every entry signed by the old key is re-signed, each printed with the
+   fields its signature covers; entries already signed by the new key are
+   left alone. `upstream list` then shows `yes` for all of them.
+3. Remove the old key's `trusted_keys` line and restart the gateway again.
+   Delete the old key file.
+
+Skipping step 1's restart is what makes the entries go unserved: an entry
+signed with a key the running gateway does not trust is refused, and with
+`require_signed` on (the default) it is not served. `sign` tells you when
+it replaced a signature made by a different key -- if you did not just
+rotate, find out whose key that was. Run as root, `sign` becomes the
+database directory's owner before it opens the database, so it leaves no
+root-owned `-wal`/`-shm` behind and no `chown` is needed.

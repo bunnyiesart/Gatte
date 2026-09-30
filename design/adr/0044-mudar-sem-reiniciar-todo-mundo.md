@@ -100,13 +100,18 @@ compartilham.
    um reload não põe o gateway num estado que o mesmo arquivo teria
    recusado no boot. Registro ilegível: `registry_unavailable`, porque a
    concordância não pode ser conferida.
-3. **Trocar a política e a quota de uma vez** (`Gateway.ApplyPolicy`): dois
-   ponteiros atômicos, trocados sob o lock da tabela, e no mesmo passo as
+3. **Trocar a política e a quota de uma vez** (`Gateway.ApplyPolicy`): um
+   só ponteiro atômico para o par (política, quota), trocado sob o lock da
+   tabela, e no mesmo passo as
    rotas que a nova quota deixa sem declaração são retiradas, como o
    `Refresh` retiraria — entre o reload e a próxima rodada nenhuma tool de
    um backend recém-orçado é servida sem contagem. `ListTools` lê o
    ponteiro uma vez por listagem: nenhuma lista é metade de uma política.
-   Uma chamada já autorizada termina sob a política que a admitiu.
+   Uma chamada já autorizada termina sob a política que a admitiu, e sob a
+   quota guardada junto com ela: o `Dispatch` lê o par uma vez, antes do
+   `Authorize`, e é esse par que debita. Eram dois ponteiros lidos em
+   separado, e um reload entre o `Authorize` e a quota casava a política
+   nova com a quota velha (ou o contrário) numa mesma chamada.
 4. **Escrever `(config reload)`** com o diff de alcance, e responder o
    mesmo diff: por papel, as tools que ele **ganhou** e **perdeu**, medidas
    sobre as tools que o gateway roteia agora (aprovadas ou não: aprovar é
@@ -243,7 +248,8 @@ apontando para `upstream redial`.
   pelo `openStore`.
 - `internal/reload`: o diff (`Diff`, `NotReloaded`, `Summary`), puro.
 - `internal/gateway`: `ApplyPolicy`, `Policy`, `RoutedTools`, `Redial`,
-  `BackendState`; `policy` e `quota` viraram ponteiros atômicos; causa de
+  `BackendState`; `policy` e `quota` viraram um só ponteiro atômico
+  (`controls`); causa de
   saúde nova `redial`.
 - `internal/admin`: `Reload`, `Redial`, `ServeRequest`, e as linhas
   declaradas `(config reload)` e `(upstream redial)` — escritas pelo
@@ -313,6 +319,7 @@ apontando para `upstream redial`.
   `TestApplyPolicy_RefusesAQuotaPlanTheRegistryDisagreesWith`,
   `TestApplyPolicy_WithholdsANewlyBudgetedBackendsUndeclaredToolsAtOnce`,
   `TestApplyPolicy_ListToolsReadsOnePolicy`,
+  `TestApplyPolicy_ACallIsDecidedByOneSnapshotOfPolicyAndQuota`,
   `TestRedial_DropsAndReDialsOneBackendWithTheCurrentCredential`,
   `TestRedial_RefusesWhatItCannotBringBack`.
 - `internal/reload`:

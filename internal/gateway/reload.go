@@ -19,13 +19,22 @@ import (
 // or refused by its own entry.
 var ErrNotServable = errors.New("gateway: backend is not servable")
 
+// controls is the role policy and the quota gate in force, as one value.
+// ApplyPolicy stores a new one whole and never mutates a stored one, so a
+// call that loaded it once holds a policy and a gate that were in force
+// together (design/adr/0044).
+type controls struct {
+	policy *access.Policy
+	quota  *quota.Gate
+}
+
 // Policy returns the role policy in force now. It is swapped whole by
 // ApplyPolicy, so a caller that holds the pointer holds one coherent
 // policy.
-func (g *Gateway) Policy() *access.Policy { return g.policy.Load() }
+func (g *Gateway) Policy() *access.Policy { return g.controls.Load().policy }
 
 // QuotaPlan returns the quota plan in force now.
-func (g *Gateway) QuotaPlan() *quota.Plan { return g.quota.Load().Plan() }
+func (g *Gateway) QuotaPlan() *quota.Plan { return g.controls.Load().quota.Plan() }
 
 // ApplyPolicy replaces the role policy and the quota gate of a running
 // gateway (design/adr/0044). It is the whole of what a reload changes in
@@ -65,8 +74,9 @@ func (g *Gateway) ApplyPolicy(ctx context.Context, p *access.Policy, q *quota.Ga
 		g.mu.Unlock()
 		return ErrClosed
 	}
-	g.policy.Store(p)
-	g.quota.Store(q)
+	// One store: the policy and the gate change together, and a call
+	// that loaded the previous snapshot finishes under both of its halves.
+	g.controls.Store(&controls{policy: p, quota: q})
 	undeclared := UndeclaredQuotaTools(q.Plan(), slices.Collect(maps.Keys(g.routes)))
 	for _, tool := range undeclared {
 		delete(g.routes, tool)

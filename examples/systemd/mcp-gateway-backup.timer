@@ -1,0 +1,12 @@
+# Starts mcp-gateway-backup.service once a day. Nothing runs between two
+# copies: the timer is systemd's, not a process of Gatte's.
+[Unit]
+Description=Daily Gatte database backup
+
+[Timer]
+OnCalendar=*-*-* 03:15:00
+RandomizedDelaySec=15m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

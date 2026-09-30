@@ -198,8 +198,10 @@ sudo -u mcpgw mcp-gateway upstream register -config "$CFG" -name edr -transport 
   -command /usr/local/bin/your-edr-mcp -env EDR_CLIENT_ID -env EDR_CLIENT_SECRET
 sudo mcp-gateway sign -config "$CFG" edr        # or: sign -all -dry-run, then sign -all -manifest SHA256
 
-# 5. Check the configuration offline, then run (in the foreground here;
-#    under your service manager in production).
+# 5. Check the configuration and this host's files offline, then run (in
+#    the foreground here; under your service manager in production).
+#    Every FAIL line carries the command that fixes it; exit 0 = none failed.
+sudo mcp-gateway check -config "$CFG" -user mcpgw     # -online also asks the IdP
 sudo -u mcpgw mcp-gateway upstream list -config "$CFG"
 sudo -u mcpgw mcp-gateway serve -config "$CFG"
 
@@ -391,6 +393,10 @@ refusing unknown keys, before doing anything. `mcp-gateway help` and
 | Rotate one backend's credential | `sops secrets.enc.json`, then `upstream redial NAME` | after one round, for that backend only |
 | Pick up a backend container you restarted or upgraded | `upstream redial NAME` | after one round, for that backend only |
 | Re-sign everything, e.g. after rotating the signing key | `sign -all -dry-run`, read the plan, then `sign -all -manifest SHA256` (as root; signs exactly the plan shown, nothing if it moved) | within one `quarantine.refresh_interval` |
+| Check the host before a start or after a change | `check [-user mcpgw] [-online] [-json]`, as root | -- |
+| Take a consistent copy of the database | `backup -out DIR [-keep N]` (serve may run; `examples/systemd/mcp-gateway-backup.timer` daily) | -- |
+| Put a copy back | `restore -in FILE -expect-head HASH`, with serve stopped | at the next start |
+| Upgrade or roll back the binary | `docs/upgrade.md` | at the next start |
 | Change anything else: `listen`, `[oidc]` (`scopes_supported` included), `[analyst]`, `[signer]` (`trusted_keys` included), `[vault]`, `[audit]`, `[telemetry]`, `[response]`, `[oci]`, `[upstreams]`, `[quarantine]` | edit `config.toml`, then restart `serve` | after restart; `reload` names these keys when they differ and leaves them alone |
 
 **Reload, and what it does not reload** (`design/adr/0044`). `reload`
@@ -412,6 +418,35 @@ signal `serve`) and wait for `serve`'s answer (`-wait`, default 2 m). A
 bare SIGHUP (`systemctl reload`, `kill -HUP`) reloads too, and its row
 says `[signal]`. `examples/systemd/mcp-gateway.service` has the
 `ExecReload=`.
+
+**Check, back up, upgrade** (`design/adr/0045`). `check` answers "is
+this host right?" before `serve` is started: the configuration loads; the
+signing key is root's, `0600` and unreadable by the service account; the
+configuration is not writable by it; the age key is owner-only and its;
+the database, its `-wal` and `-shm` and the SIEM file are writable by it;
+`sops` is on `PATH` and the vault decrypts and holds every credential name
+a backend declares (no value is printed); `oci` backends have `podman` and
+subordinate ids; every entry is signed by a trusted key; the audit chain
+verifies; the database's schema is one this binary knows; with `-online`,
+the IdP's discovery document names this issuer. Each FAIL and WARN comes
+with the command that fixes it, and the report ends with what it does not
+check (ACLs and MAC, the service manager's `PATH`, whether each backend
+answers). Exit 0 no FAIL, 1 at least one, 2 could not run. It writes
+nothing; run as root, it drops to the database directory's owner before
+opening the database. `backup` copies the database with `VACUUM INTO`
+while `serve` runs, checks the copy (integrity, chain, signatures), prints
+its sha256 and audit head, and lists what is NOT in it with this
+configuration's paths: the configuration, the vault, the age key, the
+signing key, the IdP. Keep those separately, and the two keys offline.
+`restore` refuses, and changes nothing, unless serve is stopped and the
+copy passes the integrity check, the schema guard, the chain (to
+`-expect-head`) and the signatures against this configuration's trusted
+keys; it keeps the database it replaced and records a `(restore)` row.
+Every row written after the copy leaves the restored trail. The database
+records its schema (`PRAGMA user_version`): every command, `serve`
+included, refuses a file written by a newer binary and says what to do,
+and the first row of each boot is `(boot)`, naming the build and the
+schema. `mcp-gateway version` prints both.
 
 **Rotating the signing key takes two restarts**, because `trusted_keys`
 is deliberately not reloadable:
@@ -461,7 +496,8 @@ most 200 characters, no hidden characters. Each on and off is an operator
 row, `(maintenance on)` or `(maintenance off)`. To stop `serve` itself
 (an upgrade, a host reboot): `maintenance on -until ...`, give open
 sessions a few minutes to read it, stop `serve`, work, start it, then
-`maintenance off`. While `serve` is stopped nothing answers inside MCP; the
+`maintenance off`; for an upgrade, `docs/upgrade.md` puts a `backup` and two
+`check` runs in between. While `serve` is stopped nothing answers inside MCP; the
 service manager restarts it on failure (`daemon -r` in the FreeBSD rc.d
 script, `deploy/gateway-serve.md`; `Restart=on-failure` under systemd), and
 the SIEM should alert on the heartbeat going quiet for three intervals
@@ -899,6 +935,8 @@ restart (`design/adr/0044`); the rest of the configuration needs one.
 - **`DEVELOPMENT-LOG.md`** / **`RESEARCH-recovered.md`** -- the
   investigation history and evidence behind each decision, including the
   six gateways evaluated.
+- **`docs/upgrade.md`** -- upgrading the binary with a checked backup,
+  and rolling back.
 - **`deploy/`** -- runbooks for the reference deployments, including
   credential rotation and alerting on a trail that went quiet.
 

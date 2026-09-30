@@ -253,6 +253,19 @@ type Repository interface {
 	Deregister(ctx context.Context, name string) error
 }
 
+// ImageUpdater replaces the image of an oci entry in place: the one
+// change to an entry that keeps its name, and therefore its quarantine
+// state, on purpose (design/adr/0043). It is a port of its own, not a
+// method of Repository, because only `upstream update` may reach it.
+type ImageUpdater interface {
+	// UpdateImage sets the image of the oci entry registered under name
+	// and returns the entry as stored. It returns ErrNotFound if no entry
+	// has that name, and ErrInvalid if the entry is not oci or the image
+	// fails Validate (it must be pinned by digest). Nothing else of the
+	// entry changes, CreatedAt included.
+	UpdateImage(ctx context.Context, name, image string) (UpstreamServer, error)
+}
+
 // digestPinned is NAME@sha256:<64 lowercase hex>. A tag can be repointed at
 // other bytes without changing the entry, so a signature over a tag would
 // attest a name instead of the code that runs.

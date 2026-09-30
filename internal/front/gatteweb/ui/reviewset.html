@@ -1,0 +1,37 @@
+{{template "top" .}}
+{{$csrf := .CSRF}}{{$base := .Base}}
+{{with .Data}}
+<a class="back" href="{{$base}}/tools?server={{.Server}}"><svg viewBox="0 0 8 14" width="8" height="14" aria-hidden="true"><path d="M7 1L1 7l6 6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>Tools</a>
+{{if .Server}}
+<div class="head">
+  <h1>Review {{vis .Server}}</h1>
+  <p class="sub">{{len .Tools}} {{if eq (len .Tools) 1}}tool waits{{else}}tools wait{{end}} for review: {{.Pending}} new, {{.Changed}} changed. Everything below is what one click approves.</p>
+</div>
+
+{{if .Hidden}}
+<div class="notice danger" role="alert">{{template "warn"}}<p><b>These definitions contain {{.Hidden}} hidden {{if eq .Hidden 1}}character{{else}}characters{{end}}</b>, highlighted below. Approving the set approves every one of them; approve the others one at a time instead.</p></div>
+{{end}}
+
+{{range $i, $t := .Tools}}
+<article class="set-item">
+  <h2 class="mono-title"><a href="{{$base}}/tools/show?server={{$t.Server}}&amp;tool={{$t.Tool}}">{{vis $t.Tool}}</a> <span class="muted">{{template "status" $t.Status}}</span></h2>
+  {{template "definition" $t}}
+</article>
+{{end}}
+
+{{if .Approvable}}
+<div class="actions">
+  <form method="post" action="{{$base}}/tools/approve-set">
+    <input type="hidden" name="csrf" value="{{$csrf}}">
+    <input type="hidden" name="server" value="{{.Server}}">
+    <input type="hidden" name="manifest" value="{{.Manifest}}">
+    <button class="btn{{if not .Hidden}} primary{{end}}">Approve these {{len .Tools}}</button>
+  </form>
+  <p class="caption">Approves exactly the {{len .Tools}} definitions shown on this page (review set sha256:{{short .Manifest}}). If any tool of {{vis .Server}} appears, disappears or changes before you click, nothing is approved.</p>
+</div>
+{{else if .Reason}}
+<div class="group empty-state"><p>{{vis .Reason}}</p></div>
+{{end}}
+{{end}}
+{{end}}
+{{template "bottom" .}}

@@ -262,7 +262,7 @@ func TestUI_PagesCarryAStrictPolicyAndNoScript(t *testing.T) {
 	mustRegister(t, e, stdioEntry("edr"))
 	mustObserve(t, e, "edr", quarantine.ToolIdentity{Name: "get_host", Description: "d", InputSchema: []byte(`{}`)})
 
-	for _, page := range []string{"/", "/tools", "/tools/show?server=edr&tool=get_host", "/access", "/audit", "/upstreams", "/quota"} {
+	for _, page := range []string{"/", "/tools", "/tools/show?server=edr&tool=get_host", "/tools?server=edr", "/tools/review-set?server=edr", "/access", "/audit", "/upstreams", "/quota"} {
 		w := uiDo(s, "GET", page, nil, cookie, nil)
 		if w.Code != http.StatusOK {
 			t.Errorf("GET %s: %d\n%s", page, w.Code, w.Body)
@@ -285,7 +285,7 @@ func TestUI_PagesCarryAStrictPolicyAndNoScript(t *testing.T) {
 
 func TestUI_GetNeverChangesState(t *testing.T) {
 	e, s, cookie := newUITest(t)
-	for _, target := range []string{"/access/block?subject=ana&csrf=" + s.csrf, "/tools/approve?server=edr&tool=x"} {
+	for _, target := range []string{"/access/block?subject=ana&csrf=" + s.csrf, "/tools/approve?server=edr&tool=x", "/tools/approve-set?server=edr&manifest=x"} {
 		if w := uiDo(s, "GET", target, nil, cookie, nil); w.Code != http.StatusMethodNotAllowed {
 			t.Errorf("GET %s: %d, want 405", target, w.Code)
 		}

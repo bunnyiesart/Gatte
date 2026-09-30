@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"html/template"
 	"net/http"
+	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -40,19 +42,49 @@ func (f *Front) overview(w http.ResponseWriter, r *http.Request) {
 // ---- tools
 
 type toolsData struct {
-	Show   string
+	Show string
+	// Server is the backend the list is filtered to, "" for all.
+	Server string
 	Tools  []adminapi.Tool
 	Counts map[string]int
+	// Backends is every backend with a tool, and how many of its tools
+	// wait for review.
+	Backends []backendChip
+	// ReviewSet is the backend serving feature tool_review_set.
+	ReviewSet bool
+}
+
+type backendChip struct {
+	Name   string
+	Review int
 }
 
 func (f *Front) toolsPage(w http.ResponseWriter, r *http.Request) {
-	show := r.URL.Query().Get("show")
+	q := r.URL.Query()
+	show, server := q.Get("show"), q.Get("server")
 	if show != "review" && show != "approved" {
 		show = ""
 	}
-	list, err := f.op.ListTools(r.Context(), "", show)
-	d := toolsData{Show: show, Tools: list.Tools,
+	// The filter is the backend's (listTools takes server); the whole list
+	// is read only to name the backends.
+	all, err := f.op.ListTools(r.Context(), "", "")
+	list := all
+	if err == nil && (server != "" || show != "") {
+		list, err = f.op.ListTools(r.Context(), server, show)
+	}
+	d := toolsData{Show: show, Server: server, Tools: list.Tools,
 		Counts: map[string]int{"all": list.Counts.All, "review": list.Counts.Review, "approved": list.Counts.Approved}}
+	for _, t := range all.Tools {
+		if n := len(d.Backends); n == 0 || d.Backends[n-1].Name != t.Server {
+			d.Backends = append(d.Backends, backendChip{Name: t.Server})
+		}
+		if t.Status != adminapi.StatusApproved {
+			d.Backends[len(d.Backends)-1].Review++
+		}
+	}
+	if me, werr := f.op.WhoAmI(r.Context()); werr == nil {
+		d.ReviewSet = slices.Contains(me.Features, adminapi.FeatureToolReviewSet)
+	}
 	f.render(w, "tools", "Tools", page{Data: d, Error: errText(err)})
 }
 
@@ -83,7 +115,20 @@ type reviewLine struct {
 
 func (f *Front) toolShowPage(w http.ResponseWriter, r *http.Request) {
 	server, tool := r.URL.Query().Get("server"), r.URL.Query().Get("tool")
+	f.showTool(w, r, server, tool, "")
+}
+
+// showTool renders the review page of server.tool, with notice above it
+// when an action led here.
+func (f *Front) showTool(w http.ResponseWriter, r *http.Request, server, tool, notice string) {
 	rv, err := f.op.ReviewTool(r.Context(), server, tool)
+	d := reviewOf(rv, err == nil)
+	f.render(w, "tool", frontkit.VisibleText(server+"."+tool), page{Nav: "tools", Data: d, Notice: notice, Error: errText(err)})
+}
+
+// reviewOf is the page's view of one review. ok is whether the read
+// succeeded; a failed one still shows what it carried.
+func reviewOf(rv adminapi.ToolReview, ok bool) toolReview {
 	var d toolReview
 	if rv.Tool.Server != "" {
 		// The fingerprint in the form is the one this read showed, and the
@@ -92,7 +137,7 @@ func (f *Front) toolShowPage(w http.ResponseWriter, r *http.Request) {
 		d = toolReview{Server: rv.Tool.Server, Tool: rv.Tool.Tool, Status: rv.Tool.Status, Usable: rv.Tool.Usable,
 			Fingerprint: rv.Tool.ObservedHash, Approved: rv.Tool.ApprovedHash, Output: rv.ReviewText}
 	}
-	if err == nil && rv.Observed.Kept {
+	if ok && rv.Observed.Kept {
 		d.Shown = true
 		d.Hidden = rv.Observed.HiddenCodePoints
 		if rv.Observed.Description != nil {
@@ -104,7 +149,42 @@ func (f *Front) toolShowPage(w http.ResponseWriter, r *http.Request) {
 		d.OutputSchema = schemaBlock(rv.Observed.Lines, "output schema:")
 		d.Diff = diffLines(rv.Diff)
 	}
-	f.render(w, "tool", frontkit.VisibleText(server+"."+tool), page{Nav: "tools", Data: d, Error: errText(err)})
+	return d
+}
+
+// reviewSetData is one backend's review set as the page shows it: every
+// definition, and the manifest the one button sends.
+type reviewSetData struct {
+	Server           string
+	Manifest         string
+	Tools            []toolReview
+	Pending, Changed int
+	Hidden           int
+	Approvable       bool
+	Reason           string
+}
+
+func (f *Front) reviewSetPage(w http.ResponseWriter, r *http.Request) {
+	server := r.URL.Query().Get("server")
+	rs, err := f.op.ReviewToolSet(r.Context(), server)
+	d := reviewSetData{Server: rs.Server, Manifest: rs.Manifest, Pending: rs.Pending, Changed: rs.Changed,
+		Hidden: rs.HiddenCodePoints, Reason: rs.Reason}
+	if err == nil {
+		d.Approvable = rs.Approvable
+		for _, rv := range rs.Tools {
+			t := reviewOf(rv, true)
+			// A definition the page cannot draw is not approved from it.
+			d.Approvable = d.Approvable && t.Shown
+			d.Tools = append(d.Tools, t)
+		}
+	}
+	f.render(w, "reviewset", "Review "+frontkit.VisibleText(server), page{Nav: "tools", Data: d, Error: errText(err)})
+}
+
+func (f *Front) toolApproveSet(w http.ResponseWriter, r *http.Request) {
+	server, manifest := r.PostForm.Get("server"), r.PostForm.Get("manifest")
+	res, err := f.op.ApproveToolSet(r.Context(), adminapi.ApproveSetRequest{Server: server, Manifest: manifest})
+	f.showResult(w, "tools", "Approve the tools of "+frontkit.VisibleText(server), "/tools?server="+url.QueryEscape(server), actionResult(res.ActionResult, err))
 }
 
 // splitLines cuts segments at each line feed, which the backend sends as a
@@ -169,10 +249,39 @@ func diffLines(diff []adminapi.DiffLine) []reviewLine {
 	return out
 }
 
+// toolApprove approves one tool and, when that went through and was
+// recorded, opens the next tool waiting for review -- of the same backend
+// first -- with the backend's answer above it. A refusal, an unrecorded
+// change or an empty queue is the result page, as for any action.
 func (f *Front) toolApprove(w http.ResponseWriter, r *http.Request) {
 	server, tool, fp := r.PostForm.Get("server"), r.PostForm.Get("tool"), r.PostForm.Get("fingerprint")
 	res, err := f.op.ApproveTool(r.Context(), adminapi.ApproveRequest{Server: server, Tool: tool, Fingerprint: fp})
-	f.showResult(w, "tools", "Approve "+frontkit.VisibleText(server+"."+tool), "/tools", actionResult(res.ActionResult, err))
+	out := actionResult(res.ActionResult, err)
+	if out.OK {
+		if next, ok := f.nextToReview(r, server, tool); ok {
+			notice := out.Output + "\nNext waiting for review: " + next.Server + "." + next.Tool + "."
+			f.showTool(w, r, next.Server, next.Tool, notice)
+			return
+		}
+	}
+	f.showResult(w, "tools", "Approve "+frontkit.VisibleText(server+"."+tool), "/tools", out)
+}
+
+// nextToReview is the first tool waiting for review other than the one
+// just approved: the same backend's first, then any backend's.
+func (f *Front) nextToReview(r *http.Request, server, tool string) (adminapi.Tool, bool) {
+	for _, s := range []string{server, ""} {
+		list, err := f.op.ListTools(r.Context(), s, "review")
+		if err != nil {
+			return adminapi.Tool{}, false
+		}
+		for _, t := range list.Tools {
+			if t.Server != server || t.Tool != tool {
+				return t, true
+			}
+		}
+	}
+	return adminapi.Tool{}, false
 }
 
 func (f *Front) toolRevoke(w http.ResponseWriter, r *http.Request) {

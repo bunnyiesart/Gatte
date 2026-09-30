@@ -392,25 +392,31 @@ Code has a connect script.
    list, so the connect script stores no scope on the analyst's machine
    and a change reaches everyone at their next sign-in. `[analyst]` lines
    are one line of visible characters each, without quotes; `serve`
-   refuses a set whose instructions would pass 2000 characters. All of
-   these need a restart of `serve`.
+   refuses a set whose instructions would pass 2000 characters.
+   `[oidc]` and `[analyst]` need a restart of `serve`; `[connect]` does
+   not, because only the management API reads it, on every request.
 
 ### Adding a person
 
 In the web console (`sudo mcp-gateway ui -manage-users`), **People → Add
-a person** is a three-step assistant: the username and display name, the
-groups (only groups that map to a role), then the result: a one-time
-password, shown once and stored only as an argon2id hash, and a connect
-script for macOS, Linux or Windows. Hand both to the person over a
+person** is a four-step assistant: **Person** (full name, username and an
+optional email), **Access** (the groups, only groups that map to a role),
+**Review** (then **Create account**), and **Connect**: a one-time password,
+shown once and stored only as an argon2id hash, and a connect script for
+macOS, Linux or Windows. Hand both to the person over a
 channel you trust. A front of your own gets the same script from the
 management API (`GET /v1/connect/script?os=linux&username=NAME`).
 
 The analyst runs the script on their own machine. It checks that `claude`
-is installed, installs the gateway's CA when `ca_file` is set, checks that
-Gatte answers, adds the server to Claude Code (`claude mcp add --transport
-http --scope user --client-id ... --callback-port ...`, replacing an older
-entry of the same name), installs `gatte-status`, and prints the next step:
-open Claude Code, run `/mcp` and sign in. The browser opens at the IdP;
+is installed, installs the gateway's CA when `ca_file` is set, installs
+`gatte-status` and puts it on the `PATH` (on macOS and Linux a line in each
+of `~/.zshrc`, `~/.bashrc` and `~/.profile` that exists, or a new
+`~/.profile`; on Windows the user `PATH`), checks that Gatte answers
+(skipped on macOS and Linux when `curl` is missing, and on Windows when a
+CA is set; a failure only warns), adds the server to Claude Code (`claude
+mcp add --transport http --scope user --client-id ... --callback-port ...`,
+replacing an older entry of the same name), and prints the next step: open
+Claude Code, run `/mcp` and sign in. The browser opens at the IdP;
 after the sign-in the gateway's tools appear.
 
 ### What the analyst sees
@@ -453,6 +459,7 @@ The connect script installs `gatte-status` (`~/.config/gatte/bin`, or
 | 2 | TLS failed | the CA, the certificate |
 | 3 | Gatte, or the proxy in front of it, is not serving | tell the operator |
 | 4 | Gatte is up and Claude Code is not signed in, or the account is refused | `/mcp` and sign in; if it persists, the account is blocked or disabled |
+| 5 | unexpected: something that is not Gatte answered at its address, an error the check does not recognise, `curl` missing, or `claude -p` failed under `-backends` | tell the operator, with the line it printed |
 
 It uses only the public protected-resource metadata, the MCP endpoint's
 401 challenge and `claude mcp get`, and runs Claude Code from its own
@@ -493,15 +500,19 @@ What a backend must be:
 ### Container backends
 
 ```sh
-podman pull ghcr.io/example/edr-mcp:1.4
-podman inspect --format '{{index .RepoDigests 0}}' ghcr.io/example/edr-mcp:1.4
+# as the service account: the image must be in mcpgw's own podman store
+sudo -u mcpgw podman pull ghcr.io/example/edr-mcp:1.4
+sudo -u mcpgw podman inspect --format '{{index .RepoDigests 0}}' ghcr.io/example/edr-mcp:1.4
 sudo -u mcpgw mcp-gateway upstream register -config "$CFG" -name edr -transport oci \
   -image ghcr.io/example/edr-mcp@sha256:<64 hex> -arg --network=slirp4netns \
   -env EDR_CLIENT_ID -env EDR_CLIENT_SECRET
 ```
 
 The image must be pinned by digest, because the signature covers it and a
-tag can be repointed. Every container gets `--rm -i`, a read-only root,
+tag can be repointed. It must already be in the service account's own
+(rootless) podman store: the gateway runs `podman run --pull=never`, so an
+image pulled by root or by you is not found, and the backend does not
+start (`internal/gateway/oci/invocation.go`). Every container gets `--rm -i`, a read-only root,
 `--cap-drop=all`, `--security-opt=no-new-privileges`, a numeric non-root
 `--user` (default `65534:65534`; set `[oci] user` to the image's own uid if
 its files need it) and `--pids-limit`, `--memory`, `--cpus` from `[oci]`
@@ -524,8 +535,12 @@ Who runs what: operator commands run **as the service account**
 (`sudo -u mcpgw`), because they write the database it writes; `sign`,
 `check` and `restore` run **as root**, and drop to the database owner
 before opening the database. `reload` and `upstream redial` refuse root.
-Each task below is also a button in the [web console](#the-web-console),
-except registering and signing a backend, which stay in the terminal.
+The [web console](#the-web-console) has a button for reviewing, approving
+and revoking tools, blocking and unblocking, maintenance, the audit trail
+and people. It has none for registering, deregistering, signing or
+updating a backend (`upstream update`), for `reload` or `upstream redial`
+(the management API has those two, the console does not), or for the host
+tasks (`check`, `backup`, `restore`): those stay in the terminal.
 
 ### Reviewing tools
 
@@ -626,12 +641,20 @@ map to a role. Every change is an audited operator row.
 | See quota spend | `quota usage [-analyst SUBJECT]` |
 
 Operator actions are rows too, attributed to the operator and tagged with
-where they came from (`[cli]`, `[ui]`): `(tool approve)`, `(tool approve
-set)`, `(tool revoke)`, `(upstream update)`, `(upstream redial)`,
-`(config reload)`, `(maintenance on/off)`, `(access block)`,
-`(restore)`. Gateway events are attributed to `(gateway)`: `(boot)`,
-`(backend health)`, `(access block expired)`, and the `denied` rows for a
-new tool, a changed tool and a signature that fails. In the CSV export,
+where they came from (`[cli]`, `[cli env]`, `[ui]`, `[api]`): `(tool
+approve)`, `(tool approve set)`, `(tool revoke)`, `(upstream update)`,
+`(upstream redial)`, `(config reload)` (`[signal]` for a bare SIGHUP),
+`(maintenance on)`, `(maintenance off)`, `(access block)`, `(access
+unblock)`, `(restore)`, and the account rows: `(account add)`, `(account
+groups)`, `(account disable)`, `(account enable)`, `(account reset
+password)`, `(account offboard)`, `(account delete)`. `upstream register`,
+`upstream deregister` and `sign` write **no** row: a backend shows in the
+trail only once `serve` acts on it, as a `(backend health)` row with the
+reason `backend up: first observed` or `backend removed: ...`, and
+`upstream list` is where you see what is registered and signed. Gateway events are
+attributed to `(gateway)`: `(boot)`, `(backend health)`, `(access block
+expired)`, and the `denied` rows for a new tool, a changed tool and a
+signature that fails. In the CSV export,
 hidden characters are written as `\u{XXXX}` and a cell a spreadsheet would
 run as a formula starts with an apostrophe.
 
@@ -640,7 +663,9 @@ run as a formula starts with an apostrophe.
 | What changed | How to apply it | Takes effect |
 |---|---|---|
 | `[[role]]`, `[group_to_role]`, `[quota]` | `reload` (or `systemctl reload mcp-gateway`) | next call; a client sees tools it gained after it reconnects (`/mcp`) |
-| Anything else: `listen`, `[oidc]` (`scopes_supported` included), `[analyst]`, `[connect]`, `[signer]` (`trusted_keys` included), `[vault]`, `[audit]`, `[telemetry]`, `[response]`, `[oci]`, `[upstreams]`, `[quarantine]` | restart `serve` | after restart |
+| Anything else: `listen`, `[oidc]` (`scopes_supported` included), `[analyst]`, `[signer]` (`trusted_keys` included), `[vault]`, `[audit]`, `[telemetry]`, `[response]`, `[oci]`, `[upstreams]`, `[quarantine]` | restart `serve` | after restart |
+| `[connect]`, `[idp]`, `signer.key_file` | nothing: `serve` does not read them; the management API reads `[connect]` and `[idp]` on every request, and `sign` reads the key on every run | next use |
+| `[admin]` (`operator_group`, `account_group`) | restart the management API backend: it resolves both groups once, when it starts; under systemd that is its next socket activation after its idle exit, or `systemctl restart mcp-gateway-admin.service mcp-gateway-admin-accounts.service` | next start of the backend |
 
 `reload` asks the running `serve`, through a row in its database and a
 SIGHUP, to re-read its own `-config` (`design/adr/0044`). The whole file is
@@ -682,11 +707,14 @@ the service manager's `PATH`, whether each backend answers).
 without migrating it, checks the copy (integrity, schema, chain,
 signatures), prints its sha256 and audit head, and lists what is **not** in
 it with this configuration's paths: the configuration, the vault, the age
-key, the signing key, the IdP. Keep those separately, and the two keys
+key, the signing key, the IdP's accounts, the SIEM copy, the connect
+scripts' CA (`connect.ca_file`), the proxy's TLS material and the `oci`
+backends' images. Keep those separately, and the two keys
 offline.
 
-**`restore`** refuses, and changes nothing, unless serve is stopped and the
-copy passes the integrity check, the schema guard (including objects the
+**`restore`** refuses, and changes nothing, unless serve is stopped (it
+refuses while anything listens on `listen`; it does not look for the
+management sockets, so stop those yourself) and the copy passes the integrity check, the schema guard (including objects the
 binary did not create), the chain (to `-expect-head`) and the signatures
 against this configuration's trusted keys. It keeps the database it
 replaced and records a `(restore)` row. Rows written after the copy was
@@ -734,22 +762,32 @@ row can only name a shared account.
 
 ### What to alert on in the SIEM
 
-Gatte sends no alerts itself; the SIEM does, from the JSONL or GELF copy
-of the trail:
+Gatte sends no alerts itself; the SIEM does, from the JSONL copy of the
+trail (`[audit.siem]`) or the GELF copy (`[telemetry]`). The two name the
+same things differently: in JSONL the caller is `caller`, the backend
+`backend` and the outcome `verdict`; in GELF they are
+`_analyst_identity`, `_target_upstream` and `_outcome`. The queries below
+use the JSONL names.
 
-- **Silence.** A heartbeat arrives at boot and on every maintenance tick,
-  with counters, backends up/reconnecting/down, tools pending and changed.
-  Alert when it stops arriving for three intervals, not only on what it
-  says (`deploy/freebsd-jail.md`, "Alerting on a chain that went quiet").
-- **A restart**: a new `boot` value, or a `(boot)` row.
-- **A backend down**: `tool:"(backend health)" AND outcome:denied`, closed
+- **Silence.** A heartbeat line (`type:heartbeat`) arrives at boot and on
+  every maintenance tick, with counters, backends up/reconnecting/down,
+  tools pending and changed. It is written only to the JSONL copy; GELF
+  carries no heartbeat. Alert when it stops arriving for three intervals,
+  not only on what it says (`deploy/freebsd-jail.md`, "Alerting on a chain
+  that went quiet").
+- **A restart**: a new `boot` value on the heartbeat, or a `(boot)` row.
+- **A backend down**: `tool:"(backend health)" AND verdict:denied`, closed
   by the `allowed` row of the same backend.
 - **A tool changed**: a `changed` row means a backend altered a tool you
   approved; read the diff before re-approving. New tools and failed
   signatures are `denied` rows attributed to `(gateway)` too.
 - **Access and policy changes**: `(config reload)`, `(access block)`,
-  `(access block expired)`, `(upstream update)`, `(restore)`.
-- **Refusal spikes**: `outcome:denied` excluding caller `(gateway)`.
+  `(access unblock)`, `(access block expired)`, `(upstream update)`,
+  `(restore)`, and the `(account ...)` rows.
+- **Refusal spikes**: `verdict:denied AND NOT caller:"(gateway)" AND NOT
+  caller:"(operator*"` (an operator's refused action is a `denied` row too).
+  [`docs/how-to/alert-from-the-siem.md`](docs/how-to/alert-from-the-siem.md)
+  has every query and the field names of both copies.
 
 ## The web console
 
@@ -773,7 +811,7 @@ link locally.
 | Page | What you do there |
 |---|---|
 | Overview | See what needs attention: `serve` not reporting, changed and pending tools, unsigned backends, backends down, reconnecting or in maintenance, the gateway's maintenance, blocked analysts, the latest refusals. |
-| People | Each role, the groups that map to it and its tools, and everyone the gateway has seen, with a Block button. With `-manage-users`: add a person (a three-step assistant ending with the one-time password and the connect script), change groups, disable, give a new one-time password, **Offboard** or **Delete** (`design/adr/0038`, `0039`, `0046`). |
+| People | Each role, the groups that map to it and its tools, and everyone the gateway has seen, with a Block button. With `-manage-users`: add a person (a four-step assistant, Person, Access, Review, Connect, ending with the one-time password and the connect script), change groups, disable, give a new one-time password, **Offboard** or **Delete** (`design/adr/0038`, `0039`, `0046`). |
 | Tools | Review a definition with hidden characters escaped and the diff coloured, then approve that exact fingerprint (the next waiting tool opens), or revoke. Filter by backend, and review all of one backend's waiting tools on one page, approved together by one "Approve these N" button that carries the set's manifest (`design/adr/0043`). |
 | Access | Block, with an optional end, or unblock an analyst, with a reason that goes in the trail. |
 | Audit | Filter the trail by analyst, outcome, tool, backend, source and time range, page through it, export the filtered rows as CSV or JSON Lines, and verify the hash chain against your SIEM's head. |
@@ -816,7 +854,9 @@ sudo -u mcpgw mcp-gateway admin -config "$CFG" \
   maintenance, quota, reload and connect-script routes. Identity provider
   accounts are served by a second, root-only socket (`admin -accounts`);
   a group it is delegated to (`[admin] account_group`) reaches only the
-  accounts whose groups all map to a role.
+  accounts whose groups all map to a role. Both backends resolve
+  `operator_group` and `account_group` once, when they start, so a change
+  to either takes effect at the backend's next start.
 - **The contract** is `api/admin.openapi.yaml`, version 1.4.0, additive
   since 1.0. `GET /v1/whoami` lists the features the backend has --
   `maintenance`, `backend_health`, `tool_review_set`, `serve_control`
@@ -983,7 +1023,9 @@ and never why.
 **A backend that echoes its own credential does not hand it to the
 analyst.** Every result is scrubbed of the values the gateway injected into
 that backend, in raw and escaped forms, and a result that cannot be
-scrubbed is refused rather than forwarded.
+scrubbed is refused rather than forwarded. No decision record covers it;
+the behaviour is `scrubResult` in `internal/gateway/endpoint.go`, and its
+tests beside it.
 
 **It does not guarantee the trail's integrity against whoever controls the
 host.** Records are hash-chained, not individually signed, and the chain

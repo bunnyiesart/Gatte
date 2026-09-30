@@ -180,9 +180,11 @@ The file carries a second shape of line since ADR-0021, and anything that
 parses it has to know that:
 
 ```json
-{"v":4,"type":"heartbeat","ts":"…","chain":"gatte-jail-01","boot":"…",
+{"v":5,"type":"heartbeat","ts":"…","chain":"gatte-jail-01","boot":"…",
  "head":"…","records":128,"allowed":94,"denied":31,"failed":3,
- "upstreams":4,"tools":57,"suspended":false,"pending":2,"changed":0}
+ "upstreams":4,"tools":57,"suspended":false,"pending":2,"changed":0,
+ "backends_up":4,"backends_reconnecting":0,"backends_down":0,
+ "backends_maintenance":0,"gateway_maintenance":"off"}
 ```
 
 Audit lines carry `"type":"record"`; the heartbeat carries no `hash` and no
@@ -225,7 +227,7 @@ cheap because the line arrives anyway:
   exists to catch. `-1` in `pending` or `changed` means the quarantine
   could not be read, never "all clear".
 
-The `denied` counter, and a search for `outcome:denied`, include the rows
+The `denied` counter, and a search for `verdict:denied`, include the rows
 the gateway writes about itself (first sight, change, refused signature),
 attributed to `caller:"(gateway)"`. Filter that caller out when counting
 analyst refusals.
@@ -379,11 +381,13 @@ deliberately rather than by widening the mode.
 maps a new field by its first observed value, so a field that first arrives
 looking numeric or date-like becomes `long`/`date` — and from then on a
 malformed value in that field drops the whole line. Pin any new field via
-`PUT /api/system/indices/mappings` on index set `6aa42d7143c0e26417f2d472`
+`PUT /api/system/indices/mappings` on index set `INDEX_SET_ID` (your index set's id)
 before it ships, or keep emitting strings. (The schema is versioned: `v`
-is `2` since ADR-0021, and adding a field is a version bump by ADR-0017
-item 4. It was `1` until 15 Sep 2026; this line said so for as long as the
-heartbeat above had already shipped.)
+is `5` since ADR-0041, and adding a field is a version bump by ADR-0017
+item 4: `2` added the heartbeat (ADR-0021), `3` its `pending` and
+`changed` (ADR-0032), `4` the records' `analyst_name` (ADR-0037), `5` the
+heartbeat's `backends_*` and `gateway_maintenance` (ADR-0041). This line
+said `2` while the heartbeat above already shipped `4`.)
 
 **On first start after upgrading**, rows written before this existed are
 hashed during migration, and `-verify` says how many. Those verify against

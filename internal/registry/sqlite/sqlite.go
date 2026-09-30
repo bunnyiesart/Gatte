@@ -161,6 +161,51 @@ ORDER BY name`
 	return servers, nil
 }
 
+var _ registry.ImageUpdater = (*Repository)(nil)
+
+// UpdateImage implements registry.ImageUpdater. The read, the check and
+// the write share one transaction, so the entry validated is the entry
+// written.
+func (r *Repository) UpdateImage(ctx context.Context, name, image string) (registry.UpstreamServer, error) {
+	fail := func(err error) (registry.UpstreamServer, error) {
+		return registry.UpstreamServer{}, fmt.Errorf("sqlite: update image of %q: %w", name, err)
+	}
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fail(err)
+	}
+	defer tx.Rollback() //nolint:errcheck // no-op once Commit succeeded
+
+	const read = `
+SELECT name, transport, command, args, url, image, env_var_names, created_at, updated_at
+FROM upstream_servers
+WHERE name = ?`
+	s, err := scanUpstreamServer(tx.QueryRowContext(ctx, read, name))
+	if errors.Is(err, sql.ErrNoRows) {
+		return fail(registry.ErrNotFound)
+	}
+	if err != nil {
+		return fail(err)
+	}
+	if s.Transport != registry.TransportOCI {
+		return fail(fmt.Errorf("%w: only an oci entry runs an image; %q is %s", registry.ErrInvalid, name, s.Transport))
+	}
+	s.Image = image
+	if err := s.Validate(); err != nil {
+		return fail(err)
+	}
+	s.UpdatedAt = time.Now().UTC()
+	if _, err := tx.ExecContext(ctx, `UPDATE upstream_servers SET image = ?, updated_at = ? WHERE name = ?`,
+		s.Image, s.UpdatedAt.Format(time.RFC3339), name); err != nil {
+		return fail(err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fail(fmt.Errorf("commit: %w", err))
+	}
+	s.UpdatedAt = s.UpdatedAt.Truncate(time.Second)
+	return s, nil
+}
+
 // Deregister implements registry.Repository.
 func (r *Repository) Deregister(ctx context.Context, name string) error {
 	const stmt = `DELETE FROM upstream_servers WHERE name = ?`

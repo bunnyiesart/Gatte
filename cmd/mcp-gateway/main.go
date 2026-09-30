@@ -11,8 +11,8 @@
 // Subcommands:
 //
 //	serve                     run the gateway
-//	upstream list|register|deregister|maintenance
-//	tool list|approve|revoke  Tool Quarantine
+//	upstream list|register|update|deregister|maintenance
+//	tool list|show|review|approve|revoke  Tool Quarantine
 //	sign                      sign a registry entry
 //	audit                     read the Audit Trail
 //	quota list|usage          per-analyst quota: the policy, and the counters
@@ -118,8 +118,8 @@ Usage:
 
 Commands:
   serve        Run the gateway.
-  upstream     Register, list or deregister a backend MCP server.
-  tool         List quarantined tools; approve one, or revoke an approval.
+  upstream     Register, list, update or deregister a backend MCP server.
+  tool         List quarantined tools; review and approve one or a backend's set, or revoke.
   sign         Sign a registry entry so the gateway will serve it.
   audit        Read the audit trail.
   quota        Show the declared limits and what each analyst has spent.

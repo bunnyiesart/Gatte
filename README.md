@@ -348,7 +348,9 @@ sudo -u mcpgw mcp-gateway upstream register -config "$CFG" -name edr -transport 
 ```
 
 The image must be pinned by digest, because the signature covers it and a
-tag can be repointed. Every container gets `--rm -i`, a read-only root,
+tag can be repointed. To move a registered backend to a new digest without
+putting its tools back in review, use `upstream update` (Day-to-day
+operation, below). Every container gets `--rm -i`, a read-only root,
 `--cap-drop=all`, `--security-opt=no-new-privileges`, a numeric non-root
 `--user` (default `65534:65534`; set `[oci] user` to the image's own uid if
 its files need it) and `--pids-limit`, `--memory`, `--cpus` from `[oci]`
@@ -371,8 +373,11 @@ refusing unknown keys, before doing anything. `mcp-gateway help` and
 | See what needs approval | `tool list` | -- |
 | Review a tool (or a change to one) | `tool show SERVER TOOL` | -- |
 | Approve exactly what you reviewed | `tool approve -fingerprint SHA256 SERVER TOOL` | next call |
+| Review all of one backend's pending and changed tools | `tool review -server NAME` | -- |
+| Approve exactly that set, all or nothing | `tool approve -server NAME -manifest SHA256` | next call |
 | Withdraw an approval | `tool revoke SERVER TOOL` | next call |
 | Add or remove a backend | `upstream register` + `sign`, or `upstream deregister` | within one `quarantine.refresh_interval` (default 5 m) |
+| Move a container backend to a new image digest | `upstream update -image NAME@sha256:HEX NAME`, then `sign NAME` as root | after the signature, within one interval |
 | Cut off one analyst | `access block -reason TEXT SUBJECT` | next request |
 | Restore them | `access unblock SUBJECT` | next request |
 | Read the trail | `audit [-subject ID] [-outcome denied] [-since TIME]` | -- |
@@ -486,6 +491,31 @@ token without the groups claim, and so no role. The contact and the notes
 are one line of visible characters each, without quotes; `serve` refuses a
 set whose instructions would pass 2000 characters.
 
+**Many tools waiting on one backend** (`design/adr/0043`; a new backend, or an upgrade that
+rewrote several descriptions): `tool review -server NAME` prints every one
+of them as `tool show` would, diffs included, who can call each once
+approved, and a manifest, the hash of exactly that set.
+`tool approve -server NAME -manifest SHA256` approves all of them in one
+transaction, or none if any tool of the backend appeared, disappeared or
+changed since. There is no "approve everything" without a manifest. The web
+console does the same from Tools, filtered to one backend: "Review them on
+one page", then one "Approve these N" button. Each tool gets its own
+`(tool approve)` row, plus one `(tool approve set)` row for the act.
+
+**Upgrading a container backend.** A new digest used to mean `deregister`,
+`register` and `sign`, and deregistering forgets every approval, so every
+tool went back to review. `upstream update -image NAME@sha256:HEX NAME`
+changes only the image and keeps the quarantine; the old signature no
+longer verifies the entry, so the gateway stops serving it (whatever
+`signer.require_signed` says) until root runs `sign NAME`. At the new
+image's first discovery a tool whose definition is byte-identical stays
+approved, one that differs becomes `changed` (a `denied` row, and not served
+until you review it), and a new one is pending; `tool review -server NAME`
+then shows exactly those. The update is an `(upstream update)` operator row.
+It keeps an approval for identical text, not for identical behaviour: the
+new code is what the re-signature vouches for. Deregister instead when it
+is not the same backend.
+
 **Watch for tool changes.** The first sighting of a tool, a change to an
 approved tool and a registry entry whose signature fails are each written
 to the trail as a `denied` row attributed to `(gateway)`. A `changed` row
@@ -515,7 +545,7 @@ link locally.
 |---|---|
 | Overview | See what needs attention: `serve` not reporting, changed and pending tools, unsigned backends, backends down, reconnecting or in maintenance, the gateway's maintenance; each backend's health (state, since, maintenance message); blocked analysts; the latest refusals. |
 | People | See each role, the groups that map to it and its tools, and everyone the gateway has seen, with a Block button. With `sudo mcp-gateway ui -manage-users` (or without sudo, as a member of a delegated `[admin] account_group`), also add people at the identity provider, change their groups, disable them or give them a new one-time password (`design/adr/0038`). Adding a person is a three-step assistant that ends with their one-time password and a connect script for macOS, Linux or Windows that sets up Claude Code on their machine and installs `gatte-status` (`[connect]`, `design/adr/0039`, `design/adr/0041`). |
-| Tools | Review a definition with hidden characters escaped and the diff coloured, then approve that exact fingerprint, or revoke. |
+| Tools | Review a definition with hidden characters escaped and the diff coloured, then approve that exact fingerprint (the next tool waiting opens), or revoke. Filter by backend, and review all of one backend's waiting tools on one page, approved together by one "Approve these N" button that carries the set's manifest (`design/adr/0043`). |
 | Access | Block or unblock an analyst, with a reason that goes in the trail. |
 | Audit | Filter the trail by analyst and outcome, and verify the hash chain against your SIEM's head. |
 | Backends | What is registered and signed, each backend's state (up, reconnecting, down, in maintenance), since when and why, and a form to start, update (filled with the current message and end) or end the maintenance of one backend or of the whole gateway, with the message analysts read and an optional end time. |

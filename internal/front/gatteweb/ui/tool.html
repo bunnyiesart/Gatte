@@ -7,6 +7,35 @@
   <p class="sub">{{vis .Server}} · {{template "status" .Status}}</p>
 </div>
 
+{{template "definition" .}}
+
+{{if .Shown}}
+<div class="actions">
+  {{if not .Usable}}
+  <form method="post" action="{{$base}}/tools/approve">
+    <input type="hidden" name="csrf" value="{{$csrf}}">
+    <input type="hidden" name="server" value="{{.Server}}">
+    <input type="hidden" name="tool" value="{{.Tool}}">
+    <input type="hidden" name="fingerprint" value="{{.Fingerprint}}">
+    <button class="btn{{if not .Hidden}} primary{{end}}">Approve this version</button>
+  </form>
+  <p class="caption">Approves exactly what's shown here (sha256:{{short .Fingerprint}}). If the backend changes it before you click, nothing is approved. Then the next tool waiting for review opens.</p>
+  {{end}}
+  {{if eq .Status "approved"}}
+  <form method="post" action="{{$base}}/tools/revoke">
+    <input type="hidden" name="csrf" value="{{$csrf}}">
+    <input type="hidden" name="server" value="{{.Server}}">
+    <input type="hidden" name="tool" value="{{.Tool}}">
+    <button class="btn destructive">Revoke approval</button>
+  </form>
+  <p class="caption">Stops serving this tool on the next call.</p>
+  {{end}}
+</div>
+{{end}}
+{{end}}{{end}}
+{{template "bottom" .}}
+
+{{define "definition"}}
 {{if or (eq .Status "changed") .Hidden}}
 <div class="notice danger" role="alert">{{template "warn"}}<p>{{if eq .Status "changed"}}<b>This tool changed after it was approved.</b> It isn't served until you approve the new version.{{end}}
 {{if .Hidden}}<b>{{if eq .Status "changed"}}It also contains{{else}}It contains{{end}} {{.Hidden}} hidden {{if eq .Hidden 1}}character{{else}}characters{{end}}</b>, highlighted below: a model reads {{if eq .Hidden 1}}it{{else}}them{{end}}, a screen wouldn't show {{if eq .Hidden 1}}it{{else}}them{{end}}. That's a reason not to approve; unapproved, the tool stays unserved.{{end}}</p></div>
@@ -45,33 +74,10 @@
     <pre>{{vistext .Output}}</pre>
   </details>
 </section>
-
-<div class="actions">
-  {{if not .Usable}}
-  <form method="post" action="{{$base}}/tools/approve">
-    <input type="hidden" name="csrf" value="{{$csrf}}">
-    <input type="hidden" name="server" value="{{.Server}}">
-    <input type="hidden" name="tool" value="{{.Tool}}">
-    <input type="hidden" name="fingerprint" value="{{.Fingerprint}}">
-    <button class="btn{{if not .Hidden}} primary{{end}}">Approve this version</button>
-  </form>
-  <p class="caption">Approves exactly what's shown here (sha256:{{short .Fingerprint}}). If the backend changes it before you click, nothing is approved.</p>
-  {{end}}
-  {{if eq .Status "approved"}}
-  <form method="post" action="{{$base}}/tools/revoke">
-    <input type="hidden" name="csrf" value="{{$csrf}}">
-    <input type="hidden" name="server" value="{{.Server}}">
-    <input type="hidden" name="tool" value="{{.Tool}}">
-    <button class="btn destructive">Revoke approval</button>
-  </form>
-  <p class="caption">Stops serving this tool on the next call.</p>
-  {{end}}
-</div>
 {{else}}
 <details class="group" open>
   <summary>Details{{template "chev"}}</summary>
   <pre>{{vistext .Output}}</pre>
 </details>
 {{end}}
-{{end}}{{end}}
-{{template "bottom" .}}
+{{end}}

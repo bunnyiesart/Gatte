@@ -178,3 +178,10 @@ nele — mesma conversa do `0010` e do `0012`.
 > mudado, backend desregistrado — responde a ele "is no longer available to
 > you", o mesmo texto para toda causa, em vez do `unknown tool` do SDK. Um
 > nome que ele nunca recebeu listado continua com os bytes do SDK.
+
+> **CORREÇÃO — 30 set 2026 (ADR-0043).** `Forget` no `deregister` continua
+> como está. Para trocar só a imagem de uma entrada oci há agora
+> `upstream update`, que não chama `Forget`: a aprovação sobrevive só para
+> a definição byte a byte idêntica (a de texto diferente vira `changed`), e
+> a assinatura antiga deixa de verificar a entrada até o root assinar de
+> novo.

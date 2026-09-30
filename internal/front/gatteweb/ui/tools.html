@@ -5,11 +5,22 @@
   <p class="sub">A tool is served only after you approve it.</p>
 </div>
 
-<nav class="segmented" aria-label="Filter">
-  <a href="{{$.Base}}/tools" {{if eq .Show ""}}aria-current="page"{{end}}>All <span>{{index .Counts "all"}}</span></a>
-  <a href="{{$.Base}}/tools?show=review" {{if eq .Show "review"}}aria-current="page"{{end}}>Needs review <span>{{index .Counts "review"}}</span></a>
-  <a href="{{$.Base}}/tools?show=approved" {{if eq .Show "approved"}}aria-current="page"{{end}}>Approved <span>{{index .Counts "approved"}}</span></a>
+{{if gt (len .Backends) 1}}
+<nav class="segmented" aria-label="Backend">
+  <a href="{{$.Base}}/tools?show={{.Show}}" {{if eq .Server ""}}aria-current="page"{{end}}>All backends</a>
+  {{range .Backends}}<a href="{{$.Base}}/tools?server={{.Name}}&amp;show={{$.Data.Show}}" {{if eq .Name $.Data.Server}}aria-current="page"{{end}}>{{vis .Name}}{{if .Review}} <span>{{.Review}}</span>{{end}}</a>{{end}}
 </nav>
+{{end}}
+
+<nav class="segmented" aria-label="Filter">
+  <a href="{{$.Base}}/tools?server={{.Server}}" {{if eq .Show ""}}aria-current="page"{{end}}>All <span>{{index .Counts "all"}}</span></a>
+  <a href="{{$.Base}}/tools?server={{.Server}}&amp;show=review" {{if eq .Show "review"}}aria-current="page"{{end}}>Needs review <span>{{index .Counts "review"}}</span></a>
+  <a href="{{$.Base}}/tools?server={{.Server}}&amp;show=approved" {{if eq .Show "approved"}}aria-current="page"{{end}}>Approved <span>{{index .Counts "approved"}}</span></a>
+</nav>
+
+{{if and .ReviewSet .Server (gt (index .Counts "review") 1)}}
+<div class="notice" role="note">{{template "dot"}}<p>{{index .Counts "review"}} tools of {{vis .Server}} wait for review. <a href="{{$.Base}}/tools/review-set?server={{.Server}}">Review them on one page</a>, every definition in full, and approve them together.</p></div>
+{{end}}
 
 {{if .Tools}}
 <div class="group">

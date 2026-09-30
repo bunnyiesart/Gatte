@@ -300,6 +300,49 @@ func (s *Store) approve(ctx context.Context, serverName, toolName string, transi
 	return next, nil
 }
 
+// ApproveReviewSet implements quarantine.Store.
+//
+// The set is read, compared with manifest and written in one transaction,
+// for the reason ApproveFingerprint compares inside its own: a discovery
+// cycle committing between a read here and the writes would otherwise get
+// a definition nobody was shown baselined along with the rest. SQLite
+// serialises writers, so an Observe either lands before this transaction's
+// read -- and the manifest no longer matches -- or after its commit, and
+// then observes approved tools the ordinary way.
+func (s *Store) ApproveReviewSet(ctx context.Context, serverName, manifest string) ([]quarantine.Approval, error) {
+	fail := func(err error) ([]quarantine.Approval, error) {
+		return nil, fmt.Errorf("quarantine/sqlite: approve review set of %q: %w", serverName, err)
+	}
+	now := time.Now().UTC()
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fail(err)
+	}
+	defer tx.Rollback() //nolint:errcheck // no-op once Commit succeeded
+
+	tools, err := list(ctx, tx, serverName)
+	if err != nil {
+		return fail(err)
+	}
+	approvals, err := quarantine.ApprovedSet(serverName, tools, manifest, now)
+	if err != nil {
+		return fail(err)
+	}
+	for _, a := range approvals {
+		if err := update(ctx, tx, a.After); err != nil {
+			return fail(err)
+		}
+		if err := pruneDefinitions(ctx, tx, a.Before.ApprovedHash, a.Before.ObservedHash); err != nil {
+			return fail(err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fail(fmt.Errorf("commit: %w", err))
+	}
+	return approvals, nil
+}
+
 // Revoke implements quarantine.Store.
 //
 // Read and write share one transaction for the same reason Observe's do: a
@@ -394,6 +437,21 @@ func (s *Store) Get(ctx context.Context, serverName, toolName string) (quarantin
 
 // List implements quarantine.Store.
 func (s *Store) List(ctx context.Context, serverName string) ([]quarantine.Tool, error) {
+	tools, err := list(ctx, s.db, serverName)
+	if err != nil {
+		return nil, fmt.Errorf("quarantine/sqlite: list: %w", err)
+	}
+	return tools, nil
+}
+
+// lister is satisfied by both *sql.DB and *sql.Tx.
+type lister interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
+// list reads the entries of serverName, or of every server when it is
+// empty, ordered by server then tool name.
+func list(ctx context.Context, q lister, serverName string) ([]quarantine.Tool, error) {
 	// An empty serverName means "every server". The predicate is written
 	// as a parameterized OR rather than by building two query strings so
 	// there is only one SELECT to keep in sync.
@@ -403,9 +461,9 @@ FROM quarantined_tools
 WHERE ? = '' OR server_name = ?
 ORDER BY server_name, tool_name
 `
-	rows, err := s.db.QueryContext(ctx, stmt, serverName, serverName)
+	rows, err := q.QueryContext(ctx, stmt, serverName, serverName)
 	if err != nil {
-		return nil, fmt.Errorf("quarantine/sqlite: list: %w", err)
+		return nil, err
 	}
 	defer rows.Close()
 
@@ -413,12 +471,12 @@ ORDER BY server_name, tool_name
 	for rows.Next() {
 		t, err := scanTool(rows)
 		if err != nil {
-			return nil, fmt.Errorf("quarantine/sqlite: list: %w", err)
+			return nil, err
 		}
 		tools = append(tools, t)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("quarantine/sqlite: list: %w", err)
+		return nil, err
 	}
 	return tools, nil
 }

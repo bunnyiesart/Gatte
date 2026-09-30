@@ -103,3 +103,20 @@ func TestWhoAmI_ListsBackendHealthAndTheOverviewCarriesIt(t *testing.T) {
 		t.Fatalf("overview health = %+v", ov.Health)
 	}
 }
+
+// The review-set types are the contract's schemas, field for field
+// (design/adr/0043).
+func TestReviewSetTypes_CarryExactlyTheContractsFields(t *testing.T) {
+	for name, v := range map[string]any{
+		"ToolReviewSet": adminapi.ToolReviewSet{}, "ApproveSetRequest": adminapi.ApproveSetRequest{}, "ApprovedTool": adminapi.ApprovedTool{},
+	} {
+		if got, want := jsonFields(v), schemaProperties(t, name); !slices.Equal(got, want) {
+			t.Errorf("%s fields %v, contract %v", name, got, want)
+		}
+	}
+	for _, c := range []string{adminapi.CodeManifestRequired, adminapi.CodeManifestMismatch} {
+		if !slices.Contains(adminapi.Codes(), c) {
+			t.Errorf("code %s has no status", c)
+		}
+	}
+}

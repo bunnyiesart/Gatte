@@ -539,12 +539,19 @@ type ChainVerifier interface {
 // TrailQuery selects one page of the trail for the management API
 // (design/adr/0040): the newest Limit records at a chain position below
 // Before (0: no bound) that match every filter set.
+//
+// Tool and Server (TargetUpstream) match exactly, like Subject and Source
+// (design/adr/0046). Since is inclusive and Until exclusive: the records of
+// [Since, Until), so two adjacent windows never share nor miss a record.
 type TrailQuery struct {
 	Before  int
 	Since   time.Time
+	Until   time.Time
 	Subject string
 	Outcome string
 	Source  string
+	Tool    string
+	Server  string
 	Limit   int
 }
 

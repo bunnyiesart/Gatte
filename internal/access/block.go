@@ -57,7 +57,17 @@ type Block struct {
 	By string
 	// At is when the block was placed.
 	At time.Time
+	// Until, when set, is when the block stops being enforced by itself
+	// (design/adr/0046 item 3). Zero is a block with no end: it holds
+	// until an operator lifts it. From Until on, Blocked reports the
+	// subject as not blocked; the row stays, listed as expired, until the
+	// gateway records the expiry and removes it, or an operator unblocks.
+	Until time.Time
 }
+
+// ActiveAt reports whether the block is enforced at t: it has no end, or
+// its end is still after t.
+func (b Block) ActiveAt(t time.Time) bool { return b.Until.IsZero() || t.Before(b.Until) }
 
 // Blocklist is the port the request path holds: it can ask whether a
 // subject is blocked, and nothing else. The Gateway cannot place or lift a
@@ -74,12 +84,14 @@ type BlockStore interface {
 	Blocklist
 	// Block places b. It reports false, and changes nothing, when the
 	// subject is already blocked -- the existing block, with its original
-	// author and time, is what stays on record.
+	// author and time, is what stays on record. A block that has expired
+	// is not "already blocked": b replaces it.
 	Block(ctx context.Context, b Block) (placed bool, err error)
 	// Unblock lifts the block on subject. It reports false when there was
 	// none.
 	Unblock(ctx context.Context, subject string) (lifted bool, err error)
-	// Blocks returns every current block, oldest first.
+	// Blocks returns every stored block, oldest first, expired ones
+	// included (Block.ActiveAt tells them apart).
 	Blocks(ctx context.Context) ([]Block, error)
 }
 
@@ -132,6 +144,9 @@ func ValidateBlock(b Block) error {
 	}
 	if b.At.IsZero() {
 		errs = append(errs, fmt.Errorf("%w: a block must carry the time it was placed", ErrInvalidBlock))
+	}
+	if !b.Until.IsZero() && !b.Until.After(b.At) {
+		errs = append(errs, fmt.Errorf("%w: a block's end must be after the time it was placed", ErrInvalidBlock))
 	}
 	return errors.Join(errs...)
 }

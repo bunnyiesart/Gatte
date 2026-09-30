@@ -197,12 +197,23 @@ func TestClient_CoversEveryOperationOfTheContractAgainstTheRealBackend(t *testin
 	}
 	_, err = op.ListBlocks(ctx)
 	do("listBlocks", err)
-	_, err = op.BlockSubject(ctx, adminapi.BlockRequest{Subject: "sub-1"})
+	end := time.Now().Add(time.Hour).UTC().Truncate(time.Second)
+	_, err = op.BlockSubject(ctx, adminapi.BlockRequest{Subject: "sub-1", Until: &end})
 	do("blockSubject", err)
+	if bl, err := op.ListBlocks(ctx); err != nil || len(bl.Blocks) != 1 || bl.Blocks[0].Until == nil || !bl.Blocks[0].Until.Equal(end) || bl.Blocks[0].Expired {
+		t.Errorf("blocks after a block with an end: %+v, %v", bl, err)
+	}
 	_, err = op.UnblockSubject(ctx, adminapi.BlockRequest{Subject: "sub-1"})
 	do("unblockSubject", err)
 	_, err = op.ListAudit(ctx, adminapi.AuditQuery{Limit: 10, Outcome: adminapi.OutcomeAllowed, Since: time.Now().Add(-time.Hour)})
 	do("listAudit", err)
+	// design/adr/0046: tool, server and until reach the backend.
+	if p, err := op.ListAudit(ctx, adminapi.AuditQuery{Tool: "(access block)", Server: "(gateway)", Until: time.Now().Add(time.Minute)}); err != nil || len(p.Records) != 1 {
+		t.Errorf("listAudit by tool: %+v, %v; want the one (access block) row", p, err)
+	}
+	if p, err := op.ListAudit(ctx, adminapi.AuditQuery{Tool: "(access block)", Until: time.Now().Add(-time.Hour)}); err != nil || len(p.Records) != 0 {
+		t.Errorf("listAudit until an hour ago: %+v, %v; want nothing", p, err)
+	}
 	_, err = op.VerifyAudit(ctx, adminapi.VerifyRequest{})
 	do("verifyAudit", err)
 	_, err = op.ListUpstreams(ctx)
@@ -264,6 +275,13 @@ func TestClient_CoversEveryOperationOfTheContractAgainstTheRealBackend(t *testin
 	do("enableAccount", err)
 	_, err = acc.ResetAccountPassword(ctx, "bruno")
 	do("resetAccountPassword", err)
+	off, err := acc.OffboardAccount(ctx, "ana", adminapi.OffboardRequest{Reason: "left the team"})
+	do("offboardAccount", err)
+	if err == nil && (!off.Changed || !off.Disabled || off.Blocked || len(off.Remaining) == 0 || len(off.Rows) != 2) {
+		t.Errorf("offboardAccount = %+v", off)
+	}
+	_, err = acc.DeleteAccount(ctx, "ana")
+	do("deleteAccount", err)
 	// Last: with no group left, the account is out of a non-root peer's
 	// reach (design/adr/0040 §1).
 	_, err = acc.SetAccountGroups(ctx, "bruno", []string{})

@@ -11,20 +11,22 @@
     <input type="hidden" name="csrf" value="{{$csrf}}">
     <label class="field"><span>Subject</span><input name="subject" required autocomplete="off" spellcheck="false" placeholder="As shown in the audit trail"></label>
     <label class="field"><span>Reason</span><input name="reason" autocomplete="off" placeholder="Who is acting, and why"></label>
+    {{if .Data.Until}}<label class="field"><span>Ends</span><input name="until" autocomplete="off" spellcheck="false" placeholder="Optional: 8h, or 2026-10-01 08:00 (UTC)"></label>{{end}}
     <div class="form-end"><button class="btn destructive">Block</button></div>
   </form>
+  {{if .Data.Until}}<p class="caption">With an end, the gateway serves them again from that moment by itself and records the expiry at its next round. Without one, the block holds until you lift it.</p>{{end}}
 </section>
 
 <section>
   <h2>Blocked</h2>
-  {{if .Data}}
+  {{if .Data.Blocks}}
   <ul class="group">
-    {{range .Data}}
+    {{range .Data.Blocks}}
     <li class="row">
       <span class="lead-icon changed">{{template "warn"}}</span>
       <span class="row-text">
         <span class="row-title mono">{{vis .Subject}}</span>
-        <span class="row-detail">{{vis (dash .Reason)}} · by {{vis .BlockedBy}} · {{time .BlockedAt}}</span>
+        <span class="row-detail">{{vis (dash .Reason)}} · by {{vis .BlockedBy}} · {{time .BlockedAt}}{{if .Until}} · {{if .Expired}}<span class="badge">Expired</span> {{since .Until}}: no longer refused; recorded and removed at the gateway's next round{{else}}ends {{since .Until}}{{end}}{{end}}</span>
       </span>
       <form method="post" action="{{$.Base}}/access/unblock">
         <input type="hidden" name="csrf" value="{{$csrf}}">

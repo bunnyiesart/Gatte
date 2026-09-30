@@ -23,6 +23,7 @@
   </div>
 </header>
 <main>
+{{if .Notice}}<div class="notice done" role="status">{{template "check"}}<pre>{{vistext .Notice}}</pre></div>{{end}}
 {{if .Error}}<div class="notice error" role="alert">{{template "warn"}}<pre>{{vistext .Error}}</pre></div>{{end}}
 {{end}}
 

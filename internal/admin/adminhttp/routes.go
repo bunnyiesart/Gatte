@@ -57,6 +57,18 @@ var table = []route{
 		v, err := s.o.Service.ApproveTool(r.Context(), r.actor, req)
 		return 200, v, err
 	}},
+	{Route{"GET", "/v1/tools/review-set", "reviewToolSet", opSock}, func(s *Server, r *request) (int, any, error) {
+		v, err := s.o.Service.ReviewToolSet(r.Context(), r.URL.Query().Get("server"))
+		return 200, v, err
+	}},
+	{Route{"POST", "/v1/tools/approve-set", "approveToolSet", opSock}, func(s *Server, r *request) (int, any, error) {
+		var req adminapi.ApproveSetRequest
+		if err := r.decode(&req); err != nil {
+			return 0, nil, err
+		}
+		v, err := s.o.Service.ApproveToolSet(r.Context(), r.actor, req)
+		return 200, v, err
+	}},
 	{Route{"POST", "/v1/tools/revoke", "revokeTool", opSock}, func(s *Server, r *request) (int, any, error) {
 		var req adminapi.ToolRef
 		if err := r.decode(&req); err != nil {
@@ -215,7 +227,7 @@ func whoami(s *Server, r *request) (int, any, error) {
 		APIVersions:     []string{"v1"},
 		ContractVersion: adminapi.ContractVersion,
 		// A front asks for a feature, not a version.
-		Features:       []string{adminapi.FeatureMaintenance, adminapi.FeatureBackendHealth},
+		Features:       []string{adminapi.FeatureMaintenance, adminapi.FeatureBackendHealth, adminapi.FeatureToolReviewSet},
 		GatewayVersion: s.o.GatewayVersion,
 		Socket:         s.o.Socket,
 		ConfigPath:     s.o.ConfigPath,

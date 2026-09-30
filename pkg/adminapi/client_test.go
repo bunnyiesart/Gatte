@@ -166,6 +166,16 @@ func TestClient_CoversEveryOperationOfTheContractAgainstTheRealBackend(t *testin
 	do("approveTool", err)
 	_, err = op.RevokeTool(ctx, adminapi.ToolRef{Server: "casemgmt", Tool: "list_cases"})
 	do("revokeTool", err)
+	set, err := op.ReviewToolSet(ctx, "casemgmt")
+	do("reviewToolSet", err)
+	if err == nil && (len(set.Tools) != 1 || set.Manifest == "" || !set.Approvable) {
+		t.Errorf("review set %+v", set)
+	}
+	approvedSet, err := op.ApproveToolSet(ctx, adminapi.ApproveSetRequest{Server: "casemgmt", Manifest: set.Manifest})
+	do("approveToolSet", err)
+	if err == nil && (!approvedSet.Changed || len(approvedSet.Approved) != 1 || len(approvedSet.Rows) != 1 || !strings.Contains(approvedSet.Rows[0].Reason, "[test]")) {
+		t.Errorf("approve set %+v", approvedSet)
+	}
 	_, err = op.ListBlocks(ctx)
 	do("listBlocks", err)
 	_, err = op.BlockSubject(ctx, adminapi.BlockRequest{Subject: "sub-1"})

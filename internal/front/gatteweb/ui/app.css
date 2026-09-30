@@ -199,6 +199,7 @@ tbody tr { position: relative; }
 .segmented a span { color: var(--text-2); margin-left: 4px; }
 .segmented a:hover { text-decoration: none; background: var(--fill); }
 .segmented a[aria-current] { background: var(--seg-on); box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12); }
+.segmented[aria-label="Backend"] { display: flex; flex-wrap: wrap; width: fit-content; max-width: 100%; }
 
 /* ---- buttons ---- */
 
@@ -254,6 +255,12 @@ input:focus-visible, select:focus-visible { background: var(--surface); border-c
 .notice .glyph { margin-top: 2px; }
 .notice.danger { background: var(--danger-bg); color: var(--danger-text); box-shadow: none; }
 .notice.error pre { white-space: pre-wrap; font: 400 13px/1.5 var(--mono); }
+.notice.done pre { white-space: pre-wrap; font: inherit; }
+
+/* ---- a review set: one tool after another ---- */
+
+.set-item { margin-top: 40px; padding-top: 24px; border-top: 1px solid var(--sep); }
+.set-item h2.mono-title { font-family: var(--mono); overflow-wrap: anywhere; }
 
 /* ---- the review ---- */
 

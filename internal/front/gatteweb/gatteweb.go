@@ -109,6 +109,8 @@ func (f *Front) routes() *http.ServeMux {
 	mux.HandleFunc("GET /tools", f.toolsPage)
 	mux.HandleFunc("GET /tools/show", f.toolShowPage)
 	mux.HandleFunc("POST /tools/approve", f.toolApprove)
+	mux.HandleFunc("GET /tools/review-set", f.reviewSetPage)
+	mux.HandleFunc("POST /tools/approve-set", f.toolApproveSet)
 	mux.HandleFunc("POST /tools/revoke", f.toolRevoke)
 	mux.HandleFunc("GET /access", f.accessPage)
 	mux.HandleFunc("POST /access/block", f.accessBlock)
@@ -144,8 +146,11 @@ type page struct {
 	Nav   string
 	Base  string
 	CSRF  string
-	Error string
-	Data  any
+	// Notice is what the backend answered to the action that led here,
+	// when the page shown next is not its result page.
+	Notice string
+	Error  string
+	Data   any
 }
 
 // render executes the template named tmpl. p.Nav, when empty, is tmpl: the

@@ -115,6 +115,10 @@ func opShellQuote(s string) string {
 // for the command bodies to depend on it.
 func (e *opEnv) upstreams() registry.Repository { return registrysqlite.New(e.db) }
 
+// images returns the port that replaces an oci entry's image in place
+// (design/adr/0043), wired to SQLite. Only `upstream update` uses it.
+func (e *opEnv) images() registry.ImageUpdater { return registrysqlite.New(e.db) }
+
 // tools returns the Tool Quarantine port, wired to SQLite.
 func (e *opEnv) tools() quarantine.Store { return quarantinesqlite.New(e.db) }
 

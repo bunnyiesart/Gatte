@@ -59,9 +59,7 @@ func (s *Service) People(ctx context.Context) (adminapi.People, error) {
 	blocked := map[string]bool{}
 	if s.d.Blocks != nil {
 		if bs, err := s.d.Blocks.Blocks(ctx); err == nil {
-			for _, b := range bs {
-				blocked[b.Subject] = true
-			}
+			blocked = activeBlocks(bs, s.d.Now())
 		}
 	}
 	for _, a := range seen {

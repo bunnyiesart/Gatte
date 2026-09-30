@@ -38,6 +38,9 @@ type Directory interface {
 	SetGroups(username string, groups []string) error
 	SetDisabled(username string, disabled bool) error
 	SetPassword(username, passwordHash string) error
+	// Delete removes the account (design/adr/0046). ErrNotFound when there
+	// is none.
+	Delete(username string) error
 }
 
 // ErrNotFound is returned for an edit of an account that does not exist.

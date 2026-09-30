@@ -223,6 +223,22 @@ var table = []route{
 		v, err := s.o.Service.SetAccountGroups(r.Context(), r.actor, r.PathValue("username"), req)
 		return 200, v, err
 	}},
+	{Route{"DELETE", "/v1/accounts/{username}", "deleteAccount", accSock}, func(s *Server, r *request) (int, any, error) {
+		var none struct{}
+		if err := r.decode(&none); err != nil {
+			return 0, nil, err
+		}
+		v, err := s.o.Service.DeleteAccount(r.Context(), r.actor, r.PathValue("username"))
+		return 200, v, err
+	}},
+	{Route{"POST", "/v1/accounts/{username}/offboard", "offboardAccount", accSock}, func(s *Server, r *request) (int, any, error) {
+		var req adminapi.OffboardRequest
+		if err := r.decode(&req); err != nil {
+			return 0, nil, err
+		}
+		v, err := s.o.Service.Offboard(r.Context(), r.actor, r.PathValue("username"), req)
+		return 200, v, err
+	}},
 	{Route{"POST", "/v1/accounts/{username}/disable", "disableAccount", accSock}, setDisabled(true)},
 	{Route{"POST", "/v1/accounts/{username}/enable", "enableAccount", accSock}, setDisabled(false)},
 	{Route{"POST", "/v1/accounts/{username}/reset-password", "resetAccountPassword", accSock}, func(s *Server, r *request) (int, any, error) {
@@ -251,7 +267,8 @@ func whoami(s *Server, r *request) (int, any, error) {
 		APIVersions:     []string{"v1"},
 		ContractVersion: adminapi.ContractVersion,
 		// A front asks for a feature, not a version.
-		Features:       []string{adminapi.FeatureMaintenance, adminapi.FeatureBackendHealth, adminapi.FeatureToolReviewSet, adminapi.FeatureServeControl},
+		Features: []string{adminapi.FeatureMaintenance, adminapi.FeatureBackendHealth, adminapi.FeatureToolReviewSet, adminapi.FeatureServeControl,
+			adminapi.FeatureAuditFilters, adminapi.FeatureBlockUntil, adminapi.FeatureAccountDelete, adminapi.FeatureOffboard},
 		GatewayVersion: s.o.GatewayVersion,
 		Socket:         s.o.Socket,
 		ConfigPath:     s.o.ConfigPath,
@@ -262,7 +279,7 @@ func whoami(s *Server, r *request) (int, any, error) {
 
 func listAudit(s *Server, r *request) (int, any, error) {
 	q := r.URL.Query()
-	aq := adminapi.AuditQuery{Subject: q.Get("subject"), Outcome: q.Get("outcome"), Source: q.Get("source")}
+	aq := adminapi.AuditQuery{Subject: q.Get("subject"), Outcome: q.Get("outcome"), Source: q.Get("source"), Tool: q.Get("tool"), Server: q.Get("server")}
 	for _, f := range []struct {
 		name string
 		dst  *int
@@ -275,12 +292,17 @@ func listAudit(s *Server, r *request) (int, any, error) {
 			*f.dst = n
 		}
 	}
-	if v := q.Get("since"); v != "" {
-		t, err := time.Parse(time.RFC3339, v)
-		if err != nil {
-			return 0, nil, adminapi.NewError(adminapi.CodeBadRequest, "since must be an RFC 3339 time").With("field", "since")
+	for _, f := range []struct {
+		name string
+		dst  *time.Time
+	}{{"since", &aq.Since}, {"until", &aq.Until}} {
+		if v := q.Get(f.name); v != "" {
+			t, err := time.Parse(time.RFC3339, v)
+			if err != nil {
+				return 0, nil, adminapi.NewError(adminapi.CodeBadRequest, "%s must be an RFC 3339 time", f.name).With("field", f.name)
+			}
+			*f.dst = t
 		}
-		aq.Since = t
 	}
 	v, err := s.o.Service.Audit(r.Context(), aq)
 	return 200, v, err
@@ -324,7 +346,7 @@ func (s *Server) routes() *http.ServeMux {
 			p := hr.Context().Value(peerKey{}).(*peer)
 			front := hr.Header.Get(adminapi.FrontHeader)
 			req := &request{Request: hr, w: w, peer: p, front: front,
-				actor: admin.Actor{Name: p.name, Via: p.via, Front: front, Root: p.uid == 0}}
+				actor: admin.Actor{Name: p.name, Via: p.via, Front: front, Root: p.uid == 0, Operator: p.operator}}
 			status, body, err := rt.h(s, req)
 			if err != nil {
 				writeErr(w, err)

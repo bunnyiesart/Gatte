@@ -27,6 +27,9 @@ type auditFilter struct {
 	Limit int
 	// Since excludes records older than this instant.
 	Since time.Time
+	// Until excludes records at or after this instant (design/adr/0046):
+	// with Since, the window [Since, Until).
+	Until time.Time
 	// Subject restricts to one analyst identity, matched exactly. Never
 	// against AnalystName: the name is display only (design/adr/0037), and
 	// a filter that matched it would let a user the IdP lets rename
@@ -39,6 +42,11 @@ type auditFilter struct {
 	// the network's shape, which this command has no model of, and an
 	// operator who wants one has -json and their own tools.
 	Source string
+	// Tool and Server restrict to one tool (as the TOOL column shows it,
+	// e.g. casemgmt.list_cases) and one backend (UPSTREAM), matched
+	// exactly (design/adr/0046).
+	Tool   string
+	Server string
 }
 
 // matches reports whether r passes every filter that is set.
@@ -53,6 +61,15 @@ func (f auditFilter) matches(r audit.Record) bool {
 		return false
 	}
 	if f.Source != "" && r.SourceAddress != f.Source {
+		return false
+	}
+	if !f.Until.IsZero() && !r.Timestamp.Before(f.Until) {
+		return false
+	}
+	if f.Tool != "" && r.Tool != f.Tool {
+		return false
+	}
+	if f.Server != "" && r.TargetUpstream != f.Server {
 		return false
 	}
 	return true
@@ -74,6 +91,15 @@ func (f auditFilter) describe() string {
 	if f.Source != "" {
 		parts = append(parts, "source "+f.Source)
 	}
+	if !f.Until.IsZero() {
+		parts = append(parts, "until "+opTime(f.Until))
+	}
+	if f.Tool != "" {
+		parts = append(parts, "tool "+visible.Escape(f.Tool))
+	}
+	if f.Server != "" {
+		parts = append(parts, "server "+visible.Escape(f.Server))
+	}
 	if len(parts) == 0 {
 		return "none"
 	}
@@ -88,6 +114,9 @@ func cmdAudit(args []string, stdout, stderr io.Writer) int {
 	subject := fs.String("subject", "", "only records for this analyst identity (exact match)")
 	outcome := fs.String("outcome", "", "only records with this outcome: allowed, denied or failed")
 	source := fs.String("source", "", "only records from this source address (exact match)")
+	until := fs.String("until", "", "only records BEFORE this RFC3339 timestamp (exclusive); with -since, the window [since, until)")
+	tool := fs.String("tool", "", "only records for this tool, as the TOOL column shows it, e.g. casemgmt.list_cases (exact match)")
+	server := fs.String("server", "", "only records served by this backend, as the UPSTREAM column shows it (exact match)")
 	asJSON := fs.Bool("json", false, "print JSON instead of an aligned table")
 	verify := fs.Bool("verify", false, "check the trail's hash chain instead of printing records")
 	expectHead := fs.String("expect-head", "", "with -verify, fail unless the chain head equals this hash")
@@ -118,7 +147,7 @@ func cmdAudit(args []string, stdout, stderr io.Writer) int {
 		})
 	}
 
-	filter := auditFilter{Limit: *limit, Subject: *subject, Source: *source}
+	filter := auditFilter{Limit: *limit, Subject: *subject, Source: *source, Tool: *tool, Server: *server}
 	if *limit < 0 {
 		fmt.Fprintf(stderr, "-limit must not be negative (got %d); use 0 for no limit\n", *limit)
 		return exitCannotRun
@@ -130,6 +159,18 @@ func cmdAudit(args []string, stdout, stderr io.Writer) int {
 			return exitCannotRun
 		}
 		filter.Since = t
+	}
+	if *until != "" {
+		t, err := time.Parse(time.RFC3339, *until)
+		if err != nil {
+			fmt.Fprintf(stderr, "-until %q is not an RFC3339 timestamp, e.g. 2026-09-09T00:00:00Z\n", *until)
+			return exitCannotRun
+		}
+		if !filter.Since.IsZero() && !t.After(filter.Since) {
+			fmt.Fprint(stderr, "-until must be after -since: the window [since, until) would be empty\n")
+			return exitCannotRun
+		}
+		filter.Until = t
 	}
 	if *outcome != "" {
 		o := audit.Outcome(*outcome)
@@ -148,9 +189,9 @@ func cmdAudit(args []string, stdout, stderr io.Writer) int {
 
 func auditUsage(w io.Writer) {
 	fmt.Fprint(w, `Usage:
-  mcp-gateway audit [-config FILE] [-limit N] [-since RFC3339]
+  mcp-gateway audit [-config FILE] [-limit N] [-since RFC3339] [-until RFC3339]
                     [-subject IDENTITY] [-outcome allowed|denied|failed]
-                    [-source ADDRESS] [-json]
+                    [-source ADDRESS] [-tool SERVER.TOOL] [-server SERVER] [-json]
   mcp-gateway audit -verify [-config FILE] [-expect-head HASH]
 
 -verify checks the trail's hash chain instead of printing records: every
@@ -202,6 +243,12 @@ the caller was deliberately not told.
 SOURCE is where the call came from, as the gateway's reverse proxy saw
 it. One analyst identity arriving from two addresses is what a stolen
 token looks like.
+
+FILTERS match exactly and combine with AND. -tool is the TOOL column
+(SERVER.TOOL for a call, "(access block)" and the like for an operator
+row), -server the UPSTREAM column. -since is inclusive and -until
+exclusive, so -since A -until B and -since B -until C never share or miss
+a record.
 
 COUNTING: a call that was dispatched and then failed leaves two rows --
 an "allowed" one written before the call, and a "failed" one written
@@ -346,7 +393,7 @@ func auditFlagsIgnoredByVerify(fs *flag.FlagSet, verify bool) []string {
 	}
 	conflicts := map[string]bool{
 		"limit": true, "since": true, "subject": true, "outcome": true,
-		"source": true, "json": true,
+		"source": true, "json": true, "until": true, "tool": true, "server": true,
 	}
 	var ignored []string
 	fs.Visit(func(f *flag.Flag) {

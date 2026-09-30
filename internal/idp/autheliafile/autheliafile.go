@@ -129,6 +129,22 @@ func (f *File) SetPassword(username, passwordHash string) error {
 	return f.edit(username, func(n *yaml.Node) { setScalar(n, "password", passwordHash, "") })
 }
 
+// Delete removes username's entry, keeping every other account, comment
+// and key order as they were.
+func (f *File) Delete(username string) error {
+	doc, users, err := f.load()
+	if err != nil {
+		return err
+	}
+	for i := 0; i+1 < len(users.Content); i += 2 {
+		if users.Content[i].Value == username {
+			users.Content = append(users.Content[:i:i], users.Content[i+2:]...)
+			return f.write(doc)
+		}
+	}
+	return fmt.Errorf("%q: %w", username, idp.ErrNotFound)
+}
+
 func (f *File) edit(username string, fn func(*yaml.Node)) error {
 	doc, users, err := f.load()
 	if err != nil {

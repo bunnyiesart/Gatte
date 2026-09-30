@@ -34,6 +34,13 @@ This file is the second one.
   its own ADR, not a closeout task. They are listed in `AGENTS.md` §2 and
   they stay there.
 
+  > **CORRECTION — 30 Sep 2026.** One of the three is no longer a limit:
+  > since ADR-0035 (28 Sep 2026) an analyst has at most
+  > `response.max_concurrent_calls_per_analyst` calls in flight (default 4),
+  > and the one over it is refused before the quota. What stays declared is
+  > narrower: there is no global or per-backend cap (`AGENTS.md` §2). The
+  > other two limits are unchanged.
+
 ## Progress
 
 - [ ] **Track 1** — the deployment has never run this build
@@ -74,7 +81,7 @@ clone and can run in any order, before or after it.
 >   A rewritten Track 1 would keep all three.
 >
 > **Why this is a correction block and not an edit.** Three reasons, in
-> order of weight:
+> order of weight (the first is itself corrected just below):
 >
 > 1. **Retargeting would trade a stale claim for a false one.** This
 >    repository's build cannot perform the replacement deployment. There is
@@ -92,6 +99,14 @@ clone and can run in any order, before or after it.
 > 3. **It is the posture this file already chose for itself.** Track 4
 >    records that `0026` is `Accepted` and "takes a correction block rather
 >    than an edit". Track 1 gets the same treatment.
+>
+> **CORRECTION — 30 Sep 2026, to reason 1 above.** It is no longer true
+> that this build has no `oci` transport. ADR-0028 (28 Sep 2026) added it:
+> `internal/gateway/oci/` runs a backend as a digest-pinned, rootless
+> podman container (`upstream register -transport oci`), hardened by
+> ADR-0034. Reason 1 therefore no longer holds as written; reasons 2 and 3
+> still do, and the headline of this track is unchanged: no deployment has
+> run this build.
 >
 > **Which tracks this changes: one.** Tracks 2, 3 and 5 are
 > substrate-independent — an anchor comparison with no owner, a sweep of the

@@ -36,6 +36,13 @@ para registro/quarentena/auditoria (não para segredos).
 > fitness function abaixo é estrutural, então cobre os dois pacotes novos
 > sem lista de nomes.
 
+> *Correção, 30 set 2026:* "cinco esquemas" também já não vale. `openStore`
+> migra **oito** no mesmo handle (`cmd/mcp-gateway/main.go`, o mapa de
+> `Migrate` depois do `store.CheckSchema`): registro, trilha, quarentena,
+> assinaturas, contadores de quota, sujeitos bloqueados (ADR-0031), saúde
+> dos backends (ADR-0041) e pedidos ao `serve` (ADR-0044). A decisão não
+> muda: continua um arquivo, um handle, um processo que o escreve.
+
 **Justificativa técnica:** análise de quantum (`design/03-style.md`, Q1)
 mostrou que nenhum dos oito componentes precisa de características
 operacionais divergentes o bastante para justificar um segundo quantum —

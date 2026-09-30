@@ -44,9 +44,11 @@
 # Upstream e estado operacional e vive no banco, administrado por subcomando.
 # Papel decide quem pode chamar o que, entao vive neste arquivo: alargar um
 # papel vira um diff revisado em Pull Request com commit assinado, e nao um
-# comando que nao deixa rastro. O custo aceito e que recarregar papeis exige
-# reiniciar o processo. Para ~7 pessoas cujos papeis mudam raramente, e
-# barato.
+# comando que nao deixa rastro. Papeis ([[role]]), grupos ([group_to_role])
+# e quota ([quota]) se aplicam com `mcp-gateway reload`, sem reiniciar, a
+# partir da proxima chamada (ADR-0044); o resto deste arquivo que o `serve`
+# le so vale depois de reinicia-lo, e o `reload` lista o que ficou para o
+# reinicio.
 
 
 # ===========================================================================
@@ -213,7 +215,9 @@ age_key_file = "/usr/local/etc/mcp-gateway/age.key"
 [signer]
 
 # Chave privada Ed25519 que assina entradas do registro: PEM, PKCS#8,
-# `0600`, dona do usuario que roda o gateway.
+# `root:root` e `0600`, ilegivel pela conta de servico e num diretorio que
+# ela nao grava (`mcp-gateway check` confere os tres). Quem le a chave e so
+# o `mcp-gateway sign`, como root, a cada execucao; o `serve` nunca a abre.
 #
 # **Opcional**, e vale entender por que. Sem esta chave o gateway continua
 # capaz de *verificar* assinaturas; ele so nao consegue *criar* novas. Essa
@@ -222,10 +226,10 @@ age_key_file = "/usr/local/etc/mcp-gateway/age.key"
 # partir do Operator Console, num processo separado que e o unico a tocar a
 # chave privada.
 #
-# Se errar: apontar para um arquivo que nao e PEM PKCS#8 valido faz a
-# inicializacao falhar com erro explicito. Permissao frouxa permite que
-# alguem forje entradas de registro que o gateway vai aceitar como
-# legitimas.
+# Se errar: apontar para um arquivo que nao e PEM PKCS#8 valido faz o
+# `sign` falhar com erro explicito. Permissao frouxa (a conta de servico
+# lendo a chave, ou trocando o arquivo no diretorio) permite que alguem
+# forje entradas de registro que o gateway vai aceitar como legitimas.
 key_file = "/usr/local/etc/mcp-gateway/signing.key"
 
 # Chaves publicas Ed25519 cujas assinaturas este gateway aceita: base64
@@ -470,6 +474,40 @@ refresh_interval = "5m"
 # assistente "esqueceu" o que ele tinha perguntado.
 max_bytes = 1048576
 
+# Teto de TEMPO de uma chamada, o irmao do max_bytes acima (ADR-0025).
+#
+# Antes dele nao havia teto nenhum: um backend que aceitava a chamada e nunca
+# respondia segurava a goroutine e a conexao daquele upstream ate o processo
+# reiniciar -- e a razao de auditoria `upstream timed out`, que existe e tem
+# teste, descrevia um evento que nada no sistema produzia.
+#
+# O teto e do GATEWAY e e derivado do contexto de quem chamou, entao um cliente
+# que desiste continua cortando a propria chamada na hora; isto so limita o caso
+# em que esse cancelamento nunca chega -- laptop que dorme, rede que cai, proxy
+# que segura a conexao aberta.
+#
+# Padrao "2m": acima de qualquer coisa que os quatro backends desta frota
+# produzem, abaixo do ponto em que o analista ja desistiu e foi perguntar no
+# chat. Quem tem backend mais lento aumenta, e precisar aumentar ja e
+# informacao sobre aquele backend.
+#
+# Se errar: numero cru e a mesma pegadinha do refresh_interval -- TOML le
+# inteiro como NANOSSEGUNDOS, entao `call_timeout = 30` sao 30ns e recusam toda
+# chamada da frota. Escreva a unidade. Zero ou negativo e recusado na
+# inicializacao: nao ha valor que desligue, pelo mesmo motivo do max_bytes.
+call_timeout = "2m"
+
+# Quantas chamadas um analista (um `sub` do IdP) pode ter em voo ao mesmo
+# tempo (ADR-0035). A excedente e recusada na hora, sem fila, antes de gastar
+# quota, e vai para a trilha como `denied` / `concurrency limited`; o cliente
+# recebe o erro constante `concurrency limited`.
+#
+# Padrao 4: um agente que dispara algumas consultas em paralelo cabe; um loop
+# ou um token roubado abrindo dezenas nao cabe, e cada chamada dessas pode
+# segurar o processo compartilhado de um backend por ate call_timeout.
+# Zero ou negativo e recusado: nao ha valor que desligue.
+max_concurrent_calls_per_analyst = 4
+
 
 # ===========================================================================
 # [oci] -- uid e limites de todo container `oci` (ADR-0034)
@@ -670,41 +708,6 @@ max_bytes = 1048576
 # [audit.siem]
 # path  = "/var/log/mcp-gateway/audit.jsonl"
 # chain = "gatte-jail-01"
-
-
-# Teto de TEMPO de uma chamada, o irmao do max_bytes acima (ADR-0025).
-#
-# Antes dele nao havia teto nenhum: um backend que aceitava a chamada e nunca
-# respondia segurava a goroutine e a conexao daquele upstream ate o processo
-# reiniciar -- e a razao de auditoria `upstream timed out`, que existe e tem
-# teste, descrevia um evento que nada no sistema produzia.
-#
-# O teto e do GATEWAY e e derivado do contexto de quem chamou, entao um cliente
-# que desiste continua cortando a propria chamada na hora; isto so limita o caso
-# em que esse cancelamento nunca chega -- laptop que dorme, rede que cai, proxy
-# que segura a conexao aberta.
-#
-# Padrao "2m": acima de qualquer coisa que os quatro backends desta frota
-# produzem, abaixo do ponto em que o analista ja desistiu e foi perguntar no
-# chat. Quem tem backend mais lento aumenta, e precisar aumentar ja e
-# informacao sobre aquele backend.
-#
-# Se errar: numero cru e a mesma pegadinha do refresh_interval -- TOML le
-# inteiro como NANOSSEGUNDOS, entao `call_timeout = 30` sao 30ns e recusam toda
-# chamada da frota. Escreva a unidade. Zero ou negativo e recusado na
-# inicializacao: nao ha valor que desligue, pelo mesmo motivo do max_bytes.
-call_timeout = "2m"
-
-# Quantas chamadas um analista (um `sub` do IdP) pode ter em voo ao mesmo
-# tempo (ADR-0035). A excedente e recusada na hora, sem fila, antes de gastar
-# quota, e vai para a trilha como `denied` / `concurrency limited`; o cliente
-# recebe o erro constante `concurrency limited`.
-#
-# Padrao 4: um agente que dispara algumas consultas em paralelo cabe; um loop
-# ou um token roubado abrindo dezenas nao cabe, e cada chamada dessas pode
-# segurar o processo compartilhado de um backend por ate call_timeout.
-# Zero ou negativo e recusado: nao ha valor que desligue.
-max_concurrent_calls_per_analyst = 4
 
 
 # ===========================================================================
@@ -1110,9 +1113,10 @@ tools = []
 # ---------------------------------------------------------------------
 # O QUE ATRAVESSA A REDE, E O QUE NUNCA ATRAVESSA.
 # ---------------------------------------------------------------------
-# Vao os sete campos do registro e nada mais: `_analyst_identity` (o `sub`
-# do IdP), `_tool`, `_target_upstream`, `_outcome`, `_reason`,
-# `_source_address` e o timestamp do registro -- mais `host` e
+# Vao os oito campos do registro e nada mais: `_analyst_identity` (o `sub`
+# do IdP), `_analyst_name` (o nome de exibicao, so quando diz algo que o
+# `sub` nao diz; ADR-0037), `_tool`, `_target_upstream`, `_outcome`,
+# `_reason`, `_source_address` e o timestamp do registro -- mais `host` e
 # `_cliente_soc` desta secao. Os nomes dos campos sao identicos aos do
 # `mcp-gateway audit -json`, para que a query do Graylog e o comando no host
 # nao precisem de traducao no meio de um incidente.
@@ -1120,7 +1124,7 @@ tools = []
 # NAO vao, por construcao: valor de credencial nenhum, o token apresentado
 # numa falha de autenticacao (nem truncado), o texto de erro do upstream, os
 # `args` da chamada e o conteudo do resultado. O sink so recebe
-# `audit.Record`, que tem sete campos fechados -- ampliar o que sai exige
+# `audit.Record`, que tem oito campos fechados -- ampliar o que sai exige
 # mudar o trail primeiro. Esta secao tambem nao aceita credencial nenhuma:
 # `tls_ca_file` e caminho de material publico, e o sink nao se autentica em
 # nada.

@@ -21,6 +21,7 @@ func maintenanceUsage(w io.Writer) {
 	fmt.Fprint(w, `Usage:
   mcp-gateway upstream maintenance on  [-config FILE] NAME -message TEXT [-until RFC3339|DURATION|none]
   mcp-gateway upstream maintenance off [-config FILE] NAME
+  mcp-gateway upstream maintenance list [-config FILE] [-json]
   mcp-gateway maintenance on   [-config FILE] -message TEXT [-until RFC3339|DURATION|none]
   mcp-gateway maintenance off  [-config FILE]
   mcp-gateway maintenance list [-config FILE] [-json]

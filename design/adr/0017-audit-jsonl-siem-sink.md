@@ -151,6 +151,17 @@ Conte linhas `allowed`; leia uma `failed` como anotação sobre a anterior.
 Está escrito no tipo, no doc do pacote, e aqui, porque um painel de Graylog
 é justamente onde alguém conta linhas sem ler documentação.
 
+> *Correção, 30 set 2026:* o esquema está na versão **`5`**
+> (`jsonl.Version`, `internal/audit/jsonl/jsonl.go`), não `2`: a `3`
+> (ADR-0032) pôs `pending` e `changed` no batimento; a `4` (ADR-0037) pôs
+> na linha de registro o campo `analyst_name`, o nome de exibição, que é o
+> **único** campo com `omitempty` (ausente quando não há nome, ou quando ele
+> só repetiria o `caller`), então "todos os campos sempre presentes" vale
+> para todos menos ele; a `5` (ADR-0041) pôs no batimento `backends_up`,
+> `backends_reconnecting`, `backends_down`, `backends_maintenance` e
+> `gateway_maintenance`. Na tabela acima, a linha de registro ganha
+> `analyst_name` depois de `caller`.
+
 ### 5. O que nunca pode aparecer numa linha, e por que é estrutural
 
 Nunca: o token bearer, inteiro ou truncado; valores de credencial

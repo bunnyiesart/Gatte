@@ -132,6 +132,37 @@ func TestRunToolApprove_WithoutFingerprintRefusesAndSaysWhatToRun(t *testing.T) 
 	}
 }
 
+// TestRunToolApprove_AShortFingerprintIsNamedAsSuch: a fingerprint cut
+// short when it was copied is refused, as any fingerprint that is not the
+// observed one, but with words that say what is wrong with it: "the
+// definition changed since you looked" sent the operator after a change
+// that never happened.
+func TestRunToolApprove_AShortFingerprintIsNamedAsSuch(t *testing.T) {
+	for _, short := range []func(string) string{
+		func(h string) string { return h[:12] },
+		func(h string) string { return "sha256:" + h[:63] },
+		func(h string) string { return strings.ToUpper(h) },
+	} {
+		e := newOpTestEnv(t)
+		obs := mustObserve(t, e, "casemgmt", irisListCases)
+		reviewed := short(obs.ObservedHash)
+
+		requireExit(t, runToolApproveFingerprint(e.opEnv, "casemgmt", "list_cases", reviewed), exitProblem, "approve "+reviewed)
+		requireContains(t, e.stderrText(), "is not a full SHA-256 fingerprint", "approve "+reviewed)
+		requireContains(t, e.stderrText(), "sha256:"+obs.ObservedHash, "approve "+reviewed)
+		if strings.Contains(e.stderrText(), "changed since you looked") {
+			t.Errorf("approve %s blames a change that did not happen:\n%s", reviewed, e.stderrText())
+		}
+		got, err := e.tools().Get(context.Background(), "casemgmt", "list_cases")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Status != quarantine.StatusPending || got.Usable() {
+			t.Fatalf("approve %s changed state: %+v", reviewed, got)
+		}
+	}
+}
+
 // TestRunToolApprove_ChangedToolShowsTheDiffBeforeApproving: the rug-pull
 // decision point now shows what changed, not two hashes.
 func TestRunToolApprove_ChangedToolShowsTheDiffBeforeApproving(t *testing.T) {

@@ -66,6 +66,16 @@ código-fonte de um candidato testado (`DEVELOPMENT-LOG.md` §9.2, §9.3):**
    servidor upstream — nunca gravado em disco nem logado. A chave privada
    `age` fica num arquivo root-only no host do gateway; o arquivo de
    segredos criptografado é seguro para versionar em Git privado.
+
+   *Correção, 30 set 2026:* a chave `age` não é root-only. Quem decifra o
+   cofre é o `serve`, que roda como a conta de serviço, então a chave é
+   **dela**, `0600` (por exemplo `mcpgw:mcpgw`): o `mcp-gateway check`
+   reprova qualquer bit de grupo ou de outros e uma chave que a conta de
+   serviço não lê (`judgeAgeKey`, `cmd/mcp-gateway/check.go`). Root-only é
+   a chave de **assinatura** (`root:root` `0600`, ilegível pela conta de
+   serviço; ADR-0006, ADR-0045). O "1 arquivo root-only" das Consequências
+   lê-se "1 arquivo só da conta de serviço"; o argumento de N cópias para 1
+   não muda.
 2. **Tool Quarantine por tool, não por servidor.** SHA-256 sobre
    `nome + descrição + schema de entrada` de cada tool (padrão
    mcpproxy-go). Servidor novo → toda tool nasce `pending`, invisível e

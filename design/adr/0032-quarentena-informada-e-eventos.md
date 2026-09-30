@@ -139,6 +139,16 @@ caracteres de tag.
   na cadeia); resultados de ferramenta não são escapados; nada julga o
   texto pelo operador.
 
+  *Correção, 30 set 2026:* a primeira parte deixou de valer. Desde a
+  ADR-0040 (que fechou o que a ADR-0036 deixou aberto), aprovar e revogar
+  gravam uma linha de operador `(tool approve)` ou `(tool revoke)`, com
+  servidor, tool e fingerprint, atribuída a quem aprovou e marcada
+  `[cli]`, `[cli env]`, `[ui]` ou `[api]`: o CLI, o console e a API passam
+  pelo mesmo `admin.Service` (`ApproveTool`, `internal/admin/tools.go`). A
+  ADR-0043 acrescentou `(tool approve set)` para um conjunto. O resto do
+  item continua: resultados de ferramenta não são escapados e nada julga o
+  texto pelo operador.
+
 Testes: `TestObserve_KeepsTheDefinitionItFingerprinted`,
 `TestDefinitions_ReferencedRowsAreImmutable`,
 `TestDefinitions_ARotatingBackendStaysWithinTheCap`,

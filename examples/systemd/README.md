@@ -14,7 +14,15 @@ first connection; it exits five minutes after its last request.
 applies `[[role]]`, `[group_to_role]` and `[quota]` without a restart
 (design/adr/0044): its `ExecReload=` is `mcp-gateway reload`, which waits
 for `serve`'s answer, so a file `serve` refuses makes the reload fail and
-the policy in force is kept. Every other key needs `systemctl restart`.
+the policy in force is kept. Every other key `serve` reads needs
+`systemctl restart mcp-gateway`. The admin backends read `[admin]
+operator_group` and `account_group` when they start, so a change there
+takes effect at their next start (after their idle exit, or `systemctl
+restart mcp-gateway-admin.service`).
+
+The units name the configuration `/etc/mcp-gateway/config.toml`, while the
+README and `docs/` use `/usr/local/etc/mcp-gateway/config.toml`: edit
+`-config` in each `ExecStart=`/`ExecReload=` to the path your host uses.
 
 ```sh
 install -m 0644 mcp-gateway-admin*.socket mcp-gateway-admin*.service /etc/systemd/system/

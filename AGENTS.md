@@ -50,8 +50,11 @@ of production credentials. Full history: `DEVELOPMENT-LOG.md`.
   preference — `design/adr/0001-monolithic-modular-style.md`. One binary,
   one process, no network hop between the gateway's own components.
 - **Data store: one embedded SQLite** for `Upstream Registry`, `Tool
-  Quarantine` state, `Audit Trail`, and entry signatures (four schemas,
-  all migrated together by the composition root). **Never** for secrets —
+  Quarantine` state, `Audit Trail`, and entry signatures, and since then
+  quota counters, blocked subjects, backend health and serve requests:
+  eight schemas, all migrated together by `openStore` in the composition
+  root (`cmd/mcp-gateway/main.go`). This line said "four schemas" until
+  30 Sep 2026. **Never** for secrets —
   see below. The public keys those signatures are checked against live in
   the config file, not here: an anchor stored beside what it authenticates
   is not an anchor (`design/adr/0010-signature-trust-anchor.md`).

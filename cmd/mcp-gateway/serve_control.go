@@ -161,10 +161,14 @@ func (s *serveStack) quotaGate(plan *quota.Plan) (*quota.Gate, error) {
 // nothing changes unless all of it is good.
 func (s *serveStack) reloadConfig(ctx context.Context, logger *slog.Logger) (outcome string, res adminapi.ServeRequest, reason string) {
 	refuse := func(refusal string, changes *adminapi.ReloadChanges, err error) (string, adminapi.ServeRequest, string) {
+		// One line: an errors.Join (the quota check's) puts a newline
+		// between its parts, and every reader of this text -- the CLI's
+		// one-line print, the row's reason -- would run them together.
+		detail := strings.ReplaceAll(err.Error(), "\n", "; ")
 		logger.Error("mcp-gateway: configuration reload REFUSED; the policy in force is kept",
-			slog.String("refusal", refusal), slog.String("detail", err.Error()))
+			slog.String("refusal", refusal), slog.String("detail", detail))
 		return control.OutcomeRefused, adminapi.ServeRequest{Refusal: refusal, Reload: changes,
-			Messages: []string{"Nothing changed; the roles, groups and quota in force are kept: " + err.Error()}}, fmt.Sprintf("refused (%s): %v", refusal, err)
+			Messages: []string{"Nothing changed; the roles, groups and quota in force are kept: " + detail}}, fmt.Sprintf("refused (%s): %s", refusal, detail)
 	}
 	if s.configPath == "" {
 		return refuse(adminapi.RefusalInvalidConfig, nil, errors.New("this process has no configuration file path to re-read"))

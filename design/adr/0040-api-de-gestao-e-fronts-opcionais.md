@@ -370,6 +370,16 @@ Remover, renomear ou mudar o sentido de um campo é `/v2`, servido ao lado de
 > regra do §1 ("o processo root nunca abre arquivo do usuário de serviço"):
 > vira o dono do diretório do banco antes de abri-lo.
 
+> *Correção, 30 set 2026:* o contrato está em **`1.4.0`** (ADR-0046), com
+> as features `audit_filters` (`tool`, `server` e `until` em
+> `GET /v1/audit`), `block_until` (`until` num bloqueio, `until` e
+> `expired` em cada `Block`, e a linha `(access block expired)` do
+> gateway), `account_delete` (`DELETE /v1/accounts/{username}`, linha
+> `(account delete)`) e `offboard`
+> (`POST /v1/accounts/{username}/offboard`, linha `(account offboard)`), e
+> o aviso `offboard_incomplete` (`api/admin.openapi.yaml`, `info.version`
+> e o histórico em `info.description`).
+
 ## O que sai do front e o que fica
 
 | Sai de `ui*.go` para o backend | Fica em cada front (via `frontkit`) |

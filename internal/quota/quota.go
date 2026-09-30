@@ -407,9 +407,29 @@ func (c Charge) Validate() error {
 // who they are, nor anybody else, since nothing this package produces
 // should be usable to learn about another analyst's work.
 func Exhausted(c Charge) error {
-	return fmt.Errorf("%w: %q allows %d call(s) per analyst per %s, and this window is spent; it resets at %s",
-		ErrExhausted, c.Provider, c.Limit, c.Window(), c.WindowEnd.Format(time.RFC3339))
+	return &ExhaustedError{Provider: c.Provider, Limit: c.Limit, Window: c.Window(), ResetsAt: c.WindowEnd.UTC()}
 }
+
+// ExhaustedError is the typed form of an exhausted charge, so the serving
+// adapter can tell the analyst WHEN to try again without parsing a
+// message (design/adr/0042 item 2). Every field is the operator's
+// declared policy or the window arithmetic over it -- the account name,
+// the limit, the window, its end -- and none is a count: the refusal says
+// the allowance is spent, not how much anybody spent. It unwraps to
+// ErrExhausted, and its text is the one Exhausted always produced.
+type ExhaustedError struct {
+	Provider string
+	Limit    int
+	Window   time.Duration
+	ResetsAt time.Time
+}
+
+func (e *ExhaustedError) Error() string {
+	return fmt.Sprintf("%v: %q allows %d call(s) per analyst per %s, and this window is spent; it resets at %s",
+		ErrExhausted, e.Provider, e.Limit, e.Window, e.ResetsAt.Format(time.RFC3339))
+}
+
+func (e *ExhaustedError) Unwrap() error { return ErrExhausted }
 
 // Plan is the validated, immutable set of declared accounts, and the index
 // from a tool name to the accounts it spends.
@@ -784,6 +804,9 @@ type Reader interface {
 type Gate struct {
 	plan  *Plan
 	store Store
+	// self answers Standing for gatte.status, one analyst at a time
+	// (design/adr/0042 item 3). Optional; see self.go.
+	self SelfReader
 }
 
 // NewGate joins a Plan to a Store. Both are required, and a nil one is an

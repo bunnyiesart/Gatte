@@ -106,3 +106,37 @@ func TestSystemdUnits_TheGatewayReloadsTheFileItServes(t *testing.T) {
 		t.Fatalf("User = %v, want the service account", user)
 	}
 }
+
+// TestSystemdUnits_TheBackupUnitCanWriteWhereItReadsAndWrites: the backup
+// unit (design/adr/0045) reads a WAL database, which writes its -shm, and
+// writes into its -out directory; under ProtectSystem=strict both must be
+// in ReadWritePaths or the timer fails every night.
+func TestSystemdUnits_TheBackupUnitCanWriteWhereItReadsAndWrites(t *testing.T) {
+	root := repoRoot(t)
+	ex, err := os.ReadFile(filepath.Join(root, "config.example.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	db := regexp.MustCompile(`(?m)^database\s*=\s*"([^"]+)"`).FindSubmatch(ex)
+	if db == nil {
+		t.Fatal("config.example.toml no longer names a database path")
+	}
+	unit := filepath.Join(root, "examples", "systemd", "mcp-gateway-backup.service")
+	exec := strings.Join(unitDirective(t, unit, "ExecStart"), " ")
+	out := regexp.MustCompile(`-out (\S+)`).FindStringSubmatch(exec)
+	if out == nil || !strings.Contains(exec, " backup ") {
+		t.Fatalf("mcp-gateway-backup.service does not run backup -out DIR: %s", exec)
+	}
+	rw := unitDirective(t, unit, "ReadWritePaths")
+	for _, w := range []string{path.Dir(string(db[1])), out[1]} {
+		found := false
+		for _, p := range rw {
+			if p == w {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("mcp-gateway-backup.service: ReadWritePaths %v does not include %s", rw, w)
+		}
+	}
+}

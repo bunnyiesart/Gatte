@@ -12,7 +12,7 @@ import "time"
 
 // ContractVersion is the api/admin.openapi.yaml info.version these types
 // implement.
-const ContractVersion = "1.1.0"
+const ContractVersion = "1.2.0"
 
 // Default socket paths (design/adr/0040 §1).
 const (
@@ -260,6 +260,51 @@ type ApproveResult struct {
 	PreviousBaseline string         `json:"previous_baseline,omitempty"`
 	Tool             Tool           `json:"tool"`
 	CallableBy       []RoleCoverage `json:"callable_by,omitempty"`
+}
+
+// ToolReviewSet answers GET /v1/tools/review-set (design/adr/0043): every
+// tool of one backend that waits for review, each as ToolReview shows it,
+// read in ONE read of the backend's entries, and the manifest that names
+// exactly this set. Since 1.2.0, with FeatureToolReviewSet.
+type ToolReviewSet struct {
+	Server string `json:"server"`
+	// Manifest is the value to send to approve-set. Empty when nothing
+	// waits.
+	Manifest string       `json:"manifest"`
+	Tools    []ToolReview `json:"tools"`
+	Pending  int          `json:"pending"`
+	Changed  int          `json:"changed"`
+	// HiddenCodePoints is the sum over every observed definition.
+	HiddenCodePoints int `json:"hidden_code_points"`
+	// Approvable is false when nothing waits, or when an observed
+	// definition was not kept and so cannot be shown; Reason says which.
+	Approvable bool   `json:"approvable"`
+	Reason     string `json:"reason,omitempty"`
+}
+
+// ApproveSetRequest is the body of POST /v1/tools/approve-set.
+type ApproveSetRequest struct {
+	Server   string `json:"server"`
+	Manifest string `json:"manifest"`
+}
+
+// ApprovedTool is one tool an approve-set approved.
+type ApprovedTool struct {
+	PreviousStatus   string         `json:"previous_status"`
+	PreviousBaseline string         `json:"previous_baseline,omitempty"`
+	Tool             Tool           `json:"tool"`
+	CallableBy       []RoleCoverage `json:"callable_by"`
+}
+
+// ApproveSetResult answers POST /v1/tools/approve-set. Audit is the
+// summary row, (tool approve set); Rows are the (tool approve) row of each
+// tool, in the order of Approved.
+type ApproveSetResult struct {
+	ActionResult
+	Server   string         `json:"server"`
+	Manifest string         `json:"manifest"`
+	Approved []ApprovedTool `json:"approved"`
+	Rows     []OperatorRow  `json:"rows"`
 }
 
 // ToolRef names one tool.
@@ -560,6 +605,9 @@ const (
 	FeatureMaintenance = "maintenance"
 	// FeatureBackendHealth: `health` on Overview and on each Upstream.
 	FeatureBackendHealth = "backend_health"
+	// FeatureToolReviewSet: GET /v1/tools/review-set and POST
+	// /v1/tools/approve-set (design/adr/0043), since 1.2.0.
+	FeatureToolReviewSet = "tool_review_set"
 )
 
 // Maintenance scopes.

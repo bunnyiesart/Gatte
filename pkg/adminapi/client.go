@@ -212,6 +212,20 @@ func (c *Client) ApproveTool(ctx context.Context, r ApproveRequest) (ApproveResu
 	return v, c.do(ctx, http.MethodPost, "/v1/tools/approve", nil, r, &v)
 }
 
+// ReviewToolSet returns every tool of server that waits for review and the
+// manifest naming that set (FeatureToolReviewSet).
+func (c *Client) ReviewToolSet(ctx context.Context, server string) (ToolReviewSet, error) {
+	var v ToolReviewSet
+	return v, c.do(ctx, http.MethodGet, "/v1/tools/review-set", url.Values{"server": {server}}, nil, &v)
+}
+
+// ApproveToolSet approves the review set that was shown, all of it or
+// nothing (FeatureToolReviewSet).
+func (c *Client) ApproveToolSet(ctx context.Context, r ApproveSetRequest) (ApproveSetResult, error) {
+	var v ApproveSetResult
+	return v, c.do(ctx, http.MethodPost, "/v1/tools/approve-set", nil, r, &v)
+}
+
 // RevokeTool returns an approved tool to pending.
 func (c *Client) RevokeTool(ctx context.Context, r ToolRef) (RevokeResult, error) {
 	var v RevokeResult

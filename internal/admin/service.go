@@ -163,6 +163,16 @@ const (
 	OperatorTarget = "(gateway)"
 )
 
+// Operator rows of design/adr/0043.
+const (
+	// ToolApproveSet is the summary row of a review set approved in one
+	// act; each tool of it has its own ToolApprove row.
+	ToolApproveSet = "(tool approve set)"
+	// UpstreamUpdate is `upstream update` replacing an entry's image in
+	// place, keeping the quarantine.
+	UpstreamUpdate = "(upstream update)"
+)
+
 // config reads the configuration for one operation.
 func (s *Service) config() (*config.Config, error) {
 	cfg, err := s.d.Config()

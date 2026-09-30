@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/bunnyiesart/Gatte/internal/audit"
+	"github.com/bunnyiesart/Gatte/internal/config"
 	"github.com/bunnyiesart/Gatte/internal/quarantine"
 	"github.com/bunnyiesart/Gatte/internal/visible"
 	"github.com/bunnyiesart/Gatte/pkg/adminapi"
@@ -118,6 +119,11 @@ func (s *Service) ReviewTool(ctx context.Context, server, tool string) (adminapi
 	if err != nil {
 		return adminapi.ToolReview{}, err
 	}
+	return s.reviewOf(ctx, cfg, t)
+}
+
+// reviewOf is ToolReview for an entry already read.
+func (s *Service) reviewOf(ctx context.Context, cfg *config.Config, t quarantine.Tool) (adminapi.ToolReview, error) {
 	rv := adminapi.ToolReview{Tool: ToolOf(t), CallableBy: CallableBy(cfg.Roles, t.ServerName, t.ToolName)}
 	var text, errText bytes.Buffer
 	WriteReview(ctx, s.d.Tools, &text, &errText, t)

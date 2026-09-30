@@ -43,6 +43,8 @@ type harness struct {
 	failRecord error
 	// tools wrapper hook: run after the service's read of an entry.
 	afterGet func()
+	// afterList: run after the service's read of a backend's entries.
+	afterList func()
 }
 
 const usersFixture = `users:
@@ -125,6 +127,16 @@ func (s *hookedTools) Get(ctx context.Context, server, tool string) (quarantine.
 	if s.h.afterGet != nil {
 		f := s.h.afterGet
 		s.h.afterGet = nil
+		f()
+	}
+	return t, err
+}
+
+func (s *hookedTools) List(ctx context.Context, server string) ([]quarantine.Tool, error) {
+	t, err := s.Store.List(ctx, server)
+	if s.h.afterList != nil {
+		f := s.h.afterList
+		s.h.afterList = nil
 		f()
 	}
 	return t, err

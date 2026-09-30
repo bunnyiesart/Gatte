@@ -369,15 +369,22 @@ func buildServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) (
 	// Note which half of the component is handed to the Gateway. The Gate
 	// holds a quota.Store, which can only reserve; the console's read port
 	// (quota.Reader) is a different interface over the same adapter and is
-	// wired in operator.go alone. The request path cannot read a counter.
+	// wired in operator.go alone. The request path cannot read a counter
+	// -- with one exception, made narrow on purpose: gatte.status reports
+	// the CALLER's own use of each budget through quota.SelfReader, one
+	// analyst per question, reached only through Gate.Standing with the
+	// request's verified subject (design/adr/0042 item 3; a fitness
+	// function pins that call site).
 	quotaPlan, err := cfg.ToQuotaPlan()
 	if err != nil {
 		return fail(err)
 	}
-	quotaGate, err := quota.NewGate(quotaPlan, quotasqlite.New(db))
+	quotaCounters := quotasqlite.New(db)
+	quotaGate, err := quota.NewGate(quotaPlan, quotaCounters)
 	if err != nil {
 		return fail(fmt.Errorf("quota: %w", err))
 	}
+	quotaGate = quotaGate.WithSelf(quotaCounters)
 
 	// The trust anchor. Config.Validate has already decoded these once and
 	// refused a malformed entry, so a failure here is a wiring bug rather
@@ -493,9 +500,15 @@ func buildServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) (
 		// what makes them agree.
 		Resource:             cfg.OIDC.Audience,
 		AuthorizationServers: cfg.OIDC.AuthorizationServers,
-		ServerName:           "mcp-gateway",
-		ServerVersion:        buildVersion,
-		Logger:               logger,
+		// The scopes a client with none of its own configured requests
+		// (design/adr/0042 item 1): in the metadata and in the challenge.
+		ScopesSupported: cfg.OIDC.ScopesSupported,
+		// The operator's lines for analysts' models (ADR-0042 item 3).
+		Contact:       cfg.Analyst.Contact,
+		BackendNotes:  cfg.Analyst.BackendNotes,
+		ServerName:    "mcp-gateway",
+		ServerVersion: buildVersion,
+		Logger:        logger,
 		// Left at false: an http:// resource identifier is an instruction
 		// to clients to put bearer tokens on the wire in cleartext, and
 		// there is deliberately no config key to switch that off.

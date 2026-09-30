@@ -2197,7 +2197,10 @@ func (g *Gateway) Dispatch(ctx context.Context, c Caller, namespacedTool string,
 	release, ok := g.slots.acquire(c.Identity.Subject)
 	if !ok {
 		g.auditRefusal(ctx, c, namespacedTool, rt.route.upstream, reasonConcurrencyLimited)
-		return Result{}, fmt.Errorf("%w (limit %d)", ErrConcurrencyLimited, g.slots.max)
+		// Typed, so the caller is told how many calls it already has in
+		// flight and to retry unchanged (design/adr/0042 item 2). The
+		// limit is the operator's; the count is the caller's own.
+		return Result{}, &ConcurrencyLimitedError{Limit: g.slots.max, Gateway: gwNotice}
 	}
 	defer release()
 
@@ -2228,10 +2231,14 @@ func (g *Gateway) Dispatch(ctx context.Context, c Caller, namespacedTool string,
 			// Returned rather than collapsed into ErrUnknownTool, which is
 			// the same deliberate exception to opacity access.ErrForbidden
 			// already is, on the same test: what leaks is the operator's
-			// own published policy, not the SOC's security posture. The
-			// serving adapter reduces it to one constant message for its
-			// own class -- see internal/gateway/httpapi/errors.go, where
-			// the forbidden error's text does not reach a client either.
+			// own published policy, not the SOC's security posture. Since
+			// design/adr/0042 the serving adapter says which account and
+			// when it resets, from the quota's typed refusal -- policy and
+			// window arithmetic, never a count.
+			var budget *quota.ExhaustedError
+			if errors.As(err, &budget) {
+				return Result{}, &QuotaExhaustedError{Budget: budget, Gateway: gwNotice}
+			}
 			return Result{}, err
 		}
 		// Unreadable, unwritable, or a reservation built wrong: refuse.
@@ -2285,7 +2292,10 @@ func (g *Gateway) Dispatch(ctx context.Context, c Caller, namespacedTool string,
 			return Result{}, &UnavailableError{Backend: rt.route.upstream, State: StateReconnecting, Since: now,
 				NextAttempt: next, Gateway: gwNotice, cause: ErrUpstreamGone}
 		case errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil:
-			return Result{}, &BackendFailedError{Backend: rt.route.upstream, Gateway: gwNotice, cause: context.DeadlineExceeded}
+			// The gateway's own ceiling ran out, not the caller: said as
+			// such, with the limit, so a narrower request can be tried
+			// (design/adr/0042 item 2, amending ADR-0041 item 2).
+			return Result{}, &CallTimeoutError{Backend: rt.route.upstream, Limit: g.callTimeout, Gateway: gwNotice}
 		case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded), errors.Is(err, ErrInternal):
 			return Result{}, fmt.Errorf("gateway: call %q: %w", namespacedTool, err)
 		default:
@@ -2301,6 +2311,14 @@ func (g *Gateway) Dispatch(ctx context.Context, c Caller, namespacedTool string,
 	// did run, which is why this is a failure row rather than a denial.
 	if err := g.checkResult(rt, res); err != nil {
 		g.auditFailure(ctx, c, namespacedTool, rt.route.upstream, err)
+		if errors.Is(err, ErrResultTooLarge) {
+			// The ceiling is the operator's number and the caller is
+			// granted this tool, so saying "too large, narrow it" tells
+			// them nothing their own data would not (design/adr/0042
+			// item 2, reversing the silence of ADR-0014's first test).
+			return Result{}, &ResultTooLargeError{Tool: namespacedTool, Limit: g.maxResultBytes, Gateway: gwNotice,
+				cause: fmt.Errorf("gateway: call %q: %w", namespacedTool, err)}
+		}
 		return Result{}, fmt.Errorf("gateway: call %q: %w", namespacedTool, err)
 	}
 	// Step 7b (24 set 2026): the credential this upstream was spawned with

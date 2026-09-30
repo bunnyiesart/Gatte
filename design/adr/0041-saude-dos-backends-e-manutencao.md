@@ -1034,7 +1034,7 @@ escreve na trilha (ADR-0017).
     `TestGatteStatusForACallerWithNoTools`,
     `TestGatteStatusIsAuditedOnce`,
     `TestInitializeCarriesTheInstructions`,
-    `TestInstructionsAreUnder1024AndStateless`,
+    `TestInstructionsFitTheClientCutAndAreStateless` (o limite de 1.024 virou 1.200 para a constante e 2.000 com as linhas do operador, ADR-0042),
     `TestInstructionsAreTheSameConstantDuringGatewayMaintenance`,
     `TestGatewayMaintenanceNoticeIsAppendedToTextAndHonestResults`,
     `TestSuspendedFleetAnswers503WithTheConstantText` e
@@ -1130,3 +1130,12 @@ escreve na trilha (ADR-0017).
   Gatte. O README descreve o comportamento de hoje, por isso a mudança
   entra com o código e não com este desenho; `lab/README.md` ganha a
   receita de re-medição do Contexto.
+
+> **CORREÇÃO — 30 set 2026 (ADR-0042).** Três pontos deste desenho mudaram:
+> o prazo estourado deixou de ser "the backend failed this call" e tem
+> texto próprio, com o prazo (item 2); as instructions ganharam as frases
+> sobre tool que falta e lista fixa por sessão e, do `[analyst]` do
+> operador, o contato e as notas dos backends do próprio chamador — a
+> constante fica abaixo de 1.200 caracteres e o total abaixo de 2.000
+> (item 5); e o `gatte.status` ganhou o bloco `you` (nome, papéis, quota do
+> próprio chamador).

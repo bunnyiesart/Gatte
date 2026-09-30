@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -356,9 +357,27 @@ func TestGatewayMaintenanceNoticeIsAppendedToTextAndHonestResults(t *testing.T) 
 	}
 }
 
-func TestInstructionsAreUnder1024AndStateless(t *testing.T) {
-	if n := len(serverInstructions); n >= 1024 {
-		t.Errorf("instructions are %d bytes", n)
+// TestInstructionsFitTheClientCutAndAreStateless: the constant stays well
+// under Claude Code's 2048 cut, and so does the worst case the config
+// accepts (design/adr/0042 item 3: a 200-rune contact, 12 notes whose
+// names and texts add up to 480 runes).
+func TestInstructionsFitTheClientCutAndAreStateless(t *testing.T) {
+	if n := instructionsLength(serverInstructions); n >= 1200 {
+		t.Errorf("the constant instructions are %d characters, want under 1200", n)
+	}
+	notes := map[string]string{}
+	var names []string
+	for i := range 12 {
+		name := fmt.Sprintf("backend%02d", i) // 9 runes
+		notes[name] = strings.Repeat("é", 40-9)
+		names = append(names, name)
+	}
+	worst := instructionsText(strings.Repeat("ç", 200), notes, names)
+	if n := instructionsLength(worst); n > MaxInstructionsLength {
+		t.Errorf("the worst case the config accepts is %d characters, over %d", n, MaxInstructionsLength)
+	}
+	if !strings.HasPrefix(worst, serverInstructions) {
+		t.Error("the operator's lines must come after the directive, never before it")
 	}
 	if strings.Contains(serverInstructions, "maintenance since") {
 		t.Error("instructions carry state")

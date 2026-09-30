@@ -70,6 +70,16 @@ caracteres de tag.
    crus. O mesmo escape vale para `tool list` e `audit` (nome de probe,
    sujeito, motivo, origem).
 
+   *Correção, 30 set 2026:* a contagem de code points escondidos de um
+   schema (`admin.HiddenInJSON`) passou a tratar a quebra de linha dentro
+   de uma string como a da descrição: `\n` e `\r\n` são estrutura, um
+   `\r` sozinho e uma quebra num nome de chave continuam contando. Antes,
+   a descrição de um parâmetro com uma quebra de linha fazia `tool show`,
+   `tool review` e o console avisarem de "1 hidden code point" que a tela
+   não mostrava como `\u{XXXX}` (medido num backend real do laboratório);
+   um aviso falso ensina o operador a ignorar o verdadeiro. Teste:
+   `TestHiddenInJSON_ALineBreakInAStringIsNotHidden`.
+
 4. **Eventos na trilha, só na transição.** Três linhas que o gateway
    escreve sobre si mesmo:
 

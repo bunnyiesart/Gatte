@@ -132,6 +132,14 @@ func DefinitionLines(t quarantine.ToolIdentity) ([]Line, int) {
 
 // HiddenInJSON counts the hidden code points in every decoded string --
 // keys and values -- of a valid JSON document.
+//
+// A line break inside a string value is structure, as it is in a
+// description (MultilineSegments): a schema's parameter description often
+// has one, the screen shows it as the JSON escape \n, and a model reads it
+// as a line break. Counted, every such schema carried a "hidden code point"
+// the page could not point at, which teaches an operator to ignore the one
+// warning that matters. A lone carriage return still counts, and keys are
+// names, where a line break still counts.
 func HiddenInJSON(raw []byte) int {
 	var v any
 	if json.Unmarshal(raw, &v) != nil {
@@ -141,7 +149,7 @@ func HiddenInJSON(raw []byte) int {
 	walk = func(v any) int {
 		switch x := v.(type) {
 		case string:
-			return visible.Hidden(x)
+			return hiddenOutsideLineBreaks(x)
 		case []any:
 			n := 0
 			for _, e := range x {
@@ -158,6 +166,16 @@ func HiddenInJSON(raw []byte) int {
 		return 0
 	}
 	return walk(v)
+}
+
+// hiddenOutsideLineBreaks is visible.Hidden with "\n" and "\r\n" taken as
+// line breaks rather than hidden code points.
+func hiddenOutsideLineBreaks(s string) int {
+	n := 0
+	for _, l := range strings.Split(s, "\n") {
+		n += visible.Hidden(strings.TrimSuffix(l, "\r"))
+	}
+	return n
 }
 
 // maxDiffCells bounds the line diff's table. Definitions are small; one

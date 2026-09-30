@@ -163,7 +163,21 @@ não muda nada, a menos que:
    trocar o arquivo sob um `serve` vivo o deixaria gravando no arquivo
    substituído, e o restore não teria acontecido);
 2. a cópia passe no `integrity_check`;
-3. o schema dela seja um que este binário conhece (item 3);
+3. o schema dela seja um que este binário conhece (item 3), e os objetos
+   dele sejam os que as migrações deste binário criam: todo gatilho, view
+   e índice pelo `CREATE` exato, toda tabela pelo nome e pelo conjunto de
+   colunas (tipo, `NOT NULL`, default, chave). Integridade, número de
+   schema, cadeia e assinaturas passam num arquivo que traz um gatilho
+   próprio (um que aprova a tool assim que ela é observada, ou apaga o
+   bloqueio assim que ele é posto), ou um gatilho de guarda trocado sob o
+   mesmo nome, que o `CREATE TRIGGER IF NOT EXISTS` da migração deixa como
+   está; e esse gatilho roda depois dentro do gateway restaurado. A
+   referência é um banco em memória criado pelas migrações deste binário,
+   não um arquivo. A tabela é comparada pelas colunas e não pelo texto
+   porque o texto guarda história: a coluna vinda de `ALTER TABLE` fica no
+   fim, e um banco legítimo de binário antigo lê diferente de um novo com
+   as mesmas colunas. O `backup` avisa (sai 1, mantém a cópia como
+   evidência) e o `check` acusa `FAIL` no mesmo caso;
 4. a cadeia da trilha dela verifique, e termine em `-expect-head` quando
    dado;
 5. nenhuma entrada dela tenha assinatura que falhe contra os
@@ -278,6 +292,12 @@ obrigatório (schema do novo maior que o do anterior) e o que ele custa.
   salva de uma atualização ruim, não de um disco perdido.
 - O cofre, as chaves, a configuração e o IdP não entram na cópia, e o
   `restore` não os restaura.
+- A cadeia da trilha não tem chave: prova que as linhas concordam entre
+  si, não que são as que este host gravou. Uma trilha reescrita inteira e
+  encadeada de novo verifica. Só o `-expect-head`, com o head guardado
+  fora do host, separa as duas; sem ele o `restore` avisa disso.
+- Da forma das tabelas, `CHECK` e `UNIQUE` além da chave primária não são
+  comparados; gatilhos, views, índices e colunas são.
 - A detecção de `serve` vivo é o endereço de `listen` ocupado. Um `admin`
   ativado por socket com o banco aberto não é detectado; a receita manda
   parar o socket.
@@ -307,9 +327,12 @@ obrigatório (schema do novo maior que o do anterior) e o que ele custa.
   `-keep` só apaga nomes dele; restore de ida e volta (linhas de depois da
   cópia somem, linha `(restore)` com sha256 e caminho guardado, cadeia
   íntegra, cópia do operador intocada); recusas, sem mudar o banco vivo nem
-  deixar sobra: trilha editada, head errado, entrada alterada depois de
+  deixar sobra: gatilho que o binário não criou, gatilho de guarda trocado
+  sob o mesmo nome, índice reescrito, trilha editada, head errado, entrada alterada depois de
   assinada, arquivo corrompido, schema mais novo, `serve` escutando, o
-  próprio arquivo vivo; restore num host sem banco.
+  próprio arquivo vivo; restore num host sem banco. Aceita a tabela cujas
+  colunas vieram em outra ordem (a história de um banco antigo); `backup` e
+  `check` acusam o gatilho a mais no banco vivo.
 - `cmd/mcp-gateway/check_test.go`: as regras de permissão como o kernel as
   aplica; as regras da chave de assinatura e da chave age; uma implantação
   inteira com cofre real (resultados esperados por verificação, todo

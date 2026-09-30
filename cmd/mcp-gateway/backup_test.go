@@ -372,3 +372,93 @@ func TestRestore_OntoAHostWithNoDatabase(t *testing.T) {
 		t.Errorf("restore claims to have kept a database that did not exist:\n%s", e.stdoutText())
 	}
 }
+
+// The schema objects of a backup (design/adr/0045): integrity, the schema
+// number, the chain and the signatures all pass on a file that carries a
+// trigger of its own, and that trigger then runs inside the restored
+// gateway. restore compares every trigger, view and index with what this
+// binary's migrations create, and every table by its columns.
+
+func TestRestore_RefusesATriggerTheBinaryDidNotCreate(t *testing.T) {
+	e := newFileEnv(t)
+	file, _ := backupInto(t, e, t.TempDir())
+	// A block that vanishes as it is placed: the kill switch would say
+	// "blocked" and block nobody.
+	cp := doctor(t, file, `CREATE TRIGGER blocks_vanish AFTER INSERT ON blocked_subjects
+		BEGIN DELETE FROM blocked_subjects WHERE subject = NEW.subject; END`)
+	refuseRestore(t, e, cp, "", "extra trigger blocks_vanish")
+}
+
+func TestRestore_RefusesAGuardTriggerReplacedUnderItsOwnName(t *testing.T) {
+	e := newFileEnv(t)
+	file, _ := backupInto(t, e, t.TempDir())
+	// Same name, guard removed: the migration's CREATE TRIGGER IF NOT
+	// EXISTS leaves it as it is.
+	cp := doctor(t, file, `DROP TRIGGER tool_definitions_no_update;
+		CREATE TRIGGER tool_definitions_no_update BEFORE UPDATE ON tool_definitions
+		WHEN 0 BEGIN SELECT RAISE(ABORT, 'tool_definitions rows are never rewritten'); END`)
+	refuseRestore(t, e, cp, "", "different trigger tool_definitions_no_update")
+}
+
+func TestRestore_RefusesAnIndexRewrittenUnderItsOwnName(t *testing.T) {
+	e := newFileEnv(t)
+	file, _ := backupInto(t, e, t.TempDir())
+	cp := doctor(t, file, `DROP INDEX idx_audit_records_timestamp;
+		CREATE INDEX idx_audit_records_timestamp ON audit_records (timestamp) WHERE outcome <> 'denied'`)
+	refuseRestore(t, e, cp, "", "different index idx_audit_records_timestamp")
+}
+
+// A file an older binary created has the same columns in another order in
+// its CREATE text (ALTER TABLE appends): that history is not drift.
+func TestRestore_AcceptsATableWhoseColumnsCameInAnotherOrder(t *testing.T) {
+	e := newFileEnv(t)
+	file, res := backupInto(t, e, t.TempDir())
+	cp := doctor(t, file, `CREATE TABLE audit_records_old (
+	id               INTEGER PRIMARY KEY AUTOINCREMENT,
+	analyst_identity TEXT NOT NULL,
+	tool             TEXT NOT NULL,
+	target_upstream  TEXT NOT NULL,
+	timestamp        TEXT NOT NULL,
+	outcome          TEXT NOT NULL DEFAULT '',
+	reason           TEXT NOT NULL DEFAULT '',
+	source_address   TEXT NOT NULL DEFAULT ''
+);
+ALTER TABLE audit_records_old ADD COLUMN prev_hash TEXT NOT NULL DEFAULT '';
+ALTER TABLE audit_records_old ADD COLUMN hash TEXT NOT NULL DEFAULT '';
+ALTER TABLE audit_records_old ADD COLUMN analyst_name TEXT NOT NULL DEFAULT '';
+INSERT INTO audit_records_old (id, analyst_identity, tool, target_upstream, timestamp, outcome, reason, source_address, prev_hash, hash, analyst_name)
+	SELECT id, analyst_identity, tool, target_upstream, timestamp, outcome, reason, source_address, prev_hash, hash, analyst_name FROM audit_records;
+DROP TABLE audit_records;
+ALTER TABLE audit_records_old RENAME TO audit_records;
+CREATE INDEX idx_audit_records_timestamp
+	ON audit_records (timestamp)`)
+	r := restoreEnv(t, e)
+	if code := runRestore(r, cp, res.AuditHead, time.Now()); code != exitOK {
+		t.Fatalf("restore of a file with the older column order = %d\n%s", code, e.bothText())
+	}
+}
+
+func TestBackupAndCheck_SayWhenTheLiveSchemaCarriesARuleOfItsOwn(t *testing.T) {
+	e := newFileEnv(t)
+	if _, err := e.db.Exec(`CREATE TRIGGER blocks_vanish AFTER INSERT ON blocked_subjects
+		BEGIN DELETE FROM blocked_subjects WHERE subject = NEW.subject; END`); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(t.TempDir(), "copy.db")
+	if code := runBackup(e.opEnv, out, 0, false, time.Now()); code != exitProblem {
+		t.Fatalf("backup of a database with a foreign trigger = %d, want %d\n%s", code, exitProblem, e.bothText())
+	}
+	if !strings.Contains(e.stderrText(), "extra trigger blocks_vanish") {
+		t.Errorf("backup does not name the trigger:\n%s", e.stderrText())
+	}
+	if _, err := os.Stat(out); err != nil {
+		t.Errorf("the copy was not kept as evidence: %v", err)
+	}
+	var rep dbReport
+	if err := inspectContent(context.Background(), e.cfg, e.db, &rep); err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.Drift) != 1 || rep.Drift[0] != "extra trigger blocks_vanish" {
+		t.Errorf("drift = %v, want the one extra trigger", rep.Drift)
+	}
+}

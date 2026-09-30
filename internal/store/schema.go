@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -103,4 +104,101 @@ func SchemaText(ctx context.Context, db *sql.DB) (string, error) {
 		return "", fmt.Errorf("store: read schema: %w", err)
 	}
 	return b.String(), nil
+}
+
+// SchemaShape is what of db's schema a restore or a check holds a file
+// to (design/adr/0045): every trigger, view and index by its exact CREATE
+// statement, and every table by name and by the set of its columns (name,
+// type, NOT NULL, default, primary key).
+//
+// A table is compared by its columns and not by its CREATE text because
+// that text records history: a column added by an ALTER TABLE lands at the
+// end of it, so a file an older binary created and this one migrated
+// reads differently from a new file with the same columns. A trigger or
+// an index has no such history -- they are created whole or not at all
+// -- and they are where a file could carry a rule of its own: a trigger
+// that approves a tool as it is observed, deletes a block as it is placed,
+// or a same-named trigger with its guard removed, which a migration's
+// CREATE TRIGGER IF NOT EXISTS would leave in place.
+//
+// Not compared: a table's CHECK and UNIQUE clauses beyond its primary key.
+func SchemaShape(ctx context.Context, db *sql.DB) (map[string]string, error) {
+	rows, err := db.QueryContext(ctx,
+		`SELECT type, name, COALESCE(sql, '') FROM sqlite_master
+		 WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name`)
+	if err != nil {
+		return nil, fmt.Errorf("store: read schema: %w", err)
+	}
+	shape := map[string]string{}
+	var tables []string
+	for rows.Next() {
+		var typ, name, stmt string
+		if err := rows.Scan(&typ, &name, &stmt); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("store: read schema: %w", err)
+		}
+		if typ == "table" {
+			tables = append(tables, name)
+			continue
+		}
+		shape[typ+" "+name] = strings.TrimSpace(stmt)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, fmt.Errorf("store: read schema: %w", err)
+	}
+	rows.Close()
+	for _, t := range tables {
+		cols, err := tableColumns(ctx, db, t)
+		if err != nil {
+			return nil, err
+		}
+		shape["table "+t] = cols
+	}
+	return shape, nil
+}
+
+func tableColumns(ctx context.Context, db *sql.DB, table string) (string, error) {
+	rows, err := db.QueryContext(ctx,
+		`SELECT name, type, "notnull", COALESCE(dflt_value, 'NULL'), pk FROM pragma_table_xinfo(?) ORDER BY name`, table)
+	if err != nil {
+		return "", fmt.Errorf("store: read columns of %s: %w", table, err)
+	}
+	defer rows.Close()
+	var cols []string
+	for rows.Next() {
+		var name, typ, dflt string
+		var notNull, pk int
+		if err := rows.Scan(&name, &typ, &notNull, &dflt, &pk); err != nil {
+			return "", fmt.Errorf("store: read columns of %s: %w", table, err)
+		}
+		cols = append(cols, fmt.Sprintf("%s %s notnull=%d default=%s pk=%d", name, typ, notNull, dflt, pk))
+	}
+	if err := rows.Err(); err != nil {
+		return "", fmt.Errorf("store: read columns of %s: %w", table, err)
+	}
+	return strings.Join(cols, "; "), nil
+}
+
+// SchemaDrift compares a file's shape with the one this binary's
+// migrations produce, and names every object that is extra, missing or
+// different, sorted. Empty means they agree.
+func SchemaDrift(got, want map[string]string) []string {
+	var out []string
+	for k, w := range want {
+		g, ok := got[k]
+		switch {
+		case !ok:
+			out = append(out, "missing "+k)
+		case g != w:
+			out = append(out, "different "+k)
+		}
+	}
+	for k := range got {
+		if _, ok := want[k]; !ok {
+			out = append(out, "extra "+k)
+		}
+	}
+	sort.Strings(out)
+	return out
 }

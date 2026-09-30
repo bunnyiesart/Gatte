@@ -17,6 +17,9 @@ func TestCSVCell_GuardsFormulasAndMakesHiddenTextVisible(t *testing.T) {
 		"line one\nline two":                  "line one\\u{000A}line two",
 		"":                                    "",
 		"a=b":                                 "a=b",
+		"  =1+1":                              "'  =1+1",
+		" @SUM(A1)":                           "' @SUM(A1)",
+		" plain":                              " plain",
 		"(operator:alice)":                    "(operator:alice)",
 	}
 	for in, want := range cases {

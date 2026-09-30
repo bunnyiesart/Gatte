@@ -998,6 +998,14 @@ components:
         lost:
           type: array
           items: {type: string}
+        grants_added:
+          type: array
+          description: What the role's grant in the file says that it did not, as namespaced names (backend.tool, backend.* for a wildcard), whatever the gateway routes now. Absent when none.
+          items: {type: string}
+        grants_removed:
+          type: array
+          description: What the role's grant no longer says. Absent when none.
+          items: {type: string}
     GroupChange:
       type: object
       required: [group]

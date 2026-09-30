@@ -71,6 +71,11 @@ type RoleChange struct {
 	Removed bool     `json:"removed"`
 	Gained  []string `json:"gained"`
 	Lost    []string `json:"lost"`
+	// GrantsAdded and GrantsRemoved are what the role's grant in the file
+	// says differently, as namespaced names (backend.tool, backend.* for a
+	// wildcard), whatever the gateway routes now.
+	GrantsAdded   []string `json:"grants_added,omitempty"`
+	GrantsRemoved []string `json:"grants_removed,omitempty"`
 }
 
 // GroupChange is one [group_to_role] key whose role changed; from or to

@@ -116,6 +116,19 @@ compartilham.
    Depois roda uma rodada fora de hora, para que a retirada de rotas e o
    resto da manutenção sigam a quota nova.
 
+   **Correção (30 set 2026, revisão adversarial):** o alcance é medido só
+   sobre as tools roteadas no instante do reload, então um papel alargado
+   para um backend fora do ar, ainda não listado, ou para as tools que um
+   backend vai acrescentar (`casemgmt = ["*"]` no lugar da lista) não mudava
+   nada em `gained`, e a linha dizia "no change to roles, groups or quota".
+   Cada papel agora leva também `grants_added` e `grants_removed` — o que a
+   concessão do arquivo diz de diferente, em nomes com namespace
+   (`backend.tool`, `backend.*`) —, e a razão da linha os nomeia
+   (`role "x" grant +backend.*`). Um papel cuja concessão mudou aparece
+   mesmo alcançando as mesmas tools hoje. Testes:
+   `TestDiff_ARewrittenGrantIsRecordedEvenWhenNothingRoutedMoves` e
+   `TestDiff_ARewrittenGrantThatReachesTheSameToolsNamesTheGrantOnly`.
+
 **O que não recarrega, e é dito:** `listen`, `[oidc]` (issuer, audiência,
 claim de grupos), `[signer]` — `trusted_keys` inclusive —, `[vault]`,
 `[audit]`, `[telemetry]`, `[response]`, `[oci]`, `[upstreams]`,
@@ -148,6 +161,18 @@ como usuário de serviço. O reload não escreve política: aplica o arquivo que
 o root escreveu e alguém revisou (`0009` §2). Quem edita o `config.toml`
 decide; o reload só faz valer — inclusive uma edição que ainda não era para
 valer, e por isso a resposta mostra o diff inteiro.
+
+**Correção (30 set 2026, revisão adversarial):** o pid e o instante de
+início que o `reload` toca vêm de uma tabela que o usuário de serviço grava,
+e o instante de início qualquer um lê em `/proc`. Rodado como root, o
+`reload` deixaria quem tem o usuário de serviço fazer o root mandar SIGHUP a
+qualquer processo do host. O toque agora recusa rodar como root e diz para
+rodar como o usuário de serviço (`sudo -u mcpgw`), que é como as unidades
+de exemplo e o rc.d já rodam. E um pedido sem autor na tabela — que o
+serviço de gestão nunca escreve — ganha a sua linha como `(unknown)` em vez
+de ser aplicado sem linha. Testes:
+`TestRingServe_SignalsOnlyTheProcessThatRecordedItself` e
+`TestReload_ARequestThatNamesNobodyStillGetsItsRow`.
 
 ### 3. Redial: derrubar e discar de novo um backend
 
@@ -188,6 +213,20 @@ apontando para `upstream redial`.
   lista sem assinar: o operador vê o que assina. Uma entrada que o dialer
   ou a regra de stdio com credencial recusariam não é assinada, e o comando
   sai com 1.
+- **Correção (30 set 2026, revisão adversarial):** imprimir cada entrada
+  *enquanto* assina não é mostrar antes de assinar. Uma entrada inválida é
+  exatamente o rastro do atacante da `0010` (quem grava o banco reescreveu
+  o comando), e o `sign -all` como estava assinava essa entrada sem que o
+  root a tivesse lido. Agora o `sign -all` assina só um **plano revisto**,
+  como a `0043` aprova um conjunto por manifesto: `-dry-run` imprime o
+  plano e o seu manifesto (SHA-256 com etiqueta de domínio sobre a chave e,
+  para cada entrada que seria assinada, nome, estado e os bytes de
+  `signer.Canonical`); `sign -all -manifest SHA256` assina se, e só se, o
+  plano lido agora tem esse manifesto. Sem `-manifest` o comando mostra o
+  plano, não assina nada e sai com 1; com um manifesto velho (uma entrada
+  entrou, saiu ou mudou) não assina nenhuma, nem as que não mudaram.
+  Testes: `TestCmdSign_AllSignsWhatNeedsItAndLeavesTheRest` e
+  `TestCmdSign_AllSignsNothingWhenThePlanMovedSinceItWasShown`.
 - Rodado como root, `sign` lê a configuração e a chave como root (as duas
   são do root) e **vira o dono do diretório do banco** (`setgroups`,
   `setgid`, `setuid`) **antes de abrir o banco**. O SQLite cria `-wal` e
@@ -209,7 +248,7 @@ apontando para `upstream redial`.
 - `internal/admin`: `Reload`, `Redial`, `ServeRequest`, e as linhas
   declaradas `(config reload)` e `(upstream redial)` — escritas pelo
   `serve`, que é onde a mudança acontece.
-- `cmd/mcp-gateway`: `reload`, `upstream redial`, `sign -all [-dry-run]`,
+- `cmd/mcp-gateway`: `reload`, `upstream redial`, `sign -all -dry-run | -manifest`,
   o tratamento do SIGHUP (`serve_control.go`) e o toque (`ring.go`).
 - Contrato `1.3.0`: `POST /v1/reload`, `POST /v1/upstreams/redial`, `GET
   /v1/serve-requests/{id}` (para um pedido respondido `pending`), código de
@@ -278,6 +317,7 @@ apontando para `upstream redial`.
   `TestRedial_RefusesWhatItCannotBringBack`.
 - `internal/reload`:
   `TestDiff_NamesWhoGainsAndLosesWhichToolAndNothingElse`,
+  `TestDiff_ARewrittenGrantIsRecordedEvenWhenNothingRoutedMoves`,
   `TestNotReloaded_SaysWhichKeysNeedARestart`,
   `TestSummary_IsBoundedAndStaysValidUTF8`.
 - `internal/control/sqlite`: `TestRequests_SubmitPendingFinish`.

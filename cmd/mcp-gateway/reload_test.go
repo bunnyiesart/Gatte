@@ -352,6 +352,18 @@ func TestRingServe_SignalsOnlyTheProcessThatRecordedItself(t *testing.T) {
 	if err := ringServe(control.Process{PID: 1}); err == nil {
 		t.Fatal("ring of pid 1 was attempted")
 	}
+	// Root does not ring a pid the service account's database names.
+	ringGeteuid = func() int { return 0 }
+	t.Cleanup(func() { ringGeteuid = os.Geteuid })
+	if err := ringServe(me); err == nil || !strings.Contains(err.Error(), "as root") {
+		t.Fatalf("ring as root = %v, want a refusal", err)
+	}
+	select {
+	case <-hup:
+		t.Fatal("root rang the recorded pid")
+	case <-time.After(200 * time.Millisecond):
+	}
+	ringGeteuid = os.Geteuid
 	if runtime.GOOS == "linux" {
 		if me.StartToken == "" {
 			t.Fatal("no start token on Linux")
@@ -414,5 +426,36 @@ func TestReload_TheNewQuotaGateStillReadsTheCallersOwnUse(t *testing.T) {
 	got, err := gate.Standing(context.Background(), "sub-1", []string{"threatintel.lookup_ip"}, time.Now())
 	if err != nil || len(got) != 1 || got[0].Used != 0 {
 		t.Fatalf("Standing = %+v, %v; want one budget with Used 0 (read, not unknown)", got, err)
+	}
+}
+
+// TestReload_ARequestThatNamesNobodyStillGetsItsRow: a request row with no
+// actor -- one the management service never writes -- is applied like any
+// other and recorded as (unknown), never applied without a row.
+func TestReload_ARequestThatNamesNobodyStillGetsItsRow(t *testing.T) {
+	rs := startServe(t, nil)
+	e := rs.operatorEnv(t)
+	// The store refuses such a request, so it is written the way only
+	// something else holding the database would write it.
+	if _, err := e.db.Exec(`INSERT INTO serve_request (kind, target, actor, tag, requested_at, state) VALUES (?, '', '', '', ?, ?)`,
+		control.KindReload, time.Now().UTC().Format(time.RFC3339Nano), control.StatePending); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Kill(os.Getpid(), syscall.SIGHUP); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		rows := rowsOf(t, e, admin.ConfigReload)
+		if len(rows) == 1 {
+			if !strings.HasPrefix(rows[0], "(unknown)|(gateway)|allowed|applied: ") {
+				t.Fatalf("row = %q", rows[0])
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no (config reload) row for a request that names nobody; log:\n%s", rs.log.String())
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }

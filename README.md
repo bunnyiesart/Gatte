@@ -196,7 +196,7 @@ sudo chmod 0640  /usr/local/etc/mcp-gateway/secrets.enc.json
 #    before opening the database, so it leaves no root-owned file there.
 sudo -u mcpgw mcp-gateway upstream register -config "$CFG" -name edr -transport stdio \
   -command /usr/local/bin/your-edr-mcp -env EDR_CLIENT_ID -env EDR_CLIENT_SECRET
-sudo mcp-gateway sign -config "$CFG" edr        # or: sign -all, for every entry that needs it
+sudo mcp-gateway sign -config "$CFG" edr        # or: sign -all -dry-run, then sign -all -manifest SHA256
 
 # 5. Check the configuration offline, then run (in the foreground here;
 #    under your service manager in production).
@@ -376,7 +376,7 @@ refusing unknown keys, before doing anything. `mcp-gateway help` and
 | Review all of one backend's pending and changed tools | `tool review -server NAME` | -- |
 | Approve exactly that set, all or nothing | `tool approve -server NAME -manifest SHA256` | next call |
 | Withdraw an approval | `tool revoke SERVER TOOL` | next call |
-| Add or remove a backend | `upstream register` + `sign` (or `sign -all`), or `upstream deregister` | within one `quarantine.refresh_interval` (default 5 m) |
+| Add or remove a backend | `upstream register` + `sign` (or `sign -all -manifest`), or `upstream deregister` | within one `quarantine.refresh_interval` (default 5 m) |
 | Move a container backend to a new image digest | `upstream update -image NAME@sha256:HEX NAME`, then `sign NAME` as root | after the signature, within one interval |
 | Cut off one analyst | `access block -reason TEXT SUBJECT` | next request |
 | Restore them | `access unblock SUBJECT` | next request |
@@ -390,7 +390,7 @@ refusing unknown keys, before doing anything. `mcp-gateway help` and
 | Change roles, groups or quota | edit `config.toml`, then `reload` (or `systemctl reload mcp-gateway`) | next call; a client sees tools it gained after it reconnects (`/mcp`) |
 | Rotate one backend's credential | `sops secrets.enc.json`, then `upstream redial NAME` | after one round, for that backend only |
 | Pick up a backend container you restarted or upgraded | `upstream redial NAME` | after one round, for that backend only |
-| Re-sign everything, e.g. after rotating the signing key | `sign -all` (as root; `-dry-run` first to see the list) | within one `quarantine.refresh_interval` |
+| Re-sign everything, e.g. after rotating the signing key | `sign -all -dry-run`, read the plan, then `sign -all -manifest SHA256` (as root; signs exactly the plan shown, nothing if it moved) | within one `quarantine.refresh_interval` |
 | Change anything else: `listen`, `[oidc]` (`scopes_supported` included), `[analyst]`, `[signer]` (`trusted_keys` included), `[vault]`, `[audit]`, `[telemetry]`, `[response]`, `[oci]`, `[upstreams]`, `[quarantine]` | edit `config.toml`, then restart `serve` | after restart; `reload` names these keys when they differ and leaves them alone |
 
 **Reload, and what it does not reload** (`design/adr/0044`). `reload`
@@ -399,7 +399,8 @@ re-read its own `-config`. The whole file is loaded and validated first;
 if it does not load, or the new `[quota]` disagrees with the registry,
 nothing changes, and the refusal is printed and recorded. Applied, it
 prints and records, as one `(config reload)` row, which role gained and
-lost which tool and which group moved, plus every key that differs from
+lost which tool, whose grant was rewritten (even when it reaches the same
+tools today) and which group moved, plus every key that differs from
 the file `serve` started with and is NOT applied until a restart. A tool
 a role lost is refused from the next call; a tool it gained appears to an
 analyst only after their client reconnects, because clients fetch the

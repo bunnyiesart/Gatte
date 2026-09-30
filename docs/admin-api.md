@@ -253,7 +253,10 @@ With the feature `serve_control` (contract 1.3.0, design/adr/0044):
   `pending`, which a front reads again with `GET /v1/serve-requests/{id}`.
   `serve_not_running` (503) means nothing was filed.
 - A reload's `reload` field is the diff to show: per role, the tools
-  `gained` and `lost`; `groups` that moved; `quota` accounts changed; and
+  `gained` and `lost` over what is routed now, and `grants_added` /
+  `grants_removed`, what its grant in the file says differently (a grant
+  over a backend that is down or not yet listed moves nothing in `gained`,
+  so draw both); `groups` that moved; `quota` accounts changed; and
   `not_reloaded`, the keys that differ from the file `serve` started with
   and need a restart. Show `not_reloaded` next to the success, not after
   it. A redial's `redial` says whether the backend was connected and

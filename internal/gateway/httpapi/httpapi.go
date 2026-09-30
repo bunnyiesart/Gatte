@@ -273,7 +273,7 @@ func New(cfg Config) (*Handler, error) {
 		notes[name] = note
 	}
 	if n := instructionsLength(instructionsText(cfg.Contact, notes, slices.Sorted(maps.Keys(notes)))); n > MaxInstructionsLength {
-		return nil, fmt.Errorf("httpapi: the server instructions with every backend note would be %d characters, over the %d a client keeps: shorten connect.contact or the backend notes", n, MaxInstructionsLength)
+		return nil, fmt.Errorf("httpapi: the server instructions with every backend note would be %d characters, over the %d a client keeps: shorten analyst.contact or analyst.backend_notes", n, MaxInstructionsLength)
 	}
 	now := cfg.Now
 	if now == nil {

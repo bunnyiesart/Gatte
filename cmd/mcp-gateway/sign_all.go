@@ -6,6 +6,9 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -16,6 +19,7 @@ import (
 
 	"github.com/bunnyiesart/Gatte/internal/registry"
 	"github.com/bunnyiesart/Gatte/internal/signer"
+	"github.com/bunnyiesart/Gatte/internal/visible"
 )
 
 // signGeteuid and signDropTo are variables so the root path is testable
@@ -113,9 +117,52 @@ type signPlan struct {
 	refuse error  // why it cannot be signed, if it cannot
 }
 
+// signPlanDomainTag scopes a sign -all manifest, as the review-set
+// manifest's tag scopes it: it can never be confused with another hash.
+const signPlanDomainTag = "mcp-gateway/sign-all/plan/v1"
+
+// signPlanManifest is the hex SHA-256 of what sign -all would sign: the
+// signing key, and for each entry it would sign, in registry order, its
+// name, what its signature is now, and the exact bytes its signature
+// covers (signer.Canonical). It changes when anything the operator was
+// shown changes: an entry joining or leaving the plan, any signed field,
+// or the key. Every field is length-prefixed, so no two plans collide.
+func signPlanManifest(pub []byte, plan []signPlan) string {
+	h := sha256.New()
+	field := func(b []byte) {
+		var n [8]byte
+		binary.BigEndian.PutUint64(n[:], uint64(len(b)))
+		h.Write(n[:])
+		h.Write(b)
+	}
+	field([]byte(signPlanDomainTag))
+	field(pub)
+	var signable []signPlan
+	for _, p := range plan {
+		if p.refuse == nil {
+			signable = append(signable, p)
+		}
+	}
+	var n [8]byte
+	binary.BigEndian.PutUint64(n[:], uint64(len(signable)))
+	field(n[:])
+	for _, p := range signable {
+		field([]byte(p.entry.Name))
+		field([]byte(p.state))
+		field(signer.Canonical(p.entry))
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
 // runSignAll signs every registered entry that is not validly signed by
-// the configured key: unsigned, stale, or signed by another key.
-func runSignAll(e *opEnv, dryRun bool) int {
+// the configured key -- unsigned, stale, or signed by another key -- and
+// only as the plan named by reviewed (design/adr/0044 item 4, amended):
+// the operator signs what -dry-run showed them, the way a review set is
+// approved by its manifest (design/adr/0043). A stale entry is exactly
+// what ADR-0010's attacker leaves behind, so signing it unseen would undo
+// the signature's point. Without reviewed, or with dryRun, it prints the
+// plan and its manifest and signs nothing.
+func runSignAll(e *opEnv, dryRun bool, reviewed string) int {
 	key, keyFile, ok := e.signingKeyOrLoad()
 	if !ok {
 		return exitCannotRun
@@ -176,14 +223,17 @@ func runSignAll(e *opEnv, dryRun bool) int {
 		return exitOK
 	}
 
+	manifest := signPlanManifest(pub, plan)
+	reviewed = strings.TrimPrefix(strings.TrimSpace(reviewed), "sha256:")
+	sign := !dryRun && reviewed == manifest
 	verb := "Signing"
-	if dryRun {
-		verb = "Would sign (-dry-run: nothing is written)"
+	if !sign {
+		verb = "Would sign (nothing is written)"
 	}
 	fmt.Fprintf(e.stdout, "%s with %s (%s); %d already signed by it %s left alone.\n\n",
 		verb, keyFile, signer.KeyFingerprint(pub), current, opPlural(current, "is", "are"))
 
-	problem, signed := false, 0
+	problem, signed, signable := false, 0, 0
 	for _, p := range plan {
 		fmt.Fprintf(e.stdout, "%s -- was %s\n", p.entry.Name, p.state)
 		tw := opTable(e.stdout)
@@ -201,7 +251,8 @@ func runSignAll(e *opEnv, dryRun bool) int {
 			fmt.Fprintf(e.stdout, "  NOT signed: %v\n\n", p.refuse)
 			problem = true
 			continue
-		case dryRun:
+		case !sign:
+			signable++
 			fmt.Fprint(e.stdout, "  would be signed\n\n")
 			continue
 		}
@@ -213,10 +264,24 @@ func runSignAll(e *opEnv, dryRun bool) int {
 		fmt.Fprint(e.stdout, "  signed\n\n")
 	}
 
-	if !dryRun {
-		fmt.Fprintf(e.stdout, "Signed %d %s. Each signature covers the fields shown and no secret value.\n",
-			signed, opPlural(signed, "entry", "entries"))
+	switch {
+	case sign:
+		fmt.Fprintf(e.stdout, "Signed %d %s (plan sha256:%s). Each signature covers the fields shown and no secret value.\n",
+			signed, opPlural(signed, "entry", "entries"), manifest)
 		fmt.Fprint(e.stdout, "A running gateway picks them up within one quarantine.refresh_interval; no restart.\n")
+	case signable == 0:
+		fmt.Fprint(e.stdout, "Nothing above can be signed.\n")
+	case dryRun || reviewed == "":
+		fmt.Fprintf(e.stdout, "plan  sha256:%s\n\nRead every entry above -- an INVALID one was changed after it was signed. If\nall of them are sound, sign exactly this plan:\n\n    %s -all -manifest %s\n",
+			manifest, e.cmd("sign"), manifest)
+		if !dryRun {
+			fmt.Fprint(e.stderr, "\nNOT signed: sign -all signs only the plan you reviewed; pass its -manifest.\n")
+			problem = true
+		}
+	default:
+		fmt.Fprintf(e.stderr, "\nNOT signed: the plan is now sha256:%s, not the sha256:%s you reviewed.\nSomething joined, left or changed since you looked. Review the plan above, then\nsign its manifest if it is sound.\n",
+			manifest, visible.Escape(reviewed))
+		problem = true
 	}
 	if !verifier.Trusts(pub) {
 		fmt.Fprintf(e.stdout, "\nThe gateway will NOT serve these yet: the key that signed them is not in\nsigner.trusted_keys. Add it and restart the gateway (trusted_keys is not reloadable):\n\n    [signer]\n    trusted_keys = [\n      %q,  # %s\n    ]\n",

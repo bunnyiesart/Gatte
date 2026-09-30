@@ -96,7 +96,8 @@ func cmdSign(args []string, stdout, stderr io.Writer) int {
 		"create a new Ed25519 signing key and exit; requires -out; refuses to overwrite an existing file")
 	keyOut := fs.String("out", "", "with -generate-key: path to write the new key to")
 	all := fs.Bool("all", false, "sign every registered entry not validly signed by this key: unsigned, stale (INVALID), or signed by another key")
-	dryRun := fs.Bool("dry-run", false, "with -all: list what would be signed and sign nothing")
+	dryRun := fs.Bool("dry-run", false, "with -all: list what would be signed, and the plan's manifest, and sign nothing")
+	manifest := fs.String("manifest", "", "with -all: the manifest -all -dry-run printed; only exactly that plan is signed")
 	if code, ok := opParse(fs, args, stdout, stderr, signUsage); !ok {
 		return code
 	}
@@ -119,10 +120,15 @@ func cmdSign(args []string, stdout, stderr io.Writer) int {
 			signUsage(stderr)
 			return exitCannotRun
 		}
-		return signRun(*configPath, stdout, stderr, func(e *opEnv) int { return runSignAll(e, *dryRun) })
+		if *dryRun && *manifest != "" {
+			fmt.Fprintf(stderr, "-dry-run lists the plan and -manifest signs it: give one of them\n\n")
+			signUsage(stderr)
+			return exitCannotRun
+		}
+		return signRun(*configPath, stdout, stderr, func(e *opEnv) int { return runSignAll(e, *dryRun, *manifest) })
 	}
-	if *dryRun {
-		fmt.Fprintf(stderr, "-dry-run goes with -all\n\n")
+	if *dryRun || *manifest != "" {
+		fmt.Fprintf(stderr, "-dry-run and -manifest go with -all\n\n")
 		signUsage(stderr)
 		return exitCannotRun
 	}
@@ -141,7 +147,8 @@ func cmdSign(args []string, stdout, stderr io.Writer) int {
 func signUsage(w io.Writer) {
 	fmt.Fprint(w, `Usage:
   mcp-gateway sign [-config FILE] NAME
-  mcp-gateway sign [-config FILE] -all [-dry-run]
+  mcp-gateway sign [-config FILE] -all -dry-run
+  mcp-gateway sign [-config FILE] -all -manifest SHA256
   mcp-gateway sign -generate-key -out PATH
 
 Signs the registry entry NAME with the Ed25519 key at signer.key_file, and
@@ -157,8 +164,11 @@ The key file must be readable by its owner only (chmod 600).
 -all signs every registered entry that is not validly signed by this key:
 unsigned, stale (the entry changed after it was signed, shown INVALID) or
 signed by another key -- which is what re-signing after a key rotation
-needs. Each entry signed is printed with the fields its signature covers;
--dry-run lists them and signs nothing.
+needs. It signs only a plan you were shown: -all -dry-run prints each entry
+with the fields its signature covers, and the plan's manifest; -all
+-manifest SHA256 signs exactly that plan, and nothing if any entry joined,
+left or changed since. An INVALID entry is one somebody changed after it
+was signed: read it before you sign it.
 
 Run as root (the key is root's), sign reads the configuration and the key,
 then drops to the owner of the database directory before it opens the

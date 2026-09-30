@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/bunnyiesart/Gatte/internal/access"
+	accesssqlite "github.com/bunnyiesart/Gatte/internal/access/sqlite"
 	"github.com/bunnyiesart/Gatte/internal/admin/adminhttp"
 )
 
@@ -33,9 +34,11 @@ type blockWriterInput struct {
 	Until   time.Time `json:"until,omitzero"`
 }
 
-// blockWriterOutput is the child's answer.
+// blockWriterOutput is the child's answer. Replaced is the ended block
+// the new one replaced, when there was one (access.BlockReplacer).
 type blockWriterOutput struct {
-	Placed bool `json:"placed"`
+	Placed   bool              `json:"placed"`
+	Replaced *blockWriterInput `json:"replaced,omitempty"`
 }
 
 // errNotOnAccountsSocket: the accounts backend places blocks (offboard)
@@ -45,12 +48,22 @@ var errNotOnAccountsSocket = errors.New("the accounts socket only places blocks;
 // childBlocks is the accounts backend's access.BlockStore: Block goes
 // through the child, and nothing else is served.
 type childBlocks struct {
-	place func(ctx context.Context, b access.Block) (bool, error)
+	place func(ctx context.Context, b access.Block) (bool, *access.Block, error)
 }
 
-var _ access.BlockStore = childBlocks{}
+var (
+	_ access.BlockStore    = childBlocks{}
+	_ access.BlockReplacer = childBlocks{}
+)
 
-func (c childBlocks) Block(ctx context.Context, b access.Block) (bool, error) { return c.place(ctx, b) }
+func (c childBlocks) Block(ctx context.Context, b access.Block) (bool, error) {
+	placed, _, err := c.place(ctx, b)
+	return placed, err
+}
+
+func (c childBlocks) BlockReplacing(ctx context.Context, b access.Block) (bool, *access.Block, error) {
+	return c.place(ctx, b)
+}
 func (childBlocks) Blocked(context.Context, string) (bool, error) {
 	return false, errNotOnAccountsSocket
 }
@@ -63,21 +76,24 @@ func (childBlocks) Blocks(context.Context) ([]access.Block, error) {
 
 // spawnBlockWriter places a block through `admin -block-writer` running as
 // uid and gid.
-func spawnBlockWriter(configPath string, uid, gid uint32) func(context.Context, access.Block) (bool, error) {
-	return func(ctx context.Context, b access.Block) (bool, error) {
+func spawnBlockWriter(configPath string, uid, gid uint32) func(context.Context, access.Block) (bool, *access.Block, error) {
+	return func(ctx context.Context, b access.Block) (bool, *access.Block, error) {
 		body, err := json.Marshal(blockWriterInput{Subject: b.Subject, Reason: b.Reason, By: b.By, At: b.At, Until: b.Until})
 		if err != nil {
-			return false, err
+			return false, nil, err
 		}
 		out, err := runAdminChild(ctx, configPath, "-block-writer", uid, gid, body)
 		if err != nil {
-			return false, err
+			return false, nil, err
 		}
 		var res blockWriterOutput
 		if err := json.Unmarshal(out, &res); err != nil {
-			return false, fmt.Errorf("block writer: unreadable answer: %v", err)
+			return false, nil, fmt.Errorf("block writer: unreadable answer: %v", err)
 		}
-		return res.Placed, nil
+		if r := res.Replaced; r != nil {
+			return res.Placed, &access.Block{Subject: r.Subject, Reason: r.Reason, By: r.By, At: r.At, Until: r.Until}, nil
+		}
+		return res.Placed, nil, nil
 	}
 }
 
@@ -109,14 +125,19 @@ func runBlockWriter(configPath string, stdin io.Reader, stdout, stderr io.Writer
 	}
 	return opRun(configPath, io.Discard, stderr, func(e *opEnv) int {
 		var placed bool
+		var replaced *access.Block
 		if err := retryBusy(e.ctx(), func() (err error) {
-			placed, err = e.blocks().Block(e.ctx(), b)
+			placed, replaced, err = accesssqlite.New(e.db).BlockReplacing(e.ctx(), b)
 			return err
 		}); err != nil {
 			fmt.Fprintf(stderr, "blocklist: %v\n", err)
 			return exitProblem
 		}
-		if err := json.NewEncoder(stdout).Encode(blockWriterOutput{Placed: placed}); err != nil {
+		out := blockWriterOutput{Placed: placed}
+		if replaced != nil {
+			out.Replaced = &blockWriterInput{Subject: replaced.Subject, Reason: replaced.Reason, By: replaced.By, At: replaced.At, Until: replaced.Until}
+		}
+		if err := json.NewEncoder(stdout).Encode(out); err != nil {
 			fmt.Fprintf(stderr, "admin -block-writer: %v\n", err)
 			return exitProblem
 		}

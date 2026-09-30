@@ -95,6 +95,15 @@ type BlockStore interface {
 	Blocks(ctx context.Context) ([]Block, error)
 }
 
+// BlockReplacer is a BlockStore that can also say, in the same step as the
+// placement, which ended block the new one replaced (design/adr/0046,
+// correction of 30 Sep 2026): a replaced block is never seen by the
+// gateway's expiry round, so the row of the new block is the only place
+// its end can be kept. replaced is nil when nothing was replaced.
+type BlockReplacer interface {
+	BlockReplacing(ctx context.Context, b Block) (placed bool, replaced *Block, err error)
+}
+
 // maxBlockText bounds a subject and a reason. Generous for any IdP's `sub`
 // and for a sentence of context; small enough that the audit row and the
 // console table stay legible.

@@ -157,10 +157,13 @@ largura fixa para que o SQL compare dois como compara instantes.
   trilha mostrava um bloqueio com fim e depois outro bloqueio, nunca o fim
   do primeiro. Agora a linha `(access block)` que substitui um bloqueio
   expirado diz qual substituiu — `[replaces the expired block placed by
-  QUEM at QUANDO, ended FIM]` — e a resposta avisa. Se a rodada registrar a
-  expiração entre a leitura e a substituição, as duas linhas ficam (a nota
-  então descreve um bloqueio que a rodada acabou de encerrar), o que é
-  redundante, não falso.
+  QUEM at QUANDO, ended FIM]` — e a resposta avisa. Quem diz qual foi
+  substituído é o próprio blocklist, no mesmo passo em que substitui
+  (`access.BlockReplacer`: no SQLite, leitura e troca numa transação; no
+  socket de contas, o `admin -block-writer` devolve o bloqueio substituído
+  na resposta), porque o socket de contas não lê o blocklist — uma primeira
+  versão que lia antes de bloquear fez todo offboard falhar lá (medido no
+  banco de testes).
 - `-until` aceita um instante RFC 3339 ou uma duração a partir de agora
   (`8h`), como o `maintenance`; tem de estar no futuro. No front, o campo
   "Ends" da página Access, com a feature `block_until`.

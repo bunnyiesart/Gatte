@@ -32,6 +32,9 @@ const (
 	CodeConfigUnavailable     = "config_unavailable"
 	CodeStoreBusy             = "store_busy"
 	CodeAccountNotManaged     = "account_not_managed"
+	// Since 1.2.0 (design/adr/0043).
+	CodeManifestRequired = "manifest_required"
+	CodeManifestMismatch = "manifest_mismatch"
 )
 
 // codeStatus is the HTTP status each known code travels with.
@@ -59,6 +62,8 @@ var codeStatus = map[string]int{
 	CodeConfigUnavailable:     http.StatusServiceUnavailable,
 	CodeStoreBusy:             http.StatusServiceUnavailable,
 	CodeAccountNotManaged:     http.StatusForbidden,
+	CodeManifestRequired:      http.StatusBadRequest,
+	CodeManifestMismatch:      http.StatusConflict,
 }
 
 // StatusOf returns the HTTP status of a known code, 500 otherwise.

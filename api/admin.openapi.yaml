@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Gatte management API
-  version: 1.1.0
+  version: 1.2.0
   summary: The backend every Gatte front talks to (design/adr/0040).
   description: |
     Served by `mcp-gateway admin` over UNIX sockets only. There is no TCP
@@ -104,6 +104,10 @@ info:
       `(maintenance off)` operator rows) and `backend_health` (`health` on
       `Overview` and on each `Upstream`, new `Attention.kind` and
       `Overview.problems[].part` values).
+    - 1.2.0 (design/adr/0043): feature `tool_review_set`
+      (`GET /v1/tools/review-set`, `POST /v1/tools/approve-set`, the
+      `(tool approve set)` operator row, error codes `manifest_required`
+      and `manifest_mismatch`).
   license:
     name: Apache-2.0
 servers:
@@ -200,6 +204,7 @@ components:
         | bad_request | 400 | malformed JSON, wrong content type, unknown field, bad query value |
         | invalid_argument | 400 | a value fails validation; `details.field` names it |
         | fingerprint_required | 400 | approve without a fingerprint |
+        | manifest_required | 400 | approve-set without a manifest; `details.manifest` is the current one, when something waits |
         | group_not_mapped | 400 | group is not a key of `[group_to_role]` |
         | peer_unattributable | 403 | the kernel's peer uid has no account name |
         | forbidden_peer | 403 | peer not allowed on this socket (group, or the service account on the account socket) |
@@ -211,6 +216,7 @@ components:
         | method_not_allowed | 405 | wrong method for the route |
         | fingerprint_mismatch | 409 | the tool advertises another fingerprint than the one reviewed |
         | fingerprint_moved | 409 | the definition changed while approving |
+        | manifest_mismatch | 409 | the backend's review set is not the one reviewed, or changed while approving; nothing was approved; `details.manifest` when known |
         | definition_unavailable | 409 | the observed definition was not kept; nothing can be approved |
         | changed_not_revocable | 409 | a changed tool cannot be revoked |
         | account_exists | 409 | username taken |
@@ -305,7 +311,7 @@ components:
             Stable names of capabilities added after 1.0 (empty in 1.0). A
             front sends a newer optional request field, or calls a newer
             endpoint, only when its feature is listed. Known: `maintenance`
-            and `backend_health` (1.1.0).
+            and `backend_health` (1.1.0), `tool_review_set` (1.2.0).
           items:
             type: string
         gateway_version:
@@ -588,6 +594,73 @@ components:
             callable_by:
               type: array
               items: {$ref: '#/components/schemas/RoleCoverage'}
+    ToolReviewSet:
+      type: object
+      description: |
+        Every tool of one backend that waits for review (pending or
+        changed), each as `ToolReview` shows it, read in ONE read of the
+        backend's entries, in tool-name order (design/adr/0043). `manifest`
+        names exactly this set: it is the hex SHA-256 over the backend, the
+        number of tools and each tool's name, status, observed fingerprint
+        and approved baseline. Show every entry before offering to approve
+        it; there is no approval of a set without its manifest.
+      required: [server, manifest, tools, pending, changed, hidden_code_points, approvable]
+      properties:
+        server: {type: string}
+        manifest:
+          type: string
+          description: The value to send to approve-set. Empty when nothing waits.
+          pattern: '^([0-9a-f]{64})?$'
+        tools:
+          type: array
+          items: {$ref: '#/components/schemas/ToolReview'}
+        pending: {type: integer}
+        changed: {type: integer}
+        hidden_code_points:
+          type: integer
+          description: Sum of `observed.hidden_code_points` over `tools`.
+        approvable:
+          type: boolean
+          description: false when nothing waits, or when an observed definition was not kept (`reason` says which).
+        reason: {type: string}
+    ApproveSetRequest:
+      type: object
+      required: [server, manifest]
+      additionalProperties: false
+      properties:
+        server: {type: string}
+        manifest:
+          type: string
+          description: The manifest the operator was shown (ToolReviewSet.manifest). Requests may carry the `sha256:` prefix.
+    ApprovedTool:
+      type: object
+      required: [previous_status, tool, callable_by]
+      properties:
+        previous_status: {$ref: '#/components/schemas/ToolStatus'}
+        previous_baseline: {type: string, description: The approved fingerprint that is no longer accepted (changed tools).}
+        tool: {$ref: '#/components/schemas/Tool'}
+        callable_by:
+          type: array
+          items: {$ref: '#/components/schemas/RoleCoverage'}
+    ApproveSetResult:
+      allOf:
+        - $ref: '#/components/schemas/ActionResult'
+        - type: object
+          description: |
+            `audit` is the summary row, `(tool approve set)`. `rows` are the
+            `(tool approve)` rows of each tool that were recorded; when one
+            is missing, `recorded` is false and `warnings` carries
+            `audit_write_failed`.
+          required: [server, manifest, approved, rows]
+          properties:
+            server: {type: string}
+            manifest: {type: string, description: The manifest approved. Empty when nothing waited.}
+            approved:
+              type: array
+              items: {$ref: '#/components/schemas/ApprovedTool'}
+            rows:
+              type: array
+              items: {$ref: '#/components/schemas/OperatorRow'}
     ToolRef:
       type: object
       required: [server, tool]
@@ -1174,6 +1247,53 @@ paths:
               schema: {$ref: '#/components/schemas/ApproveResult'}
         default:
           description: fingerprint_required, fingerprint_mismatch, fingerprint_moved, definition_unavailable, not_found, corrupt_state, store_busy, ...
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorResponse'}
+  /v1/tools/review-set:
+    get:
+      operationId: reviewToolSet
+      tags: [tools]
+      x-gatte-socket: [operator]
+      summary: Every pending and changed tool of one backend, and the manifest of that set (`tool review -server`). Feature `tool_review_set`.
+      parameters:
+        - {name: server, in: query, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: OK. Nothing waiting is `tools` empty, `manifest` empty and `approvable` false.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ToolReviewSet'}
+        default:
+          description: invalid_argument (no server), not_found (no tool observed on it), ...
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorResponse'}
+  /v1/tools/approve-set:
+    post:
+      operationId: approveToolSet
+      x-gatte-idempotent: true
+      tags: [tools]
+      x-gatte-socket: [operator]
+      summary: |
+        Approve one backend's whole review set, all of it or nothing, and only
+        while it is still the set the manifest names. Writes one
+        `(tool approve)` row per tool and one `(tool approve set)` row.
+        Feature `tool_review_set`.
+      parameters: [{$ref: '#/components/parameters/GatteFront'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ApproveSetRequest'}
+      responses:
+        '200':
+          description: Approved, or nothing waited any more (`changed` false).
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApproveSetResult'}
+        default:
+          description: manifest_required, manifest_mismatch, definition_unavailable, not_found, corrupt_state, store_busy, ...
           content:
             application/json:
               schema: {$ref: '#/components/schemas/ErrorResponse'}

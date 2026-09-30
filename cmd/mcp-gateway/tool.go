@@ -33,6 +33,8 @@ func cmdTool(args []string, stdout, stderr io.Writer) int {
 		return toolList(rest, stdout, stderr)
 	case "show":
 		return toolShow(rest, stdout, stderr)
+	case "review":
+		return toolReview(rest, stdout, stderr)
 	case "approve":
 		return toolApprove(rest, stdout, stderr)
 	case "revoke":
@@ -52,6 +54,8 @@ func toolUsage(w io.Writer) {
   mcp-gateway tool list [-config FILE] [-server NAME] [-json]
   mcp-gateway tool show [-config FILE] SERVER TOOL
   mcp-gateway tool approve [-config FILE] -fingerprint SHA256 SERVER TOOL
+  mcp-gateway tool review [-config FILE] -server NAME
+  mcp-gateway tool approve [-config FILE] -server NAME -manifest SHA256
   mcp-gateway tool revoke [-config FILE] SERVER TOOL
 
 "list" is the approval queue: it shows every tool the gateway has observed,
@@ -68,6 +72,13 @@ printed as \u{XXXX}.
 hash of the definition you reviewed. Without -fingerprint it approves
 nothing and prints the command to run; if the tool is advertising another
 fingerprint by then, it refuses.
+
+"review -server" prints every pending and changed tool of one backend, each
+as "show" prints it, who can call each once approved, and the manifest: the
+hash of exactly that set. "approve -server -manifest" prints the same, then
+approves every tool of it in one transaction -- or none, if any tool of the
+backend joined, left or changed since the review. There is no approval of
+a set without its manifest (design/adr/0043).
 
 "revoke" is the way back: it withdraws an approval and returns the tool to
 pending, so a running gateway stops serving it on the very next call. It
@@ -205,8 +216,20 @@ func runToolList(e *opEnv, server string, asJSON bool) int {
 func toolApprove(args []string, stdout, stderr io.Writer) int {
 	fs, configPath := opFlagSet("tool approve", stderr)
 	fingerprint := fs.String("fingerprint", "", "approve only if the observed fingerprint is still this one (the full sha256 `tool list -json` prints)")
+	setServer := fs.String("server", "", "with -manifest: approve this backend's whole review set")
+	manifest := fs.String("manifest", "", "with -server: approve only if the backend's review set is still this one (the sha256 `tool review` prints)")
 	if code, ok := opParse(fs, args, stdout, stderr, toolUsage); !ok {
 		return code
+	}
+	if *setServer != "" || *manifest != "" {
+		if fs.NArg() != 0 || *fingerprint != "" || *setServer == "" {
+			fmt.Fprint(stderr, "approving a review set takes -server NAME and -manifest SHA256, and no -fingerprint\nor SERVER TOOL: a set is approved by its manifest, one tool by its fingerprint\n\n")
+			toolUsage(stderr)
+			return exitCannotRun
+		}
+		return opRun(*configPath, stdout, stderr, func(e *opEnv) int {
+			return runToolApproveSet(e, *setServer, *manifest)
+		})
 	}
 	if fs.NArg() != 2 {
 		fmt.Fprint(stderr, "approve takes exactly two arguments: the server name and the tool name\n\n")

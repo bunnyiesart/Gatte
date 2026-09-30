@@ -33,3 +33,26 @@ func TestMultilineSegments_ALineBreakIsNotAHiddenCharacter(t *testing.T) {
 		t.Fatalf("Segments(a\\nb) = %+v, want the newline hidden", s)
 	}
 }
+
+// A schema's parameter description with a line break is shown as the JSON
+// escape \n. Counted as hidden, the warning named a code point the screen
+// could not point at (measured: a real backend's decode tool, 30 Sep 2026).
+// A real hidden code point in a schema, in either spelling, still counts.
+func TestHiddenInJSON_ALineBreakInAStringIsNotHidden(t *testing.T) {
+	for _, c := range []struct {
+		raw  string
+		want int
+	}{
+		{`{"properties":{"e":{"description":"One of a, b.\n      Default: a."}}}`, 0},
+		{`{"d":"first\r\nsecond"}`, 0},
+		{`{"d":"a\rb"}`, 1},
+		{`{"d":"line\nbreak\u202e"}`, 1},
+		{"{\"d\":\"raw \u202e override\"}", 1},
+		{`{"k\ney":"v"}`, 1},
+		{`{"d":"tab\there"}`, 1},
+	} {
+		if got := HiddenInJSON([]byte(c.raw)); got != c.want {
+			t.Errorf("HiddenInJSON(%s) = %d, want %d", c.raw, got, c.want)
+		}
+	}
+}

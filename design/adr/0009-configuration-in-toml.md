@@ -67,6 +67,15 @@ Consequência aceita: recarregar papéis exige reiniciar o processo (ou um
 reload explícito). Para uma equipe de ~7 pessoas cujos papéis mudam
 raramente, isso é preço baixo por revisibilidade.
 
+> **CORREÇÃO — 30 set 2026 (ADR-0044).** O reload explícito existe:
+> `mcp-gateway reload`, `POST /v1/reload` ou SIGHUP fazem o `serve` reler o
+> arquivo, validá-lo inteiro e aplicar `[[role]]`, `[group_to_role]` e
+> `[quota]` sem restart, com uma linha `(config reload)` que diz quem ganhou
+> e perdeu que tool. A revisibilidade deste item fica como estava: o reload
+> aplica o arquivo revisado, não escreve política. O resto do arquivo
+> (`listen`, `[oidc]`, `[signer]`, `[vault]`, ...) continua pedindo restart,
+> e o reload diz quais chaves diferem.
+
 ### 3. Segredo nenhum no arquivo de configuração
 
 O arquivo carrega **caminhos** e **identificadores**, jamais valores:

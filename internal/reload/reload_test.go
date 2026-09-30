@@ -79,6 +79,10 @@ func TestNotReloaded_SaysWhichKeysNeedARestart(t *testing.T) {
 	next.Listen = "127.0.0.1:9090"
 	next.Signer.TrustedKeys = []string{"key-a", "key-b"}
 	next.Roles = nil // reloadable, not listed
+	// Read by sign and by the management backend on every run: no restart.
+	next.Signer.KeyFile = "/usr/local/etc/mcp-gateway/signing-2.key"
+	next.IdP.UsersFile = "/etc/authelia/users.yml"
+	next.Admin.OperatorGroup = "gatte-operators"
 	got := NotReloaded(old, next)
 	if !slices.Equal(got, []string{"listen", "signer.trusted_keys"}) {
 		t.Fatalf("NotReloaded = %v", got)

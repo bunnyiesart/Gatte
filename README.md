@@ -80,7 +80,7 @@ trail with its reason.
 |---|---|---|
 | **Secrets** | All backend credentials in one sops+age encrypted file. Decrypted in memory, injected into the backend's environment at spawn, never logged, never returned. The backend's environment is built from scratch, not inherited. | `design/adr/0003`, `0005` |
 | **Identity** | OIDC bearer tokens, asymmetric signatures only, validated audience. Protected-resource metadata (RFC 9728) so clients can discover the IdP. | `design/adr/0008` |
-| **Access** | Token groups → roles → tools, by exact name or per backend. Roles live in the config file, so widening one is a reviewed diff. | `design/adr/0003` |
+| **Access** | Token groups → roles → tools, by exact name or per backend. Roles live in the config file, so widening one is a reviewed diff, applied with `mcp-gateway reload` without a restart. | `design/adr/0003`, `0044` |
 | **Kill switch** | `access block SUBJECT` refuses one analyst from their next request, no restart. Block and unblock are audited operator actions. | `design/adr/0031` |
 | **Tool quarantine** | Per-tool approval pinned to a SHA-256 fingerprint of the definition. `tool show` escapes invisible characters (a common way to hide instructions in a tool description) and diffs against the approved version. | `design/adr/0032` |
 | **Signed backends** | A registered backend (command, arguments, image digest, credential *names*) must carry an Ed25519 signature from a key listed in the config file before it is served. Someone who can write the database cannot add or change a backend. | `design/adr/0010` |
@@ -191,12 +191,12 @@ sudo chmod 0640  /usr/local/etc/mcp-gateway/secrets.enc.json
 
 # 4. Register each backend, naming its credentials (names only), and sign it.
 #    Operator commands run as the service account, because they write the
-#    database it writes; sign runs as root, because only root reads the key,
-#    and SQLite may leave root-owned -wal/-shm files behind, hence the chown.
+#    database it writes; sign runs as root, because only root reads the key.
+#    It reads the key as root and then becomes the database directory's owner
+#    before opening the database, so it leaves no root-owned file there.
 sudo -u mcpgw mcp-gateway upstream register -config "$CFG" -name edr -transport stdio \
   -command /usr/local/bin/your-edr-mcp -env EDR_CLIENT_ID -env EDR_CLIENT_SECRET
-sudo mcp-gateway sign -config "$CFG" edr
-sudo chown -R mcpgw:mcpgw /var/db/mcp-gateway
+sudo mcp-gateway sign -config "$CFG" edr        # or: sign -all, for every entry that needs it
 
 # 5. Check the configuration offline, then run (in the foreground here;
 #    under your service manager in production).
@@ -372,7 +372,7 @@ refusing unknown keys, before doing anything. `mcp-gateway help` and
 | Review a tool (or a change to one) | `tool show SERVER TOOL` | -- |
 | Approve exactly what you reviewed | `tool approve -fingerprint SHA256 SERVER TOOL` | next call |
 | Withdraw an approval | `tool revoke SERVER TOOL` | next call |
-| Add or remove a backend | `upstream register` + `sign`, or `upstream deregister` | within one `quarantine.refresh_interval` (default 5 m) |
+| Add or remove a backend | `upstream register` + `sign` (or `sign -all`), or `upstream deregister` | within one `quarantine.refresh_interval` (default 5 m) |
 | Cut off one analyst | `access block -reason TEXT SUBJECT` | next request |
 | Restore them | `access unblock SUBJECT` | next request |
 | Read the trail | `audit [-subject ID] [-outcome denied] [-since TIME]` | -- |
@@ -382,7 +382,43 @@ refusing unknown keys, before doing anything. `mcp-gateway help` and
 | Bring it back | `upstream maintenance off NAME` | next call |
 | Announce maintenance of the whole gateway | `maintenance on -message TEXT [-until 2026-09-29T15:00:00Z]`, later `maintenance off` | next call |
 | See what is in maintenance | `maintenance list [-json]` | -- |
-| Change roles or rotate a credential | edit `config.toml` / `sops secrets.enc.json`, then restart | after restart |
+| Change roles, groups or quota | edit `config.toml`, then `reload` (or `systemctl reload mcp-gateway`) | next call; a client sees tools it gained after it reconnects (`/mcp`) |
+| Rotate one backend's credential | `sops secrets.enc.json`, then `upstream redial NAME` | after one round, for that backend only |
+| Pick up a backend container you restarted or upgraded | `upstream redial NAME` | after one round, for that backend only |
+| Re-sign everything, e.g. after rotating the signing key | `sign -all` (as root; `-dry-run` first to see the list) | within one `quarantine.refresh_interval` |
+| Change anything else: `listen`, `[oidc]`, `[signer]` (`trusted_keys` included), `[vault]`, `[audit]`, `[telemetry]`, `[response]`, `[oci]`, `[upstreams]`, `[quarantine]` | edit `config.toml`, then restart `serve` | after restart; `reload` names these keys when they differ and leaves them alone |
+
+**Reload, and what it does not reload** (`design/adr/0044`). `reload`
+asks the running `serve`, through a row in its database and a SIGHUP, to
+re-read its own `-config`. The whole file is loaded and validated first;
+if it does not load, or the new `[quota]` disagrees with the registry,
+nothing changes, and the refusal is printed and recorded. Applied, it
+prints and records, as one `(config reload)` row, which role gained and
+lost which tool and which group moved, plus every key that differs from
+the file `serve` started with and is NOT applied until a restart. A tool
+a role lost is refused from the next call; a tool it gained appears to an
+analyst only after their client reconnects, because clients fetch the
+tool list when they connect. `upstream redial NAME` drops the connection
+to one backend and dials it again with the vault as it is now: its calls
+are answered as reconnecting until the new process has listed its tools,
+and the others are not touched. Both run as the service account (they
+signal `serve`) and wait for `serve`'s answer (`-wait`, default 2 m). A
+bare SIGHUP (`systemctl reload`, `kill -HUP`) reloads too, and its row
+says `[signal]`. `examples/systemd/mcp-gateway.service` has the
+`ExecReload=`.
+
+**Rotating the signing key takes two restarts**, because `trusted_keys`
+is deliberately not reloadable:
+
+1. `sudo mcp-gateway sign -generate-key -out /usr/local/etc/mcp-gateway/signing-2.key`
+   and add its public half to `trusted_keys` **beside** the old one.
+   Restart `serve` (the new key is trusted from here).
+2. Point `signer.key_file` at the new key (only `sign` reads it, on every
+   run: no restart, and `reload` does not report it), then `sudo mcp-gateway sign -config "$CFG" -all`:
+   every entry is re-signed with the new key, each printed with what its
+   signature covers. `upstream list` shows `yes` for all of them.
+3. Remove the old key's line from `trusted_keys` and restart `serve`.
+   Delete the old key file.
 
 **During an incident, do two things.** `access block` stops the analyst at
 the gateway immediately. It does not touch the IdP: their token stays
@@ -509,7 +545,9 @@ sudo -u mcpgw mcp-gateway admin -config "$CFG" \
 Identity provider accounts are served by a second, root-only socket
 (`admin -accounts`); a group it is delegated to reaches only the accounts
 whose groups all map to a role. A block's stored reason, the REASON column
-of `access list`, now starts with where it came from (`[cli]`, `[ui]`). The contract is `api/admin.openapi.yaml`; how to write
+of `access list`, now starts with where it came from (`[cli]`, `[ui]`).
+`POST /v1/reload` and `POST /v1/upstreams/redial` are `reload` and
+`upstream redial` for a front (contract 1.2.0, feature `serve_control`). The contract is `api/admin.openapi.yaml`; how to write
 a front is `docs/admin-api.md`.
 
 ## Security model
@@ -680,9 +718,10 @@ check is a size ceiling plus validation against a declared output schema
 (`design/adr/0014`). Neither can tell a malicious result from a real one.
 
 **Credentials are resolved when a backend is spawned**, so rotating one in
-the vault reaches an already-connected backend only after a restart; the
-gateway warns while the old value is in use (`deploy/freebsd-jail.md`,
-"Rotating credentials").
+the vault reaches an already-connected backend only when it is dialled
+again: `upstream redial NAME` for that backend, or a restart for all of
+them. The gateway warns while the old value is in use
+(`deploy/freebsd-jail.md`, "Rotating credentials").
 
 These limits came out of five adversarial review rounds, one of which
 audited the whole system; each round found controls that were documented as
@@ -721,7 +760,9 @@ register`, `upstream deregister` and a signature that stops verifying take
 effect within one `quarantine.refresh_interval` plus the time one
 maintenance round takes (`design/adr/0013`, 28 Sep 2026 correction). An
 unreadable registry serves nothing until it can be read again
-(`design/adr/0020`). Role changes and credential rotation need a restart.
+(`design/adr/0020`). Role, group and quota changes take effect with
+`reload`, and a rotated credential with `upstream redial NAME`, without a
+restart (`design/adr/0044`); the rest of the configuration needs one.
 
 ## Repository map
 

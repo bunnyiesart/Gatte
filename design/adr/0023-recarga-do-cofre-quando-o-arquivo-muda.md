@@ -111,6 +111,14 @@ compraria nada contra esse mesmo atacante.
 
 ### 4. O que continua NÃO acontecendo
 
+> **CORREÇÃO — 30 set 2026 (ADR-0044).** A reconexão sob demanda existe:
+> `mcp-gateway upstream redial NAME` (ou `POST /v1/upstreams/redial`) derruba
+> e disca de novo um backend, resolvendo o cofre como ele está agora, sem
+> reiniciar o gateway nem os outros backends. O canal de controle que este
+> item temia não é um listener: é uma linha no banco e um SIGHUP. Reconexão
+> **automática** continua não existindo, pelo motivo abaixo, e o aviso de
+> drift passa a apontar para o comando.
+
 Nenhuma reconexão automática. Um upstream conectado segue com o valor que
 recebeu no dial até alguém reiniciar — a metade do GAB-20 que continua
 deliberadamente não construída, pelo motivo do canal de controle. O que

@@ -58,9 +58,9 @@ CFG=/usr/local/etc/mcp-gateway/config.toml
 The commands below are written bare. On a host laid out as in the
 [quick start](../README.md#quick-start), run them as the gateway's service
 account (`sudo -u mcpgw mcp-gateway ...`), except `sign`, which runs as root
-because only root reads the signing key. SQLite creates its `-wal` and `-shm`
-files owned by whoever opens the database first, so after a `sign` give the
-directory back with `sudo chown -R mcpgw:mcpgw /var/db/mcp-gateway`.
+because only root reads the signing key. `sign` reads the key as root and
+then becomes the database directory's owner before it opens the database, so
+it leaves no root-owned `-wal` or `-shm` file behind (`design/adr/0044`).
 
 ### 1. Register the upstream
 
@@ -164,7 +164,9 @@ you have no key yet, `mcp-gateway sign -generate-key -out PATH` creates one
 and prints the lines to paste into the configuration.
 
 A running gateway picks up a registration, a deregistration or a signature
-that stops verifying within one `quarantine.refresh_interval`.
+that stops verifying within one `quarantine.refresh_interval`. `mcp-gateway
+sign -all` signs every registered entry that is not yet validly signed by
+your key (`-dry-run` lists them first).
 
 ### 4. Review and approve the tools
 
@@ -229,7 +231,12 @@ with reason `not visible to caller` (see `mcp-gateway audit`). When a grant
 seems not to work, check `tool list` for the tool's status first and the
 role in the configuration second.
 
-Role changes take effect after a restart.
+Role changes take effect without a restart: `mcp-gateway reload -config
+"$CFG"` (as the service account, or `systemctl reload mcp-gateway`) makes
+the running gateway re-read the file, validate all of it, and apply
+`[[role]]`, `[group_to_role]` and `[quota]` from the next call, printing who
+gained and lost which tool (`design/adr/0044`). A file it refuses changes
+nothing. An analyst sees a newly granted tool after their client reconnects.
 
 ## Checking your configuration offline
 

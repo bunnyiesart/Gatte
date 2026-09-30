@@ -445,3 +445,6 @@ details.inline[open] summary { margin-bottom: 6px; }
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; }
 }
+
+/* a container image: repository, then the short digest, each on one line */
+.cell-sub.image span { display: block; white-space: nowrap; }

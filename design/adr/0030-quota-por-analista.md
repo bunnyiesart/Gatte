@@ -177,3 +177,13 @@ do mesmo tick, que retém a ferramenta não declarada exatamente como no boot.
 - `internal/e2e`: `TestCheckpoint_QuotaStopsOneAnalystWithoutStoppingTheTeam`.
 - `internal/fitness`: `TestTheRequestPathCannotReadAQuotaCounter`,
   `TestEveryAdapterMigrationIsWiredIntoTheCompositionRoot`.
+
+> **CORREÇÃO — 30 set 2026 (ADR-0042 itens 2 e 3).** A recusa por quota
+> esgotada passa a ser um resultado `isError` com a conta, o limite, a
+> janela e o instante do reset, montado de `quota.ExhaustedError` (política
+> e aritmética de janela, nenhuma contagem). E o `gatte.status` informa ao
+> chamador o próprio uso de cada conta que as tools dele gastam, pela porta
+> estreita `quota.SelfReader` (um analista por pergunta), alcançada só por
+> `Gate.Standing` com o sujeito verificado da requisição — pinado por
+> `TestTheRequestPathReadsOnlyTheCallersOwnQuota`. A proibição de
+> `quota.Reader` e `quota.Usage` no caminho da requisição continua.

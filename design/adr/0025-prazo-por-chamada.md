@@ -135,3 +135,8 @@ um analista recebe erro em vez de espera indefinida.
 
 - Autor: bunnyiesart + Claude, 16 set 2026, a partir de uma auditoria do
   sistema inteiro — a primeira que não olhou um diff.
+
+> **CORREÇÃO — 30 set 2026 (ADR-0042 item 2).** O prazo estourado (com o
+> chamador ainda conectado) responde um resultado `isError` que diz o prazo
+> do Gatte e sugere uma consulta mais estreita (`gateway.CallTimeoutError`).
+> A razão da trilha continua `upstream timed out`.

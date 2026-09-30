@@ -129,3 +129,9 @@ um retry, não é indisponibilidade.
 - `internal/access/oidc`: `TestForgedTokensDoNotTurnIntoJWKSFetches`,
   `TestARedirectingJWKSEndpointStillLoadsKeys`.
 - `internal/config`: `TestMaxConcurrentCallsCannotDisableTheCap`.
+
+> **CORREÇÃO — 30 set 2026 (ADR-0042 item 2).** A recusa por vagas cheias
+> passa a ser um resultado `isError` que diz quantas chamadas o analista já
+> tem em voo, somando todas as sessões dele, e que ele deve esperar e
+> repetir com os mesmos argumentos (`gateway.ConcurrencyLimitedError`). A
+> classe `concurrency limited` continua para o caminho JSON-RPC.

@@ -1,0 +1,33 @@
+# A consistent copy of the gateway's database (design/adr/0045 item 2),
+# started by mcp-gateway-backup.timer. It runs while serve runs: VACUUM INTO
+# reads one transaction, so the copy is the database as of one instant.
+#
+# The copy is the database only. The configuration file, the vault, the age
+# key, the signing key and the IdP are backed up separately: the command's
+# own output (journalctl -u mcp-gateway-backup) lists them with their paths.
+[Unit]
+Description=Gatte database backup
+
+[Service]
+Type=oneshot
+User=mcpgw
+Group=mcpgw
+# Keep the newest 14 copies; the command removes only files it named.
+ExecStart=/usr/local/bin/mcp-gateway backup -config /etc/mcp-gateway/config.toml -out /var/backups/mcp-gateway -keep 14
+# The directory must exist, the service account's and private:
+#   install -d -m 0700 -o mcpgw -g mcpgw /var/backups/mcp-gateway
+# Ship the copies off the host from there: a copy on the same disk survives
+# a bad upgrade, not a lost disk. The database directory is writable because
+# a reader of a WAL database writes its -shm.
+ReadWritePaths=/var/db/mcp-gateway /var/backups/mcp-gateway
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX
+CapabilityBoundingSet=
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native

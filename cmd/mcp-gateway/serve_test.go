@@ -1093,16 +1093,28 @@ func TestServeStack_HeartbeatIsEmittedOnEveryRound(t *testing.T) {
 	cancel()
 	<-done
 
-	// The line is a heartbeat and not an audit record: nothing was
+	// The lines are heartbeats and not audit records: nothing was
 	// dispatched, so anything claiming a verdict here would be a fiction.
+	// The one record is the boot row (design/adr/0045 item 3), which says
+	// which binary started, not what anybody did.
 	var hb map[string]any
+	boots := 0
 	for _, line := range strings.Split(strings.TrimSpace(readFileString(t, sinkPath)), "\n") {
-		if err := json.Unmarshal([]byte(line), &hb); err != nil {
+		var l map[string]any
+		if err := json.Unmarshal([]byte(line), &l); err != nil {
 			t.Fatalf("sink line is not valid JSON (%v): %s", err, line)
 		}
-		if hb["type"] != "heartbeat" {
-			t.Fatalf("a quiet gateway emitted a line of type %v; only heartbeats should be here:\n%s", hb["type"], line)
+		if l["type"] == "record" && l["tool"] == bootTool && l["caller"] == "(gateway)" {
+			boots++
+			continue
 		}
+		if l["type"] != "heartbeat" {
+			t.Fatalf("a quiet gateway emitted a line of type %v; only heartbeats and the boot row should be here:\n%s", l["type"], line)
+		}
+		hb = l
+	}
+	if boots != 1 {
+		t.Errorf("%d boot rows reached the SIEM copy, want exactly 1", boots)
 	}
 	if hb["chain"] != "gatte-test-hb" {
 		t.Errorf("heartbeat chain = %v, want the configured chain -- an alert keyed on the chain would never match", hb["chain"])

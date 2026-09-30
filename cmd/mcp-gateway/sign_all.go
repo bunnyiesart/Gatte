@@ -17,6 +17,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/bunnyiesart/Gatte/internal/config"
 	"github.com/bunnyiesart/Gatte/internal/registry"
 	"github.com/bunnyiesart/Gatte/internal/signer"
 	"github.com/bunnyiesart/Gatte/internal/visible"
@@ -71,22 +72,8 @@ func signRun(configPath string, stdout, stderr io.Writer, fn func(*opEnv) int) i
 		if !ok {
 			return exitCannotRun
 		}
-		dir := filepath.Dir(cfg.Database)
-		fi, err := os.Lstat(dir)
-		if err != nil {
-			fmt.Fprintf(stderr, "database directory: %v\n", err)
+		if !becomeDatabaseOwner(cfg, stderr) {
 			return exitCannotRun
-		}
-		st, isStat := fi.Sys().(*syscall.Stat_t)
-		if !fi.IsDir() || !isStat {
-			fmt.Fprintf(stderr, "the database directory %s is not a directory (a symbolic link is refused)\n", dir)
-			return exitCannotRun
-		}
-		if st.Uid != 0 {
-			if err := signDropTo(int(st.Uid), int(st.Gid)); err != nil {
-				fmt.Fprintf(stderr, "could not become the database directory's owner (uid %d) before opening the database: %v\n", st.Uid, err)
-				return exitCannotRun
-			}
 		}
 		key, keyFile = k, f
 	}
@@ -108,6 +95,39 @@ func signRun(configPath string, stdout, stderr io.Writer, fn func(*opEnv) int) i
 		e.signingKey, e.signingKeyFile = key, keyFile
 	}
 	return fn(e)
+}
+
+// becomeDatabaseOwner is the drop signRun makes, for every command that
+// may run as root and then opens the database: sign, and backup, restore
+// and check (design/adr/0045). Run as root, the process becomes the owner
+// of the database directory, for good, before the database is opened, so
+// the -wal and -shm SQLite creates are the service account's and root
+// never opens a file in a directory the service account can write. Not
+// root, or a root-owned directory, it does nothing. A directory reached
+// through a symbolic link is refused. It reports whether the caller may
+// go on; a refusal has been printed.
+func becomeDatabaseOwner(cfg *config.Config, stderr io.Writer) bool {
+	if signGeteuid() != 0 || cfg.Database == ":memory:" {
+		return true
+	}
+	dir := filepath.Dir(cfg.Database)
+	fi, err := os.Lstat(dir)
+	if err != nil {
+		fmt.Fprintf(stderr, "database directory: %v\n", err)
+		return false
+	}
+	st, isStat := fi.Sys().(*syscall.Stat_t)
+	if !fi.IsDir() || !isStat {
+		fmt.Fprintf(stderr, "the database directory %s is not a directory (a symbolic link is refused)\n", dir)
+		return false
+	}
+	if st.Uid != 0 {
+		if err := signDropTo(int(st.Uid), int(st.Gid)); err != nil {
+			fmt.Fprintf(stderr, "could not become the database directory's owner (uid %d) before opening the database: %v\n", st.Uid, err)
+			return false
+		}
+	}
+	return true
 }
 
 // signPlan is one entry sign -all looked at.

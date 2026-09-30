@@ -439,8 +439,11 @@ func TestBuildServer_AccessBlockReachesARunningGateway(t *testing.T) {
 	if code, out, errText := runCLI("access", "block", "-config", configPath, "sub-analyst-1"); code != exitOK {
 		t.Fatalf("access block = %d\n%s%s", code, out, errText)
 	}
-	if code, got := post(); code != http.StatusForbidden || got != "forbidden\n" {
-		t.Fatalf("after the block, same token: %d %q, want 403 \"forbidden\\n\"", code, got)
+	// The constant 403 of a refused account (design/adr/0042 item 2): it
+	// says signing in again will not help, and never why.
+	const refused = "Gatte refuses requests from this account. Signing in again will not change that: ask the SOC operator.\n"
+	if code, got := post(); code != http.StatusForbidden || got != refused {
+		t.Fatalf("after the block, same token: %d %q, want 403 %q", code, got, refused)
 	}
 	if code, out, errText := runCLI("access", "unblock", "-config", configPath, "sub-analyst-1"); code != exitOK {
 		t.Fatalf("access unblock = %d\n%s%s", code, out, errText)

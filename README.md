@@ -443,6 +443,49 @@ cannot load its hooks or its own MCP servers into the check. There is no `/healt
 DNS, network, TLS, proxy and the process, and per-backend state needs the
 caller's identity.
 
+**What the analyst's model is told** (`design/adr/0042`). Claude Code
+shows the model the server instructions and the text of an `isError`
+result, and little else, so Gatte puts there what a model otherwise guesses
+wrong. A tool call Gatte refuses or gives up on for a reason of its own
+answers, to an analyst granted and approved for that tool, with what
+happened and what to do: a result over `response.max_bytes` ("larger than
+Gatte's limit of N bytes ... narrow the request"; the call did run), a call
+over the per-call time limit ("did not answer within Gatte's limit ... a
+narrower request may finish"), a spent quota (the account, its limit and
+window, when it resets, "do not retry before then, tell the user"), and the
+analyst's own calls in flight at the cap ("wait for one to finish, retry
+with the same arguments"). A tool the analyst was listed and that is then
+pulled from them -- a role change, a rewrite awaiting review, a
+deregistered backend -- answers "no longer available to you, do not try
+other names" instead of `unknown tool`; a name they were never listed
+still gets `unknown tool`. A blocked analyst's 403 says signing in again
+will not help; Claude Code shows it only as "Needs authentication", so
+`gatte-status` says it too. The instructions say that a missing tool is not
+granted or awaiting review and that the list is fixed per session
+(reconnect with `/mcp` after a change), and `gatte.status` reports the
+analyst's own name, roles and use of each budget their tools spend. Three
+optional keys feed this:
+
+```toml
+[oidc]
+scopes_supported = ["openid", "profile", "email", "groups", "offline_access"]
+
+[analyst]
+contact = "SOC on-call, channel #soc-gatte"   # instructions and the 403 body
+
+[analyst.backend_notes]                     # one line per backend, shown only
+casemgmt = "Cases, alerts and tasks"        # to analysts with a tool on it
+```
+
+`scopes_supported` goes into the protected-resource metadata and the 401
+challenge; Claude Code with no scope of its own requests exactly that list
+(measured on 2.1.285), so the connect script stores no scope on the
+analyst's machine and a change reaches everyone at their next sign-in.
+Without it Claude Code requests no scope, which with most IdPs means a
+token without the groups claim, and so no role. The contact and the notes
+are one line of visible characters each, without quotes; `serve` refuses a
+set whose instructions would pass 2000 characters.
+
 **Watch for tool changes.** The first sighting of a tool, a change to an
 approved tool and a registry entry whose signature fails are each written
 to the trail as a `denied` row attributed to `(gateway)`. A `changed` row
@@ -539,6 +582,7 @@ against, and -- just as important -- what it does not.
 | An unauthenticated flood denying service to analysts | **Mitigated** -- audit rows for failed logins are rate-limited per source. |
 | A caller learning which backends are down | **Only their own** -- the state of a backend reaches a caller who holds an approved tool on it, nobody else. |
 | Backend text posing as a Gatte status message | **Not preventable in the text** -- `gatte.status` is named as the only authoritative source. |
+| A caller learning another analyst's quota use | **Yes** -- `gatte.status` reads only the caller's own counters. |
 
 ### In detail
 
@@ -620,8 +664,7 @@ accepted and stated: a caller whose call is in flight when the backend dies
 is told it is now reconnecting -- the caller learns the backend died during
 their call, which the trail records as `failed (upstream gone)` with their
 identity -- and a call a live backend fails is answered "the backend failed
-this call", without its error and without saying whether it was an error or
-a timeout. Text inside a backend's result that claims to come from Gatte is
+this call", without its error. Text inside a backend's result that claims to come from Gatte is
 that backend's data: nothing in text can prove its origin, so the server
 instructions name `gatte.status` as the only authoritative source, and
 results Gatte builds itself carry `_meta` key
@@ -633,6 +676,26 @@ get`; it reads no token. No unauthenticated endpoint reports health: the
 state of backends is only ever told to an authenticated caller, as above,
 and to the operator (the Backends page and `GET /v1/overview` of the
 management API, over its operator socket).
+**What a caller learns about Gatte's own limits** (`design/adr/0042`).
+Again only a caller granted and approved for the tool: that its result was
+over the size ceiling, and the ceiling (the call ran; no byte of the result
+is sent); that the backend did not answer within the per-call limit, and the
+limit (it no longer says only "failed"); that their own allowance on an
+account is spent, with the account's name, its limit, its window and when
+it resets -- never a count; and that they already have N calls in flight,
+N being the cap. `gatte.status` adds the caller's display name, role names
+and, for each budget their served tools spend, their own use in the current
+window: the one counter read on the request path, through a port that
+answers for one analyst per question and is called with the request's
+verified subject only (a fitness function pins the call site); another
+analyst's use is never readable there. A tool the caller was listed in
+their own `tools/list` and that is no longer served to them answers "no
+longer available to you", the same words for every cause, from a memory of
+what each subject was listed that lives in the process for seven days; a
+name the caller was never listed gets the SDK's `unknown tool` as before,
+and a restart forgets. The 403 of a blocked account says signing in again
+will not help, and never why: admission has no other forbidden answer, so
+the status already said as much.
 A tool of a backend that is down stays listed for as long as its registry
 entry is servable (registered, valid, signed, covered by the quota), from
 the definition a human approved and the backend last announced; removing or

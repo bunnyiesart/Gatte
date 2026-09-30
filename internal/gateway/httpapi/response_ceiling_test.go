@@ -15,10 +15,10 @@ package httpapi
 //     first megabyte in an error string would break that while passing
 //     every test in the gateway package; and
 //
-//  2. the refusal is not an oracle. A result refused for size and a
-//     backend that simply broke must be the same event from outside,
-//     for the reason errors.go states: the class is what a client is
-//     told, never the cause.
+//  2. the refusal says what happened and what to do -- the result was
+//     over Gatte's ceiling, narrow the request -- from the gateway's own
+//     numbers and never the payload (design/adr/0042 item 2; until then
+//     this point said the opposite, see the test).
 //
 // The ceiling under test is the DEFAULT one. The harness builds its
 // Gateway without MaxResultBytes, exactly as a configuration file that
@@ -53,7 +53,7 @@ func oversizedContent(canary string) json.RawMessage {
 	return block
 }
 
-func TestOversizedResultIsRefusedAndTheCallerIsToldNothingAboutIt(t *testing.T) {
+func TestOversizedResultIsRefusedWholeAndTheCallerIsToldToNarrowIt(t *testing.T) {
 	const canary = "OVERSIZE-CANARY-4b71"
 
 	h := newHarness(t)
@@ -94,33 +94,26 @@ func TestOversizedResultIsRefusedAndTheCallerIsToldNothingAboutIt(t *testing.T) 
 	}
 	assertNoLeak(t, refused)
 
-	// 2. Nor is the client told the ceiling exists. A caller who could
-	//    tell "too large" from "the backend broke" could binary-search the
-	//    limit, and more usefully could tell which queries return a lot --
-	//    which is a fact about the SOC's data, obtained without ever
-	//    receiving any of it.
-	for _, telltale := range []string{"too large", "limit", "bytes", "max_bytes", "1048576"} {
-		if strings.Contains(strings.ToLower(refused), telltale) {
-			t.Errorf("the refusal names %q, so the caller can tell a size refusal from any other failure:\n%s", telltale, refused)
-		}
+	// 2. The caller IS told it was the size, and to narrow the request
+	//    (design/adr/0042 item 2). Until then this test asserted the
+	//    opposite -- that the ceiling stayed a secret, so a caller could
+	//    not binary-search it nor learn which queries return a lot. Both
+	//    arguments were weighed and dropped: the ceiling is the operator's
+	//    published number (README, response.max_bytes), and "this query
+	//    returns a lot" is a fact about data this caller is granted and
+	//    would have received whole under a larger ceiling. What the model
+	//    got instead was "internal error", and it retried the same query.
+	want := `Gatte: the result of \"casemgmt.list_cases\" was larger than Gatte's limit of 1048576 bytes (1 MiB) for one result, so Gatte did not deliver any of it. The call itself did run at the backend. Narrow the request (fewer results, a shorter time range, fewer fields) and call again; do not repeat it unchanged. If the call changes something at the backend, that change has already happened.`
+	if !strings.Contains(refused, want) || !strings.Contains(refused, `"isError":true`) {
+		t.Errorf("the refusal = %s\nwant an isError result with %s", refused, want)
 	}
 
-	// The same call, refused by the gateway for a completely different
-	// reason, must produce the same bytes. The tool name is the only
-	// caller-varying value errors.go permits, and it is identical here
-	// anyway.
-	//
-	// Until design/adr/0041 the comparison was with a backend that broke.
-	// That one now has a text of its own ("the backend failed this call"),
-	// deliberately: a refusal the GATEWAY decided -- size, schema, an
-	// unrepresentable result -- stays the constant internal error, since
-	// for a result too large the fault can be the request's (ADR-0041
-	// item 1). What stays hidden is the ceiling, not that the backend is
-	// not at fault.
+	// Every OTHER refusal the gateway decides on the way out -- schema,
+	// an unrepresentable result -- stays the constant internal error.
 	h.dialer.upstream("casemgmt").result = gateway.Result{Content: json.RawMessage(`[{"type":"no-such-content-type"}]`)}
 	_, unrepresentable := h.rawCall(toolListCases)
-	if refused != unrepresentable {
-		t.Errorf("a result refused for size is distinguishable from another gateway refusal:\n  size:            %q\n  unrepresentable: %q", refused, unrepresentable)
+	if !strings.Contains(unrepresentable, msgInternal) || strings.Contains(unrepresentable, "limit") {
+		t.Errorf("an unrepresentable result = %q, want the constant internal error", unrepresentable)
 	}
 }
 

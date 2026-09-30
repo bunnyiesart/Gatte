@@ -26,6 +26,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -101,8 +102,9 @@ type Store struct {
 // widened into the other -- see the two port declarations for why the
 // request path must not be able to read a counter.
 var (
-	_ quota.Store  = (*Store)(nil)
-	_ quota.Reader = (*Store)(nil)
+	_ quota.Store      = (*Store)(nil)
+	_ quota.Reader     = (*Store)(nil)
+	_ quota.SelfReader = (*Store)(nil)
 )
 
 // New returns a Store that counts through db. db must already have been
@@ -248,6 +250,27 @@ ORDER BY analyst, provider, window_start
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("quota/sqlite: usage: %w", err)
+	}
+	return out, nil
+}
+
+// SpentBy implements quota.SelfReader: one analyst's count in each
+// charge's window, zero for a counter with no row. One primary-key read
+// per charge; the WHERE clause names the analyst, so no other analyst's
+// row can be selected by it (design/adr/0042 item 3).
+func (s *Store) SpentBy(ctx context.Context, analyst string, charges []quota.Charge) ([]int, error) {
+	const stmt = `SELECT used FROM quota_counters WHERE analyst = ? AND provider = ? AND window_start = ?`
+	out := make([]int, len(charges))
+	for i, c := range charges {
+		var used int
+		err := s.db.QueryRowContext(ctx, stmt, analyst, c.Provider, c.WindowStart.UTC().Format(timeLayout)).Scan(&used)
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			used = 0
+		case err != nil:
+			return nil, fmt.Errorf("quota/sqlite: spent by: %w", err)
+		}
+		out[i] = used
 	}
 	return out, nil
 }

@@ -218,7 +218,7 @@ func TestStatusScript_TellsUnreachableFromNeedsLoginFromUp(t *testing.T) {
 		never   []string
 	}{
 		{"up and signed in", up.URL, claudeGetConnected, 0, []string{"/mcp", "reconnect"}, nil},
-		{"up, login expired", up.URL, claudeGetNeedsAuth, 4, []string{"/mcp", "authenticate"}, nil},
+		{"up, login expired", up.URL, claudeGetNeedsAuth, 4, []string{"/mcp", "authenticate", "signing in again will not help"}, nil},
 		{"up, not serving tools", up.URL, claudeGetFailed503, 3, []string{"Gatte is temporarily unable to serve tools"}, nil},
 		{"up, unexpected failure", up.URL, claudeGetFailedOther, 5, []string{"Dynamic Client Registration rejected"}, nil},
 		{"up, no Claude Code", up.URL, "", 4, []string{"connect-gatte"}, nil},
@@ -474,5 +474,21 @@ func TestConnectScript_InstallsGatteStatusIdempotently(t *testing.T) {
 	rc, _ := os.ReadFile(filepath.Join(home, ".zshrc"))
 	if !strings.HasPrefix(string(rc), "# mine\n") || strings.Count(string(rc), "gatte/bin") != 1 {
 		t.Fatalf(".zshrc after two runs:\n%s", rc)
+	}
+}
+
+// TestStatusScripts_SayARefusedAccountIsNotALoginProblem: Claude Code shows
+// Gatte's 403 for a refused account as "Needs authentication" and drops
+// its body (measured on 2.1.285, design/adr/0042 item 2), so the one place
+// the analyst can read that signing in again will not help is here.
+func TestStatusScripts_SayARefusedAccountIsNotALoginProblem(t *testing.T) {
+	for _, system := range []string{"linux", "windows"} {
+		script, _, err := admin.RenderStatusScript(statusInfo("https://mcp.example.internal"), system)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(script, "signing in again will not help; ask the SOC operator.") {
+			t.Errorf("%s: the needs-authentication branch does not say a refused account is not a login problem", system)
+		}
 	}
 }

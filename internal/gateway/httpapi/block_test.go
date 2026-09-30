@@ -30,8 +30,9 @@ const toolsCallBody = `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"
 // TestBlockedSubjectIsRefusedOnTheNextRequest is ADR-0031 at the boundary:
 // a token that verified a moment ago is refused on the very next request
 // once the operator blocks its subject -- no restart, no session to expire
-// -- with the constant 403 every forbidden answer carries and nothing that
-// says why. Lifting the block restores the same token the same way.
+// -- with a constant 403 that says signing in again will not help
+// (design/adr/0042 item 2) and nothing that says why. Lifting the block
+// restores the same token the same way.
 func TestBlockedSubjectIsRefusedOnTheNextRequest(t *testing.T) {
 	h := newHarness(t)
 	bearer := "Bearer " + tokenAnalyst
@@ -52,8 +53,8 @@ func TestBlockedSubjectIsRefusedOnTheNextRequest(t *testing.T) {
 		if res.StatusCode != http.StatusForbidden {
 			t.Fatalf("blocked subject: status %d, want 403 (body %q)", res.StatusCode, got)
 		}
-		if got != msgForbidden+"\n" {
-			t.Errorf("blocked subject: body %q, want exactly the constant %q", got, msgForbidden+"\n")
+		if got != msgAccountRefused+"\n" {
+			t.Errorf("blocked subject: body %q, want exactly the constant %q", got, msgAccountRefused+"\n")
 		}
 		for _, leak := range []string{analyst.Subject, "block", "stolen", "operator1"} {
 			if strings.Contains(strings.ToLower(got), strings.ToLower(leak)) {

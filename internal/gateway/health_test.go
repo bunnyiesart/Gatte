@@ -158,8 +158,12 @@ func TestDispatch_ABackendErrorOrTimeoutAnswersBackendFailedWithoutItsText(t *te
 	up.mu.Lock()
 	up.callErr, up.callBlocks = nil, true
 	up.mu.Unlock()
-	if _, err := h.dispatch("casemgmt.list_cases"); !errors.As(err, &bf) || !errors.Is(err, context.DeadlineExceeded) {
-		t.Errorf("a timed-out call = %v, want a *BackendFailedError over DeadlineExceeded", err)
+	// Since design/adr/0042 a timeout is the gateway's own limit, said as
+	// such: a *CallTimeoutError, not "the backend failed".
+	var te *CallTimeoutError
+	if _, err := h.dispatch("casemgmt.list_cases"); !errors.As(err, &te) || !errors.Is(err, context.DeadlineExceeded) ||
+		errors.As(err, &bf) || te.Backend != "casemgmt" || te.Limit != 30*time.Millisecond {
+		t.Errorf("a timed-out call = %#v, want a *CallTimeoutError for casemgmt with the 30ms limit", err)
 	}
 
 	// The caller hanging up is not the backend failing.
@@ -405,7 +409,7 @@ func TestHealth_ReconnectingUnlessDialsAreHeldBack(t *testing.T) {
 
 func (h *harness) stateOf(name string) BackendStatus {
 	h.t.Helper()
-	rep, err := h.gw.GatteStatus(context.Background(), fromAnalyst, []string{name})
+	rep, err := h.gw.GatteStatus(context.Background(), fromAnalyst, []string{name}, nil)
 	if err != nil {
 		h.t.Fatalf("GatteStatus: %v", err)
 	}
@@ -528,7 +532,7 @@ func TestGatteStatus_ReportsOnlyTheNamedBackendsAndIsAuditedOnce(t *testing.T) {
 	h.startMaintenance(health.GatewayTarget, "Atualização", time.Time{})
 	before := len(h.auditRows())
 
-	rep, err := h.gw.GatteStatus(context.Background(), fromAnalyst, []string{"casemgmt"})
+	rep, err := h.gw.GatteStatus(context.Background(), fromAnalyst, []string{"casemgmt"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -552,7 +556,7 @@ func TestGatteStatus_ABlockedSubjectIsRefused(t *testing.T) {
 	if _, err := h.blocks.Block(context.Background(), access.Block{Subject: analyst.Subject, By: "op", At: fixedAt}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.gw.GatteStatus(context.Background(), fromAnalyst, []string{"casemgmt"}); !errors.Is(err, access.ErrForbidden) {
+	if _, err := h.gw.GatteStatus(context.Background(), fromAnalyst, []string{"casemgmt"}, nil); !errors.Is(err, access.ErrForbidden) {
 		t.Errorf("GatteStatus for a blocked subject = %v, want forbidden", err)
 	}
 }

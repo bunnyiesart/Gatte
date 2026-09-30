@@ -157,6 +157,20 @@ groups_claim = "groups"
 # nao tem como se recuperar sozinho.
 authorization_servers = ["https://id.example.internal/realms/soc"]
 
+# Escopos OAuth que o cliente MCP do analista deve pedir ao IdP (ADR-0042
+# item 1). Anunciados como `scopes_supported` na metadata RFC 9728 e como
+# `scope` no desafio de todo 401. O Claude Code sem escopo configurado pede
+# exatamente a lista da metadata (medido no 2.1.285), entao o script de
+# conexao nao precisa gravar escopo nenhum na maquina do analista.
+#
+# Opcional. Sem ele, nenhum escopo e anunciado e o Claude Code nao pede
+# escopo algum -- na maioria dos IdPs isso da um token sem o claim de
+# grupos, ou seja, sem papel. Cada um precisa ser um scope-token da RFC
+# 6749 (ASCII visivel, sem espaco, aspas ou barra invertida), sem repetir,
+# e o client do IdP precisa permitir todos.
+#
+# scopes_supported = ["openid", "profile", "email", "groups", "offline_access"]
+
 
 # ===========================================================================
 # [vault] -- Credential Vault (ADR-0003 e ADR-0005)
@@ -545,6 +559,32 @@ max_bytes = 1048576
 # client_id     = "claude-code"
 # callback_port = 47823
 # ca_file       = "/etc/ssl/example-ca/ca.crt"
+
+
+# ===========================================================================
+# [analyst] -- o que o modelo do analista le sobre este gateway (ADR-0042)
+# ===========================================================================
+# Linhas do operador que entram nas instructions do servidor MCP, o unico
+# texto do servidor que o modelo sempre ve (o Claude Code corta em 2048
+# caracteres, por isso os limites).
+#
+#   contact       -- a quem o analista pede ajuda quando o Gatte recusa.
+#                    Tambem fecha o corpo do 403 de uma conta recusada.
+#                    Ate 200 caracteres.
+#   backend_notes -- uma linha por backend, pelo nome do registro. Cada
+#                    analista so ve as linhas dos backends de que tem alguma
+#                    tool. Ate 12 linhas, 160 caracteres cada, 480 somando
+#                    nomes e textos.
+#
+# Uma linha so, caracteres visiveis, sem aspas nem barra invertida: vai na
+# frente de um modelo.
+#
+# [analyst]
+# contact = "Plantao do SOC, canal #soc-gatte"
+#
+# [analyst.backend_notes]
+# casemgmt  = "Casos, alertas e tarefas do SOC"
+# logsearch = "Busca nos logs do SIEM; prefira janelas curtas"
 
 
 # ===========================================================================

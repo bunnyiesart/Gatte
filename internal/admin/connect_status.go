@@ -144,6 +144,8 @@ case "$status" in
   *"Needs authentication"*)
     say "✘ Gatte is up, but Claude Code is not signed in to it."
     say "  Open claude, type /mcp, choose $GATTE_SERVER and authenticate."
+    say "  If it asks again right after you signed in, Gatte is refusing your account:"
+    say "  signing in again will not help; ask the SOC operator."
     exit 4 ;;
   *"Failed to connect"*)
     case "$issue" in
@@ -359,7 +361,9 @@ $status = Clean ([string]($get | Where-Object { $_ -match 'Status:' } | Select-O
 $issue = Clean (([string]($get | Where-Object { $_ -match 'Issue:' } | Select-Object -First 1)) -replace '^\s*Issue:\s*', '')
 if ($status -match 'Needs authentication') {
   Write-Host "X Gatte is up, but Claude Code is not signed in to it."
-  Write-Host "  Open claude, type /mcp, choose $GatteServer and authenticate."; exit 4
+  Write-Host "  Open claude, type /mcp, choose $GatteServer and authenticate."
+  Write-Host "  If it asks again right after you signed in, Gatte is refusing your account:"
+  Write-Host "  signing in again will not help; ask the SOC operator."; exit 4
 } elseif ($status -match 'Failed to connect') {
   if ($issue -match '^HTTP 5') {
     Write-Host "X Gatte answers but is not serving tools right now. Claude Code says:"

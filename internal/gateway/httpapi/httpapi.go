@@ -37,12 +37,14 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"net/url"
 	"runtime/debug"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -111,8 +113,28 @@ type Config struct {
 	// authorization server sends the client nowhere.
 	AuthorizationServers []string
 
-	// ScopesSupported is optional and advertised as-is when non-empty.
+	// ScopesSupported is optional. When non-empty it is advertised as
+	// scopes_supported in the RFC 9728 metadata and as the scope parameter
+	// of every 401's challenge (RFC 6750 section 3), which is where an MCP
+	// client that has no scope configured takes the scope to request
+	// (design/adr/0042 item 1). Each entry must be an RFC 6749 scope-token.
 	ScopesSupported []string
+
+	// Contact is the operator's one-line "who to ask" for analysts, put in
+	// the server instructions and in the body of the 403 a refused account
+	// gets (design/adr/0042 item 3). Optional; validated by config.
+	Contact string
+
+	// BackendNotes are the operator's one-line descriptions of backends,
+	// by registry name, put in the server instructions of a caller who has
+	// at least one tool of that backend registered (design/adr/0042 item
+	// 3). Optional; validated by config, and New refuses a set whose
+	// instructions would not fit under the client's cut.
+	BackendNotes map[string]string
+
+	// Now is the clock for the memory of what each subject was listed.
+	// Optional; defaults to time.Now.
+	Now func() time.Time
 
 	// ServerName and ServerVersion identify this gateway to MCP clients in
 	// the initialize handshake. Optional.
@@ -168,6 +190,16 @@ type Handler struct {
 	// challenge is the single WWW-Authenticate value every 401 carries. See
 	// [Handler.rejectUnauthenticated].
 	challenge string
+
+	// contact and notes are the operator's lines for the instructions
+	// (design/adr/0042 item 3); contact also closes the refused account's
+	// 403.
+	contact string
+	notes   map[string]string
+	// listed is which tools each subject has been listed, so a tool pulled
+	// mid-session answers "no longer available to you" (ADR-0042 item 2).
+	listed *listedTools
+	now    func() time.Time
 
 	// impl identifies this gateway in the MCP initialize handshake.
 	impl *mcp.Implementation
@@ -225,6 +257,23 @@ func New(cfg Config) (*Handler, error) {
 		version = defaultServerVersion
 	}
 
+	for _, scope := range cfg.ScopesSupported {
+		if !isScopeToken(scope) {
+			return nil, fmt.Errorf("httpapi: ScopesSupported: %q is not an RFC 6749 scope-token", scope)
+		}
+	}
+	notes := make(map[string]string, len(cfg.BackendNotes))
+	for name, note := range cfg.BackendNotes {
+		notes[name] = note
+	}
+	if n := instructionsLength(instructionsText(cfg.Contact, notes, slices.Sorted(maps.Keys(notes)))); n > MaxInstructionsLength {
+		return nil, fmt.Errorf("httpapi: the server instructions with every backend note would be %d characters, over the %d a client keeps: shorten connect.contact or the backend notes", n, MaxInstructionsLength)
+	}
+	now := cfg.Now
+	if now == nil {
+		now = time.Now
+	}
+
 	doc := protectedResourceMetadata{
 		Resource:             resource.String(),
 		AuthorizationServers: servers,
@@ -247,7 +296,11 @@ func New(cfg Config) (*Handler, error) {
 		log:           logger,
 		metadata:      rendered,
 		metadataPaths: metadataPathsFor(resource),
-		challenge:     challengeFor(resource),
+		challenge:     challengeFor(resource, cfg.ScopesSupported),
+		contact:       cfg.Contact,
+		notes:         notes,
+		listed:        newListedTools(),
+		now:           now,
 		impl:          &mcp.Implementation{Name: name, Version: version},
 	}
 
@@ -441,7 +494,14 @@ func (h *Handler) authenticate(w http.ResponseWriter, r *http.Request, source st
 			slog.String("class", class.String()),
 			slog.String("detail", err.Error()),
 		)
-		writeGeneric(w, class)
+		if class == classForbidden {
+			// Admission's only forbidden cause is the block, so the 403
+			// already said it; the body adds that signing in again will
+			// not help (design/adr/0042 item 2).
+			writeAccountRefused(w, h.contact)
+		} else {
+			writeGeneric(w, class)
+		}
 		return access.Identity{}, nil, false
 	}
 
@@ -716,26 +776,51 @@ type caller struct {
 // answer is an empty server, never a permissive one. A caller we cannot
 // identify gets a working MCP session with nothing in it.
 func (h *Handler) getServer(r *http.Request) *mcp.Server {
-	// The instructions are a constant (design/adr/0041 item 5), the same
-	// for every caller and every state.
-	srv := mcp.NewServer(h.impl, &mcp.ServerOptions{Logger: h.log, Instructions: serverInstructions})
-
 	c, ok := r.Context().Value(callerContextKey{}).(*caller)
 	if !ok || c == nil {
 		h.log.ErrorContext(r.Context(), "httpapi: no verified identity on an authenticated path; serving an empty server",
 			slog.String("path", r.URL.Path),
 		)
-		return srv
+		return mcp.NewServer(h.impl, &mcp.ServerOptions{Logger: h.log, Instructions: instructionsText(h.contact, nil, nil)})
 	}
 
-	// served is the set of names this server will actually answer a
-	// tools/call for. It is built from the registrations rather than from
-	// c.tools because the two can differ: a tool with an unusable schema is
-	// skipped below, and a caller who names it is refused by the SDK just
-	// like a caller who names somebody else's tool. The middleware has to
-	// see it the way the SDK does or it would miss that refusal.
-	served := make(map[string]struct{}, len(c.tools))
+	// The instructions carry nothing of the state (design/adr/0041 item 5).
+	// With backend notes configured they name the backends this caller has
+	// a tool of (design/adr/0042 item 3) -- the served set, known only after
+	// registering, since the SDK can refuse a definition. The SDK copies
+	// ServerOptions at construction, so a scratch server learns that set
+	// first; the notes then never name a backend the caller's own
+	// tools/list does not show, exactly the rule gatte.status keeps.
+	instructions := instructionsText(h.contact, nil, nil)
+	if len(h.notes) > 0 {
+		scratch := mcp.NewServer(h.impl, &mcp.ServerOptions{Logger: h.log})
+		instructions = instructionsText(h.contact, h.notes, backendsOf(h.registerTools(r, scratch, c, false)))
+	}
+	srv := mcp.NewServer(h.impl, &mcp.ServerOptions{Logger: h.log, Instructions: instructions})
+	served := h.registerTools(r, srv, c, true)
 
+	// After the caller's tools and from the names actually registered, so
+	// gatte.status names no backend this caller's tools/list does not
+	// already show -- not even one whose only tool the SDK refused above.
+	h.registerGatteStatus(r.Context(), srv, c.gwCaller, served)
+
+	// Installed after the registrations so served is complete, and last so
+	// it is the outermost middleware -- it must observe every tools/call,
+	// including any the SDK's own middleware might later short-circuit.
+	srv.AddReceivingMiddleware(h.recordUnservedToolCalls(c.gwCaller, served))
+	return srv
+}
+
+// registerTools registers c's tools on srv and returns the set of names it
+// will actually answer a tools/call for. It is built from the
+// registrations rather than from c.tools because the two can differ: a
+// tool with an unusable schema is skipped below, and a caller who names it
+// is refused by the SDK just like a caller who names somebody else's tool.
+// The middleware has to see it the way the SDK does or it would miss that
+// refusal. logSkips is false for the scratch pass, so a skipped tool is
+// logged once per request.
+func (h *Handler) registerTools(r *http.Request, srv *mcp.Server, c *caller, logSkips bool) map[string]struct{} {
+	served := make(map[string]struct{}, len(c.tools))
 	for _, def := range c.tools {
 		schema, ok := objectSchema(def.InputSchema)
 		if !ok {
@@ -746,9 +831,11 @@ func (h *Handler) getServer(r *http.Request) *mcp.Server {
 			// something other than what Tool Quarantine approved -- is the
 			// fail-closed reading, and it keeps a malformed backend from
 			// taking the process down.
-			h.log.ErrorContext(r.Context(), "httpapi: tool not served: input schema is not a JSON object",
-				slog.String("tool", def.Name),
-			)
+			if logSkips {
+				h.log.ErrorContext(r.Context(), "httpapi: tool not served: input schema is not a JSON object",
+					slog.String("tool", def.Name),
+				)
+			}
 			continue
 		}
 		if err := addTool(srv, &mcp.Tool{
@@ -761,25 +848,17 @@ func (h *Handler) getServer(r *http.Request) *mcp.Server {
 			Description: def.Description,
 			InputSchema: schema,
 		}, h.dispatchTool(c.gwCaller, def.Name)); err != nil {
-			h.log.ErrorContext(r.Context(), "httpapi: tool not served: the MCP SDK refused its definition",
-				slog.String("tool", def.Name),
-				slog.String("detail", err.Error()),
-			)
+			if logSkips {
+				h.log.ErrorContext(r.Context(), "httpapi: tool not served: the MCP SDK refused its definition",
+					slog.String("tool", def.Name),
+					slog.String("detail", err.Error()),
+				)
+			}
 			continue
 		}
 		served[def.Name] = struct{}{}
 	}
-
-	// After the caller's tools and from the names actually registered, so
-	// gatte.status names no backend this caller's tools/list does not
-	// already show -- not even one whose only tool the SDK refused above.
-	h.registerGatteStatus(r.Context(), srv, c.gwCaller, served)
-
-	// Installed after the registrations so served is complete, and last so
-	// it is the outermost middleware -- it must observe every tools/call,
-	// including any the SDK's own middleware might later short-circuit.
-	srv.AddReceivingMiddleware(h.recordUnservedToolCalls(c.gwCaller, served))
-	return srv
+	return served
 }
 
 // addTool is srv.AddTool with its panic turned into an error.
@@ -807,6 +886,22 @@ func addTool(srv *mcp.Server, t *mcp.Tool, h mcp.ToolHandler) (err error) {
 // SDK's own constant is unexported, and the string is fixed by the MCP
 // specification, so it is restated here rather than inferred.
 const methodToolsCall = "tools/call"
+
+// methodToolsList is the JSON-RPC method name for listing tools, fixed by
+// the MCP specification like methodToolsCall.
+const methodToolsList = "tools/list"
+
+// listedNames is served without the built-in gatte.status, which is never
+// pulled.
+func listedNames(served map[string]struct{}) []string {
+	out := make([]string, 0, len(served))
+	for name := range served {
+		if name != gateway.GatteStatusTool {
+			out = append(out, name)
+		}
+	}
+	return out
+}
 
 // recordUnservedToolCalls returns the receiving middleware that puts a
 // tools/call for a name this caller was never served onto the audit trail.
@@ -886,10 +981,24 @@ func (h *Handler) recordUnservedToolCalls(c gateway.Caller, served map[string]st
 					name = params.Name
 					if _, offered := served[params.Name]; !offered {
 						h.gateway.RecordRefusedProbe(ctx, c, params.Name)
+						// The one exception to "the SDK answers": a name
+						// THIS subject was listed and is no longer served
+						// (design/adr/0042 item 2). Everything else --
+						// another role's tool, a quarantined one they were
+						// never shown, a guess -- still gets the SDK's bytes.
+						if h.listed.wasListed(c.Identity.Subject, params.Name, h.now()) {
+							return nil, pulledError(params.Name)
+						}
 					}
 				}
 			}
-			return next(ctx, method, req)
+			res, err = next(ctx, method, req)
+			if method == methodToolsList && err == nil {
+				// What this subject was just shown, and nothing else, is
+				// what the memory above may later recognise.
+				h.listed.remember(c.Identity.Subject, listedNames(served), h.now())
+			}
+			return res, err
 		}
 	}
 }
@@ -979,6 +1088,13 @@ func (h *Handler) rejectCall(ctx context.Context, id access.Identity, tool strin
 		slog.String("class", class.String()),
 		slog.String("error_class", fmt.Sprintf("%T", err)),
 	)
+	// A registered tool the gateway now calls unknown (it went into review,
+	// or its route went, between this request's listing and its call) is
+	// answered as the middleware answers a pulled one, by the same rule:
+	// only for a name this subject was listed (design/adr/0042 item 2).
+	if class == classUnknownTool && h.listed.wasListed(id.Subject, tool, h.now()) {
+		return pulledError(tool)
+	}
 	return jsonRPCError(class, tool)
 }
 
@@ -1131,11 +1247,34 @@ func metadataPathsFor(resource *url.URL) []string {
 
 // challengeFor builds the constant WWW-Authenticate value, whose
 // resource_metadata parameter points a compliant client at the document
-// above (RFC 9728 section 5.1).
-func challengeFor(resource *url.URL) string {
+// above (RFC 9728 section 5.1), and whose scope parameter, when the
+// operator configured scopes, is the space-delimited list a client should
+// request (RFC 6750 section 3; design/adr/0042 item 1). Still no `error`:
+// the challenge stays one constant for every cause.
+func challengeFor(resource *url.URL, scopes []string) string {
 	metadataURL := *resource
 	metadataURL.Path = MetadataPath + strings.TrimSuffix(resource.Path, "/")
 	metadataURL.RawQuery = ""
 	metadataURL.Fragment = ""
-	return fmt.Sprintf("Bearer resource_metadata=%q", metadataURL.String())
+	challenge := fmt.Sprintf("Bearer resource_metadata=%q", metadataURL.String())
+	if len(scopes) > 0 {
+		challenge += fmt.Sprintf(", scope=%q", strings.Join(scopes, " "))
+	}
+	return challenge
+}
+
+// isScopeToken reports whether s is an RFC 6749 section 3.3 scope-token:
+// one or more of %x21 / %x23-5B / %x5D-7E -- printable ASCII without
+// space, `"` or `\`, so it can sit inside the challenge's quoted string.
+func isScopeToken(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c < 0x21 || c > 0x7e || c == '"' || c == '\\' {
+			return false
+		}
+	}
+	return true
 }

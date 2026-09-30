@@ -26,6 +26,7 @@ import (
 	"github.com/bunnyiesart/Gatte/internal/access"
 	"github.com/bunnyiesart/Gatte/internal/audit"
 	"github.com/bunnyiesart/Gatte/internal/config"
+	"github.com/bunnyiesart/Gatte/internal/control"
 	"github.com/bunnyiesart/Gatte/internal/health"
 	"github.com/bunnyiesart/Gatte/internal/idp"
 	"github.com/bunnyiesart/Gatte/internal/quarantine"
@@ -83,6 +84,16 @@ type Deps struct {
 	IsBusy func(error) bool
 	Now    func() time.Time
 	Log    *slog.Logger
+
+	// Control files requests for the running gateway process and reads
+	// them back (design/adr/0044). nil: reload and redial answer internal.
+	Control control.Requester
+	// Ring wakes the gateway process to take its pending requests
+	// (SIGHUP to the pid it recorded). Required with Control.
+	Ring func(control.Process) error
+	// ServeWait is how long reload and redial wait for serve's answer
+	// before answering pending. Zero: DefaultServeWait.
+	ServeWait time.Duration
 }
 
 // Service is the management service. Its methods are safe for concurrent

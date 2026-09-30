@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Gatte management API
-  version: 1.2.0
+  version: 1.3.0
   summary: The backend every Gatte front talks to (design/adr/0040).
   description: |
     Served by `mcp-gateway admin` over UNIX sockets only. There is no TCP
@@ -108,6 +108,11 @@ info:
       (`GET /v1/tools/review-set`, `POST /v1/tools/approve-set`, the
       `(tool approve set)` operator row, error codes `manifest_required`
       and `manifest_mismatch`).
+    - 1.3.0 (design/adr/0044): feature `serve_control` (`POST
+      /v1/reload`, `POST /v1/upstreams/redial`, `GET
+      /v1/serve-requests/{id}`, the `(config reload)` and `(upstream
+      redial)` operator rows), error code `serve_not_running`, health
+      `cause` value `redial`.
   license:
     name: Apache-2.0
 servers:
@@ -125,6 +130,8 @@ tags:
   - name: connect
   - name: maintenance
     description: Planned maintenance of one backend or of the whole gateway (design/adr/0041). Feature `maintenance`.
+  - name: serve
+    description: Requests to the running gateway process -- reload the reloadable configuration, re-dial one backend (design/adr/0044). Feature `serve_control`.
   - name: accounts
     description: Account socket only (root, or `[admin] account_group` when delegated). Identity provider accounts (design/adr/0038).
 components:
@@ -226,6 +233,7 @@ components:
         | internal | 500 | anything else; see `x-gatte-idempotent` before retrying |
         | config_unavailable | 503 | the configuration does not load, or fails the ownership check; `details.path` |
         | store_busy | 503 | the database stayed locked through every retry; nothing was written |
+        | serve_not_running | 503 | no gateway process (`serve`) recorded itself in this database, or the one recorded could not be signalled; nothing was filed (1.3.0) |
       examples: [fingerprint_mismatch]
     Fingerprint:
       type: string
@@ -311,7 +319,8 @@ components:
             Stable names of capabilities added after 1.0 (empty in 1.0). A
             front sends a newer optional request field, or calls a newer
             endpoint, only when its feature is listed. Known: `maintenance`
-            and `backend_health` (1.1.0), `tool_review_set` (1.2.0).
+            and `backend_health` (1.1.0), `tool_review_set` (1.2.0),
+            `serve_control` (1.3.0).
           items:
             type: string
         gateway_version:
@@ -846,7 +855,7 @@ components:
           type: string
           x-gatte-open-enum: true
           description: Set when not live. Operator only.
-          enum: [process_gone, not_brought_up, held_back, not_listed]
+          enum: [process_gone, not_brought_up, held_back, not_listed, redial]
         maintenance:
           $ref: '#/components/schemas/Maintenance'
     ServeStatus:
@@ -967,6 +976,124 @@ components:
             previous:
               description: The row this request replaced or ended, when there was one.
               $ref: '#/components/schemas/Maintenance'
+    RedialRequest:
+      type: object
+      required: [upstream]
+      additionalProperties: false
+      properties:
+        upstream:
+          type: string
+          description: A registered backend (`not_found` otherwise).
+    RoleChange:
+      type: object
+      required: [role, added, removed, gained, lost]
+      properties:
+        role: {type: string}
+        added: {type: boolean}
+        removed: {type: boolean}
+        gained:
+          type: array
+          description: Namespaced tools the role reaches after the reload and did not before, over the tools the gateway routes now (approved or not).
+          items: {type: string}
+        lost:
+          type: array
+          items: {type: string}
+    GroupChange:
+      type: object
+      required: [group]
+      properties:
+        group: {type: string}
+        from: {type: string, description: Absent for a group added.}
+        to: {type: string, description: Absent for a group removed.}
+    QuotaChange:
+      type: object
+      required: [account, change]
+      properties:
+        account: {type: string}
+        change:
+          type: string
+          x-gatte-open-enum: true
+          enum: [added, removed, changed]
+        from: {type: string, description: One-line summary of the account before.}
+        to: {type: string, description: One-line summary of the account after.}
+    ReloadChanges:
+      type: object
+      required: [roles, groups, quota, free_tools_changed, not_reloaded]
+      properties:
+        roles:
+          type: array
+          items: {$ref: '#/components/schemas/RoleChange'}
+        groups:
+          type: array
+          items: {$ref: '#/components/schemas/GroupChange'}
+        quota:
+          type: array
+          items: {$ref: '#/components/schemas/QuotaChange'}
+        free_tools_changed: {type: boolean}
+        not_reloaded:
+          type: array
+          description: |
+            Keys (dotted, e.g. `signer.trusted_keys`, `listen`) whose value
+            differs from the file `serve` started with and that a reload
+            does NOT apply. They take effect at the next restart.
+          items: {type: string}
+    RedialOutcome:
+      type: object
+      required: [was_connected, live]
+      properties:
+        was_connected:
+          type: boolean
+          description: false when the backend had no live connection; the round dialled it with nothing to drop.
+        live:
+          type: boolean
+          description: Whether the backend is live after the round that followed the redial.
+        cause: {type: string, description: 'Why not live (the `BackendHealth.cause` values).'}
+    ServeRequest:
+      type: object
+      description: |
+        One request to the running gateway process, as filed and, once
+        `state` is `done`, as `serve` answered it. `serve` writes the
+        operator row, so `recorded` and `audit` are its.
+      required: [id, kind, requested_by, requested_at, state, recorded, messages]
+      properties:
+        id: {type: integer, format: int64}
+        kind:
+          type: string
+          x-gatte-open-enum: true
+          enum: [reload, redial]
+        upstream: {type: string, description: The backend of a redial.}
+        requested_by: {type: string, examples: ['(operator:alice)']}
+        requested_at: {type: string, format: date-time}
+        state:
+          type: string
+          x-gatte-open-enum: true
+          enum: [pending, done]
+          description: '`pending`: filed and rung, not answered within the wait; read it again with `serveRequest`.'
+        outcome:
+          type: string
+          x-gatte-open-enum: true
+          enum: [applied, refused]
+        refusal:
+          type: string
+          x-gatte-open-enum: true
+          enum: [invalid_config, quota_mismatch, registry_unavailable, not_servable, held_back, superseded_by_restart, serve_not_rung]
+          description: Why a refused request changed nothing.
+        done_at: {type: string, format: date-time}
+        reload:
+          description: The diff of a reload; on a refusal, the diff it would have applied when the file loaded.
+          $ref: '#/components/schemas/ReloadChanges'
+        redial:
+          $ref: '#/components/schemas/RedialOutcome'
+        recorded: {type: boolean}
+        audit:
+          $ref: '#/components/schemas/OperatorRow'
+        warnings:
+          type: array
+          description: Known codes `not_reloaded`, `audit_write_failed`.
+          items: {$ref: '#/components/schemas/Warning'}
+        messages:
+          type: array
+          items: {type: string}
     MaintenanceList:
       type: object
       required: [upstreams]
@@ -1514,6 +1641,84 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/MaintenanceResult'}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/reload:
+    post:
+      operationId: reloadConfig
+      tags: [serve]
+      x-gatte-socket: [operator]
+      summary: Ask the running gateway to re-read its configuration file and apply `[[role]]`, `[group_to_role]` and `[quota]` (`mcp-gateway reload`). `serve` writes `(config reload)`. Feature `serve_control`.
+      description: |
+        The request is a row in the database; the backend rings `serve`
+        with SIGHUP at the pid `serve` recorded and waits up to 20 s for
+        the answer. `serve` loads and validates the WHOLE file first
+        (its own `-config`, which is the one applied): an invalid file, or
+        a `[quota]` the registry disagrees with, changes nothing and is
+        answered `refused`, with a `denied` row. Applied, it takes effect
+        from the next call; clients that already listed their tools keep
+        that list until they reconnect. Every other key (listen, `[oidc]`,
+        `[signer]` including `trusted_keys`, `[vault]`, `[audit]`,
+        `[telemetry]`, `[response]`, `[oci]`, `[upstreams]`, ...) is NOT
+        reloaded: when it differs it is listed in `reload.not_reloaded` and
+        needs a restart. Not idempotent in the trail (each call is a row),
+        harmless to repeat.
+      parameters: [{$ref: '#/components/parameters/GatteFront'}]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {type: object, additionalProperties: false}
+      responses:
+        '200':
+          description: Filed and rung; `state` says whether `serve` answered within the wait.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ServeRequest'}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/upstreams/redial:
+    post:
+      operationId: redialUpstream
+      tags: [serve]
+      x-gatte-socket: [operator]
+      summary: Ask the running gateway to drop its connection to one backend and dial it again with the vault as it is now (`mcp-gateway upstream redial`). `serve` writes `(upstream redial)`. Feature `serve_control`.
+      description: |
+        For a rotated credential or a restarted container, without
+        restarting the gateway. From the moment `serve` takes it, the
+        backend's calls are answered as reconnecting (a `(backend health)`
+        row with cause `redial`) until the new process is listed; the
+        answer comes after one round, with `redial.live`. Refused while
+        dials are held back (`held_back`), or for a backend `serve` does
+        not consider servable (`not_servable`).
+      parameters: [{$ref: '#/components/parameters/GatteFront'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/RedialRequest'}
+      responses:
+        '200':
+          description: Filed and rung; `state` says whether `serve` answered within the wait.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ServeRequest'}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/serve-requests/{id}:
+    get:
+      operationId: serveRequest
+      tags: [serve]
+      x-gatte-socket: [operator]
+      summary: Read a request to the gateway process back, e.g. one answered `pending`. Feature `serve_control`.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: integer, format: int64, minimum: 1}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ServeRequest'}
         default: {$ref: '#/components/responses/Error'}
   /v1/quota:
     get:

@@ -42,7 +42,7 @@ func TestSystemdUnits_WriteWhereTheExampleConfigurationWrites(t *testing.T) {
 		t.Fatal("config.example.toml no longer names a database path and an [audit.siem] path")
 	}
 	want := []string{path.Dir(string(db[1])), path.Dir(string(siem[1]))}
-	for _, unit := range []string{"mcp-gateway-admin.service", "mcp-gateway-admin-accounts.service"} {
+	for _, unit := range []string{"mcp-gateway-admin.service", "mcp-gateway-admin-accounts.service", "mcp-gateway.service"} {
 		rw := unitDirective(t, filepath.Join(root, "examples", "systemd", unit), "ReadWritePaths")
 		for _, w := range want {
 			found := false
@@ -73,5 +73,36 @@ func TestSystemdUnits_TheAccountsBackendCanKeepTheUsersFilesGroup(t *testing.T) 
 		if !found {
 			t.Errorf("mcp-gateway-admin-accounts.service: CapabilityBoundingSet %v lacks %s", caps, want)
 		}
+	}
+}
+
+// TestSystemdUnits_TheGatewayReloadsTheFileItServes: `systemctl reload`
+// must run `mcp-gateway reload` against the same -config serve was started
+// with (design/adr/0044) -- a bare kill -HUP would report success for a
+// file serve refused, and another -config would reload a gateway that is
+// not this one.
+func TestSystemdUnits_TheGatewayReloadsTheFileItServes(t *testing.T) {
+	unit := filepath.Join(repoRoot(t), "examples", "systemd", "mcp-gateway.service")
+	start := unitDirective(t, unit, "ExecStart")
+	reload := unitDirective(t, unit, "ExecReload")
+	configOf := func(words []string) string {
+		for i, w := range words {
+			if w == "-config" && i+1 < len(words) {
+				return words[i+1]
+			}
+		}
+		return ""
+	}
+	if len(start) < 2 || start[1] != "serve" {
+		t.Fatalf("ExecStart = %v, want mcp-gateway serve", start)
+	}
+	if len(reload) < 2 || reload[1] != "reload" || !strings.HasSuffix(reload[0], "mcp-gateway") {
+		t.Fatalf("ExecReload = %v, want mcp-gateway reload", reload)
+	}
+	if c := configOf(start); c == "" || c != configOf(reload) {
+		t.Fatalf("ExecStart -config %q, ExecReload -config %q: they must be the same file", c, configOf(reload))
+	}
+	if user := unitDirective(t, unit, "User"); len(user) != 1 || user[0] == "root" {
+		t.Fatalf("User = %v, want the service account", user)
 	}
 }

@@ -11,9 +11,13 @@ import (
 	"maps"
 	"net"
 	"net/http"
+	"os"
+	"os/signal"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/bunnyiesart/Gatte/internal/access"
@@ -23,6 +27,8 @@ import (
 	auditjsonl "github.com/bunnyiesart/Gatte/internal/audit/jsonl"
 	auditsqlite "github.com/bunnyiesart/Gatte/internal/audit/sqlite"
 	"github.com/bunnyiesart/Gatte/internal/config"
+	"github.com/bunnyiesart/Gatte/internal/control"
+	controlsqlite "github.com/bunnyiesart/Gatte/internal/control/sqlite"
 	"github.com/bunnyiesart/Gatte/internal/gateway"
 	"github.com/bunnyiesart/Gatte/internal/gateway/httpapi"
 	healthsqlite "github.com/bunnyiesart/Gatte/internal/health/sqlite"
@@ -124,7 +130,7 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 	// It still goes through opParse, which is what maps -h onto exit 0 and
 	// onto stdout.
 	usage := func(w io.Writer) {
-		fmt.Fprint(w, "Usage: mcp-gateway serve [-config path]\n\nRuns the gateway until SIGINT or SIGTERM.\n\nFlags:\n")
+		fmt.Fprint(w, "Usage: mcp-gateway serve [-config path]\n\nRuns the gateway until SIGINT or SIGTERM. SIGHUP (or `mcp-gateway reload`)\nre-reads [[role]], [group_to_role] and [quota] without a restart.\n\nFlags:\n")
 		fs.SetOutput(w)
 		fs.PrintDefaults()
 		fs.SetOutput(io.Discard)
@@ -153,6 +159,12 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 	// the listener is up.
 	ctx, stop := signalContext()
 	defer stop()
+	// SIGHUP is installed as early as SIGTERM, for the same reason and one
+	// more: its default action ends the process, and a reload rung during
+	// a slow startup must be queued, not fatal (design/adr/0044).
+	hup := make(chan os.Signal, 1)
+	signal.Notify(hup, syscall.SIGHUP)
+	defer signal.Stop(hup)
 
 	stack, err := buildServer(ctx, cfg, logger)
 	if err != nil {
@@ -163,6 +175,13 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 		return exitCannotRun
 	}
 	defer stack.close()
+	stack.hup = hup
+	if abs, err := filepath.Abs(*configPath); err == nil {
+		stack.configPath = abs
+	} else {
+		stack.configPath = *configPath
+	}
+	stack.announce(ctx, logger)
 
 	return stack.run(ctx, logger)
 }
@@ -216,6 +235,23 @@ type serveStack struct {
 
 	// closers release what buildServer acquired, and are run in reverse.
 	closers []func()
+
+	// The reload and redial of design/adr/0044. hup delivers SIGHUP (nil
+	// outside cmdServe: nothing rings a test's stack); control is the
+	// request table; cfg is the configuration in force, whose reloadable
+	// part a reload replaces; configPath is the file a reload re-reads
+	// (set by cmdServe); quotaStore is the counter a new quota gate is
+	// built over, and quotaSelf the caller's-own-counters reader it is
+	// joined to (design/adr/0042 item 3), so a reloaded gate keeps
+	// answering gatte.status; audit is the recorder the operator rows go
+	// through.
+	hup        <-chan os.Signal
+	control    control.Store
+	cfg        *config.Config
+	configPath string
+	quotaStore quota.Store
+	quotaSelf  quota.SelfReader
+	audit      audit.Recorder
 }
 
 // close releases every resource the stack holds. It is safe to call more
@@ -379,12 +415,16 @@ func buildServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) (
 	if err != nil {
 		return fail(err)
 	}
+	stack.cfg = cfg
 	quotaCounters := quotasqlite.New(db)
-	quotaGate, err := quota.NewGate(quotaPlan, quotaCounters)
+	stack.quotaStore = quotaCounters
+	stack.quotaSelf = quotaCounters
+	stack.control = controlsqlite.New(db)
+	stack.audit = aud
+	quotaGate, err := stack.quotaGate(quotaPlan)
 	if err != nil {
 		return fail(fmt.Errorf("quota: %w", err))
 	}
-	quotaGate = quotaGate.WithSelf(quotaCounters)
 
 	// The trust anchor. Config.Validate has already decoded these once and
 	// refused a malformed entry, so a failure here is a wiring bug rather
@@ -498,6 +538,9 @@ func buildServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) (
 		// cannot check that the two agree -- Verifier is an opaque
 		// interface -- so passing the same value from one config field is
 		// what makes them agree.
+		// The roles in the log line come from the policy in force, which
+		// a reload swaps (design/adr/0044).
+		CurrentPolicy:        gw.Policy,
 		Resource:             cfg.OIDC.Audience,
 		AuthorizationServers: cfg.OIDC.AuthorizationServers,
 		// The scopes a client with none of its own configured requests
@@ -745,104 +788,129 @@ func (s *serveStack) refreshLoop(ctx context.Context, logger *slog.Logger) {
 		case <-ctx.Done():
 			return
 		case <-timer.C:
-		}
-
-		// The registry first: settling which backends should be connected
-		// before asking the connected ones what they advertise is the
-		// order ADR-0020 item 2 requires -- an upstream registered since
-		// the last round is dialed here and discovered by the Refresh
-		// below, on the same tick.
-		reconcileCtx, cancelReconcile := context.WithTimeout(ctx, reconcileTimeout)
-		reconcileErr := s.gateway.Reconcile(reconcileCtx)
-		cancelReconcile()
-
-		switch {
-		case reconcileErr == nil:
-		case errors.Is(reconcileErr, gateway.ErrClosed):
-			return
-		case errors.Is(reconcileErr, gateway.ErrRegistryUnavailable):
-			// Fail closed (ADR-0004): nothing is being served until a
-			// later round reads the registry. Said at Error every round,
-			// not once, because this is the state serve.go's boot path
-			// calls worse than refusing to start -- a process holding the
-			// port and serving nobody -- and a single line at the moment
-			// it began would be off the top of the operator's screen by
-			// the time anyone looked.
-			logger.Error("mcp-gateway: the upstream registry cannot be read, so NOTHING is being served; upstream connections are kept and this will be retried",
-				slog.Duration("retry_in", registryRetryEvery),
-				slog.String("detail", reconcileErr.Error()))
-			// Emitted on this path too, and it is the path that needs it
-			// most: a suspended gateway is up, answering, and serving
-			// nobody, and the heartbeat carrying suspended=true is the
-			// difference between that being visible in the SIEM and being
-			// visible only to whoever is reading the log right then.
-			s.heartbeat(ctx, logger)
-			timer.Reset(registryRetryEvery)
+		case <-s.hup:
+			// SIGHUP (design/adr/0044): the operator's pending requests,
+			// or a reload attributed to the signal when there are none.
+			// When they ran a round out of turn, the next one is scheduled
+			// from it, as after any round -- including the short retry of
+			// a suspension that round found.
+			stop, next := s.handleControl(ctx, logger)
+			if stop {
+				return
+			}
+			if next > 0 {
+				timer.Reset(next)
+			}
 			continue
-		case errors.Is(reconcileErr, gateway.ErrQuotaMisconfigured):
-			// Not a suspension: everything already connected keeps serving.
-			// But the fleet cannot grow -- nothing registered, changed or
-			// found dead is brought up -- until the registry and the
-			// [quota] section agree again, which only an operator can make
-			// happen (design/adr/0030). Said at Error every round for the
-			// reason the case above gives. The Refresh below still runs, so
-			// what is connected stays observed.
-			logger.Error("mcp-gateway: the quota policy and the upstream registry disagree, so no upstream is being brought up until they agree; see `mcp-gateway quota list`",
-				slog.String("detail", reconcileErr.Error()))
-		default:
-			// Partial by construction, like Refresh's: one upstream that
-			// would not dial, or an entry refused by its own contract or
-			// its signature. gateway.Reconcile has logged each with its
-			// detail.
-			logger.Error("mcp-gateway: some upstreams could not be reconciled against the registry; they will be retried next round",
-				slog.String("detail", reconcileErr.Error()))
 		}
-
-		// Bounded, and derived from ctx so a shutdown cuts a round in
-		// flight rather than waiting for a stalled backend to answer.
-		refreshCtx, cancel := context.WithTimeout(ctx, refreshTimeout)
-		err := s.gateway.Refresh(refreshCtx)
-		cancel()
-
-		switch {
-		case err == nil:
-		case errors.Is(err, gateway.ErrClosed):
-			// Shutdown won the race with this tick. Nothing to report and
-			// nothing left to refresh.
+		next, stop := s.round(ctx, logger)
+		if stop {
 			return
-		default:
-			// Partial by construction: gateway.Refresh has already logged
-			// each upstream's own failure with its detail, and every
-			// upstream that did answer has been re-observed. One line here
-			// so the failure is visible as a recurring event rather than
-			// only as scattered per-upstream errors.
-			logger.Error("mcp-gateway: some upstreams were not re-observed; their previous tool definitions and quarantine state stand",
-				slog.String("detail", err.Error()))
 		}
-
-		// Rides the same tick as the re-observation, and for the same
-		// reason: both answer "is what we are serving still what we
-		// think?", and both bound a window rather than closing one.
-		//
-		// Run even when Refresh above failed. The two are independent --
-		// a backend that would not answer `tools/list` says nothing about
-		// whether its credential was rotated underneath it -- and a
-		// rotation is exactly the kind of thing somebody does during the
-		// incident that also makes a backend flaky.
-		// Its OWN context, derived from ctx. refreshCtx was cancelled the
-		// moment Refresh returned, a dozen lines above, so passing it here
-		// handed the drift check a context that was already dead. Nothing
-		// failed visibly only because the vault in use does not consult
-		// it -- the check was one ctx-honouring vault.Provider away from
-		// reporting no drift, forever, while looking like it ran.
-		driftCtx, driftCancel := context.WithTimeout(ctx, refreshTimeout)
-		s.reportCredentialDrift(driftCtx, logger)
-		driftCancel()
-
-		s.heartbeat(ctx, logger)
-
-		timer.Reset(s.refreshEvery)
+		timer.Reset(next)
 	}
+}
+
+// round is one maintenance round: reconcile the fleet against the
+// registry, re-observe the connected upstreams, report credential drift
+// and beat. It returns how long to rest before the next one, and stop
+// when the Gateway is closed. A reload or a redial (design/adr/0044) runs
+// one out of turn, from the same goroutine, so two rounds never overlap.
+func (s *serveStack) round(ctx context.Context, logger *slog.Logger) (next time.Duration, stop bool) {
+	// The registry first: settling which backends should be connected
+	// before asking the connected ones what they advertise is the
+	// order ADR-0020 item 2 requires -- an upstream registered since
+	// the last round is dialed here and discovered by the Refresh
+	// below, on the same tick.
+	reconcileCtx, cancelReconcile := context.WithTimeout(ctx, reconcileTimeout)
+	reconcileErr := s.gateway.Reconcile(reconcileCtx)
+	cancelReconcile()
+
+	switch {
+	case reconcileErr == nil:
+	case errors.Is(reconcileErr, gateway.ErrClosed):
+		return 0, true
+	case errors.Is(reconcileErr, gateway.ErrRegistryUnavailable):
+		// Fail closed (ADR-0004): nothing is being served until a
+		// later round reads the registry. Said at Error every round,
+		// not once, because this is the state serve.go's boot path
+		// calls worse than refusing to start -- a process holding the
+		// port and serving nobody -- and a single line at the moment
+		// it began would be off the top of the operator's screen by
+		// the time anyone looked.
+		logger.Error("mcp-gateway: the upstream registry cannot be read, so NOTHING is being served; upstream connections are kept and this will be retried",
+			slog.Duration("retry_in", registryRetryEvery),
+			slog.String("detail", reconcileErr.Error()))
+		// Emitted on this path too, and it is the path that needs it
+		// most: a suspended gateway is up, answering, and serving
+		// nobody, and the heartbeat carrying suspended=true is the
+		// difference between that being visible in the SIEM and being
+		// visible only to whoever is reading the log right then.
+		s.heartbeat(ctx, logger)
+		return registryRetryEvery, false
+	case errors.Is(reconcileErr, gateway.ErrQuotaMisconfigured):
+		// Not a suspension: everything already connected keeps serving.
+		// But the fleet cannot grow -- nothing registered, changed or
+		// found dead is brought up -- until the registry and the
+		// [quota] section agree again, which only an operator can make
+		// happen (design/adr/0030). Said at Error every round for the
+		// reason the case above gives. The Refresh below still runs, so
+		// what is connected stays observed.
+		logger.Error("mcp-gateway: the quota policy and the upstream registry disagree, so no upstream is being brought up until they agree; see `mcp-gateway quota list`",
+			slog.String("detail", reconcileErr.Error()))
+	default:
+		// Partial by construction, like Refresh's: one upstream that
+		// would not dial, or an entry refused by its own contract or
+		// its signature. gateway.Reconcile has logged each with its
+		// detail.
+		logger.Error("mcp-gateway: some upstreams could not be reconciled against the registry; they will be retried next round",
+			slog.String("detail", reconcileErr.Error()))
+	}
+
+	// Bounded, and derived from ctx so a shutdown cuts a round in
+	// flight rather than waiting for a stalled backend to answer.
+	refreshCtx, cancel := context.WithTimeout(ctx, refreshTimeout)
+	err := s.gateway.Refresh(refreshCtx)
+	cancel()
+
+	switch {
+	case err == nil:
+	case errors.Is(err, gateway.ErrClosed):
+		// Shutdown won the race with this tick. Nothing to report and
+		// nothing left to refresh.
+		return 0, true
+	default:
+		// Partial by construction: gateway.Refresh has already logged
+		// each upstream's own failure with its detail, and every
+		// upstream that did answer has been re-observed. One line here
+		// so the failure is visible as a recurring event rather than
+		// only as scattered per-upstream errors.
+		logger.Error("mcp-gateway: some upstreams were not re-observed; their previous tool definitions and quarantine state stand",
+			slog.String("detail", err.Error()))
+	}
+
+	// Rides the same tick as the re-observation, and for the same
+	// reason: both answer "is what we are serving still what we
+	// think?", and both bound a window rather than closing one.
+	//
+	// Run even when Refresh above failed. The two are independent --
+	// a backend that would not answer `tools/list` says nothing about
+	// whether its credential was rotated underneath it -- and a
+	// rotation is exactly the kind of thing somebody does during the
+	// incident that also makes a backend flaky.
+	// Its OWN context, derived from ctx. refreshCtx was cancelled the
+	// moment Refresh returned, a dozen lines above, so passing it here
+	// handed the drift check a context that was already dead. Nothing
+	// failed visibly only because the vault in use does not consult
+	// it -- the check was one ctx-honouring vault.Provider away from
+	// reporting no drift, forever, while looking like it ran.
+	driftCtx, driftCancel := context.WithTimeout(ctx, refreshTimeout)
+	s.reportCredentialDrift(driftCtx, logger)
+	driftCancel()
+
+	s.heartbeat(ctx, logger)
+
+	return s.refreshEvery, false
 }
 
 // heartbeat says, once per round, that this process is alive and what it
@@ -961,10 +1029,10 @@ func (s *serveStack) heartbeat(ctx context.Context, logger *slog.Logger) {
 //
 // It is a Warn and not an Error because nothing is broken: the upstream is
 // serving fine, on the old value. That is precisely the problem -- see
-// gateway.CredentialDrift. The operator's remedy today is a restart; there
-// is deliberately no automatic reconnect here, because silently re-dialing
-// a backend during an incident is a bigger decision than this loop is
-// entitled to make (the reconnect command is the other half of GAB-20).
+// gateway.CredentialDrift. The operator's remedy is `upstream redial NAME`
+// (design/adr/0044), or a restart; there is deliberately no automatic
+// reconnect here, because silently re-dialing a backend during an incident
+// is a bigger decision than this loop is entitled to make.
 func (s *serveStack) reportCredentialDrift(ctx context.Context, logger *slog.Logger) {
 	// A dead context here means the check cannot have run, and the danger
 	// is that "no drift reported" and "drift never looked for" are the same
@@ -988,7 +1056,7 @@ func (s *serveStack) reportCredentialDrift(ctx context.Context, logger *slog.Log
 	for _, d := range drift {
 		pairs = append(pairs, d.Upstream+"."+d.VarName)
 	}
-	logger.Warn("mcp-gateway: a credential was rotated in the vault but the connected upstream is STILL USING THE OLD VALUE -- rotation takes effect at the next dial, so restart the gateway to make it real",
+	logger.Warn("mcp-gateway: a credential was rotated in the vault but the connected upstream is STILL USING THE OLD VALUE -- rotation takes effect at the next dial: run `mcp-gateway upstream redial NAME` for each upstream named (or restart the gateway) to make it real",
 		slog.Any("credentials", pairs),
 		slog.Int("count", len(pairs)),
 	)

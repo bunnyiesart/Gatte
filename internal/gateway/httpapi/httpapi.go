@@ -95,6 +95,11 @@ type Config struct {
 	// Dispatch consult it in the same order. Duplicating the decision here
 	// would be a second implementation of it, free to drift.
 	Policy *access.Policy
+	// CurrentPolicy, when set, is read instead of Policy for that log line:
+	// the Gateway's policy is swapped by a reload (design/adr/0044), and a
+	// log naming the roles of the file the process booted with would name
+	// roles that no longer exist. Optional.
+	CurrentPolicy func() *access.Policy
 
 	// Resource is this gateway's resource identifier: the absolute URI that
 	// RFC 8707 resource indicators name and that RFC 9728 metadata
@@ -178,6 +183,7 @@ type Handler struct {
 	gateway  *gateway.Gateway
 	verifier access.TokenVerifier
 	policy   *access.Policy
+	current  func() *access.Policy
 	log      *slog.Logger
 
 	// metadata is the pre-rendered RFC 9728 document. Rendered once at
@@ -293,6 +299,7 @@ func New(cfg Config) (*Handler, error) {
 		gateway:       cfg.Gateway,
 		verifier:      cfg.Verifier,
 		policy:        cfg.Policy,
+		current:       cfg.CurrentPolicy,
 		log:           logger,
 		metadata:      rendered,
 		metadataPaths: metadataPathsFor(resource),
@@ -402,7 +409,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.log.DebugContext(r.Context(), "httpapi: authenticated request",
 		slog.String("subject", id.Subject),
 		slog.String("source", source),
-		slog.Any("roles", roleNames(h.policy, id)),
+		slog.Any("roles", roleNames(h.rolePolicy(), id)),
 		slog.Int("tools", len(tools)),
 	)
 
@@ -1277,4 +1284,15 @@ func isScopeToken(s string) bool {
 		}
 	}
 	return true
+}
+
+// rolePolicy is the policy the role names in the log come from: the one in
+// force, when the Gateway's is swappable (design/adr/0044).
+func (h *Handler) rolePolicy() *access.Policy {
+	if h.current != nil {
+		if p := h.current(); p != nil {
+			return p
+		}
+	}
+	return h.policy
 }

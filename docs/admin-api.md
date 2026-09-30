@@ -14,7 +14,7 @@ TCP listener, so a front runs on the gateway host (or reaches it through
 
 | Socket | Default path | Who can connect | Serves |
 |---|---|---|---|
-| operator | `/run/mcp-gateway-admin/operator/operator.sock` | members of `gatte-operators` (file `0660`) | overview, tools, access, audit, backends, maintenance, quota, people, connect |
+| operator | `/run/mcp-gateway-admin/operator/operator.sock` | members of `gatte-operators` (file `0660`) | overview, tools, access, audit, backends, maintenance, reload and redial, quota, people, connect |
 | accounts | `/run/mcp-gateway-admin/accounts/accounts.sock` | root (file `root:root 0600`), or the delegated group (below) | identity provider accounts |
 
 Each socket has a directory of its own under a `root:root 0755`
@@ -131,8 +131,9 @@ Every rule lives in the backend, so a front cannot forget one:
 - **The operator is who the kernel says.** Identity comes from the
   socket's peer credentials, never from a request field. Every state change
   writes an operator row, `(operator:NAME)`, to the audit trail:
-  `(tool approve)`, `(tool approve set)`, `(tool revoke)`, `(access block)`, `(access unblock)`,
-  `(maintenance on)`, `(maintenance off)`,
+  `(tool approve)`, `(tool approve set)`, `(tool revoke)`, `(access block)`,
+  `(access unblock)`, `(maintenance on)`, `(maintenance off)`, `(config
+  reload)` and `(upstream redial)` (written by `serve`),
   `(account add|groups|disable|enable|reset password)`.
 - **An approval is of the fingerprint you were shown.** Approve refuses
   without one, refuses another, and refuses if the definition moved while
@@ -237,6 +238,28 @@ moving refuses the whole set (`manifest_mismatch`) and approves nothing.
 Draw every entry of the set before offering its button, as you would for
 one tool. The answer carries one `(tool approve)` row per tool in `rows`
 and the `(tool approve set)` summary row in `audit`.
+
+## Reload and redial
+
+With the feature `serve_control` (contract 1.3.0, design/adr/0044):
+
+- `POST /v1/reload` (body `{}`) asks the running gateway to re-read its
+  configuration file and apply `[[role]]`, `[group_to_role]` and
+  `[quota]`. `POST /v1/upstreams/redial` with `{"upstream": NAME}` asks it
+  to drop one backend and dial it again with the vault as it is now.
+- Both answer a `ServeRequest`. The backend files the request in the
+  database, rings `serve` with SIGHUP and waits up to 20 s: `state` is
+  `done` with `outcome` `applied` or `refused` (and a `refusal` code), or
+  `pending`, which a front reads again with `GET /v1/serve-requests/{id}`.
+  `serve_not_running` (503) means nothing was filed.
+- A reload's `reload` field is the diff to show: per role, the tools
+  `gained` and `lost`; `groups` that moved; `quota` accounts changed; and
+  `not_reloaded`, the keys that differ from the file `serve` started with
+  and need a restart. Show `not_reloaded` next to the success, not after
+  it. A redial's `redial` says whether the backend was connected and
+  whether it is live after the round.
+- `serve` writes the operator rows, `(config reload)` and `(upstream
+  redial)`; `recorded` and `audit` are its.
 
 ## Backend health and maintenance
 

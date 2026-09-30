@@ -607,12 +607,12 @@ func (g *Gateway) persistHealth(ctx context.Context, round bool) {
 // logged; gatte.status still answers.
 func (g *Gateway) standingOf(ctx context.Context, c Caller, tools []string, now time.Time) CallerStanding {
 	you := CallerStanding{Name: c.Identity.Name, Roles: []string{}}
-	for _, r := range g.policy.RolesFor(c.Identity) {
+	for _, r := range g.policy.Load().RolesFor(c.Identity) {
 		you.Roles = append(you.Roles, r.Name)
 	}
 	slices.Sort(you.Roles)
 	you.Roles = slices.Compact(you.Roles)
-	budgets, err := g.quota.Standing(ctx, c.Identity.Subject, tools, now)
+	budgets, err := g.quota.Load().Standing(ctx, c.Identity.Subject, tools, now)
 	if err != nil {
 		g.log.WarnContext(ctx, "gateway: gatte.status could not read the caller's own quota use; reporting it as unknown",
 			slog.String("detail", err.Error()))

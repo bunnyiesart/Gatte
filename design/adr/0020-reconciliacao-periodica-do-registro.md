@@ -204,6 +204,12 @@ comparação é por conteúdo, não por `UpdatedAt` — justamente para que
 ninguém passe a usar "toca na entrada" como um comando de reconexão que este
 ADR não está autorizando.
 
+> **CORREÇÃO — 30 set 2026 (ADR-0044).** O comando de reconexão agora existe
+> e é explícito: `mcp-gateway upstream redial NAME` marca a conexão como a
+> de um processo morto e a rodada seguinte a re-disca pela regra da
+> ADR-0024, com o cofre como está. `CredentialDrift` segue detecção pura, e
+> o re-registro idêntico continua não sendo reconexão.
+
 ## Consequências
 
 **Impactos positivos:** `upstream register` e `upstream deregister` passam a

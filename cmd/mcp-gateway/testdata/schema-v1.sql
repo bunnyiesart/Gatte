@@ -47,7 +47,7 @@ CREATE TABLE blocked_subjects (
 	reason     TEXT NOT NULL DEFAULT '',
 	blocked_by TEXT NOT NULL,
 	blocked_at TEXT NOT NULL
-);
+, blocked_until TEXT NOT NULL DEFAULT '');
 
 -- table entry_signatures
 CREATE TABLE entry_signatures (

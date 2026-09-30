@@ -8,11 +8,13 @@ import (
 	"errors"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/bunnyiesart/Gatte/internal/access"
 	"github.com/bunnyiesart/Gatte/internal/audit"
 	"github.com/bunnyiesart/Gatte/internal/health"
+	"github.com/bunnyiesart/Gatte/internal/quarantine"
 	"github.com/bunnyiesart/Gatte/internal/quota"
 	quotasql "github.com/bunnyiesart/Gatte/internal/quota/sqlite"
 	"github.com/bunnyiesart/Gatte/internal/store"
@@ -282,5 +284,63 @@ func TestRedial_OfAServableBackendThatIsDownMarksNothing(t *testing.T) {
 	h.tick()
 	if live, _, _ := h.gw.BackendState("casemgmt"); !live {
 		t.Fatal("not live after the next round")
+	}
+}
+
+// swapOnAdmit is a quarantine that runs swap once, from inside the first
+// Get: that is, after Dispatch has authorized a call and before it has
+// asked the quota gate, exactly where a reload landing mid-call would
+// split the policy from the gate.
+type swapOnAdmit struct {
+	quarantine.Store
+	once *sync.Once
+	swap func()
+}
+
+func (s swapOnAdmit) Get(ctx context.Context, upstream, tool string) (quarantine.Tool, error) {
+	s.once.Do(s.swap)
+	return s.Store.Get(ctx, upstream, tool)
+}
+
+// TestApplyPolicy_ACallIsDecidedByOneSnapshotOfPolicyAndQuota is the
+// ADR-0044 residual: the policy and the quota gate were two atomic
+// stores, loaded separately on the call path, so a call authorized by the
+// old policy could be debited (or waved through) by the new gate. Here a
+// reload that replaces a spent budget with a free plan lands between
+// Authorize and the quota; the call must still be decided by the gate
+// stored with the policy that authorized it, and be refused.
+func TestApplyPolicy_ACallIsDecidedByOneSnapshotOfPolicyAndQuota(t *testing.T) {
+	h := newHarness(t, "casemgmt.list_cases")
+	h.register("casemgmt")
+	h.serve("casemgmt", def("list_cases", "list"))
+	h.mustConnect()
+	h.approve("casemgmt", "list_cases")
+
+	old := mustGate(t, []quota.Provider{virustotalOn("casemgmt", "casemgmt.list_cases", 1)}, nil)
+	if err := h.gw.ApplyPolicy(context.Background(), mustPolicy(t, "casemgmt.list_cases"), old); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.dispatch("casemgmt.list_cases"); err != nil {
+		t.Fatalf("the one call the budget allows = %v", err)
+	}
+
+	swapped := false
+	h.gw.quarantine = swapOnAdmit{Store: h.quarantine, once: &sync.Once{}, swap: func() {
+		if err := h.gw.ApplyPolicy(context.Background(), mustPolicy(t, "casemgmt.list_cases"), mustGate(t, nil, []string{"casemgmt.list_cases"})); err != nil {
+			t.Errorf("ApplyPolicy mid-call = %v", err)
+		}
+		swapped = true
+	}}
+	_, err := h.dispatch("casemgmt.list_cases")
+	if !swapped {
+		t.Fatal("precondition: the reload did not land inside the call")
+	}
+	if !errors.Is(err, quota.ErrExhausted) {
+		t.Fatalf("a call authorized under the budgeted policy, with the free plan stored mid-call = %v, want quota.ErrExhausted from the gate stored with that policy", err)
+	}
+
+	// The next call reads the new snapshot whole: the free plan admits it.
+	if _, err := h.dispatch("casemgmt.list_cases"); err != nil {
+		t.Fatalf("the call after the reload = %v, want nil under the free plan", err)
 	}
 }

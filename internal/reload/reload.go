@@ -212,9 +212,25 @@ func quotaChanges(old, next []config.QuotaProvider) []QuotaChange {
 	return out
 }
 
+// NotServe are the keys serve never reads: the commands that use them read
+// the file on every run (sign reads signer.key_file; the management backend
+// reads [idp], [connect] and [admin] per request), so a difference in them
+// needs no restart and is not reported as one.
+var NotServe = []string{"signer.key_file", "idp", "connect", "admin"}
+
+func notServe(key string) bool {
+	for _, k := range NotServe {
+		if key == k || strings.HasPrefix(key, k+".") {
+			return true
+		}
+	}
+	return false
+}
+
 // NotReloaded lists, dotted and sorted, the keys outside Reloadable whose
 // value differs between old and next: a struct-valued key is compared one
 // level down ("signer.trusted_keys"), anything else as a whole ("listen").
+// The keys of NotServe are left out.
 func NotReloaded(old, next *config.Config) []string {
 	var out []string
 	ov, nv := reflect.ValueOf(*old), reflect.ValueOf(*next)
@@ -232,13 +248,13 @@ func NotReloaded(old, next *config.Config) []string {
 				if sub == "" {
 					continue
 				}
-				if !reflect.DeepEqual(a.Field(j).Interface(), b.Field(j).Interface()) {
+				if !notServe(key+"."+sub) && !reflect.DeepEqual(a.Field(j).Interface(), b.Field(j).Interface()) {
 					out = append(out, key+"."+sub)
 				}
 			}
 			continue
 		}
-		if !reflect.DeepEqual(a.Interface(), b.Interface()) {
+		if !notServe(key) && !reflect.DeepEqual(a.Interface(), b.Interface()) {
 			out = append(out, key)
 		}
 	}

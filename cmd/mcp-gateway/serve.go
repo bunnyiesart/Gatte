@@ -1007,10 +1007,10 @@ func (s *serveStack) heartbeat(ctx context.Context, logger *slog.Logger) {
 //
 // It is a Warn and not an Error because nothing is broken: the upstream is
 // serving fine, on the old value. That is precisely the problem -- see
-// gateway.CredentialDrift. The operator's remedy today is a restart; there
-// is deliberately no automatic reconnect here, because silently re-dialing
-// a backend during an incident is a bigger decision than this loop is
-// entitled to make (the reconnect command is the other half of GAB-20).
+// gateway.CredentialDrift. The operator's remedy is `upstream redial NAME`
+// (design/adr/0044), or a restart; there is deliberately no automatic
+// reconnect here, because silently re-dialing a backend during an incident
+// is a bigger decision than this loop is entitled to make.
 func (s *serveStack) reportCredentialDrift(ctx context.Context, logger *slog.Logger) {
 	// A dead context here means the check cannot have run, and the danger
 	// is that "no drift reported" and "drift never looked for" are the same
@@ -1034,7 +1034,7 @@ func (s *serveStack) reportCredentialDrift(ctx context.Context, logger *slog.Log
 	for _, d := range drift {
 		pairs = append(pairs, d.Upstream+"."+d.VarName)
 	}
-	logger.Warn("mcp-gateway: a credential was rotated in the vault but the connected upstream is STILL USING THE OLD VALUE -- rotation takes effect at the next dial, so restart the gateway to make it real",
+	logger.Warn("mcp-gateway: a credential was rotated in the vault but the connected upstream is STILL USING THE OLD VALUE -- rotation takes effect at the next dial: run `mcp-gateway upstream redial NAME` for each upstream named (or restart the gateway) to make it real",
 		slog.Any("credentials", pairs),
 		slog.Int("count", len(pairs)),
 	)

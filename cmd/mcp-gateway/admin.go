@@ -40,6 +40,7 @@ import (
 	"github.com/bunnyiesart/Gatte/internal/audit"
 	auditsqlite "github.com/bunnyiesart/Gatte/internal/audit/sqlite"
 	"github.com/bunnyiesart/Gatte/internal/config"
+	controlsqlite "github.com/bunnyiesart/Gatte/internal/control/sqlite"
 	healthsqlite "github.com/bunnyiesart/Gatte/internal/health/sqlite"
 	"github.com/bunnyiesart/Gatte/internal/idp"
 	"github.com/bunnyiesart/Gatte/internal/idp/autheliafile"
@@ -439,12 +440,12 @@ func runAuditWriter(configPath string, stdin io.Reader, stderr io.Writer) int {
 // newAdminService builds the management service over db, reading the
 // configuration with loadCfg for every operation. The CLI builds one per
 // command; `admin` builds one per process.
-func newAdminService(db *sql.DB, loadCfg func() (*config.Config, error), stderr io.Writer, configPath string, logger *slog.Logger) (*admin.Service, error) {
+func newAdminService(db *sql.DB, loadCfg func() (*config.Config, error), stderr io.Writer, configPath string, logger *slog.Logger, opts ...func(*admin.Deps)) (*admin.Service, error) {
 	envFor := func(cfg *config.Config) *opEnv {
 		return &opEnv{cfg: cfg, db: db, stdout: io.Discard, stderr: stderr, configPath: configPath}
 	}
 	base := envFor(nil)
-	return admin.New(admin.Deps{
+	d := admin.Deps{
 		Config: loadCfg,
 		Tools:  base.tools(),
 		Blocks: base.blocks(),
@@ -466,5 +467,13 @@ func newAdminService(db *sql.DB, loadCfg func() (*config.Config, error), stderr 
 		Accounts: openDirectory,
 		IsBusy:   store.IsBusy,
 		Log:      logger,
-	})
+		// Reload and redial (design/adr/0044): a row serve takes on
+		// SIGHUP, rung at the pid serve recorded in the same database.
+		Control: controlsqlite.New(db),
+		Ring:    ringServe,
+	}
+	for _, o := range opts {
+		o(&d)
+	}
+	return admin.New(d)
 }

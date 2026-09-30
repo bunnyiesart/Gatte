@@ -8,6 +8,13 @@ first connection; it exits five minutes after its last request.
 |---|---|---|
 | `mcp-gateway-admin.socket` / `.service` | `/run/mcp-gateway-admin/operator/operator.sock`, `root:gatte-operators 0660` | the service account (`mcpgw`) |
 | `mcp-gateway-admin-accounts.socket` / `.service` | `/run/mcp-gateway-admin/accounts/accounts.sock`, `root:root 0600` | root |
+| `mcp-gateway.service` | none (the gateway, `serve`) | the service account (`mcpgw`) |
+
+`mcp-gateway.service` runs `serve` itself. `systemctl reload mcp-gateway`
+applies `[[role]]`, `[group_to_role]` and `[quota]` without a restart
+(design/adr/0044): its `ExecReload=` is `mcp-gateway reload`, which waits
+for `serve`'s answer, so a file `serve` refuses makes the reload fail and
+the policy in force is kept. Every other key needs `systemctl restart`.
 
 ```sh
 install -m 0644 mcp-gateway-admin*.socket mcp-gateway-admin*.service /etc/systemd/system/

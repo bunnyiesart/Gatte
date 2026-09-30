@@ -11,13 +11,14 @@
 // Subcommands:
 //
 //	serve                     run the gateway
-//	upstream list|register|deregister|maintenance
+//	upstream list|register|deregister|maintenance|redial
 //	tool list|approve|revoke  Tool Quarantine
 //	sign                      sign a registry entry
 //	audit                     read the Audit Trail
 //	quota list|usage          per-analyst quota: the policy, and the counters
 //	access block|unblock|list per-analyst kill switch
 //	maintenance on|off|list   planned maintenance (upstream maintenance for one backend)
+//	reload                    apply the reloadable configuration to the running serve
 //	admin                     the management API, over a UNIX socket
 //	ui                        the web console (not in a -tags nofront build)
 //	version
@@ -42,6 +43,7 @@ import (
 	accesssqlite "github.com/bunnyiesart/Gatte/internal/access/sqlite"
 	auditsqlite "github.com/bunnyiesart/Gatte/internal/audit/sqlite"
 	"github.com/bunnyiesart/Gatte/internal/config"
+	controlsqlite "github.com/bunnyiesart/Gatte/internal/control/sqlite"
 	healthsqlite "github.com/bunnyiesart/Gatte/internal/health/sqlite"
 	quarantinesqlite "github.com/bunnyiesart/Gatte/internal/quarantine/sqlite"
 	quotasqlite "github.com/bunnyiesart/Gatte/internal/quota/sqlite"
@@ -93,6 +95,8 @@ func runWithStdin(args []string, stdin io.Reader, stdout, stderr io.Writer) int 
 		return cmdAccess(rest, stdout, stderr)
 	case "maintenance":
 		return cmdMaintenance(rest, stdout, stderr)
+	case "reload":
+		return cmdReload(rest, stdout, stderr)
 	case "admin":
 		return cmdAdmin(rest, stdin, stdout, stderr)
 	case "ui":
@@ -125,6 +129,7 @@ Commands:
   quota        Show the declared limits and what each analyst has spent.
   access       Block or unblock one analyst at once, or list who is blocked.
   maintenance  Announce planned maintenance of the whole gateway, or list it.
+  reload       Apply [[role]], [group_to_role] and [quota] to the running gateway.
   admin        Serve the management API on a UNIX socket (for the fronts).
   ui           Serve the operator console as a web page on loopback.
   version      Print the build version.
@@ -140,7 +145,7 @@ Exit codes: 0 ok, 1 ran and found a problem, 2 could not run.
 // openStore opens the SQLite file named by the config and migrates every
 // component's schema.
 //
-// All seven migrations live here, together, deliberately: a component
+// All eight migrations live here, together, deliberately: a component
 // whose table is missing fails at the first query, deep inside a request,
 // rather than at startup. Running them all from the composition root
 // means an operator learns about a broken database when they start the
@@ -161,6 +166,7 @@ func openStore(cfg *config.Config) (*sql.DB, error) {
 		"quota counters":    quotasqlite.Migrate,
 		"blocked subjects":  accesssqlite.Migrate,
 		"backend health":    healthsqlite.Migrate,
+		"serve requests":    controlsqlite.Migrate,
 	} {
 		if err := migrate(db); err != nil {
 			db.Close()

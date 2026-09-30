@@ -118,6 +118,30 @@ var table = []route{
 		v, err := s.o.Service.EndMaintenance(r.Context(), r.actor, req)
 		return 200, v, err
 	}},
+	{Route{"POST", "/v1/reload", "reloadConfig", opSock}, func(s *Server, r *request) (int, any, error) {
+		var none struct{}
+		if err := r.decode(&none); err != nil {
+			return 0, nil, err
+		}
+		v, err := s.o.Service.Reload(r.Context(), r.actor)
+		return 200, v, err
+	}},
+	{Route{"POST", "/v1/upstreams/redial", "redialUpstream", opSock}, func(s *Server, r *request) (int, any, error) {
+		var req adminapi.RedialRequest
+		if err := r.decode(&req); err != nil {
+			return 0, nil, err
+		}
+		v, err := s.o.Service.Redial(r.Context(), r.actor, req)
+		return 200, v, err
+	}},
+	{Route{"GET", "/v1/serve-requests/{id}", "serveRequest", opSock}, func(s *Server, r *request) (int, any, error) {
+		id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+		if err != nil || id < 1 {
+			return 0, nil, adminapi.NewError(adminapi.CodeBadRequest, "id must be a positive integer").With("field", "id")
+		}
+		v, err := s.o.Service.ServeRequest(r.Context(), id)
+		return 200, v, err
+	}},
 	{Route{"GET", "/v1/quota", "quotaUsage", opSock}, func(s *Server, r *request) (int, any, error) {
 		q := r.URL.Query()
 		qq := adminapi.QuotaQuery{Analyst: q.Get("analyst"), Account: q.Get("account")}
@@ -215,7 +239,7 @@ func whoami(s *Server, r *request) (int, any, error) {
 		APIVersions:     []string{"v1"},
 		ContractVersion: adminapi.ContractVersion,
 		// A front asks for a feature, not a version.
-		Features:       []string{adminapi.FeatureMaintenance, adminapi.FeatureBackendHealth},
+		Features:       []string{adminapi.FeatureMaintenance, adminapi.FeatureBackendHealth, adminapi.FeatureServeControl},
 		GatewayVersion: s.o.GatewayVersion,
 		Socket:         s.o.Socket,
 		ConfigPath:     s.o.ConfigPath,

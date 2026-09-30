@@ -119,6 +119,20 @@ command_args="-f -r -S -T ${name} -o ${mcp_gateway_logfile} \
 
 start_precmd="${name}_prestart"
 
+# `service mcp_gateway reload` applies [[role]], [group_to_role] and [quota]
+# without a restart (design/adr/0044). Not rc.subr's default reload, which
+# would send SIGHUP to ${pidfile} -- the daemon(8) supervisor, not the
+# gateway. `mcp-gateway reload` files the request in the database, rings
+# the pid serve recorded there, waits for serve's answer and fails when
+# serve refuses the file; it runs as the service account, which owns both.
+extra_commands="reload"
+reload_cmd="${name}_reload"
+
+mcp_gateway_reload()
+{
+	su -m "${mcp_gateway_user}" -c "${gateway_command} reload -config ${mcp_gateway_config}"
+}
+
 mcp_gateway_prestart()
 {
 	if [ ! -f "${mcp_gateway_config}" ]; then

@@ -117,8 +117,11 @@ cheaper than a serve that does not start.
 ```sh
 sudo systemctl start mcp-gateway         # FreeBSD: sudo service mcp_gateway start
 sudo journalctl -u mcp-gateway -n 50     # "mcp-gateway: starting" with version and schema
-sudo -u mcpgw mcp-gateway audit -config "$CFG" -since 10m
+sudo -u mcpgw mcp-gateway audit -config "$CFG" -tool '(boot)' -limit 1
 ```
+
+`-since` takes an RFC 3339 time (`-since 2026-09-30T14:00:00Z`), not a
+duration: to see everything since the start, pass the time you started it.
 
 The first row of every boot is `(gateway)` `(boot)` with the reason
 `boot: mcp-gateway VERSION, schema N`, in the trail and in the SIEM copy:

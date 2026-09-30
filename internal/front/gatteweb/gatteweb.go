@@ -79,6 +79,7 @@ func New(o Options) (*Front, error) {
 		"segs":    frontkit.DrawSegments,
 		"time":    showTime,
 		"short":   shortHash,
+		"image":   shortImage,
 		"dash":    dash,
 		"initial": initial,
 		"dict":    dict,
@@ -271,6 +272,17 @@ func shortHash(h string) string {
 		return dash(h)
 	}
 	return h[:shown] + "..."
+}
+
+// shortImage is an image reference as a table shows it: the repository and
+// the first 12 hex digits of a sha256 digest. The page puts the full
+// reference in the cell's title.
+func shortImage(ref string) string {
+	name, digest, ok := strings.Cut(ref, "@sha256:")
+	if !ok || len(digest) <= 12 {
+		return ref
+	}
+	return name + "@sha256:" + digest[:12] + "…"
 }
 
 // initial is the letter an account's avatar shows.

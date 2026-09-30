@@ -60,6 +60,36 @@ func TestAdmin_TheBlockWriterPlacesOneOperatorBlock(t *testing.T) {
 	}
 }
 
+// TestAdmin_TheBlockWriterSaysWhichEndedBlockItReplaced: the accounts
+// backend cannot read the blocklist, so the child answers with the ended
+// block its placement replaced, for the offboard's row to name
+// (design/adr/0046, correction of 30 Sep 2026).
+func TestAdmin_TheBlockWriterSaysWhichEndedBlockItReplaced(t *testing.T) {
+	cfgPath := writeAdminTestConfig(t)
+	asUID1000(t)
+	start := time.Now().UTC().Add(-2 * time.Hour)
+	end := time.Now().UTC().Add(-time.Hour)
+	first := blockWriterInput{Subject: "sub-ana", Reason: "[cli] short", By: "alice", At: start, Until: end}
+	body, _ := json.Marshal(first)
+	var out, errb bytes.Buffer
+	if code := runWithStdin([]string{"admin", "-block-writer", "-config", cfgPath}, bytes.NewReader(body), &out, &errb); code != exitOK {
+		t.Fatalf("block writer: exit %d\n%s", code, errb.String())
+	}
+	second := blockWriterInput{Subject: "sub-ana", Reason: `[ui] offboard of account "ana"`, By: "bob", At: time.Now().UTC()}
+	body, _ = json.Marshal(second)
+	out.Reset()
+	if code := runWithStdin([]string{"admin", "-block-writer", "-config", cfgPath}, bytes.NewReader(body), &out, &errb); code != exitOK {
+		t.Fatalf("block writer over the ended block: exit %d\n%s", code, errb.String())
+	}
+	var res blockWriterOutput
+	if err := json.Unmarshal(out.Bytes(), &res); err != nil || !res.Placed || res.Replaced == nil {
+		t.Fatalf("answer %q, %v; want placed, with the replaced block", out.String(), err)
+	}
+	if r := res.Replaced; r.By != "alice" || !r.Until.Equal(end) || !r.At.Equal(start) {
+		t.Fatalf("replaced %+v; want alice's block that ended at %v", r, end)
+	}
+}
+
 // TestAdmin_TheBlockWriterRefusesToRunAsRoot, like the audit writer.
 func TestAdmin_TheBlockWriterRefusesToRunAsRoot(t *testing.T) {
 	old := adminGeteuid

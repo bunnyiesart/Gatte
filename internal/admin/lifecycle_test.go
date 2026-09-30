@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bunnyiesart/Gatte/internal/access"
 	accesssqlite "github.com/bunnyiesart/Gatte/internal/access/sqlite"
 	"github.com/bunnyiesart/Gatte/internal/admin"
 	"github.com/bunnyiesart/Gatte/internal/audit"
@@ -185,6 +186,61 @@ func TestBlock_ReplacingAnExpiredBlockKeepsItsEndOnTheTrail(t *testing.T) {
 	res, err = svc.Block(ctx, alice, adminapi.BlockRequest{Subject: "sub-bruno", Reason: "fresh"})
 	if err != nil || strings.Contains(res.Audit.Reason, "replaces") {
 		t.Fatalf("a fresh block: %+v, %v", res, err)
+	}
+}
+
+// placeOnly is the accounts backend's kind of blocklist: it places blocks
+// (and says what it replaced) and cannot read or lift them.
+type placeOnly struct{ inner *accesssqlite.Store }
+
+func (p placeOnly) Block(ctx context.Context, b access.Block) (bool, error) {
+	return p.inner.Block(ctx, b)
+}
+func (p placeOnly) BlockReplacing(ctx context.Context, b access.Block) (bool, *access.Block, error) {
+	return p.inner.BlockReplacing(ctx, b)
+}
+func (placeOnly) Blocked(context.Context, string) (bool, error) {
+	return false, errors.New("place only")
+}
+func (placeOnly) Unblock(context.Context, string) (bool, error) {
+	return false, errors.New("place only")
+}
+func (placeOnly) Blocks(context.Context) ([]access.Block, error) {
+	return nil, errors.New("place only")
+}
+
+// TestBlock_OverAnEndedBlockThroughAPlaceOnlyBlocklistNamesIt: the
+// block goes through a blocklist that cannot be read (the offboard's, on the
+// accounts socket), replaces an ended block, and its row names it
+// (measured on the test bed, 30 Sep 2026: a first fix that read the
+// blocklist made every offboard fail there with an internal error).
+func TestBlock_OverAnEndedBlockThroughAPlaceOnlyBlocklistNamesIt(t *testing.T) {
+	h := newHarness(t)
+	now := time.Date(2026, 9, 30, 8, 0, 0, 0, time.UTC)
+	bl := accesssqlite.New(h.db).WithClock(func() time.Time { return now })
+	if _, err := bl.Block(context.Background(), access.Block{Subject: "sub-ana", Reason: "[cli] short", By: "alice",
+		At: now.Add(-2 * time.Hour), Until: now.Add(-time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	svc, err := admin.New(admin.Deps{
+		Config: func() (*config.Config, error) { return h.cfg, nil },
+		Tools:  h.tools, Blocks: placeOnly{bl}, Trail: h.trail,
+		Record: func(ctx context.Context, _ *config.Config, rec audit.Record) error { return h.trail.Record(ctx, rec) },
+		Accounts: func(cfg *config.Config) (idp.Directory, error) {
+			return autheliafile.New(cfg.IdP.UsersFile), nil
+		},
+		IsBusy: store.IsBusy,
+		Now:    func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := svc.Block(context.Background(), alice, adminapi.BlockRequest{Subject: "sub-ana", Reason: "offboard"})
+	if err != nil || !res.Changed {
+		t.Fatalf("block over an ended block through a place-only blocklist: %+v, %v", res, err)
+	}
+	if !strings.Contains(res.Audit.Reason, "[replaces the expired block placed by alice at 2026-09-30T06:00:00Z, ended 2026-09-30T07:00:00Z]") {
+		t.Fatalf("the row does not name the replaced block: %q", res.Audit.Reason)
 	}
 }
 

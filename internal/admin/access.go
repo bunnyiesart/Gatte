@@ -92,24 +92,6 @@ func ReplacedBlockReason(reason string, old access.Block) string {
 		old.By, old.At.UTC().Format(time.RFC3339), old.Until.UTC().Format(time.RFC3339))
 }
 
-// expiredBlockOf is the stored block on subject when it has ended at now,
-// or nil when there is none or it is still in force.
-func (s *Service) expiredBlockOf(ctx context.Context, subject string, now time.Time) (*access.Block, error) {
-	var bs []access.Block
-	if err := s.retryBusy(ctx, func() (err error) {
-		bs, err = s.d.Blocks.Blocks(ctx)
-		return err
-	}); err != nil {
-		return nil, err
-	}
-	for _, b := range bs {
-		if b.Subject == subject && !b.ActiveAt(now) {
-			return &b, nil
-		}
-	}
-	return nil, nil
-}
-
 // validateBlock validates a request before anything is opened, so a typo
 // costs nothing and is never recorded.
 func (s *Service) validateBlock(a Actor, req adminapi.BlockRequest) (string, error) {
@@ -167,15 +149,16 @@ func (s *Service) placeBlock(ctx context.Context, cfg *config.Config, a Actor, r
 	// replaced by this one (BlockStore.Block), and then the gateway's round
 	// never sees it: without a word here, the trail would show a block
 	// with an end and then a second block, and never the end of the first
-	// (measured on the test bed, 30 Sep 2026). The new row names the block
-	// it replaces.
-	replaced, err := s.expiredBlockOf(ctx, req.Subject, now)
-	if err != nil {
-		res.err = s.storeErr("blocklist", err)
-		return
-	}
+	// (measured on the test bed, 30 Sep 2026). A store that can say which
+	// block it replaced (access.BlockReplacer, every store Gatte ships)
+	// says it in the same step, and the new row names it.
 	var placed bool
+	var replaced *access.Block
 	if err := s.retryBusy(ctx, func() (err error) {
+		if br, ok := s.d.Blocks.(access.BlockReplacer); ok {
+			placed, replaced, err = br.BlockReplacing(ctx, b)
+			return err
+		}
 		placed, err = s.d.Blocks.Block(ctx, b)
 		return err
 	}); err != nil {

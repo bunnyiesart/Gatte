@@ -77,8 +77,9 @@ type Store struct {
 }
 
 var (
-	_ access.Blocklist  = (*Store)(nil)
-	_ access.BlockStore = (*Store)(nil)
+	_ access.Blocklist     = (*Store)(nil)
+	_ access.BlockStore    = (*Store)(nil)
+	_ access.BlockReplacer = (*Store)(nil)
 )
 
 // New returns a Store over db, which must already be migrated.
@@ -141,6 +142,64 @@ WHERE blocked_subjects.blocked_until <> '' AND blocked_subjects.blocked_until <=
 		return false, fmt.Errorf("access/sqlite: block: %w", err)
 	}
 	return n == 1, nil
+}
+
+// BlockReplacing implements access.BlockReplacer: Block, and the block it
+// replaced, read and replaced in one transaction so no other writer can
+// slip between the two.
+func (s *Store) BlockReplacing(ctx context.Context, b access.Block) (bool, *access.Block, error) {
+	if err := access.ValidateBlock(b); err != nil {
+		return false, nil, err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, nil, fmt.Errorf("access/sqlite: block: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	var old access.Block
+	var at, until string
+	err = tx.QueryRowContext(ctx, `SELECT subject, reason, blocked_by, blocked_at, blocked_until FROM blocked_subjects WHERE subject = ?`, b.Subject).
+		Scan(&old.Subject, &old.Reason, &old.By, &at, &until)
+	existed := err == nil
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+	case err != nil:
+		return false, nil, fmt.Errorf("access/sqlite: block: %w", err)
+	default:
+		if old.At, err = time.Parse(timeLayout, at); err != nil {
+			return false, nil, fmt.Errorf("access/sqlite: block on %q has an unreadable time %q: %w", old.Subject, at, err)
+		}
+		if until != "" {
+			if old.Until, err = time.Parse(untilLayout, until); err != nil {
+				return false, nil, fmt.Errorf("access/sqlite: block on %q has an unreadable end %q: %w", old.Subject, until, err)
+			}
+		}
+	}
+	res, err := tx.ExecContext(ctx, `
+INSERT INTO blocked_subjects (subject, reason, blocked_by, blocked_at, blocked_until)
+VALUES (?, ?, ?, ?, ?)
+ON CONFLICT (subject) DO UPDATE SET
+	reason = excluded.reason, blocked_by = excluded.blocked_by,
+	blocked_at = excluded.blocked_at, blocked_until = excluded.blocked_until
+WHERE blocked_subjects.blocked_until <> '' AND blocked_subjects.blocked_until <= ?`,
+		b.Subject, b.Reason, b.By, b.At.UTC().Format(timeLayout), formatUntil(b.Until), formatUntil(s.now()))
+	if err != nil {
+		return false, nil, fmt.Errorf("access/sqlite: block: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, nil, fmt.Errorf("access/sqlite: block: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return false, nil, fmt.Errorf("access/sqlite: block: %w", err)
+	}
+	if n != 1 {
+		return false, nil, nil
+	}
+	if existed {
+		return true, &old, nil
+	}
+	return true, nil, nil
 }
 
 // Unblock implements access.BlockStore.

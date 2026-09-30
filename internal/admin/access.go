@@ -83,6 +83,33 @@ func BlockReasonUntil(subject string, until time.Time, note string) string {
 	return r
 }
 
+// ReplacedBlockReason is the (access block) row's Reason when the block
+// replaces one that had ended but was not yet recorded as expired
+// (design/adr/0046): the end of that block, who placed it and when, so the
+// trail keeps its end.
+func ReplacedBlockReason(reason string, old access.Block) string {
+	return fmt.Sprintf("%s [replaces the expired block placed by %s at %s, ended %s]", reason,
+		old.By, old.At.UTC().Format(time.RFC3339), old.Until.UTC().Format(time.RFC3339))
+}
+
+// expiredBlockOf is the stored block on subject when it has ended at now,
+// or nil when there is none or it is still in force.
+func (s *Service) expiredBlockOf(ctx context.Context, subject string, now time.Time) (*access.Block, error) {
+	var bs []access.Block
+	if err := s.retryBusy(ctx, func() (err error) {
+		bs, err = s.d.Blocks.Blocks(ctx)
+		return err
+	}); err != nil {
+		return nil, err
+	}
+	for _, b := range bs {
+		if b.Subject == subject && !b.ActiveAt(now) {
+			return &b, nil
+		}
+	}
+	return nil, nil
+}
+
 // validateBlock validates a request before anything is opened, so a typo
 // costs nothing and is never recorded.
 func (s *Service) validateBlock(a Actor, req adminapi.BlockRequest) (string, error) {
@@ -136,6 +163,17 @@ func (s *Service) placeBlock(ctx context.Context, cfg *config.Config, a Actor, r
 	if req.Until != nil {
 		b.Until = req.Until.UTC()
 	}
+	// A block that has ended and not yet been recorded as expired is
+	// replaced by this one (BlockStore.Block), and then the gateway's round
+	// never sees it: without a word here, the trail would show a block
+	// with an end and then a second block, and never the end of the first
+	// (measured on the test bed, 30 Sep 2026). The new row names the block
+	// it replaces.
+	replaced, err := s.expiredBlockOf(ctx, req.Subject, now)
+	if err != nil {
+		res.err = s.storeErr("blocklist", err)
+		return
+	}
 	var placed bool
 	if err := s.retryBusy(ctx, func() (err error) {
 		placed, err = s.d.Blocks.Block(ctx, b)
@@ -159,7 +197,13 @@ func (s *Service) placeBlock(ctx context.Context, cfg *config.Config, a Actor, r
 			b.Until.Format(time.RFC3339), req.Subject, AccessBlockExpired)
 	}
 	res.Messages = append(res.Messages, msg)
-	row := s.operatorRow(a, AccessBlock, BlockReasonUntil(req.Subject, b.Until, note), now)
+	reason := BlockReasonUntil(req.Subject, b.Until, note)
+	if replaced != nil {
+		reason = ReplacedBlockReason(reason, *replaced)
+		res.Messages = append(res.Messages, fmt.Sprintf("This replaces a block on %s that had ended at %s and was not yet recorded as expired; the row says so.",
+			req.Subject, replaced.Until.UTC().Format(time.RFC3339)))
+	}
+	row := s.operatorRow(a, AccessBlock, reason, now)
 	s.record(ctx, cfg, &res.ActionResult, row)
 	if res.Recorded {
 		res.row = res.Audit

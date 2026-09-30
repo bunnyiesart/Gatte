@@ -142,6 +142,52 @@ func TestBlock_AnEndIsInTheFutureIsRecordedAndStopsCountingWhenPassed(t *testing
 	}
 }
 
+// TestBlock_ReplacingAnExpiredBlockKeepsItsEndOnTheTrail: a block placed
+// on a subject whose timed block has ended, before the gateway's round
+// recorded the expiry, replaces it (BlockStore.Block); the new row names
+// the block it replaced and its end, so the trail never loses the end of
+// the first (measured on the test bed, 30 Sep 2026: before this, the
+// trail showed two blocks and no end).
+func TestBlock_ReplacingAnExpiredBlockKeepsItsEndOnTheTrail(t *testing.T) {
+	h := newHarness(t)
+	now := time.Date(2026, 9, 30, 8, 0, 0, 0, time.UTC)
+	svc := clockedService(t, h, &now, nil)
+	ctx := context.Background()
+	end := now.Add(time.Minute)
+	if _, err := svc.Block(ctx, alice, adminapi.BlockRequest{Subject: "sub-ana", Reason: "short", Until: &end}); err != nil {
+		t.Fatal(err)
+	}
+	// Still in force: a second block changes nothing and says nothing of
+	// a replacement.
+	now = now.Add(30 * time.Second)
+	res, err := svc.Block(ctx, alice, adminapi.BlockRequest{Subject: "sub-ana", Reason: "again"})
+	if err != nil || res.Changed {
+		t.Fatalf("a block over one in force: %+v, %v", res, err)
+	}
+	now = end.Add(time.Minute)
+	res, err = svc.Block(ctx, alice, adminapi.BlockRequest{Subject: "sub-ana", Reason: "for good"})
+	if err != nil || !res.Changed || !res.Recorded {
+		t.Fatalf("a block over an expired one: %+v, %v", res, err)
+	}
+	for _, want := range []string{`subject "sub-ana": `, "for good", "[replaces the expired block placed by", "at 2026-09-30T08:00:00Z", "ended 2026-09-30T08:01:00Z]"} {
+		if !strings.Contains(res.Audit.Reason, want) {
+			t.Errorf("the row %q lacks %q", res.Audit.Reason, want)
+		}
+	}
+	if !strings.Contains(strings.Join(res.Messages, " "), "replaces a block on sub-ana that had ended at 2026-09-30T08:01:00Z") {
+		t.Errorf("the answer does not say it replaced an ended block: %v", res.Messages)
+	}
+	list, _ := svc.ListBlocks(ctx)
+	if len(list.Blocks) != 1 || list.Blocks[0].Until != nil || list.Blocks[0].Expired {
+		t.Fatalf("the new block with no end is not the one in force: %+v", list)
+	}
+	// A block over no previous block says nothing of a replacement.
+	res, err = svc.Block(ctx, alice, adminapi.BlockRequest{Subject: "sub-bruno", Reason: "fresh"})
+	if err != nil || strings.Contains(res.Audit.Reason, "replaces") {
+		t.Fatalf("a fresh block: %+v, %v", res, err)
+	}
+}
+
 // TestDeleteAccount_RemovesAManagedAccountAndRecordsIt, within the reach
 // of design/adr/0040 §1.
 func TestDeleteAccount_RemovesAManagedAccountAndRecordsIt(t *testing.T) {

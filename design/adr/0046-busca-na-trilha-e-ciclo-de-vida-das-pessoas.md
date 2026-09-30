@@ -151,6 +151,16 @@ largura fixa para que o SQL compare dois como compara instantes.
   novo um subject com bloqueio expirado substitui o bloqueio; com bloqueio
   em vigor, não muda nada (o fim em vigor fica: para trocar, desbloquear e
   bloquear).
+- **Correção de 30 set 2026 (medido no banco de testes):** a substituição
+  apagava o fim da trilha. O bloqueio expirado sumia antes da rodada, a
+  rodada não o via mais e nenhuma `(access block expired)` era escrita: a
+  trilha mostrava um bloqueio com fim e depois outro bloqueio, nunca o fim
+  do primeiro. Agora a linha `(access block)` que substitui um bloqueio
+  expirado diz qual substituiu — `[replaces the expired block placed by
+  QUEM at QUANDO, ended FIM]` — e a resposta avisa. Se a rodada registrar a
+  expiração entre a leitura e a substituição, as duas linhas ficam (a nota
+  então descreve um bloqueio que a rodada acabou de encerrar), o que é
+  redundante, não falso.
 - `-until` aceita um instante RFC 3339 ou uma duração a partir de agora
   (`8h`), como o `maintenance`; tem de estar no futuro. No front, o campo
   "Ends" da página Access, com a feature `block_until`.

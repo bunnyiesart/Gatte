@@ -40,6 +40,7 @@ import (
 	registrysqlite "github.com/bunnyiesart/Gatte/internal/registry/sqlite"
 	"github.com/bunnyiesart/Gatte/internal/signer"
 	signersqlite "github.com/bunnyiesart/Gatte/internal/signer/sqlite"
+	"github.com/bunnyiesart/Gatte/internal/store"
 	"github.com/bunnyiesart/Gatte/internal/vault/sopsage"
 )
 
@@ -288,7 +289,8 @@ func buildServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) (
 	// told to expose and whether signature enforcement is on.
 	stack.maxResultBytes = cfg.Response.MaxResultBytes()
 	logger.Info("mcp-gateway: starting",
-		slog.String("version", buildVersion),
+		slog.String("version", buildIdentity()),
+		slog.Int("schema", store.SchemaVersion),
 		slog.String("listen", cfg.Listen),
 		slog.Bool("require_signed", cfg.Signer.SignaturesRequired()),
 		// Stated at boot because a result refused for size looks, from the
@@ -345,6 +347,14 @@ func buildServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) (
 	})
 	aud = telemetryRecorder{Recorder: aud, sink: sink}
 	logTelemetry(logger, cfg, sink.Stats())
+
+	// The boot row (design/adr/0045 item 3): which binary, on which
+	// schema, started serving this trail. Through the whole recorder, so
+	// the SIEM gets it too, and before the vault or any backend, so a boot
+	// that fails later is still on the trail with its version.
+	if err := recordBoot(ctx, aud, stack.boot); err != nil {
+		return fail(fmt.Errorf("audit trail: the boot row could not be written: %w", err))
+	}
 
 	// Credential Vault. sopsage deliberately discards sops's stderr and
 	// never wraps the decrypted bytes into an error, because both can echo

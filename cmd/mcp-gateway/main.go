@@ -21,6 +21,8 @@
 //	reload                    apply the reloadable configuration to the running serve
 //	admin                     the management API, over a UNIX socket
 //	ui                        the web console (not in a -tags nofront build)
+//	check                     offline checks of the configuration and the host's files
+//	backup | restore          a consistent copy of the database, and the way back
 //	version
 //
 // Exit codes follow the convention the rest of this project's tooling
@@ -38,6 +40,9 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"runtime/debug"
+	"strconv"
+	"strings"
 	"syscall"
 
 	accesssqlite "github.com/bunnyiesart/Gatte/internal/access/sqlite"
@@ -101,6 +106,12 @@ func runWithStdin(args []string, stdin io.Reader, stdout, stderr io.Writer) int 
 		return cmdAdmin(rest, stdin, stdout, stderr)
 	case "ui":
 		return cmdUI(rest, stdout, stderr)
+	case "check":
+		return cmdCheck(rest, stdout, stderr)
+	case "backup":
+		return cmdBackup(rest, stdout, stderr)
+	case "restore":
+		return cmdRestore(rest, stdout, stderr)
 	case "version":
 		fmt.Fprintln(stdout, version())
 		return exitOK
@@ -132,6 +143,9 @@ Commands:
   reload       Apply [[role]], [group_to_role] and [quota] to the running gateway.
   admin        Serve the management API on a UNIX socket (for the fronts).
   ui           Serve the operator console as a web page on loopback.
+  check        Check the configuration and this host's files offline, with the fix for each problem.
+  backup       Write a consistent copy of the database while serve runs.
+  restore      Replace the database with a checked backup, with serve stopped.
   version      Print the build version.
 
 Every command except sign -generate-key takes -config (default:
@@ -153,9 +167,24 @@ Exit codes: 0 ok, 1 ran and found a problem, 2 could not run.
 // exports a Migrate must be named in this map, because forgetting one is
 // invisible in every test that builds its own database and shows up only
 // on the host that has been running since before the component existed.
+//
+// Before any migration, the schema guard (design/adr/0045 item 3): a file
+// written by a newer binary is refused untouched, because a migration run
+// by an older binary over a newer schema is exactly the write nobody
+// tested. After them, the file records the schema this binary wrote.
 func openStore(cfg *config.Config) (*sql.DB, error) {
-	db, err := store.Open(cfg.Database)
+	return openStorePath(cfg.Database)
+}
+
+// openStorePath is openStore for a file the configuration does not name:
+// the staging copy restore checks before it swaps it in.
+func openStorePath(dbPath string) (*sql.DB, error) {
+	db, err := store.Open(dbPath)
 	if err != nil {
+		return nil, err
+	}
+	if _, err := store.CheckSchema(context.Background(), db); err != nil {
+		db.Close()
 		return nil, err
 	}
 	for name, migrate := range map[string]func(*sql.DB) error{
@@ -172,6 +201,10 @@ func openStore(cfg *config.Config) (*sql.DB, error) {
 			db.Close()
 			return nil, fmt.Errorf("migrate %s: %w", name, err)
 		}
+	}
+	if err := store.RecordSchema(context.Background(), db); err != nil {
+		db.Close()
+		return nil, err
 	}
 	return db, nil
 }
@@ -209,4 +242,36 @@ func signalContext() (context.Context, context.CancelFunc) {
 // "-X main.buildVersion=...".
 var buildVersion = "dev"
 
-func version() string { return "mcp-gateway " + buildVersion }
+func version() string {
+	return "mcp-gateway " + buildIdentity() + " (database schema " + strconv.Itoa(store.SchemaVersion) + ")"
+}
+
+// buildIdentity is buildVersion, plus the source revision the Go toolchain
+// stamped into the binary when it was built from a checkout: `make build`
+// sets no -X, and "dev" alone cannot tell two binaries apart in the boot
+// row of the trail (design/adr/0045 item 3).
+func buildIdentity() string {
+	id := buildVersion
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return id
+	}
+	var rev string
+	var dirty bool
+	for _, s := range info.Settings {
+		switch s.Key {
+		case "vcs.revision":
+			rev = s.Value
+		case "vcs.modified":
+			dirty = s.Value == "true"
+		}
+	}
+	if rev == "" || strings.Contains(id, rev[:min(12, len(rev))]) {
+		return id
+	}
+	id += "+" + rev[:min(12, len(rev))]
+	if dirty {
+		id += "-dirty"
+	}
+	return id
+}

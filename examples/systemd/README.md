@@ -44,3 +44,25 @@ the change instead of leaving the IdP a file it cannot read.
 
 The operator backend refuses to start when its socket file is open to
 others, or belongs to a group other than `[admin] operator_group`.
+
+## Database backup
+
+`mcp-gateway-backup.service` and `.timer` take a copy of the database once a
+day with `mcp-gateway backup` (design/adr/0045), while serve runs, and keep
+the newest 14 in `/var/backups/mcp-gateway`:
+
+```sh
+install -d -m 0700 -o mcpgw -g mcpgw /var/backups/mcp-gateway
+install -m 0644 mcp-gateway-backup.service mcp-gateway-backup.timer /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now mcp-gateway-backup.timer
+systemctl start mcp-gateway-backup.service     # one now, to see it work
+journalctl -u mcp-gateway-backup               # sha256, audit head, what is NOT in the copy
+```
+
+The copy is the database and nothing else. The configuration file, the
+encrypted vault, the age key, the signing key and the identity provider are
+backed up separately; the age key and the signing key are secrets, so keep
+their copies offline and apart from the database copies. The unit runs with
+no network: shipping the copies off the host is a separate job of yours.
+Restoring one is `docs/upgrade.md`, "Rollback".

@@ -31,7 +31,9 @@
 package fitness
 
 import (
+	"fmt"
 	"go/ast"
+	"go/types"
 	"strings"
 	"testing"
 )
@@ -190,4 +192,75 @@ func (g *Gateway) admit(ctx context.Context, who, tool string) error {
 		}
 		return true
 	})
+}
+
+// ------------------------------------------------ the one self read
+//
+// design/adr/0042 item 3 amends the rule above by exactly one call:
+// gatte.status reports the caller's OWN use of each budget, through
+// quota.Gate.Standing over the narrow quota.SelfReader port, which answers
+// for one analyst at a time. What keeps that from becoming "how much has X
+// spent" is the argument it is called with, so the rule is positional: in
+// the request path, Standing is called from exactly one place, and its
+// analyst argument is the verified subject of the request being answered.
+
+// selfReadCalls returns every call to a method named Standing in f whose
+// analyst argument (the second) is not c.Identity.Subject, and the number
+// of calls found at all.
+func selfReadCalls(f sourceFile) (bad []string, total int) {
+	ast.Inspect(f.File, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok || sel.Sel.Name != "Standing" {
+			return true
+		}
+		total++
+		if len(call.Args) < 2 || types.ExprString(call.Args[1]) != "c.Identity.Subject" {
+			arg := "(none)"
+			if len(call.Args) >= 2 {
+				arg = types.ExprString(call.Args[1])
+			}
+			bad = append(bad, fmt.Sprintf("%s: Standing(..., %s, ...)", f.Fset.Position(call.Pos()), arg))
+		}
+		return true
+	})
+	return bad, total
+}
+
+func TestTheRequestPathReadsOnlyTheCallersOwnQuota(t *testing.T) {
+	requestPath := internalPrefix + "gateway"
+	total := 0
+	for _, f := range moduleSource(t) {
+		if f.Pkg != requestPath && !strings.HasPrefix(f.Pkg, requestPath+"/") {
+			continue
+		}
+		bad, n := selfReadCalls(f)
+		total += n
+		for _, b := range bad {
+			t.Errorf("%s\n\nThe request path may read a quota counter only for the subject of the request it is "+
+				"answering (design/adr/0042 item 3). Anything else is the question the port split exists to keep "+
+				"unanswerable: how much another analyst has spent.", b)
+		}
+	}
+	if total != 1 {
+		t.Errorf("the request path calls quota.Gate.Standing %d times, want exactly 1 (gatte.status's own block); "+
+			"a second reader of counters is an ADR amendment, not a test edit", total)
+	}
+}
+
+func TestSelfReadDetectorFailsOnARegression(t *testing.T) {
+	const src = `package gateway
+
+func (g *Gateway) peek(ctx context.Context, c Caller, victim string) {
+	_, _ = g.quota.Standing(ctx, victim, nil, g.now())
+	_, _ = g.quota.Standing(ctx, c.Identity.Subject, nil, g.now())
+}
+`
+	bad, total := selfReadCalls(parseSyntheticAs(t, internalPrefix+"gateway", src))
+	if total != 2 || len(bad) != 1 || !strings.Contains(bad[0], "victim") {
+		t.Fatalf("detector found %d call(s), flagged %v; want 2 found and only the victim one flagged", total, bad)
+	}
 }

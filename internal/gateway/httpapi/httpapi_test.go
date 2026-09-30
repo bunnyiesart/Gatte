@@ -63,6 +63,9 @@ type fakeUpstream struct {
 	// panicWith makes CallTool panic -- a backend adapter with a bug
 	// (ADR-0035).
 	panicWith any
+	// hang makes CallTool wait for its context -- a backend that never
+	// answers (ADR-0025).
+	hang bool
 }
 
 func (u *fakeUpstream) ListTools(context.Context) ([]gateway.ToolDef, error) {
@@ -71,8 +74,14 @@ func (u *fakeUpstream) ListTools(context.Context) ([]gateway.ToolDef, error) {
 	return slices.Clone(u.defs), nil
 }
 
-func (u *fakeUpstream) CallTool(_ context.Context, tool string, _ json.RawMessage) (gateway.Result, error) {
+func (u *fakeUpstream) CallTool(ctx context.Context, tool string, _ json.RawMessage) (gateway.Result, error) {
 	u.mu.Lock()
+	if u.hang {
+		u.calls = append(u.calls, tool)
+		u.mu.Unlock()
+		<-ctx.Done()
+		return gateway.Result{}, ctx.Err()
+	}
 	defer u.mu.Unlock()
 	u.calls = append(u.calls, tool)
 	if u.panicWith != nil {
@@ -232,6 +241,9 @@ type harnessOptions struct {
 	// wrapAudit decorates the audit store the Gateway writes to; the
 	// harness still reads the trail from the database directly.
 	wrapAudit func(audit.Recorder) audit.Recorder
+	// gateway and handler bend the two configs just before construction.
+	gateway func(*gateway.Config)
+	handler func(*Config)
 }
 
 func newHarness(t *testing.T) *harness {
@@ -317,7 +329,7 @@ func newHarnessWith(t *testing.T, opts harnessOptions) *harness {
 		trail = opts.wrapAudit(trail)
 	}
 
-	gw, err := gateway.New(gateway.Config{
+	gwCfg := gateway.Config{
 		Registry:      reg,
 		Vault:         fakeVault{},
 		Quarantine:    served,
@@ -331,7 +343,11 @@ func newHarnessWith(t *testing.T, opts harnessOptions) *harness {
 		Maintenance:   healthStore,
 		State:         healthStore,
 		RoundInterval: 5 * time.Minute,
-	})
+	}
+	if opts.gateway != nil {
+		opts.gateway(&gwCfg)
+	}
+	gw, err := gateway.New(gwCfg)
 	if err != nil {
 		t.Fatalf("gateway.New: %v", err)
 	}
@@ -347,7 +363,7 @@ func newHarnessWith(t *testing.T, opts harnessOptions) *harness {
 	}
 	// casemgmt.pending_tool is deliberately left unapproved.
 
-	handler, err := New(Config{
+	hCfg := Config{
 		Gateway: gw,
 		Verifier: fakeVerifier{tokens: map[string]access.Identity{
 			tokenAnalyst:   analyst,
@@ -360,7 +376,11 @@ func newHarnessWith(t *testing.T, opts harnessOptions) *harness {
 		ServerName:           "mcp-gateway-test",
 		ServerVersion:        "0.0.1",
 		Logger:               logger,
-	})
+	}
+	if opts.handler != nil {
+		opts.handler(&hCfg)
+	}
+	handler, err := New(hCfg)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -901,9 +921,11 @@ var forbiddenSubstrings = []string{
 	"may not call",
 	"quarantin", "Quarantin",
 	// Account names and reset instants. The quota's own error text names
-	// both, correctly, for the operator's log and the audit trail -- and
-	// neither may travel to a client: the class is distinguishable, the
-	// text is not.
+	// both, correctly, for the operator's log and the audit trail, and no
+	// error TEXT may travel to a client. Since design/adr/0042 the isError
+	// answer to an exhausted quota names the account and its reset, built
+	// from the typed refusal's policy fields -- that result is checked on
+	// its own (analyst_test.go), not with this list.
 	"virustotal", "abusech", "resets at",
 	"access:", "gateway:", "httpapi:",
 	"sql:", "database", "goroutine",

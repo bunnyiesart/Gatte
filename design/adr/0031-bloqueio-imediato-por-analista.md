@@ -108,3 +108,12 @@ vezes com recuo (`TestAccessBlock_OutlastsAWriterThatHoldsTheLockPastBusyTimeout
   `access block` agora, revogação da sessão no IdP em seguida.
 - Quem constrói `gateway.Config` precisa passar `Blocklist`; `New`
   recusa um nil, porque nil significaria "ninguém pode ser bloqueado".
+
+> **CORREÇÃO — 30 set 2026 (ADR-0042 item 2).** O 403 da admissão continua
+> 403 e sem `WWW-Authenticate`, mas o corpo passa de `forbidden` a "Gatte
+> refuses requests from this account. Signing in again will not change
+> that: ask the SOC operator." (mais o contato de `[analyst] contact`,
+> quando há). Não diz "bloqueio" nem o motivo; a admissão não tem outra
+> causa de `forbidden`, então o código já dizia o mesmo. O Claude Code
+> 2.1.285 mostra esse 403 como "Needs authentication" e não mostra o corpo;
+> o `gatte-status` diz a mesma frase nesse ramo.

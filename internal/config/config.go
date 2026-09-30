@@ -21,18 +21,23 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"net"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/bunnyiesart/Gatte/internal/access"
 	"github.com/bunnyiesart/Gatte/internal/gateway"
 	"github.com/bunnyiesart/Gatte/internal/quota"
+	"github.com/bunnyiesart/Gatte/internal/registry"
+	"github.com/bunnyiesart/Gatte/internal/visible"
 )
 
 // ErrInvalid is returned for a configuration that parses but cannot be
@@ -65,6 +70,7 @@ type Config struct {
 	IdP        IdP        `toml:"idp"`
 	Connect    Connect    `toml:"connect"`
 	Admin      Admin      `toml:"admin"`
+	Analyst    Analyst    `toml:"analyst"`
 
 	// Roles defines what each role may call. Order is irrelevant.
 	Roles []Role `toml:"role"`
@@ -109,6 +115,64 @@ type OIDC struct {
 	// metadata so a client can discover where to get a token. Defaults to
 	// [Issuer].
 	AuthorizationServers []string `toml:"authorization_servers"`
+	// ScopesSupported are the OAuth scopes an analyst's MCP client should
+	// request from the IdP, e.g. ["openid", "profile", "email", "groups",
+	// "offline_access"]. Advertised as scopes_supported in the RFC 9728
+	// metadata and as scope in every 401's challenge (design/adr/0042 item
+	// 1); a client with no scope of its own configured requests these.
+	// Optional: empty advertises none, and a client then requests no scope
+	// at all -- with most IdPs a token with no groups claim, so no role.
+	// Each must be an RFC 6749 scope-token, and none may repeat.
+	ScopesSupported []string `toml:"scopes_supported"`
+}
+
+// Analyst holds the operator's lines for analysts' MCP clients
+// (design/adr/0042 item 3). Both are put in front of a model, in the
+// server instructions, so both are one line of visible text, and both are
+// short: Claude Code cuts the instructions at 2048 characters.
+type Analyst struct {
+	// Contact is who an analyst should ask when Gatte refuses them, e.g.
+	// "SOC on-call, channel #soc-gatte". Optional; up to MaxContactRunes.
+	// Also the last line of the 403 a refused account gets.
+	Contact string `toml:"contact"`
+	// BackendNotes is one line per backend, by registry name, telling the
+	// model what the backend is for, e.g. casemgmt = "Cases, alerts and
+	// tasks". A caller's instructions carry only the notes of backends
+	// they have a tool of. Optional; at most MaxBackendNotes, each up to
+	// MaxBackendNoteRunes, names and notes together up to
+	// MaxBackendNotesRunes.
+	BackendNotes map[string]string `toml:"backend_notes"`
+}
+
+// The limits on the operator's analyst lines. Chosen so the worst case the
+// file accepts, quoted, stays under the 2000-character ceiling httpapi
+// holds the instructions to (the test there measures it).
+const (
+	MaxContactRunes      = 200
+	MaxBackendNotes      = 12
+	MaxBackendNoteRunes  = 160
+	MaxBackendNotesRunes = 480
+)
+
+// validAnalystLine is the rule for a line of the operator's that reaches a
+// model: one line, visible characters (internal/visible), and no `"` or
+// `\`, so quoting it never grows it.
+func validAnalystLine(field, s string, maxRunes int) error {
+	if s != strings.TrimSpace(s) {
+		return fmt.Errorf("%s: %q has leading or trailing whitespace", field, s)
+	}
+	if !utf8.ValidString(s) {
+		return fmt.Errorf("%s: not valid UTF-8", field)
+	}
+	if n := utf8.RuneCountInString(s); n > maxRunes {
+		return fmt.Errorf("%s: %d characters, over the %d allowed -- it goes into the MCP server instructions, which clients cut at 2048", field, n, maxRunes)
+	}
+	for _, r := range s {
+		if visible.Hides(r) || r == '"' || r == '\\' {
+			return fmt.Errorf("%s: carries %U; write one line of visible characters, without quotes or backslashes, since it is put in front of a model", field, r)
+		}
+	}
+	return nil
 }
 
 // Vault points at the sops-encrypted secrets file and the age identity
@@ -805,6 +869,40 @@ func (c *Config) Validate() error {
 		if _, err := access.ResourceIdentifier(strings.TrimSpace(raw), false); err != nil {
 			errs = append(errs, fmt.Errorf("oidc.authorization_servers[%d]: %w", i, err))
 		}
+	}
+	seenScope := map[string]bool{}
+	for i, scope := range c.OIDC.ScopesSupported {
+		if !isScopeToken(scope) {
+			errs = append(errs, fmt.Errorf("oidc.scopes_supported[%d]: %q is not an OAuth scope (RFC 6749: printable ASCII, no spaces, quotes or backslashes)", i, scope))
+		} else if seenScope[scope] {
+			errs = append(errs, fmt.Errorf("oidc.scopes_supported[%d]: %q is listed twice", i, scope))
+		}
+		seenScope[scope] = true
+	}
+
+	if c.Analyst.Contact != "" {
+		if err := validAnalystLine("analyst.contact", c.Analyst.Contact, MaxContactRunes); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if n := len(c.Analyst.BackendNotes); n > MaxBackendNotes {
+		errs = append(errs, fmt.Errorf("analyst.backend_notes: %d notes, over the %d allowed", n, MaxBackendNotes))
+	}
+	total := 0
+	for _, name := range slices.Sorted(maps.Keys(c.Analyst.BackendNotes)) {
+		note := c.Analyst.BackendNotes[name]
+		if !registry.ValidName(name) {
+			errs = append(errs, fmt.Errorf("analyst.backend_notes: %q is not a backend name the registry accepts", name))
+		}
+		if note == "" {
+			errs = append(errs, fmt.Errorf("analyst.backend_notes.%s: empty; remove the line instead", name))
+		} else if err := validAnalystLine("analyst.backend_notes."+name, note, MaxBackendNoteRunes); err != nil {
+			errs = append(errs, err)
+		}
+		total += utf8.RuneCountInString(name) + utf8.RuneCountInString(note)
+	}
+	if total > MaxBackendNotesRunes {
+		errs = append(errs, fmt.Errorf("analyst.backend_notes: %d characters of names and notes together, over the %d allowed", total, MaxBackendNotesRunes))
 	}
 
 	if strings.TrimSpace(c.Vault.SecretsFile) == "" {
@@ -1703,4 +1801,18 @@ func (t Telemetry) BufferSize() int {
 // with a space in it can never match a call.
 func containsSpace(s string) bool {
 	return strings.IndexFunc(s, unicode.IsSpace) >= 0
+}
+
+// isScopeToken is RFC 6749 section 3.3's scope-token: %x21 / %x23-5B /
+// %x5D-7E, one or more. The same rule httpapi.New applies.
+func isScopeToken(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if b := s[i]; b < 0x21 || b > 0x7e || b == '"' || b == '\\' {
+			return false
+		}
+	}
+	return true
 }

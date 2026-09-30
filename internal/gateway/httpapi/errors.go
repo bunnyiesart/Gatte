@@ -361,12 +361,103 @@ func gatewayNoticeText(n *gateway.MaintenanceNotice) string {
 		stamp(n.Since), untilPhrase(n), quoteMessage(n.Message))
 }
 
+// ------------------------------------------------ design/adr/0042: texts
+//
+// Four more answers a model can act on, for a granted, approved call the
+// gateway refused or gave up on for a reason of its OWN: a result over the
+// size ceiling, a call over the time ceiling, the caller's allowance spent,
+// the caller's calls in flight at the cap. Every value in them is the
+// operator's declared policy (a limit, a window, an account name) or the
+// window arithmetic over it (when it resets) -- never a count of anybody's
+// use and never a backend's words. Each says what happened, whether the
+// request was at fault, and what to do next, in that order, because a
+// client may cut the text and the model acts on the first sentence.
+
+// durationPhrase renders a policy duration the way an operator writes it:
+// "24h", "90m", "45s", never Go's "24h0m0s".
+func durationPhrase(d time.Duration) string {
+	switch {
+	case d >= time.Hour && d%time.Hour == 0:
+		return strconv.FormatInt(int64(d/time.Hour), 10) + "h"
+	case d >= time.Minute && d%time.Minute == 0:
+		return strconv.FormatInt(int64(d/time.Minute), 10) + "m"
+	case d >= time.Second && d%time.Second == 0:
+		return strconv.FormatInt(int64(d/time.Second), 10) + "s"
+	default:
+		return d.String()
+	}
+}
+
+// bytesPhrase renders a size ceiling: bytes, and MiB when it is a round
+// number of them.
+func bytesPhrase(n int64) string {
+	const mib = 1 << 20
+	if n >= mib && n%mib == 0 {
+		return fmt.Sprintf("%d bytes (%d MiB)", n, n/mib)
+	}
+	return fmt.Sprintf("%d bytes", n)
+}
+
+// tooLargeText: the call ran and its result was refused whole (ADR-0014).
+func tooLargeText(e *gateway.ResultTooLargeError) string {
+	return fmt.Sprintf("Gatte: the result of %s was larger than Gatte's limit of %s for one result, so Gatte did not deliver any of it. The call itself did run at the backend. Narrow the request (fewer results, a shorter time range, fewer fields) and call again; do not repeat it unchanged. If the call changes something at the backend, that change has already happened.",
+		strconv.Quote(e.Tool), bytesPhrase(e.Limit))
+}
+
+// timeoutText: the gateway's per-call ceiling ran out (ADR-0025).
+func timeoutText(e *gateway.CallTimeoutError) string {
+	return fmt.Sprintf("Gatte: the backend %s did not answer this call within Gatte's limit of %s for one call, so Gatte stopped waiting. This limit is Gatte's, not an error in your arguments, and the backend may still have run the call. A narrower request (a shorter time range, fewer results) may finish in time: retry once with it, and if that also times out, tell the user.",
+		strconv.Quote(e.Backend), durationPhrase(e.Limit))
+}
+
+// quotaText: the caller's own allowance on one account is spent (ADR-0030).
+func quotaText(e *gateway.QuotaExhaustedError) string {
+	b := e.Budget
+	return fmt.Sprintf("Gatte: your quota on the %s account is spent: it allows %d call(s) per analyst every %s, and this window resets at %s. Do not retry this tool, or any tool that spends the same account, before then: every such call until the reset is refused the same way and spends nothing. Tell the user when it resets. Tools that do not spend this account keep working.",
+		strconv.Quote(b.Provider), b.Limit, durationPhrase(b.Window), stamp(b.ResetsAt))
+}
+
+// concurrencyText: the caller's own calls in flight fill the cap (ADR-0035).
+func concurrencyText(e *gateway.ConcurrencyLimitedError) string {
+	return fmt.Sprintf("Gatte: you already have %d calls in flight through Gatte, counting every session of yours, and %d is the limit per analyst. This call was not run and spent no quota. Wait for one of your calls to finish, then retry this one with the same arguments.",
+		e.Limit, e.Limit)
+}
+
+// msgAccountRefused is the body of the 403 a blocked subject gets at
+// admission (ADR-0031, amended by ADR-0042 item 2). Admission has exactly
+// one forbidden cause, so the text tells nothing the status did not; what
+// it adds is the one thing the analyst needs: signing in again will not
+// help. It deliberately does not say "blocked", nor why.
+const msgAccountRefused = "Gatte refuses requests from this account. Signing in again will not change that: ask the SOC operator."
+
+// pulledText is the JSON-RPC error message for a tool this very subject
+// was listed and that is no longer served to them (ADR-0042 item 2). The
+// same words whatever removed it -- a role change, a rewrite awaiting
+// review, a deregistered backend -- so it says "no longer available",
+// which the caller already knew the moment the call failed, and never
+// which. A name this subject was never listed gets the SDK's own
+// `unknown tool`, byte for byte, as before.
+func pulledText(tool string) string {
+	return fmt.Sprintf("Gatte: the tool %s was in your tool list but is no longer available to you. Do not retry it and do not try other names or spellings for it. Tell the user; if an operator makes it available again, reconnecting the Gatte server lists it again (in Claude Code: /mcp, then reconnect).",
+		strconv.Quote(tool))
+}
+
+// pulledError is pulledText as the JSON-RPC error, with the SDK's code for
+// an unknown tool: the call did not reach any tool.
+func pulledError(tool string) error {
+	return &jsonrpc.Error{Code: jsonrpc.CodeInvalidParams, Message: pulledText(tool)}
+}
+
 // honestResult is the tool result for a call the gateway answers with a
-// backend's state, or nil when err is not one of the two classes above.
+// backend's state or its own limit, or nil when err is none of those.
 func honestResult(err error) *mcp.CallToolResult {
 	var (
 		ue   *gateway.UnavailableError
 		bf   *gateway.BackendFailedError
+		tl   *gateway.ResultTooLargeError
+		to   *gateway.CallTimeoutError
+		qe   *gateway.QuotaExhaustedError
+		cl   *gateway.ConcurrencyLimitedError
 		text string
 		gw   *gateway.MaintenanceNotice
 	)
@@ -375,6 +466,14 @@ func honestResult(err error) *mcp.CallToolResult {
 		text, gw = unavailableText(ue), ue.Gateway
 	case errors.As(err, &bf):
 		text, gw = backendFailedText(bf), bf.Gateway
+	case errors.As(err, &tl):
+		text, gw = tooLargeText(tl), tl.Gateway
+	case errors.As(err, &to):
+		text, gw = timeoutText(to), to.Gateway
+	case errors.As(err, &qe):
+		text, gw = quotaText(qe), qe.Gateway
+	case errors.As(err, &cl):
+		text, gw = concurrencyText(cl), cl.Gateway
 	default:
 		return nil
 	}
@@ -403,4 +502,19 @@ func writeServiceUnavailable(w http.ResponseWriter) {
 	w.Header().Set("Retry-After", "60")
 	w.WriteHeader(http.StatusServiceUnavailable)
 	_, _ = fmt.Fprintln(w, msgServiceUnavailable)
+}
+
+// writeAccountRefused answers a subject admission refused as forbidden --
+// which today means blocked -- with 403 and msgAccountRefused, plus the
+// operator's configured contact line when there is one. No
+// WWW-Authenticate: this is not a request to authenticate (ADR-0031 §3).
+func writeAccountRefused(w http.ResponseWriter, contact string) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(http.StatusForbidden)
+	body := msgAccountRefused
+	if contact != "" {
+		body += " Contact: " + strconv.Quote(contact) + "."
+	}
+	_, _ = fmt.Fprintln(w, body)
 }

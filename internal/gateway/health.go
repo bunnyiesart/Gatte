@@ -151,6 +151,8 @@ type StatusReport struct {
 	// Gateway is the whole gateway's maintenance, nil when none.
 	Gateway  *MaintenanceNotice
 	Backends []BackendStatus
+	// You is the caller's own standing (design/adr/0042 item 3).
+	You CallerStanding
 }
 
 // backendHealth is the fact of life under one servable backend.
@@ -406,7 +408,11 @@ func (e *UnavailableError) reason() string {
 // nothing else -- plus the whole gateway's maintenance. It writes exactly
 // one allowed row, aimed at the gateway, and refuses a blocked subject the
 // way every other path does.
-func (g *Gateway) GatteStatus(ctx context.Context, c Caller, backends []string) (StatusReport, error) {
+//
+// tools is the set of tool names the adapter registered for this caller;
+// the "you" block names only the budgets those tools spend
+// (design/adr/0042 item 3).
+func (g *Gateway) GatteStatus(ctx context.Context, c Caller, backends, tools []string) (StatusReport, error) {
 	if err := g.checkBlock(ctx, c.Identity.Subject); err != nil {
 		g.refuseBlocked(ctx, c, GatteStatusTool, gatewayItself, err)
 		return StatusReport{}, err
@@ -424,6 +430,7 @@ func (g *Gateway) GatteStatus(ctx context.Context, c Caller, backends []string) 
 		}
 	}
 	g.mu.RUnlock()
+	rep.You = g.standingOf(ctx, c, tools, now)
 
 	writeCtx, cancel := auditWriteCtx(ctx)
 	defer cancel()
@@ -587,4 +594,29 @@ func (g *Gateway) persistHealth(ctx context.Context, round bool) {
 		delete(g.dirtyListing, name)
 	}
 	g.mu.Unlock()
+}
+
+// standingOf is the caller's own block of gatte.status: their display
+// name, the names of their roles, and the budgets their served tools
+// spend with their own use of each (design/adr/0042 item 3).
+//
+// The quota is asked about c.Identity.Subject and nothing else -- the
+// verified subject of this very request -- and a fitness function pins
+// that argument, because this is the one counter read on the request
+// path. A read failure reports each budget's use as unknown (-1) and is
+// logged; gatte.status still answers.
+func (g *Gateway) standingOf(ctx context.Context, c Caller, tools []string, now time.Time) CallerStanding {
+	you := CallerStanding{Name: c.Identity.Name, Roles: []string{}}
+	for _, r := range g.policy.RolesFor(c.Identity) {
+		you.Roles = append(you.Roles, r.Name)
+	}
+	slices.Sort(you.Roles)
+	you.Roles = slices.Compact(you.Roles)
+	budgets, err := g.quota.Standing(ctx, c.Identity.Subject, tools, now)
+	if err != nil {
+		g.log.WarnContext(ctx, "gateway: gatte.status could not read the caller's own quota use; reporting it as unknown",
+			slog.String("detail", err.Error()))
+	}
+	you.Budgets = budgets
+	return you
 }

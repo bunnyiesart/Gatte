@@ -693,8 +693,14 @@ func TestCheckpoint_OversizedResultNeverReachesTheClient(t *testing.T) {
 	sess := s.connect("analyst-token")
 
 	res, err := sess.CallTool(context.Background(), &mcp.CallToolParams{Name: "casemgmt.list_cases"})
-	if err == nil {
-		t.Fatalf("the call succeeded and returned %+v; an oversized result must be refused", res)
+	// Since design/adr/0042 the refusal is an isError result that says the
+	// result was over Gatte's ceiling and to narrow the request -- the
+	// ceiling's number and nothing of the payload.
+	if err != nil || res == nil || !res.IsError || len(res.Content) == 0 {
+		t.Fatalf("the call = %+v, %v; an oversized result must be refused as an isError result", res, err)
+	}
+	if text, ok := res.Content[0].(*mcp.TextContent); !ok || !strings.Contains(text.Text, "larger than Gatte's limit of 256 bytes") {
+		t.Errorf("the refusal = %+v, want it to name Gatte's 256-byte ceiling", res.Content[0])
 	}
 
 	// The decisive assertion. "IDS Enumeration Attack" is a case title only
@@ -948,20 +954,22 @@ func TestCheckpoint_QuotaStopsOneAnalystWithoutStoppingTheTeam(t *testing.T) {
 		}
 	}
 
-	_, err = ana.CallTool(context.Background(), &mcp.CallToolParams{Name: "threatintel.threatintel_credcheck"})
-	if err == nil {
-		t.Fatal("ana's third call was allowed; the allowance was two")
+	third, err := ana.CallTool(context.Background(), &mcp.CallToolParams{Name: "threatintel.threatintel_credcheck"})
+	if err != nil || third == nil || !third.IsError || len(third.Content) == 0 {
+		t.Fatalf("ana's third call = %+v, %v; the allowance was two, want an isError refusal", third, err)
 	}
-	// The wire message is the class's constant string and nothing else:
-	// the analyst learns it is their own limit, never which account was
-	// charged, what the limit is, or when it resets. Those are in the
-	// trail and the operator's log.
-	if !strings.Contains(err.Error(), "quota exhausted") {
-		t.Errorf("the refusal does not say it is a quota: %v", err)
+	// Since design/adr/0042 the refusal names the account, its limit and
+	// when the window resets -- the operator's declared policy, which the
+	// analyst needs to know when to try again -- and never a count or
+	// anybody else's spending. The quota's own error text stays in the
+	// trail and the log.
+	text, _ := third.Content[0].(*mcp.TextContent)
+	if text == nil || !strings.Contains(text.Text, `your quota on the "virustotal" account is spent`) || !strings.Contains(text.Text, "resets at") {
+		t.Errorf("the refusal = %+v, want the account and its reset", third.Content[0])
 	}
-	for _, leak := range []string{"virustotal", "resets at", "per analyst per"} {
-		if strings.Contains(err.Error(), leak) {
-			t.Errorf("the refusal carries %q, which belongs to the operator's trail and not the wire: %v", leak, err)
+	for _, leak := range []string{"sub-ana", "sub-bo", "quota: exhausted", "per analyst per"} {
+		if text != nil && strings.Contains(text.Text, leak) {
+			t.Errorf("the refusal carries %q, which belongs to the operator's trail and not the wire: %q", leak, text.Text)
 		}
 	}
 

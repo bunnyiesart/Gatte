@@ -54,7 +54,7 @@
         <tr>
           <td data-label="Name"><b>{{vis .Name}}</b></td>
           {{if $.Data.Health}}<td data-label="State">{{with .Health}}<span class="badge {{if eq .State "up"}}ok{{else if or (eq .State "reconnecting") (eq .State "down")}}danger{{end}}">{{state .State}}</span>{{if .Since}}<span class="cell-sub">since {{since .Since}}</span>{{end}}{{if .NextAttempt}}<span class="cell-sub">next attempt around {{since .NextAttempt}}</span>{{end}}{{if .Cause}}<span class="cell-sub mono">{{vis .Cause}}</span>{{end}}{{else}}<span class="muted">-</span>{{end}}</td>{{end}}
-          <td class="muted" data-label="Runs as">{{if eq .Transport "oci"}}Container{{else}}Process{{end}}<span class="mono wrap cell-sub">{{if .Image}}{{vis .Image}}{{else}}{{vis .Command}}{{end}}</span></td>
+          <td class="muted" data-label="Runs as">{{if eq .Transport "oci"}}Container{{else}}Process{{end}}{{if .Image}}<span class="mono wrap cell-sub" title="{{vis .Image}}">{{vis (image .Image)}}</span>{{else}}<span class="mono wrap cell-sub">{{vis .Command}}</span>{{end}}</td>
           <td data-label="Network">{{if .NetworkError}}<span class="badge danger">Refused</span>{{else}}{{.Network}}{{end}}</td>
           <td class="mono" data-label="Credentials">{{range $i, $n := .EnvVarNames}}{{if $i}}, {{end}}{{vis $n}}{{else}}<span class="muted">None</span>{{end}}</td>
           <td data-label="Signed">{{if eq .Signature "yes"}}<span class="badge ok">{{template "check"}}Signed</span>{{else}}<span class="badge danger">{{template "warn"}}Not signed</span>{{end}}</td>

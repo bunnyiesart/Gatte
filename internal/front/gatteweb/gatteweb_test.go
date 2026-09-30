@@ -63,3 +63,15 @@ func TestReview_TheSchemaIsTheBlockUnderItsLabel(t *testing.T) {
 		t.Fatalf("output schema = %q, want none", got)
 	}
 }
+
+// The Backends page names an image by its repository and the start of its
+// digest; the full digest is in the cell's title, one hover away.
+func TestShortImage_KeepsTheNameAndTheStartOfTheDigest(t *testing.T) {
+	d := "3080f9bea75375018d3bc337ffc838897d348bf3e532f4cd17fa95672ff32056"
+	if got, want := shortImage("localhost/iris-mcp@sha256:"+d), "localhost/iris-mcp@sha256:3080f9bea753…"; got != want {
+		t.Fatalf("shortImage = %q, want %q", got, want)
+	}
+	if got := shortImage("ghcr.io/example/edr-mcp:1.4"); got != "ghcr.io/example/edr-mcp:1.4" {
+		t.Fatalf("an image with no digest changed: %q", got)
+	}
+}

@@ -466,8 +466,8 @@ ORDER BY id ASC
 // from, has position = id, and the filters and the Before bound go to the
 // database. A trail with a gap (a deleted row, which VerifyChain reports)
 // is walked newest first from COUNT down, so positions stay those
-// VerifyChain names. Since is compared in Go on the parsed instant, for
-// the reason List gives. Both reads run in one transaction, so a row
+// VerifyChain names. Since and Until are compared in Go on the parsed
+// instant, for the reason List gives. Both reads run in one transaction, so a row
 // appended meanwhile cannot shift the positions.
 func (r *Recorder) Page(ctx context.Context, q audit.TrailQuery) ([]audit.PositionedRecord, bool, error) {
 	tx, err := r.db.BeginTx(ctx, nil)
@@ -486,7 +486,8 @@ func (r *Recorder) Page(ctx context.Context, q audit.TrailQuery) ([]audit.Positi
 		if q.Before > 0 {
 			where, args = append(where, "id < ?"), append(args, q.Before)
 		}
-		for _, f := range []struct{ col, v string }{{"analyst_identity", q.Subject}, {"outcome", q.Outcome}, {"source_address", q.Source}} {
+		for _, f := range []struct{ col, v string }{{"analyst_identity", q.Subject}, {"outcome", q.Outcome}, {"source_address", q.Source},
+			{"tool", q.Tool}, {"target_upstream", q.Server}} {
 			if f.v != "" {
 				where, args = append(where, f.col+" = ?"), append(args, f.v)
 			}
@@ -519,7 +520,9 @@ func (r *Recorder) Page(ctx context.Context, q audit.TrailQuery) ([]audit.Positi
 			if q.Before > 0 && p >= q.Before ||
 				q.Subject != "" && rec.AnalystIdentity != q.Subject ||
 				q.Outcome != "" && outcome != q.Outcome ||
-				q.Source != "" && rec.SourceAddress != q.Source {
+				q.Source != "" && rec.SourceAddress != q.Source ||
+				q.Tool != "" && rec.Tool != q.Tool ||
+				q.Server != "" && rec.TargetUpstream != q.Server {
 				continue
 			}
 		}
@@ -527,7 +530,7 @@ func (r *Recorder) Page(ctx context.Context, q audit.TrailQuery) ([]audit.Positi
 		if err != nil {
 			return nil, false, fmt.Errorf("audit/sqlite: page: parse timestamp: %w", err)
 		}
-		if !q.Since.IsZero() && rec.Timestamp.Before(q.Since) {
+		if !q.Since.IsZero() && rec.Timestamp.Before(q.Since) || !q.Until.IsZero() && !rec.Timestamp.Before(q.Until) {
 			continue
 		}
 		if len(out) == q.Limit {

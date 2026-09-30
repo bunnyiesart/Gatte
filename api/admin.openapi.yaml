@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Gatte management API
-  version: 1.3.0
+  version: 1.4.0
   summary: The backend every Gatte front talks to (design/adr/0040).
   description: |
     Served by `mcp-gateway admin` over UNIX sockets only. There is no TCP
@@ -113,6 +113,13 @@ info:
       /v1/serve-requests/{id}`, the `(config reload)` and `(upstream
       redial)` operator rows), error code `serve_not_running`, health
       `cause` value `redial`.
+    - 1.4.0 (design/adr/0046): features `audit_filters` (`tool`, `server`
+      and `until` on `GET /v1/audit`), `block_until` (`until` on a block
+      request, `until` and `expired` on each `Block`, the gateway's
+      `(access block expired)` row), `account_delete` (`DELETE
+      /v1/accounts/{username}`, the `(account delete)` row) and `offboard`
+      (`POST /v1/accounts/{username}/offboard`, the `(account offboard)`
+      row), warning `offboard_incomplete`.
   license:
     name: Apache-2.0
 servers:
@@ -251,7 +258,8 @@ components:
           description: |
             Open set. Known: `never_seen`, `no_role_grants`, `wildcard_grant`,
             `idp_reload`, `audit_write_failed` (the change IS in force and the
-            trail has no row for it; `recorded` is false).
+            trail has no row for it; `recorded` is false), `offboard_incomplete`
+            (1.4.0: an offboard's block is in force and its disable failed).
         message:
           type: string
           description: English fallback for a person; localise on `code`.
@@ -320,7 +328,8 @@ components:
             front sends a newer optional request field, or calls a newer
             endpoint, only when its feature is listed. Known: `maintenance`
             and `backend_health` (1.1.0), `tool_review_set` (1.2.0),
-            `serve_control` (1.3.0).
+            `serve_control` (1.3.0), `audit_filters`, `block_until`,
+            `account_delete` and `offboard` (1.4.0).
           items:
             type: string
         gateway_version:
@@ -693,6 +702,17 @@ components:
         blocked_by: {type: string}
         blocked_at: {type: string, format: date-time}
         reason: {type: string}
+        until:
+          type: string
+          format: date-time
+          description: 1.4.0 (`block_until`). When the block ends by itself; absent for a block with no end.
+        expired:
+          type: boolean
+          description: |
+            1.4.0 (`block_until`). The end has passed: the gateway no longer
+            refuses the subject. The row stays listed until the gateway's next
+            round records `(access block expired)` and removes it, or an
+            operator unblocks.
     BlockRequest:
       type: object
       required: [subject]
@@ -704,6 +724,14 @@ components:
         reason:
           type: string
           description: Free text; the backend prefixes the front tag, e.g. `[ui] stolen laptop`.
+        until:
+          type: string
+          format: date-time
+          description: |
+            1.4.0, send only with feature `block_until`; block only. The block
+            ends by itself at this instant, which must be in the future
+            (`invalid_argument`, field `until`). The gateway enforces the end
+            at admission. An existing block keeps its own end (`changed` false).
     BlockResult:
       allOf:
         - $ref: '#/components/schemas/ActionResult'
@@ -1276,6 +1304,42 @@ components:
         groups:
           type: array
           items: {type: string}
+    OffboardRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        subject:
+          type: string
+          description: |
+            The person's analyst identity, as the trail's `analyst_identity`
+            (the token's `sub`). Optional: without it no gateway block is
+            placed, and `remaining` says so. With it, a peer that is not root
+            must also be in `[admin] operator_group` (`forbidden_peer`).
+        reason:
+          type: string
+          description: Free text; recorded in each row after the front tag.
+    OffboardResult:
+      allOf:
+        - $ref: '#/components/schemas/ActionResult'
+        - type: object
+          required: [account, blocked, disabled, rows, remaining]
+          properties:
+            account: {$ref: '#/components/schemas/Account'}
+            subject: {type: string}
+            blocked:
+              type: boolean
+              description: The subject is blocked now (placed by this call, or already).
+            disabled:
+              type: boolean
+              description: The account is disabled now (by this call, or already).
+            rows:
+              type: array
+              description: "The rows written, in order: `(access block)`, `(account disable)`, `(account offboard)`."
+              items: {$ref: '#/components/schemas/OperatorRow'}
+            remaining:
+              type: array
+              description: What the operator still does by hand, in order. Never empty; the first is revoking the sessions at the identity provider.
+              items: {type: string}
     AccountResult:
       allOf:
         - $ref: '#/components/schemas/ActionResult'
@@ -1534,6 +1598,18 @@ paths:
           description: Exact match on analyst_identity only, never on analyst_name (design/adr/0037).
         - {name: outcome, in: query, schema: {$ref: '#/components/schemas/AuditOutcome'}}
         - {name: source, in: query, schema: {type: string}, description: Exact source address.}
+        - name: until
+          in: query
+          schema: {type: string, format: date-time}
+          description: 1.4.0 (`audit_filters`). Only records BEFORE this time (exclusive; `since` is inclusive). Must be after `since` (`bad_request`).
+        - name: tool
+          in: query
+          schema: {type: string}
+          description: 1.4.0 (`audit_filters`). Exact `tool`, e.g. `casemgmt.list_cases` or `(access block)`.
+        - name: server
+          in: query
+          schema: {type: string}
+          description: 1.4.0 (`audit_filters`). Exact `target_upstream`. An older backend ignores these three; a front must not send them without the feature.
         - name: before
           in: query
           schema: {type: integer, minimum: 1}
@@ -1899,6 +1975,57 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Account'}
+        default: {$ref: '#/components/responses/Error'}
+    delete:
+      operationId: deleteAccount
+      x-gatte-idempotent: false
+      tags: [accounts]
+      x-gatte-socket: [accounts]
+      summary: Remove the account from the identity provider's users file (1.4.0, `account_delete`). Writes `(account delete)`.
+      description: |
+        Same reach as disable (`account_not_managed`). A second call answers
+        `not_found`. The trail keeps every row; no session is ended and no
+        block placed or lifted.
+      parameters:
+        - {$ref: '#/components/parameters/Username'}
+        - {$ref: '#/components/parameters/GatteFront'}
+      responses:
+        '200':
+          description: Deleted; `account` is the account as it was.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AccountResult'}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/accounts/{username}/offboard:
+    post:
+      operationId: offboardAccount
+      x-gatte-idempotent: true
+      tags: [accounts]
+      x-gatte-socket: [accounts]
+      summary: Block the person in the gateway and disable their account, in one call (1.4.0, `offboard`).
+      description: |
+        The block first, through a child running as the database's owner (the
+        root process still never opens the service account's database), then
+        the disable. Writes `(access block)`, `(account disable)` and a summary
+        `(account offboard)`. Nothing changes when the block cannot be placed;
+        when the block is in force and the disable failed, 200 with warning
+        `offboard_incomplete`. Same reach as disable (`account_not_managed`).
+        Nothing at the identity provider's sessions is touched: `remaining`
+        says what is left.
+      parameters:
+        - {$ref: '#/components/parameters/Username'}
+        - {$ref: '#/components/parameters/GatteFront'}
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/OffboardRequest'}
+      responses:
+        '200':
+          description: Offboarded, or already (`changed` false).
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/OffboardResult'}
         default: {$ref: '#/components/responses/Error'}
   /v1/accounts/{username}/groups:
     post:

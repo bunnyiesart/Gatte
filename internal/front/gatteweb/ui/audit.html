@@ -14,20 +14,35 @@
     <option value="denied" {{if eq .Outcome "denied"}}selected{{end}}>Denied</option>
     <option value="failed" {{if eq .Outcome "failed"}}selected{{end}}>Failed</option>
   </select>
+  {{if .Filters}}
+  <input name="tool" value="{{.Tool}}" spellcheck="false" autocomplete="off" placeholder="Tool, e.g. casemgmt.list_cases" aria-label="Tool">
+  <input name="server" value="{{.Server}}" spellcheck="false" autocomplete="off" placeholder="Backend" aria-label="Backend">
+  {{end}}
+  <input name="source" value="{{.Source}}" spellcheck="false" autocomplete="off" placeholder="Source address" aria-label="Source address">
+  <input name="since" value="{{.Since}}" spellcheck="false" autocomplete="off" placeholder="From (UTC), e.g. 2026-09-30 08:00" aria-label="From, UTC, inclusive">
+  {{if .Filters}}
+  <input name="until" value="{{.Until}}" spellcheck="false" autocomplete="off" placeholder="To (UTC), exclusive" aria-label="To, UTC, exclusive">
+  {{end}}
   <label class="unit"><input name="limit" type="number" min="1" max="5000" value="{{.Limit}}" class="narrow">rows</label>
   <button class="btn">Filter</button>
 </form>
+<p class="caption">Every filter is an exact match and they combine. From is inclusive and To exclusive, both in UTC.{{if not .Filters}} This management API does not filter by tool, backend or end time.{{end}}
+  Download the filtered rows, newest first, up to {{.ExportMax}}:
+  <a href="{{$.Base}}/audit/export?format=csv{{if .Filtered}}&amp;{{.Filtered}}{{end}}">CSV</a> ·
+  <a href="{{$.Base}}/audit/export?format=jsonl{{if .Filtered}}&amp;{{.Filtered}}{{end}}">JSON Lines</a>.
+  In the CSV, hidden characters are written as \u{XXXX} and a cell a spreadsheet would run as a formula starts with an apostrophe; the JSON Lines carry the values as they are.</p>
 
 {{if .Records}}
 <div class="group">
   <table>
-    <thead><tr><th>Time</th><th>Analyst</th><th>Tool</th><th>Outcome</th><th>Reason</th></tr></thead>
+    <thead><tr><th>Time</th><th>Analyst</th><th>Tool</th><th>Backend</th><th>Outcome</th><th>Reason</th></tr></thead>
     <tbody>
     {{range .Records}}
       <tr>
         <td class="muted num" data-label="Time">{{time .Timestamp}}</td>
         <td data-label="Analyst">{{if .AnalystName}}{{vis .AnalystName}}<span class="cell-sub mono">{{vis .AnalystIdentity}}</span>{{else}}<span class="mono">{{vis .AnalystIdentity}}</span>{{end}}</td>
         <td class="mono" data-label="Tool">{{vis .Tool}}</td>
+        <td class="mono" data-label="Backend">{{vis .TargetUpstream}}</td>
         <td data-label="Outcome">{{if eq .Outcome "allowed"}}<span class="badge ok">Allowed</span>{{else if eq .Outcome "denied"}}<span class="badge danger">Denied</span>{{else}}<span class="badge danger">Failed</span>{{end}}</td>
         <td class="muted" data-label="Reason">{{vis (dash .Reason)}}</td>
       </tr>
@@ -35,6 +50,9 @@
     </tbody>
   </table>
 </div>
+{{if or .Older .Before}}
+<p class="caption">{{if .Before}}Records before position {{.Before}}. <a href="{{$.Base}}/audit{{if .Filtered}}?{{.Filtered}}{{end}}">Newest</a>{{end}}{{if and .Older .Before}} · {{end}}{{if .Older}}<a href="{{$.Base}}/audit?{{.Older}}">Older records</a>{{end}}</p>
+{{end}}
 {{else}}
 <div class="group empty-state"><p><b>No records match.</b></p></div>
 {{end}}

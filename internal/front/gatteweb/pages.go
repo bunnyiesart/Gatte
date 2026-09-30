@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
-	"strconv"
 	"strings"
+	"time"
 
 	"github.com/bunnyiesart/Gatte/pkg/adminapi"
 	"github.com/bunnyiesart/Gatte/pkg/frontkit"
@@ -292,9 +292,20 @@ func (f *Front) toolRevoke(w http.ResponseWriter, r *http.Request) {
 
 // ---- access
 
+// accessData is the Access page: the blocklist, and whether the backend
+// takes an end for a block (feature block_until, design/adr/0046).
+type accessData struct {
+	Blocks []adminapi.Block
+	Until  bool
+}
+
 func (f *Front) accessPage(w http.ResponseWriter, r *http.Request) {
 	list, err := f.op.ListBlocks(r.Context())
-	f.render(w, "access", "Access", page{Data: list.Blocks, Error: errText(err)})
+	d := accessData{Blocks: list.Blocks}
+	if me, werr := f.op.WhoAmI(r.Context()); werr == nil {
+		d.Until = slices.Contains(me.Features, adminapi.FeatureBlockUntil)
+	}
+	f.render(w, "access", "Access", page{Data: d, Error: errText(err)})
 }
 
 func (f *Front) accessBlock(w http.ResponseWriter, r *http.Request)   { f.accessChange(w, r, true) }
@@ -308,35 +319,34 @@ func (f *Front) accessChange(w http.ResponseWriter, r *http.Request, block bool)
 	call := f.op.UnblockSubject
 	if block {
 		verb, call = "Block", f.op.BlockSubject
+		if v := strings.TrimSpace(r.PostForm.Get("until")); v != "" {
+			until, err := blockEnd(v, time.Now())
+			if err != nil {
+				f.showResult(w, "access", verb+" "+frontkit.VisibleText(req.Subject), "/access", result{Summary: err.Error(), Output: err.Error()})
+				return
+			}
+			req.Until = &until
+		}
 	}
 	res, err := call(r.Context(), req)
 	f.showResult(w, "access", verb+" "+frontkit.VisibleText(req.Subject), "/access", actionResult(res.ActionResult, err))
 }
 
+// blockEnd reads the Access form's end: a duration from now ("8h") or a
+// time as the audit filters take it. The backend refuses one that is not
+// in the future.
+func blockEnd(v string, now time.Time) (time.Time, error) {
+	if d, err := time.ParseDuration(v); err == nil && d > 0 {
+		return now.Add(d).UTC(), nil
+	}
+	t, err := formTime("Until", v)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("%v, or a duration such as 8h", err)
+	}
+	return t, nil
+}
+
 // ---- audit
-
-type auditData struct {
-	Records []adminapi.AuditRecord
-	Subject string
-	Outcome string
-	Limit   int
-}
-
-func (f *Front) auditPage(w http.ResponseWriter, r *http.Request) {
-	q := r.URL.Query()
-	d := auditData{Subject: q.Get("subject"), Outcome: q.Get("outcome"), Limit: auditLimit}
-	if n, err := strconv.Atoi(q.Get("limit")); err == nil && n > 0 {
-		d.Limit = min(n, maxAuditLimit)
-	}
-	switch d.Outcome {
-	case adminapi.OutcomeAllowed, adminapi.OutcomeDenied, adminapi.OutcomeFailed:
-	default:
-		d.Outcome = ""
-	}
-	p, err := f.op.ListAudit(r.Context(), adminapi.AuditQuery{Limit: d.Limit, Subject: d.Subject, Outcome: d.Outcome})
-	d.Records = p.Records
-	f.render(w, "audit", "Audit trail", page{Data: d, Error: errText(err)})
-}
 
 func (f *Front) auditVerify(w http.ResponseWriter, r *http.Request) {
 	res, err := f.op.VerifyAudit(r.Context(), adminapi.VerifyRequest{ExpectHead: strings.TrimSpace(r.PostForm.Get("expect_head"))})

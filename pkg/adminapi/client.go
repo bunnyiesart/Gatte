@@ -291,6 +291,15 @@ func (c *Client) ListAudit(ctx context.Context, q AuditQuery) (AuditPage, error)
 	if q.Before > 0 {
 		v.Set("before", strconv.Itoa(q.Before))
 	}
+	if !q.Until.IsZero() {
+		v.Set("until", q.Until.UTC().Format(time.RFC3339))
+	}
+	if q.Tool != "" {
+		v.Set("tool", q.Tool)
+	}
+	if q.Server != "" {
+		v.Set("server", q.Server)
+	}
 	var p AuditPage
 	return p, c.do(ctx, http.MethodGet, "/v1/audit", v, nil, &p)
 }

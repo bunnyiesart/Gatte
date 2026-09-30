@@ -13,7 +13,9 @@ package gatteweb
 import (
 	"errors"
 	"net/http"
+	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/bunnyiesart/Gatte/pkg/adminapi"
@@ -49,6 +51,11 @@ type accountData struct {
 	Account adminapi.Account
 	Groups  []adminapi.AssignableGroup
 	Has     map[string]bool
+	// Offboard and Delete: the accounts socket serves them (features
+	// offboard and account_delete, design/adr/0046). Seen is who the trail
+	// has seen, for the offboard's subject: the operator picks it.
+	Offboard, Delete bool
+	Seen             []adminapi.Seen
 }
 
 func (f *Front) accountPage(w http.ResponseWriter, r *http.Request) {
@@ -70,6 +77,15 @@ func (f *Front) accountPage(w http.ResponseWriter, r *http.Request) {
 	d.Groups = groups.Groups
 	for _, g := range a.Groups {
 		d.Has[g] = true
+	}
+	if me, werr := f.acc.WhoAmI(r.Context()); werr == nil {
+		d.Offboard = slices.Contains(me.Features, adminapi.FeatureOffboard)
+		d.Delete = slices.Contains(me.Features, adminapi.FeatureAccountDelete)
+	}
+	if d.Offboard {
+		if p, perr := f.op.People(r.Context()); perr == nil {
+			d.Seen = p.Seen
+		}
 	}
 	f.render(w, "account", frontkit.VisibleText(a.DisplayName), page{Nav: "people", Data: d, Error: errText(err)})
 }
@@ -156,6 +172,49 @@ func (f *Front) accountReset(w http.ResponseWriter, r *http.Request) {
 		res, err := f.acc.ResetAccountPassword(r.Context(), u)
 		return u, res.OneTimePassword, res.ActionResult, err
 	})
+}
+
+// accountOffboard blocks the person in the gateway and disables their
+// account in one call of the accounts socket, and shows what is left to
+// do by hand.
+func (f *Front) accountOffboard(w http.ResponseWriter, r *http.Request) {
+	if f.acc == nil {
+		http.NotFound(w, r)
+		return
+	}
+	u := r.PostForm.Get("username")
+	subject := strings.TrimSpace(r.PostForm.Get("subject_typed"))
+	if subject == "" {
+		subject = r.PostForm.Get("subject")
+	}
+	res, err := f.acc.OffboardAccount(r.Context(), u, adminapi.OffboardRequest{Subject: subject, Reason: strings.TrimSpace(r.PostForm.Get("reason"))})
+	out := actionResult(res.ActionResult, err)
+	if err == nil {
+		out.Remaining = res.Remaining
+		for _, w := range res.Warnings {
+			if w.Code == adminapi.WarnOffboardIncomplete {
+				out.OK, out.Summary = false, w.Message
+			}
+		}
+	}
+	f.render(w, "result", "Offboard "+frontkit.VisibleText(u), page{Nav: "people", Data: out.withBack(f.kit.Base() + "/people/account?u=" + url.QueryEscape(u))})
+}
+
+// accountDelete removes the account. The form carries a confirmation the
+// operator ticks; the backend's rule is the same with or without it.
+func (f *Front) accountDelete(w http.ResponseWriter, r *http.Request) {
+	if f.acc == nil {
+		http.NotFound(w, r)
+		return
+	}
+	u := r.PostForm.Get("username")
+	if r.PostForm.Get("confirm") != "yes" {
+		f.showResult(w, "people", "Delete "+frontkit.VisibleText(u), "/people/account?u="+url.QueryEscape(u),
+			result{Summary: "Nothing was deleted: tick the confirmation first."})
+		return
+	}
+	res, err := f.acc.DeleteAccount(r.Context(), u)
+	f.showResult(w, "people", "Delete "+frontkit.VisibleText(u), "/people", actionResult(res.ActionResult, err))
 }
 
 // ---- connect

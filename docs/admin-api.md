@@ -314,6 +314,39 @@ With the features `backend_health` and `maintenance` (contract 1.1.0,
 oldest first, each with its chain `position`. When `more` is true, pass
 `next_before` as `before` to get the next older page.
 
+With the feature `audit_filters` (contract 1.4.0, design/adr/0046) it also
+takes `tool`, `server` (the record's `target_upstream`) and `until`. All
+filters match exactly and combine; `since` is inclusive and `until`
+exclusive. An older backend ignores parameters it does not know and would
+answer the unfiltered trail, so do not send these three without the
+feature. A download is the same query walked back with `before`; the Gatte
+front writes CSV through `frontkit.CSVCell` (hidden code points written
+visibly, a cell starting with `=`, `+`, `-`, `@`, tab or CR prefixed with
+an apostrophe), and a front that offers CSV should do the same.
+
+## Blocks that end, deleting and offboarding
+
+With the feature `block_until` (1.4.0), `POST /v1/access/block` takes
+`until`, a future instant. The gateway enforces the end at admission, to
+the instant; `GET /v1/access/blocks` then marks the block `expired`, and
+the gateway's next round writes `(access block expired)`, attributed to
+`(gateway)`, and removes it. Show `expired` blocks as not in force.
+
+On the accounts socket, `account_delete` adds `DELETE
+/v1/accounts/{username}` (`(account delete)`), and `offboard` adds `POST
+/v1/accounts/{username}/offboard` with `{"subject": ..., "reason": ...}`:
+the subject is blocked in the gateway, then the account is disabled, each
+with its own row plus a summary `(account offboard)`. Both keep the reach
+of the other account actions (`account_not_managed`). With a subject, a
+peer that is not root must also be in `[admin] operator_group`
+(`forbidden_peer`): blocking is an operator's action, and the accounts
+socket's delegation does not include it. Let the operator pick the
+subject from `GET /v1/people`; the names there are display only. Show
+`remaining` as the steps left to do by hand: revoking the sessions at the
+identity provider is always one of them, because Gatte cannot. A warning
+`offboard_incomplete` means the block is in force and the account was not
+disabled.
+
 ## Versioning
 
 Everything is under `/v1`. `GET /v1/whoami` returns `contract_version` (the

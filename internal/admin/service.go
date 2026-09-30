@@ -135,6 +135,11 @@ type Actor struct {
 	// Root is true when the kernel said the peer is uid 0. Only root
 	// reaches IdP accounts Gatte does not manage (design/adr/0040 §1).
 	Root bool
+	// Operator is true when the kernel said the peer is in [admin]
+	// operator_group, as the accounts socket checks it: an offboard with a
+	// subject also blocks in the gateway, which is an operator's action
+	// (design/adr/0046 item 2). Root needs no group.
+	Operator bool
 }
 
 // Identity is the ANALYST value of the actor's rows.
@@ -172,6 +177,18 @@ const (
 	AccountEnable  = "(account enable)"
 	AccountReset   = "(account reset password)"
 	OperatorTarget = "(gateway)"
+)
+
+// Operator rows of design/adr/0046.
+const (
+	// AccountDelete is an account removed from the IdP's users file.
+	AccountDelete = "(account delete)"
+	// AccountOffboard is the summary row of an offboard; its block and its
+	// disable have their own (access block) and (account disable) rows.
+	AccountOffboard = "(account offboard)"
+	// AccessBlockExpired is written by the gateway process, attributed to
+	// "(gateway)", when it removes a block whose end has passed.
+	AccessBlockExpired = "(access block expired)"
 )
 
 // Operator rows of design/adr/0043.

@@ -373,7 +373,7 @@ func (s *Service) Overview(ctx context.Context) (adminapi.Overview, error) {
 		if bs, err := s.d.Blocks.Blocks(ctx); err != nil {
 			problem("blocks", err)
 		} else {
-			ov.Counts.Blocked = len(bs)
+			ov.Counts.Blocked = len(activeBlocks(bs, s.d.Now()))
 		}
 	}
 	if page, err := s.Audit(ctx, adminapi.AuditQuery{Limit: 5, Outcome: string(audit.OutcomeDenied)}); err != nil {

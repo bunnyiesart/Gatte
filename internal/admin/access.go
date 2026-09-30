@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/bunnyiesart/Gatte/internal/access"
+	"github.com/bunnyiesart/Gatte/internal/config"
 	"github.com/bunnyiesart/Gatte/pkg/adminapi"
 )
 
@@ -19,10 +21,34 @@ func (s *Service) ListBlocks(ctx context.Context) (adminapi.BlockList, error) {
 		return adminapi.BlockList{}, s.storeErr("blocklist", err)
 	}
 	out := adminapi.BlockList{Blocks: []adminapi.Block{}}
+	now := s.d.Now()
 	for _, b := range bs {
-		out.Blocks = append(out.Blocks, adminapi.Block{Subject: b.Subject, BlockedBy: b.By, BlockedAt: b.At, Reason: b.Reason})
+		out.Blocks = append(out.Blocks, BlockOf(b, now))
 	}
 	return out, nil
+}
+
+// BlockOf is the contract's view of a block at now: its end, when it has
+// one, and whether that end has passed (design/adr/0046).
+func BlockOf(b access.Block, now time.Time) adminapi.Block {
+	v := adminapi.Block{Subject: b.Subject, BlockedBy: b.By, BlockedAt: b.At, Reason: b.Reason}
+	if !b.Until.IsZero() {
+		until := b.Until.UTC()
+		v.Until, v.Expired = &until, !b.ActiveAt(now)
+	}
+	return v
+}
+
+// activeBlocks is the subjects blocked at now; an expired block blocks
+// nobody and is not counted.
+func activeBlocks(bs []access.Block, now time.Time) map[string]bool {
+	out := map[string]bool{}
+	for _, b := range bs {
+		if b.ActiveAt(now) {
+			out[b.Subject] = true
+		}
+	}
+	return out
 }
 
 // BlockNote is the note a block carries, and the blocklist's REASON: the
@@ -40,7 +66,17 @@ func BlockNote(a Actor, reason string) string {
 // subject acted on, quoted so a subject that looks like prose cannot be
 // misread, then the note.
 func BlockReason(subject, note string) string {
+	return BlockReasonUntil(subject, time.Time{}, note)
+}
+
+// BlockReasonUntil is BlockReason for a block with an end, which the row
+// states (design/adr/0046): the expiry is on the trail from the moment the
+// block is placed.
+func BlockReasonUntil(subject string, until time.Time, note string) string {
 	r := fmt.Sprintf("subject %q", subject)
+	if !until.IsZero() {
+		r += " until " + until.UTC().Format(time.RFC3339)
+	}
 	if note != "" {
 		r += ": " + note
 	}
@@ -59,6 +95,10 @@ func (s *Service) validateBlock(a Actor, req adminapi.BlockRequest) (string, err
 	note := BlockNote(a, req.Reason)
 	if err := access.ValidateBlock(access.Block{Subject: req.Subject, Reason: note, By: a.Name, At: s.d.Now()}); err != nil {
 		return "", adminapi.NewError(adminapi.CodeInvalidArgument, "%v", err).With("field", "reason")
+	}
+	if req.Until != nil && !req.Until.After(s.d.Now()) {
+		return "", adminapi.NewError(adminapi.CodeInvalidArgument, "until %s is not in the future; a block that ended before it began would block nobody",
+			req.Until.UTC().Format(time.RFC3339)).With("field", "until")
 	}
 	return note, nil
 }
@@ -81,21 +121,49 @@ func (s *Service) Block(ctx context.Context, a Actor, req adminapi.BlockRequest)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	out := blockOutcome{ActionResult: res.ActionResult}
+	s.placeBlock(ctx, cfg, a, req, note, &out)
+	res.ActionResult = out.ActionResult
+	return res, out.err
+}
+
+// placeBlock is Block under the lock: place, then record, then check the
+// trail for the subject. A failure to place is res.err, and nothing else
+// happened.
+func (s *Service) placeBlock(ctx context.Context, cfg *config.Config, a Actor, req adminapi.BlockRequest, note string, res *blockOutcome) {
 	now := s.d.Now().UTC()
+	b := access.Block{Subject: req.Subject, Reason: note, By: a.Name, At: now}
+	if req.Until != nil {
+		b.Until = req.Until.UTC()
+	}
 	var placed bool
 	if err := s.retryBusy(ctx, func() (err error) {
-		placed, err = s.d.Blocks.Block(ctx, access.Block{Subject: req.Subject, Reason: note, By: a.Name, At: now})
+		placed, err = s.d.Blocks.Block(ctx, b)
 		return err
 	}); err != nil {
-		return res, s.storeErr("blocklist", err)
+		res.err = s.storeErr("blocklist", err)
+		return
 	}
 	if !placed {
-		res.Messages = append(res.Messages, fmt.Sprintf("%s is already blocked; nothing changed and nothing was recorded.", req.Subject))
-		return res, nil
+		msg := fmt.Sprintf("%s is already blocked; nothing changed and nothing was recorded.", req.Subject)
+		if req.Until != nil {
+			msg += " The block in force keeps its own end; to give it another, unblock and block again."
+		}
+		res.Messages = append(res.Messages, msg)
+		return
 	}
 	res.Changed = true
-	res.Messages = append(res.Messages, fmt.Sprintf("Blocked %s. The running gateway refuses it from its next request, whatever token it carries; no restart is needed. This does not revoke anything at the IdP: revoke the session there too.", req.Subject))
-	s.record(ctx, cfg, &res.ActionResult, s.operatorRow(a, AccessBlock, BlockReason(req.Subject, note), now))
+	msg := fmt.Sprintf("Blocked %s. The running gateway refuses it from its next request, whatever token it carries; no restart is needed. This does not revoke anything at the IdP: revoke the session there too.", req.Subject)
+	if !b.Until.IsZero() {
+		msg += fmt.Sprintf(" The block ends by itself at %s: from then on the gateway serves %s again, and records the expiry as %s at its next round.",
+			b.Until.Format(time.RFC3339), req.Subject, AccessBlockExpired)
+	}
+	res.Messages = append(res.Messages, msg)
+	row := s.operatorRow(a, AccessBlock, BlockReasonUntil(req.Subject, b.Until, note), now)
+	s.record(ctx, cfg, &res.ActionResult, row)
+	if res.Recorded {
+		res.row = res.Audit
+	}
 	if s.d.Trail != nil {
 		seen, err := s.d.Trail.HasAnalyst(ctx, req.Subject)
 		switch {
@@ -106,7 +174,15 @@ func (s *Service) Block(ctx context.Context, a Actor, req adminapi.BlockRequest)
 				Message: "No request from this subject is on record; check the spelling against the audit trail. The block is in force either way."})
 		}
 	}
-	return res, nil
+}
+
+// blockOutcome is what placeBlock leaves: the answer's ActionResult, the
+// row it wrote (nil if none), and the error that stopped it before
+// anything changed.
+type blockOutcome struct {
+	adminapi.ActionResult
+	row *adminapi.OperatorRow
+	err error
 }
 
 // Unblock records FIRST and lifts second -- the reverse of Block, for the
@@ -127,9 +203,15 @@ func (s *Service) Unblock(ctx context.Context, a Actor, req adminapi.BlockReques
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	blocked, err := s.d.Blocks.Blocked(ctx, req.Subject)
+	// Present, not enforced: an expired block (design/adr/0046) is still a
+	// row an operator may clear before the gateway's round does.
+	bs, err := s.d.Blocks.Blocks(ctx)
 	if err != nil {
 		return res, s.storeErr("blocklist", err)
+	}
+	blocked := false
+	for _, b := range bs {
+		blocked = blocked || b.Subject == req.Subject
 	}
 	if !blocked {
 		res.Messages = append(res.Messages, fmt.Sprintf("%s is not blocked; nothing changed and nothing was recorded.", req.Subject))

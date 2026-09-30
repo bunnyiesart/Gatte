@@ -68,7 +68,11 @@ func uiServeBackend(t *testing.T, e opTestEnv, socket string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv, err := adminhttp.New(adminhttp.Options{Socket: socket, Service: svc, ServiceUID: 1 << 30,
+	// The test's own group is the operator group: the peer is an
+	// operator on both sockets, as a member of gatte-operators would be
+	// (an offboard with a subject needs it, design/adr/0046).
+	gid := uint32(os.Getegid())
+	srv, err := adminhttp.New(adminhttp.Options{Socket: socket, Service: svc, ServiceUID: 1 << 30, OperatorGID: &gid,
 		LookupUser: func(uint32) (string, error) { return uiOperator, nil }})
 	if err != nil {
 		t.Fatal(err)

@@ -351,6 +351,14 @@ Remover, renomear ou mudar o sentido de um campo é `/v2`, servido ao lado de
 > front do Gatte (página Backends, formulário com CSRF) chamam o mesmo
 > `admin.Service`.
 
+> **CORREÇÃO — 30 set 2026 (ADR-0043).** O contrato está em `1.2.0`, com a
+> feature `tool_review_set`: `GET /v1/tools/review-set` e
+> `POST /v1/tools/approve-set` aprovam o conjunto de revisão de um backend
+> por manifesto, tudo ou nada, com uma linha `(tool approve)` por ferramenta
+> e uma `(tool approve set)`; códigos novos `manifest_required` e
+> `manifest_mismatch`. A regra do §3 continua a mesma, para um conjunto:
+> aprova-se só o que foi mostrado.
+
 ## O que sai do front e o que fica
 
 | Sai de `ui*.go` para o backend | Fica em cada front (via `frontkit`) |

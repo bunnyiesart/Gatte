@@ -172,3 +172,10 @@ nele — mesma conversa do `0010` e do `0012`.
 - Estende `0007` sem contradizê-lo. Depende de `0004` (falhar em medir não
   é o mesmo que medir uma falha) e do precedente de `0006` item 3 sobre
   estado que sobrevive ao que descrevia.
+
+> **CORREÇÃO — 30 set 2026 (ADR-0043).** `Forget` no `deregister` continua
+> como está. Para trocar só a imagem de uma entrada oci há agora
+> `upstream update`, que não chama `Forget`: a aprovação sobrevive só para
+> a definição byte a byte idêntica (a de texto diferente vira `changed`), e
+> a assinatura antiga deixa de verificar a entrada até o root assinar de
+> novo.

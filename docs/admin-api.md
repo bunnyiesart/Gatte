@@ -131,12 +131,13 @@ Every rule lives in the backend, so a front cannot forget one:
 - **The operator is who the kernel says.** Identity comes from the
   socket's peer credentials, never from a request field. Every state change
   writes an operator row, `(operator:NAME)`, to the audit trail:
-  `(tool approve)`, `(tool revoke)`, `(access block)`, `(access unblock)`,
+  `(tool approve)`, `(tool approve set)`, `(tool revoke)`, `(access block)`, `(access unblock)`,
   `(maintenance on)`, `(maintenance off)`,
   `(account add|groups|disable|enable|reset password)`.
 - **An approval is of the fingerprint you were shown.** Approve refuses
   without one, refuses another, and refuses if the definition moved while
-  approving.
+  approving. A backend's whole review set is approved by its manifest,
+  never "everything pending" (below).
 - **Access is only through `[group_to_role]`.** Accounts get only groups
   that map to a role, and a peer that is not root changes only accounts
   whose groups all map to one (`account_not_managed` otherwise).
@@ -221,6 +222,21 @@ The backend does not know what you render or who is at your screen.
    `ServeStatus.state` are for your texts; `detail`, `message` and
    `messages` are English fallbacks. A maintenance `message` is the
    operator's own text and is shown as it is (escaped).
+
+## Review sets
+
+With the feature `tool_review_set` (contract 1.2.0, `design/adr/0043`):
+`GET /v1/tools/review-set?server=NAME` answers every pending and changed
+tool of one backend, each as `reviewTool` answers it (definitions, diff,
+`callable_by`), from one read, and a `manifest`: the SHA-256 over the
+backend, the number of tools and each tool's name, status, observed
+fingerprint and approved baseline. `POST /v1/tools/approve-set` with
+`{"server": NAME, "manifest": M}` approves all of them in one transaction,
+and only while the set still hashes to `M`; a tool joining, leaving or
+moving refuses the whole set (`manifest_mismatch`) and approves nothing.
+Draw every entry of the set before offering its button, as you would for
+one tool. The answer carries one `(tool approve)` row per tool in `rows`
+and the `(tool approve set)` summary row in `audit`.
 
 ## Backend health and maintenance
 

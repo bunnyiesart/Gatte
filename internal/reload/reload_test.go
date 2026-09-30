@@ -65,12 +65,19 @@ func TestDiff_NamesWhoGainsAndLosesWhichToolAndNothingElse(t *testing.T) {
 	}
 }
 
-func TestDiff_ARewrittenGrantThatReachesTheSameToolsIsNoChange(t *testing.T) {
+// A wildcard rewritten as the tools it reaches today moves no routed tool,
+// but it is a different grant: the wildcard would have reached the next
+// tool casemgmt adds (design/adr/0016). Reach is unchanged and the grant
+// change is named.
+func TestDiff_ARewrittenGrantThatReachesTheSameToolsNamesTheGrantOnly(t *testing.T) {
 	old, next := base(), base()
 	next.Roles[0].Grants = nil
 	next.Roles[0].Tools = []string{"casemgmt.close_case", "casemgmt.list_cases"}
-	if c := Diff(old, next, routed); !c.Empty() {
-		t.Fatalf("Diff = %+v, want no change of reachability", c)
+	c := Diff(old, next, routed)
+	if len(c.Roles) != 1 || len(c.Roles[0].Gained) != 0 || len(c.Roles[0].Lost) != 0 ||
+		!slices.Equal(c.Roles[0].GrantsRemoved, []string{"casemgmt.*"}) ||
+		!slices.Equal(c.Roles[0].GrantsAdded, []string{"casemgmt.close_case", "casemgmt.list_cases"}) {
+		t.Fatalf("Diff = %+v, want the grant change and no change of reachability", c.Roles)
 	}
 }
 
@@ -124,5 +131,34 @@ func TestNotReloaded_NamesTheAnalystLinesAndTheAdvertisedScopes(t *testing.T) {
 	want := []string{"analyst.backend_notes", "analyst.contact", "oidc.scopes_supported"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("NotReloaded = %v, want %v", got, want)
+	}
+}
+
+// TestDiff_ARewrittenGrantIsRecordedEvenWhenNothingRoutedMoves: reach is
+// measured over the tools routed at the reload, so widening a role to a
+// backend that is down or not yet listed moves nothing in Gained. The
+// grant itself changed, and the row must say so.
+func TestDiff_ARewrittenGrantIsRecordedEvenWhenNothingRoutedMoves(t *testing.T) {
+	old, next := base(), base()
+	next.Roles = []config.Role{
+		{Name: "ir", Grants: map[string][]string{"casemgmt": {"*"}}},
+		{Name: "triage", Tools: []string{"logsearch.search"}, Grants: map[string][]string{"docsearch": {"*"}}},
+	}
+	c := Diff(old, next, routed)
+	if c.Empty() {
+		t.Fatal("a widened grant reads as an empty reload")
+	}
+	if len(c.Roles) != 1 || c.Roles[0].Role != "triage" || len(c.Roles[0].Gained) != 0 ||
+		!slices.Equal(c.Roles[0].GrantsAdded, []string{"docsearch.*"}) || len(c.Roles[0].GrantsRemoved) != 0 {
+		t.Fatalf("roles = %+v", c.Roles)
+	}
+	if s := Summary(c, 0); !strings.Contains(s, `role "triage" grant +docsearch.*`) {
+		t.Fatalf("summary = %q", s)
+	}
+	// The same grant, written in another order, is no change.
+	again := base()
+	again.Roles[1].Tools = []string{"logsearch.search"}
+	if c := Diff(old, again, routed); !c.Empty() {
+		t.Fatalf("an unchanged grant reads as a change: %+v", c.Roles)
 	}
 }

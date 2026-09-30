@@ -34,6 +34,13 @@ const maxReloadReason = 4000
 // the gateway itself, because the signal does not say who sent it.
 const signalActor = "(gateway)"
 
+// unknownActor is who a request that names nobody is attributed to. The
+// management service always names the operator, so a request without one
+// was written to the database by something else; it is still applied or
+// refused like any other, and it still gets its row -- a change nobody is
+// recorded for is the one the trail exists to catch.
+const unknownActor = "(unknown)"
+
 // announce is what serve does once it is built and before it serves: every
 // request still pending from a previous process is answered as superseded
 // by this restart -- which read the whole file and dials every backend --
@@ -232,11 +239,15 @@ func (s *serveStack) finish(ctx context.Context, logger *slog.Logger, r control.
 		}
 		reason = reason[:n] + " ... (truncated)"
 	}
-	rec := audit.Record{AnalystIdentity: r.Actor, Tool: tool, TargetUpstream: target, Timestamp: now, Outcome: audit.OutcomeAllowed, Reason: reason}
+	actor := r.Actor
+	if strings.TrimSpace(actor) == "" {
+		actor = unknownActor
+	}
+	rec := audit.Record{AnalystIdentity: actor, Tool: tool, TargetUpstream: target, Timestamp: now, Outcome: audit.OutcomeAllowed, Reason: reason}
 	if outcome != control.OutcomeApplied {
 		rec.Outcome = audit.OutcomeDenied
 	}
-	if s.audit != nil && r.Actor != "" {
+	if s.audit != nil {
 		if err := retryBusy(ctx, func() error { return s.audit.Record(ctx, rec) }); err != nil {
 			res.Warnings = append(res.Warnings, adminapi.Warning{Code: adminapi.WarnAuditWriteFailed,
 				Message: "The audit trail has no row for this: " + err.Error()})
@@ -267,7 +278,8 @@ func toAPIChanges(c reload.Changes) *adminapi.ReloadChanges {
 		FreeToolsChanged: c.FreeToolsChanged, NotReloaded: append([]string{}, c.NotReloaded...)}
 	for _, r := range c.Roles {
 		out.Roles = append(out.Roles, adminapi.RoleChange{Role: r.Role, Added: r.Added, Removed: r.Removed,
-			Gained: append([]string{}, r.Gained...), Lost: append([]string{}, r.Lost...)})
+			Gained: append([]string{}, r.Gained...), Lost: append([]string{}, r.Lost...),
+			GrantsAdded: r.GrantsAdded, GrantsRemoved: r.GrantsRemoved})
 	}
 	for _, g := range c.Groups {
 		out.Groups = append(out.Groups, adminapi.GroupChange{Group: g.Group, From: g.From, To: g.To})

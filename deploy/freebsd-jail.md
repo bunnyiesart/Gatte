@@ -645,7 +645,9 @@ differs and leaves it alone):
    old one. Restart the gateway: from here both keys are trusted.
 2. Point `signer.key_file` at the new key -- only `sign` reads it, on every
    run, so this needs no restart -- and re-sign everything at once with
-   `mcp-gateway sign -all` (`-dry-run` first lists what it will sign).
+   `mcp-gateway sign -all -dry-run`, which lists what it would sign and the
+   plan's manifest, then `mcp-gateway sign -all -manifest SHA256`, which
+   signs exactly that plan and nothing if an entry moved in between.
    Every entry signed by the old key is re-signed, each printed with the
    fields its signature covers; entries already signed by the new key are
    left alone. `upstream list` then shows `yes` for all of them.

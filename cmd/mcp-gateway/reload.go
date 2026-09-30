@@ -182,6 +182,14 @@ func printServeRequest(w io.Writer, r adminapi.ServeRequest) {
 			for _, t := range ch.Lost {
 				fmt.Fprintf(w, "    - %s\n", oneLine(t))
 			}
+			if !ch.Added && !ch.Removed {
+				for _, g := range ch.GrantsAdded {
+					fmt.Fprintf(w, "    grant + %s\n", oneLine(g))
+				}
+				for _, g := range ch.GrantsRemoved {
+					fmt.Fprintf(w, "    grant - %s\n", oneLine(g))
+				}
+			}
 		}
 		for _, g := range c.Groups {
 			fmt.Fprintf(w, "  group %s: %s -> %s\n", oneLine(g.Group), opDash(oneLine(g.From)), opDash(oneLine(g.To)))

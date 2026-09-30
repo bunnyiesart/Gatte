@@ -165,8 +165,9 @@ and prints the lines to paste into the configuration.
 
 A running gateway picks up a registration, a deregistration or a signature
 that stops verifying within one `quarantine.refresh_interval`. `mcp-gateway
-sign -all` signs every registered entry that is not yet validly signed by
-your key (`-dry-run` lists them first).
+sign -all -dry-run` lists every registered entry that is not yet validly
+signed by your key, and the plan's manifest; `sign -all -manifest SHA256`
+signs exactly that plan, and nothing if an entry changed in between.
 
 ### 4. Review and approve the tools
 

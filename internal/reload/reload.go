@@ -37,6 +37,14 @@ type RoleChange struct {
 	// Gained and Lost are namespaced tool names, sorted.
 	Gained []string
 	Lost   []string
+	// GrantsAdded and GrantsRemoved are what the file's grant of this role
+	// says differently, sorted, as namespaced names ("casemgmt.get_case",
+	// "threatintel.*"): what the role will reach, whatever is routed now.
+	// Reach is measured over the tools routed at the reload, so a grant
+	// over a backend that is down, not yet listed or yet to add a tool
+	// changes nothing in Gained and would otherwise go unrecorded.
+	GrantsAdded   []string
+	GrantsRemoved []string
 }
 
 // GroupChange is one [group_to_role] key whose role changed. From or To is
@@ -149,11 +157,41 @@ func roleChanges(old, next []config.Role, routed []string) []RoleChange {
 		}
 		slices.Sort(ch.Gained)
 		slices.Sort(ch.Lost)
-		// A role whose grant was rewritten but reaches the same tools is
-		// not a change of reachability; an added or removed role is always
-		// shown, even reaching nothing.
-		if ch.Added || ch.Removed || len(ch.Gained) > 0 || len(ch.Lost) > 0 {
+		gb, ga := grantSet(b), grantSet(a)
+		for g := range ga {
+			if !gb[g] {
+				ch.GrantsAdded = append(ch.GrantsAdded, g)
+			}
+		}
+		for g := range gb {
+			if !ga[g] {
+				ch.GrantsRemoved = append(ch.GrantsRemoved, g)
+			}
+		}
+		slices.Sort(ch.GrantsAdded)
+		slices.Sort(ch.GrantsRemoved)
+		// A role is shown when what it reaches now changed, or when what
+		// its grant says changed -- even if it reaches the same routed
+		// tools today, it will not tomorrow. An added or removed role is
+		// always shown, even reaching nothing.
+		if ch.Added || ch.Removed || len(ch.Gained) > 0 || len(ch.Lost) > 0 || len(ch.GrantsAdded) > 0 || len(ch.GrantsRemoved) > 0 {
 			out = append(out, ch)
+		}
+	}
+	return out
+}
+
+// grantSet is what r's grant says, as namespaced names: its flat tools
+// and each grants entry as backend.tool (backend.* for a wildcard). A
+// zero Role grants nothing.
+func grantSet(r config.Role) map[string]bool {
+	out := map[string]bool{}
+	for _, t := range r.Tools {
+		out[t] = true
+	}
+	for backend, tools := range r.Grants {
+		for _, t := range tools {
+			out[backend+"."+t] = true
 		}
 	}
 	return out
@@ -295,6 +333,15 @@ func Summary(c Changes, max int) string {
 		}
 		for _, t := range r.Lost {
 			s.WriteString(" -" + t)
+		}
+		if len(r.GrantsAdded)+len(r.GrantsRemoved) > 0 && !r.Added && !r.Removed {
+			s.WriteString(" grant")
+			for _, g := range r.GrantsAdded {
+				s.WriteString(" +" + g)
+			}
+			for _, g := range r.GrantsRemoved {
+				s.WriteString(" -" + g)
+			}
 		}
 		parts = append(parts, s.String())
 	}

@@ -172,3 +172,9 @@ nele — mesma conversa do `0010` e do `0012`.
 - Estende `0007` sem contradizê-lo. Depende de `0004` (falhar em medir não
   é o mesmo que medir uma falha) e do precedente de `0006` item 3 sobre
   estado que sobrevive ao que descrevia.
+
+> **CORREÇÃO — 30 set 2026 (ADR-0042 item 2).** A tool que sai da vista de
+> um analista que a recebeu num `tools/list` — rug pull em revisão, papel
+> mudado, backend desregistrado — responde a ele "is no longer available to
+> you", o mesmo texto para toda causa, em vez do `unknown tool` do SDK. Um
+> nome que ele nunca recebeu listado continua com os bytes do SDK.

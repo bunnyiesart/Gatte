@@ -175,3 +175,10 @@ que a chamada ficou registrada.
   prompt injection. Depende de `0007` (a quarentena cobre a definição da
   tool; isto cobre a resposta) e de `0012` (`OutcomeFailed` existir para
   registrar a recusa).
+
+> **CORREÇÃO — 30 set 2026 (ADR-0042 item 2).** O resultado acima do teto
+> continua recusado inteiro, sem um byte do conteúdo, mas o chamador que tem
+> a tool concedida e aprovada passa a ler um resultado `isError` que diz o
+> teto e pede para estreitar a consulta, em vez de `internal error`. O
+> argumento de esconder o teto foi pesado e descartado lá. Schema violado e
+> resultado irrepresentável continuam `internal error`.

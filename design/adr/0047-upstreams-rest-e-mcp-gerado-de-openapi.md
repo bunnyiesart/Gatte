@@ -4,16 +4,32 @@
 fases (§Fases). Cada fase que tomar uma sub-decisão significativa ganha seu
 próprio ADR, como manda o `AGENTS.md` §6.
 
-**Revisão de 05 out 2026 (pós-revisão adversarial contra o código):** a
-direção segue de pé, mas várias afirmações que sustentavam o texto eram
-falsas contra o código atual e foram corrigidas aqui antes de abrir as
-fases. Em resumo: a rota de proxy **passa a ser roteada por `Dispatch`** em
-vez de ser um segundo caminho de chamada que ignora kill switch, suspensão,
-concorrência e quota (§7); a resposta HTTP proxiada **não** é higienizável
-por `scrubResult` e ganha um `ModifyResponse` próprio (§5, §7); o esquema
-de auth e o conjunto de operações **entram na assinatura e são persistidos**
-(§1, §3, §4) — isto é, sim, um campo novo no modelo de dados (Contexto); e
-o `InputSchema` gerado preserva a **localização** de cada parâmetro (§2, §3).
+**Revisão de 05 out 2026 (duas passagens de revisão adversarial contra o
+código).** A direção segue de pé; o texto foi corrigido duas vezes antes de
+abrir as fases, porque a primeira correção introduziu uma incoerência de tipo.
+Estado atual:
+
+- **Os dois front-ends (tools MCP e proxy) passam pelo mesmo `gateway.Dispatch`**
+  — kill switch, suspensão, concorrência, quota e record-then-forward valem
+  para ambos (§7).
+- **Não há `ReverseProxy` nem `ModifyResponse`.** `Upstream.CallTool` devolve
+  um `gateway.Result` sem cabeçalhos HTTP (`gateway.go:153-170,195`) e um
+  `httputil.ReverseProxy` escreve direto no `ResponseWriter` e não devolve
+  nada — os dois não compõem. O `resthttp.CallTool` faz um round-trip
+  bufferizado e **serializa status + cabeçalhos + corpo dentro do
+  `Result.Content`**; com isso a resposta flui por `Dispatch` como qualquer
+  tool e o **`scrubResult` que já existe** (`endpoint.go:2342,2377`) mascara a
+  credencial em todo o blob, cabeçalhos inclusive — sem segundo caminho e sem
+  hook novo (§5, §7).
+- **O esquema de auth e a URL completa entram na assinatura já na Fase A**, no
+  mesmo momento em que passam a dirigir a injeção; o digest do conjunto de
+  operações entra na Fase B, quando o conjunto passa a existir (§1, §4, Fases).
+- **`UpstreamServer` ganha campos novos** (descritor de auth, e na Fase B o
+  conjunto de operações congelado) — é uma pequena migração de modelo de
+  dados, não "só um dialer chegando" (Contexto, §1, §3).
+- **O `InputSchema` gerado preserva a localização de cada parâmetro por
+  namespacing** (não por anotação sobre um objeto plano, que ainda colidiria)
+  (§2, §3).
 
 ## Contexto
 
@@ -42,13 +58,14 @@ recusados só pela `Validate`. O que falta é um dialer, a geração de tools, a
 injeção de credencial por cabeçalho, o egresso e a rota servida.
 
 **O schema, porém, cresce — ao contrário do que a versão anterior deste ADR
-afirmava.** O transporte e a `URL` já existem, mas o esquema de auth
-(§5) e o **conjunto de operações congelado** (§3) precisam ser *persistidos*
-na entrada e *cobertos pela assinatura* (§4): hoje `registry.UpstreamServer`
-não tem campo para nenhum dos dois, e `signer.Canonical` (`signer.go:124`)
-assina apenas `Command/URL/Args/Image` e os *nomes* das env. Logo, isto é um
-dialer chegando **e** uma pequena migração de modelo de dados, não só um
-dialer — ver §3, §4 e a Fase B.
+afirmava.** O transporte e a `URL` já existem, mas o **descritor do esquema de
+auth** (§5) e o **conjunto de operações congelado** (§3) precisam ser
+*persistidos* na entrada e *cobertos pela assinatura* (§4): hoje
+`registry.UpstreamServer` não tem campo para nenhum dos dois, e
+`signer.Canonical` (`signer.go:124`) assina `Name`, `Transport`, `Command`,
+`URL`, `Image` e os *nomes* das env — não um descritor de auth nem um conjunto
+de operações. Logo, isto é um dialer chegando **e** uma pequena migração de
+modelo de dados — ver §3, §4 e as Fases A/B.
 
 Decisão do dono (05 out 2026): a rota de proxy reverso é **restrita às
 operações declaradas no OpenAPI**, não um passthrough cru. O motivo é o eixo
@@ -58,13 +75,18 @@ que lê um IOC e faz POST do caso para um endpoint público). Um passthrough cru
 entregaria todo path e método da API ao agente e apagaria esse controle.
 
 **Restringir às operações declaradas não fecha, por si, o canal de
-exfiltração.** A operação de exfil (o `POST /submit` de um `urlscan`,
-`virustotal`, `abuseipdb` e afins) **é** uma operação declarada — §3 a gera
-como tool normal, sem distinguir leitura de escrita. O controle de fato é
-tratar uma tool gerada de **método HTTP não-seguro** (ou cuja `requestBody`
-carrega dado do chamador para fora) como superfície de exfil: *default-deny* —
-em quarentena até aprovação explícita **e** atrás de um papel distinto do de
-leitura — e não dissolvida na quarentena genérica por tool (ver §3).
+exfiltração**, e o controle precisa de mecanismo, não só de disciplina. A
+operação de exfil (o `POST /submit` de um `urlscan`, `virustotal`,
+`abuseipdb` e afins) **é** uma operação declarada — §3 a gera como tool. O
+controle de fato: no momento da geração (§3) cada tool recebe uma **classe de
+segurança** derivada do método HTTP (safe/não-safe), gravada como metadado da
+tool na entrada assinada. Uma tool de método não-safe nasce **default-deny** —
+em estado de quarentena próprio (uma classe nova ao lado de
+`pending`/`approved`/`changed`, não a quarentena genérica) que exige aprovação
+explícita e concessão a um **papel distinto do de leitura**. A classificação
+mora na borda REST/registro; o `internal/access` continua casando por nome de
+tool, sem aprender o que é método HTTP (a classe chega como metadado, não como
+regra no domínio puro). Ver §3 para onde o acoplamento vive.
 
 ## Decisão
 
@@ -80,12 +102,14 @@ chamada (`gateway.Dispatch`), nunca por um segundo caminho paralelo (§7).
 Reabrir o caso `TransportHTTP` em `registry.Validate` (`registry.go:202`):
 uma entrada `http` exige `URL`, aceita `EnvVarNames` (os nomes das chaves,
 nunca os valores), recusa `Command` e `Image`. GAB-19 fecha. A entrada
-assinada passa a descrever `{URL (host + base path), descritor do esquema de
-auth, nomes das env, conjunto de operações congelado}` — ver §4. O descritor
-de auth e o conjunto de operações são **campos novos** em
-`registry.UpstreamServer`, migrados junto com o resto dos schemas por
-`openStore` (`AGENTS.md` §2); a Fase A já introduz o descritor de auth (a
-injeção do §5 não é demonstrável sem ele), e a Fase B o conjunto de operações.
+assinada passa a descrever `{URL completa, descritor do esquema de auth, nomes
+das env, classe de segurança por operação, e — na Fase B — conjunto de
+operações congelado}` — ver §4. O descritor de auth é um **campo novo** em
+`registry.UpstreamServer`, migrado junto com os demais schemas por `openStore`
+(`cmd/mcp-gateway/main.go`, `AGENTS.md` §2); a **Fase A já o introduz e já o
+assina** (a injeção do §5 não pode dirigir-se por um campo não assinado — ver
+§4 e as Fases). O conjunto de operações congelado é outro campo, adicionado na
+Fase B (§3).
 
 ### 2. Dialer REST — um adaptador novo, sem conexão persistente
 
@@ -95,19 +119,26 @@ contrário de stdio/oci, uma API REST não é uma conexão viva: o `Upstream`
 (`internal/gateway/gateway.go:188`) que o dialer entrega é stateless —
 
 - `ListTools` devolve as tools geradas do OpenAPI (§3);
-- `CallTool(nome, args)` mapeia a tool → uma requisição HTTP (método + path +
-  parâmetros **na localização correta**, ver abaixo), injeta a credencial
-  (§5), passa pela allowlist de egresso (§6), executa com
-  `Response.call_timeout`/`max_bytes` (`config.go:317,297`) e devolve o corpo
-  como resultado da tool.
+- `CallTool(ctx, nome, args)` mapeia a tool → uma requisição HTTP (método +
+  path + parâmetros **na localização correta**, ver abaixo), injeta a
+  credencial (§5), passa pela allowlist de egresso (§6), executa com
+  `Response.call_timeout`/`max_bytes` (`config.go:317,297`) e **serializa a
+  resposta — status, cabeçalhos e corpo — dentro do `gateway.Result`** que a
+  interface exige (`CallTool(...) (Result, error)`, `gateway.go:195`;
+  `Result` não tem campo de status/cabeçalho HTTP, `gateway.go:153-170`). O
+  status não-2xx mapeia em `Result.IsError`; status, cabeçalhos e corpo vão em
+  `Result.Content` como um bloco JSON (forma canônica definida na Fase A). É
+  assim que a resposta REST atravessa `Dispatch` como qualquer tool — e é
+  `Dispatch` quem roda `scrubResult` sobre esse `Result` (§5, §7).
 
 **Mapeamento de argumentos → requisição preserva a localização do
 parâmetro.** OpenAPI identifica um parâmetro pelo par `(name, in)`
 (`path`/`query`/`header`/`cookie`) ou pelo `requestBody`; dois parâmetros de
 mesmo `name` em locais diferentes são distintos. O `InputSchema` gerado (§3)
-carrega essa localização, e `CallTool` a usa para montar a URL e o corpo sem
-ambiguidade — sem ela, `id` em path e `id` em query colidiriam numa única
-chave e o dialer não saberia onde cada valor vai.
+**namespaceia** cada propriedade por local (`path_id`, `query_id`, `body_id`,
+`header_x`), e `CallTool` usa o prefixo para montar URL, query, cabeçalhos e
+corpo sem ambiguidade — sem isso, `id` em path e `id` em query colidiriam numa
+única chave JSON.
 
 Observação de saúde (ADR-0041): para um upstream http stateless a máquina de
 estados de saúde é um `up` constante que nunca transiciona — `markGone`
@@ -115,9 +146,9 @@ dispara só em `ErrUpstreamGone` (um stream que termina), que uma API REST
 nunca produz. Uma chamada de saída que falha devolve `BackendFailedError`,
 mas `gatte.status`/disponibilidade seguem reportando o backend `up`. A Fase A
 assume explicitamente **saúde fixa em `up`** para http (a degradação
-permitida), ou, se for preciso mais, define um sinal de vivacidade REST
-mapeando falha de conexão → `reconnecting`/`down` — mas isso é decisão sua, não
-reuso implícito da máquina do 0041.
+permitida); se for preciso mais, um sinal de vivacidade REST mapeando falha de
+conexão → `reconnecting`/`down` é decisão própria, não reuso implícito da
+máquina do 0041.
 
 O `dialTimeRefusal` (`dialer.go:115`) ganha a validação de pré-registro do
 transporte http (URL bem-formada, host na allowlist, esquema de auth
@@ -134,63 +165,82 @@ No `upstream register -transport http`, o operador aponta a spec OpenAPI
   (o ponto é `NameSeparator`), e `routesFor` descarta **as duas** cópias em
   qualquer colisão de nome dentro do upstream. Logo: sanear o `operationId`,
   anexar um hash curto de `método+path` em colisão ou estouro de comprimento,
-  rodar `validToolName` **no momento do `register`** e **falhar o registro em
-  alto e bom som** para qualquer operação que não consiga nome único e legal —
-  nunca descobrir isso como falha silenciosa por-tool no connect. Operação sem
-  `operationId` recebe um nome derivado de `método+path` pela mesma regra.
+  rodar a regra **no momento do `register`** e **falhar o registro em alto e
+  bom som** para qualquer operação sem nome único e legal — nunca descobrir
+  isso como falha silenciosa por-tool no connect. Operação sem `operationId`
+  usa `método+path`. Como `validToolName` é não-exportado em `internal/gateway`
+  e o `register` vive em `cmd/mcp-gateway`, a regra do charset é **exportada de
+  um lugar só** (ou `validToolName` passa a exportado), para que `register` e
+  `routesFor` não divirjam. As outras recusas por-tool do `routesFor` (schema
+  > 64 KiB `endpoint.go:1722`, `validateSchema` `:1726`, `resolveOutputSchema`
+  `:1753`, `quarantine.Observe` `:1758`) ou também sobem para o `register`, ou
+  ficam explicitamente como recusa por-tool no connect — a decisão é da Fase B,
+  mas é tomada, não deixada implícita.
 - **`description`** do `summary`/`description`.
 - **`InputSchema`** montado de `parameters` + o schema do `requestBody`, com
-  **a localização de cada parâmetro preservada** — ou namespaceando cada
-  propriedade (`path_id`/`query_id`/`body_id`), ou por uma anotação
-  `x-gatte-param-location` *dentro* dos bytes hasheados do `InputSchema`. A
-  localização não pode ficar fora dos bytes assinados/fingerprintados (§2).
-  O gerador **resolve `$ref` contra os `components` da spec congelada** e
-  achata `allOf`/`oneOf`/`anyOf`, embrulhando o corpo sob
-  `{"type":"object","properties":{...}}`: `validateSchema` exige um
-  `type:object` de topo (um corpo que seja `$ref`/`allOf` cru é recusado na
-  descoberta) e o SDK MCP pula qualquer tool com `$ref` pendente. Como a
-  quarentena hasheia os bytes crus sem canonicalização, define-se uma **forma
-  canônica de bytes** do `InputSchema` (ordenação de chaves, `$ref` resolvido)
-  para que inline-vs-ref não vire, por acidente, uma impressão digital
-  diferente.
+  **a localização de cada parâmetro preservada por namespacing**
+  (`path_id`/`query_id`/`header_x`/`body_id`) — a anotação `x-gatte-param-
+  location` sobre um objeto plano **não** basta, porque dois params de mesmo
+  `name` ainda colapsariam numa chave. O **nome do cabeçalho/cookie de auth
+  injetado é reservado**: um parâmetro `header_*`/`cookie_*` declarado que o
+  sombreie é recusado/descartado no registro, para o chamador não sobrescrever
+  a credencial do servidor. O gerador **resolve `$ref` contra os `components`
+  da spec congelada**; `allOf` funde no mapa de propriedades, mas `oneOf`/
+  `anyOf` **preservam a alternância** como irmãos de topo
+  (`{"type":"object","oneOf":[...]}`), que `validateSchema` (`endpoint.go:3905`)
+  aceita — achatá-los num só `properties` aceitaria corpos que nenhuma
+  alternativa aceitava. Um `requestBody` **não-objeto** (array/escalar JSON,
+  `application/octet-stream`) ganha uma representação explícita sob a mesma
+  regra (ex. `body` único tipado), definida na Fase B. Define-se também uma
+  **forma canônica de bytes** do `InputSchema` (ordenação de chaves, `$ref`
+  resolvido) porque a quarentena hasheia os bytes crus.
+- **Classe de segurança por método** (safe/não-safe), metadado da tool na
+  entrada assinada; método não-safe → default-deny em classe de quarentena
+  própria + papel distinto (Contexto). O acoplamento mora aqui (geração/
+  registro) e no estado de quarentena, nunca no `internal/access`.
 
 Essas definições **entram na entrada assinada** e cada tool gerada passa pela
 **quarentena** existente (SHA-256 sobre `name+description+schema`, `pending`
-até o operador aprovar) — idêntico ao controle por tool de todo o resto. Uma
-tool de **método não-seguro** entra em quarentena com *default-deny* e num
-papel distinto do de leitura (ver Contexto). Reaproveita
-`httpapi.registerTools` (`internal/gateway/httpapi/httpapi.go:829`) e
-`Dispatch` (`internal/gateway/endpoint.go:2130`) sem ramo novo: para o
-servidor MCP, uma tool REST é só uma tool cujo upstream é um
+até o operador aprovar) — idêntico ao controle por tool do resto, acrescido da
+classe de segurança acima. Reaproveita `httpapi.registerTools`
+(`internal/gateway/httpapi/httpapi.go:829`) e `Dispatch`
+(`internal/gateway/endpoint.go:2130`) sem ramo novo no caminho de chamada:
+para o servidor MCP, uma tool REST é só uma tool cujo upstream é um
 `resthttp.Upstream`.
 
 O **conjunto de operações congelado é persistido** na entrada (`registry.
-UpstreamServer` ganha o campo; §1) e sobrevive a restart — re-buscar é
-proibido sem `upstream update`. A spec é **congelada no momento da
+UpstreamServer` ganha o campo na Fase B; §1) e sobrevive a restart — re-buscar
+é proibido sem `upstream update`. A spec é **congelada no momento da
 assinatura**. Uma spec remota pode mudar embaixo; re-buscar é um
 `upstream update` explícito → novas tools → nova quarentena → nova
 assinatura. Nunca uma re-leitura silenciosa.
 
 ### 4. Assinatura cobre a URL, o esquema de auth e o conjunto de operações (canonical v3)
 
-A forma canônica de hoje cobre `Command/URL + Args + nomes das env`, exclui
-valores de segredo (`internal/signer/signer.go:124`, tags `...canonical/v1` e
+A forma canônica de hoje assina `Name`, `Transport`, `Command`, a **URL
+inteira** (`s.URL`, `signer.go:139`), `Image` e os *nomes* das env, excluindo
+valores de segredo (`signer.go:124-160`, tags `...canonical/v1` e
 `...v2-image`). Uma entrada http assina, numa **tag canônica nova
-(`v3-http`)** em `signer.go:64`:
+(`v3-http`)** em `signer.go:64`, **tudo o que a v1 já assina** (Name,
+Transport, EnvVarNames, e a URL) **mais**:
 
-- o **host E o base path** da URL (ver §6 sobre por que o base path entra);
-- um **digest do conjunto de operações congelado** (§3);
+- a **URL completa** — esquema, host, porta E base path (ver §6 sobre o base
+  path; a v1 já assina a `s.URL` inteira, então a v3 não pode cobrir *menos*:
+  deixar esquema/porta de fora deixaria um downgrade `https→http` ou uma troca
+  de porta como edição não assinada, e é a porta que o verificador de egresso
+  da Fase D compara);
 - o **descritor do esquema de auth** — `kind` (bearer/header/query) + o nome
   do cabeçalho ou parâmetro. É ele que decide **onde** a credencial viva é
   injetada (§5); fora da assinatura, trocar `X-API-Key` por um parâmetro de
-  query seria edição não assinada que muda o destino do segredo.
+  query por escrita direta no banco seria edição não assinada que redireciona
+  o segredo e ainda verifica como assinada — o exato ataque que a assinatura
+  existe para fechar (modelo de ameaça em `signer.go:255-269`);
+- na **Fase B**, um **digest do conjunto de operações congelado** (§3).
 
-Senão, trocar o destino, o conjunto de tools ou o ponto de injeção seria
-edição não assinada. É uma sub-decisão própria (ADR na Fase B). O **valor** da
+É uma sub-decisão própria (ADR na Fase B para o digest de operações; o
+descritor de auth e a URL completa já na Fase A, ver Fases). O **valor** da
 chave continua fora da assinatura: rotação nunca quebra a assinatura, como no
-resto (`AGENTS.md` §2, Definition Signer). O campo do descritor de auth e o do
-conjunto de operações são adicionados a `UpstreamServer` (§1) e roteados por
-`Validate`/`Canonical`.
+resto (`AGENTS.md` §2, Definition Signer).
 
 ### 5. Injeção de credencial por cabeçalho — mecanismo novo, máquina reusada
 
@@ -200,21 +250,28 @@ A injeção de hoje é ambiente de processo filho (`resolveEnv`,
 query, conforme o **descritor de auth assinado** (§4, derivado das
 `securitySchemes` do OpenAPI ou do `register`). Reusa, sem copiar plaintext
 para lugar nenhum: `vault.Provider.Resolve` (`internal/vault/vault.go:125`) e
-o registro de digests `rememberCredentials` (`endpoint.go:4016`).
+o registro `rememberCredentials` (`endpoint.go:4016`).
 
-**A higienização da resposta não é `scrubResult`.** `scrubResult`
-(`endpoint.go:2377`) tem assinatura `(ctx, upstream, Result)` e reescreve só
-`res.Content`/`res.StructuredContent` de um `Result` MCP já parseado; não tem
-caminho para cabeçalhos HTTP e desiste de corpo não-JSON. Um `ReverseProxy`
-transmite status, **todos os cabeçalhos** e corpo crus do upstream direto ao
-analista — uma credencial refletida num `Location` 3xx, num eco `X-API-Key` ou
-num `Set-Cookie` chegaria intacta. Logo, em vez de `scrubResult`, um hook
-`ModifyResponse` que: (a) bufferiza sob `Response.max_bytes`, (b) mascara os
-valores da credencial no corpo **e nos cabeçalhos** (re-resolvendo os digests
-de `rememberCredentials`), (c) recusa/trunca acima do teto. O analista recebe
-a resposta higienizada; a chave só existe na requisição de saída. O mesmo hook
-serve a tool MCP (sobre o `Result`) e o proxy (sobre a resposta HTTP), para
-paridade com o `0014`.
+**A higienização da resposta é o `scrubResult` que já existe — não um hook
+novo.** Como o `resthttp.CallTool` serializa status, cabeçalhos e corpo dentro
+do `Result.Content` (§2), a resposta atravessa `Dispatch`, que roda
+`scrubResult(ctx, upstream, res)` incondicionalmente sobre todo `Result`
+(`endpoint.go:2342`, definido em `:2377`). `scrubResult` mascara pegando os
+**nomes** das credenciais em `g.creds[upstream]` e re-resolvendo o **plaintext**
+em `g.vault.Resolve` (`endpoint.go:2379-2404`) — **não** os digests de
+`rememberCredentials`, que são HMAC-SHA256 de via única (`endpoint.go:4010-4013`)
+e não voltam a plaintext. Como os cabeçalhos agora fazem parte do
+`Result.Content`, uma credencial refletida num `Location` 3xx, num eco
+`X-API-Key` ou num `Set-Cookie` é mascarada pelo mesmo caminho — **desde que**
+o conjunto de renderizações de `scrubResult` ganhe uma forma **URL-decodificada**
+(`redact.go:123-156` hoje só tem valor cru, `%q`/`QuoteToASCII` e encoding de
+string JSON; um valor percent-encodado num redirect não casaria). Essa extensão
+do `scrubResult` (uma renderização a mais) é parte da Fase A.
+
+O caminho da tool MCP (não-proxy) **mantém `scrubResult` inalterado** sobre o
+`Result` (`endpoint.go:2342`) — não há hook `ModifyResponse` nele nem seam para
+um, e o `0014` continua valendo igual. O analista recebe a resposta
+higienizada; a chave só existe na requisição de saída.
 
 ### 6. Egresso pelo cliente do gateway
 
@@ -227,20 +284,19 @@ registradas", imposta no `http.Client` do `resthttp`. A guarda de egresso:
 - recusa IP privado, `169.254.0.0/16` e loopback **pelo IP resolvido**, não
   pelo nome — a checagem roda em `net.Dialer.Control` (ou resolve uma vez e
   disca o IP literal), para fechar DNS-rebind/TOCTOU: um host cuja segunda
-  resolução vira link-local não pode escapar porque a allowlist olhou a
-  string e o dial re-resolveu. A URL `servers` do OpenAPI e qualquer host que
-  a spec sugira são **entrada não confiável**; o destino é o host registrado.
-  Um host whose-rebind-para-link-local entra no harness de aceite da Fase A.
+  resolução vira link-local não escapa porque a allowlist olhou a string e o
+  dial re-resolveu. A URL `servers` do OpenAPI e qualquer host que a spec
+  sugira são **entrada não confiável**; o destino é o host registrado. Um host
+  que rebinde para link-local entra no harness de aceite da Fase A.
 
-**`servers[].url` não é descartado inteiro.** A versão anterior mandava
-desconfiar de `servers[].url` e ficar só com o host, mas isso joga fora o
-**base path** ao qual todo path de operação é relativo (o `/api/v2` do
-`abuseipdb` → `/check` gerado dá 404). Na hora do registro: ficar só com o
-**host** sob a regra de SSRF/allowlist, mas exigir que a URL registrada (ou o
-gerador) **dobre o base path** para dentro; definir comportamento para
-múltiplas entradas `servers[]` e para templating de variáveis de servidor. A
-URL assinada (`v3-http`, §4) inclui o base path, para ficar dentro da
-assinatura.
+**`servers[].url` não é descartado inteiro.** Desconfiar de `servers[].url` e
+ficar só com o host joga fora o **base path** ao qual todo path de operação é
+relativo (o `/api/v2` do `abuseipdb` → `/check` gerado dá 404). Na hora do
+registro: ficar só com o **host** sob a regra de SSRF/allowlist, mas exigir que
+a URL registrada (ou o gerador) **dobre o base path** para dentro; definir
+comportamento para múltiplas entradas `servers[]` e para templating de
+variáveis de servidor. A URL assinada (`v3-http`, §4) inclui esquema, host,
+porta e base path.
 
 Esta é a precisão por-entrada que o `0033` havia adiado **para o novo
 transporte http, onde o gateway é o cliente**. Ela **não** fecha o passo
@@ -250,11 +306,12 @@ compartilhada — segue aberto. Aqui só vale quando o próprio gateway é o
 cliente HTTP.
 
 **Não casa com `entryNetwork`.** `entryNetwork` (`dialer.go:138`) devolve a
-constante `"host"` para todo transporte não-OCI — nunca `host:porta` — e
-`"host"`, no `0033` §3, mapeia para backend stdio: semanticamente errado para
-o firewall, e `ResolveNetwork(entry.Args)` é vazio para http. O egresso http é
-decisão própria da **Fase D**: ou dar a `entryNetwork` um ramo http explícito
-devolvendo um tipo nomeado novo (ex. `http:<host:port>` derivado de
+constante `stdioNetwork="host"` para todo transporte não-OCI (`dialer.go:140`),
+**antes** de chegar ao ramo OCI que chamaria `ResolveNetwork` (`:142`) — ou
+seja, `ResolveNetwork` nunca é invocado para http. E `"host"`, no `0033` §3,
+mapeia para backend stdio: semanticamente errado para o firewall. O egresso
+http é decisão própria da **Fase D**: ou dar a `entryNetwork` um ramo http
+explícito devolvendo um tipo nomeado novo (ex. `http:<host:port>` derivado de
 `entry.URL`) e estender o vocabulário do `0033` §3 e o verificador de
 implantação, ou manter `network="host"` e dizer claramente que o firewall do
 host trata estes upstreams como qualquer egresso da uid compartilhada.
@@ -269,60 +326,66 @@ Usa-se `gatte/<nome>/...` de forma consistente — o `gatte` reservado é
 à-prova-de-colisão porque é nome de upstream reservado — e **não** `/<nome>/...`
 na raiz, onde um nome de upstream arbitrário poderia sombrear o endpoint MCP.
 
-**O proxy não é um irmão de `Dispatch`; ele passa por `Dispatch`.** O caminho
-autoritativo `gateway.Dispatch` (`endpoint.go:2130`) aplica quatro portões que
-um segundo caminho de chamada não pode pular: `checkBlock` (kill switch,
-`:2144`, ADR-0031), `isSuspended` (`:2154`, ADR-0020), `slots.acquire`
-(concorrência por analista, `:2206`, ADR-0035) e `quota.Admit` (quota por
-analista, `:2237`, ADR-0030 — "o único lugar onde pode ir"). A operação casada
-é **canalizada por `gateway.Dispatch`** como uma tool namespaceada sintetizada,
-com o `ReverseProxy` virando o *transporte* sob `resthttp.CallTool`. O handler
-de proxy:
+**O proxy não é um irmão de `Dispatch`; ele passa por `Dispatch`, e não usa
+`ReverseProxy`.** O caminho autoritativo `gateway.Dispatch` (`endpoint.go:2130`)
+aplica quatro portões que um segundo caminho de chamada não pode pular:
+`checkBlock` (kill switch, `:2144`, ADR-0031), `isSuspended` (`:2154`,
+ADR-0020), `slots.acquire` (concorrência por analista, `:2206`, ADR-0035) e
+`quota.Admit` (quota por analista, `:2237`, ADR-0030 — "o único lugar onde pode
+ir"), grava a linha `OutcomeAllowed` **antes** de encaminhar (`:2263-2267`,
+"refusing unauditable call") e roda `scrubResult` no retorno (`:2342`). Um
+`httputil.ReverseProxy` não compõe com isso: ele escreve status/cabeçalhos/
+corpo direto no `ResponseWriter` e não devolve `Result`, enquanto
+`Upstream.CallTool` devolve `(Result, error)` sem acesso ao `ResponseWriter`
+(`gateway.go:195`). Então o handler de proxy:
 
 - autentica pelo **mesmo** caminho Authelia/OIDC (`httpapi.authenticate`,
   `httpapi.go:456`);
 - casa `método+path` de entrada contra o **conjunto de operações aprovadas**
-  de `<nome>` que o papel do chamador permite — uma operação em quarentena ou
-  fora do papel **não** é roteável; responde 404/403 a qualquer path/método
-  fora do conjunto aprovado — não é passthrough;
-- **grava a linha de trilha `OutcomeAllowed` e bloqueia no sucesso dela ANTES
-  de qualquer byte chegar ao upstream** — o invariante record-then-forward do
-  `Dispatch` ("refusing unauditable call", `endpoint.go:2263-2267`, o exato
-  comportamento que o `AGENTS.md` fixa sob a enxurrada ADR-0027). O
-  `Director`/`Rewrite` do `ReverseProxy` não tem retorno de aborto e o
-  `ModifyResponse` só roda depois que o upstream já recebeu a chamada; logo o
-  proxy **recusa pela mesma via "unauditable call"** se a trilha não puder ser
-  escrita primeiro, em vez de encaminhar e auditar depois;
-- injeta a credencial (§5), impõe a allowlist de egresso (§6), encaminha
-  (`net/http/httputil.ReverseProxy`) e higieniza a resposta com o
-  `ModifyResponse` do §5 (não `scrubResult`).
+  de `<nome>` que o papel do chamador permite — operação em quarentena, de
+  método não-safe não concedido, ou fora do papel **não** é roteável; responde
+  404/403 fora do conjunto — não é passthrough;
+- traduz a requisição na tool sintetizada correspondente e **chama
+  `gateway.Dispatch`** com ela. O round-trip HTTP, a injeção (§5) e a allowlist
+  de egresso (§6) acontecem dentro do `resthttp.CallTool`, que serializa a
+  resposta num `Result` (§2); `Dispatch` aplica os quatro portões, grava a
+  trilha antes de qualquer byte de saída e roda `scrubResult` no `Result`;
+- devolve ao analista o `Result` já higienizado, reconstituindo status/
+  cabeçalhos/corpo a partir do `Result.Content` serializado.
 
-Proxy e tools MCP são, assim, dois front-ends sobre o mesmo conjunto de
-operações, ambos por `Dispatch`: a mesma aprovação, a mesma trilha, os mesmos
-portões de bloqueio/suspensão/concorrência/quota valem para os dois.
+Assim o record-then-forward não é reimplementado no proxy: é o do `Dispatch`,
+porque a chamada do proxy **é** uma chamada do `Dispatch`. Proxy e tools MCP
+são dois front-ends sobre o mesmo conjunto de operações, ambos por `Dispatch`:
+a mesma aprovação, a mesma trilha, os mesmos portões de bloqueio/suspensão/
+concorrência/quota, a mesma higienização.
 
 ## Fases
 
 Ordem de dependência; cada uma termina num artefato verificável e as que
 tomam sub-decisão ganham ADR próprio.
 
-- **A — transporte http chamável.** Reabrir `Validate` (§1), dialer `resthttp`
-  (§2) com mapeamento manual de operação (sem OpenAPI ainda), **campo de
-  descritor de auth na entrada** (§1/§4) e injeção por cabeçalho (§5),
-  `ModifyResponse` de higienização (§5), allowlist de egresso + guarda de SSRF
-  no IP resolvido (§6). Fim: um upstream REST aprovado é chamável como tools
-  MCP. Harness: um mock REST em `lab/`, incluindo o teste de DNS-rebind do §6.
-- **B — OpenAPI → tools + assinatura v3.** Ingestão da spec (§3) com resolução
-  de `$ref` e derivação de nome colisão-segura, **persistência do conjunto de
-  operações congelado** (§3/§1), `canonical/v3-http` cobrindo URL+base path,
-  descritor de auth e digest de operações (§4), quarentena das tools geradas
-  com default-deny para métodos não-seguros. ADR próprio para a v3.
+- **A — transporte http chamável e já assinável com segurança.** Reabrir
+  `Validate` (§1); dialer `resthttp` (§2) com mapeamento manual de operação
+  (sem OpenAPI ainda) que serializa a resposta HTTP num `Result`; **campo de
+  descritor de auth na entrada E cobertura dele + URL completa pela assinatura
+  `v3-http`** (§1/§4) — a injeção do §5 não pode ir ao ar dirigida por um campo
+  não assinado; injeção por cabeçalho (§5) com a extensão URL-decodificada do
+  `scrubResult`; allowlist de egresso + guarda de SSRF no IP resolvido (§6).
+  Fim: um upstream REST aprovado é chamável como tools MCP, com o ponto de
+  injeção sob assinatura. Harness: um mock REST em `lab/`, incluindo o teste de
+  DNS-rebind do §6 e um teste de credencial refletida em cabeçalho/`Location`.
+- **B — OpenAPI → tools + digest de operações na v3.** Ingestão da spec (§3)
+  com resolução de `$ref`, união `oneOf`/`anyOf` preservada, namespacing de
+  localização, derivação de nome colisão-segura e classe de segurança por
+  método; **persistência do conjunto de operações congelado** e seu **digest na
+  `v3-http`** (§3/§4); quarentena das tools geradas com classe default-deny
+  para métodos não-safe. ADR próprio para o digest de operações na v3.
 - **C — rota de proxy reverso restrita.** O mux em `serve.go:582` com a regra
-  de prefixo `gatte/` (§7) e o handler que **roteia por `Dispatch`** (§7). ADR
+  de prefixo `gatte/` (§7) e o handler que **chama `Dispatch`** (§7). ADR
   próprio para a superfície de ingresso nova.
 - **D — endurecimento e docs.** Decisão do egresso http em `entryNetwork`/mapa
-  do `0033` (§6), **verificador de egresso que lê o host da URL assinada e
-  afirma igualdade com o mapa de implantação** (não só presença), `README`
+  do `0033` (§6), **verificador de egresso que lê `host:porta` da URL assinada
+  e afirma igualdade com o mapa de implantação** (não só presença), `README`
   (Security model), `config.example.toml`.
 
 ## Consequências
@@ -331,13 +394,19 @@ tomam sub-decisão ganham ADR próprio.
   (hoje só há clientes de saída para o IdP e o socket admin — `oidc.go:222`,
   `check.go:171`, `pkg/adminapi/client.go:73`). Toda a superfície de SSRF e de
   egresso que isso abre é tratada no §6 e é condição de aceite da Fase A.
-- **Há um campo novo no modelo de dados.** `UpstreamServer` ganha o descritor
-  de auth e o conjunto de operações congelado, com migração em `openStore`
-  (§1, §3) e codificação canônica própria em `signer.go` (§4). Não é só "um
-  dialer chegando".
-- **Dois front-ends, um caminho de chamada.** O proxy não ganha portões
-  próprios: ele passa por `Dispatch` (§7). Não há segundo lugar para manter
-  kill switch, suspensão, concorrência, quota e o invariante record-then-forward.
+- **Há campos novos no modelo de dados.** `UpstreamServer` ganha o descritor de
+  auth e a classe de segurança por operação (Fase A) e o conjunto de operações
+  congelado (Fase B), com migração em `openStore` e codificação canônica
+  própria em `signer.go` (§4). Não é só "um dialer chegando".
+- **Dois front-ends, um caminho de chamada, uma higienização.** O proxy não
+  ganha portões, nem `ReverseProxy`, nem hook de resposta próprio: ele chama
+  `Dispatch`, e o `scrubResult` de `Dispatch` (`endpoint.go:2342`) mascara a
+  resposta HTTP serializada no `Result` — não há segundo lugar para manter kill
+  switch, suspensão, concorrência, quota, record-then-forward ou mascaramento.
+- **O ponto de injeção da credencial nunca fica sem assinatura.** O descritor
+  de auth e a URL completa (esquema+host+porta+base path) são assinados na mesma
+  fase em que passam a dirigir a injeção (Fase A) — uma entrada http não é
+  servida com um campo de injeção coberto só pela v1, que não o descreve.
 - **APIs com OAuth, não com chave estática, são sub-decisão posterior.** O
   `AGENTS.md` §2 (token-passthrough) exige que, para uma API OAuth, o gateway
   **cunhe o próprio token** (client-credentials), nunca repasse o do analista.
@@ -348,15 +417,12 @@ tomam sub-decisão ganham ADR próprio.
   explícitos. Uma API sem OpenAPI fica no mapeamento manual da Fase A até
   ganhar spec.
 - **Uma única fonte de destino para o egresso http.** A allowlist em binário
-  (o `DialContext` sobre o host da URL assinada) e o mapa de firewall da
-  implantação precisam **casar**, senão um `upstream update` que move o host
-  atualiza um e deixa o outro velho (dial passa, firewall derruba em silêncio).
-  O verificador da Fase D lê o host da URL **assinada** e afirma que o
-  `host:porta` do mapa é igual a ele — a URL assinada é a fonte única; alargar
-  o destino continua sendo diff assinado, como no `0033`.
-- **A rota de proxy não higieniza como uma tool MCP sem ajuda.** `scrubResult`
-  não alcança cabeçalhos HTTP; o `ModifyResponse` do §5 é o que mascara
-  credencial em corpo e cabeçalho da resposta proxiada.
+  (o `DialContext` sobre a URL assinada) e o mapa de firewall da implantação
+  precisam **casar**, senão um `upstream update` que move o host/porta atualiza
+  um e deixa o outro velho (dial passa, firewall derruba em silêncio). O
+  verificador da Fase D lê `host:porta` da URL **assinada** e afirma que o mapa
+  é igual a ele — a URL assinada é a fonte única; alargar o destino continua
+  sendo diff assinado, como no `0033`.
 - **Não cobre, e não se afirma coberto:** paginação e APIs com estado,
   WebSocket/streaming além do teto de `max_bytes`, o passo `allow_hosts`/
   CONNECT-SNI do `0033` para backends stdio/oci na uid compartilhada (segue

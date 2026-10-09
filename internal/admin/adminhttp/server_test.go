@@ -3,12 +3,14 @@ package adminhttp_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -272,7 +274,11 @@ func TestConnections_TheSeventeenthIsClosed(t *testing.T) {
 	fmt.Fprint(c, "GET /v1/whoami HTTP/1.1\r\nHost: gatte-admin\r\n\r\n")
 	buf := make([]byte, 64)
 	n, err := c.Read(buf)
-	if err != io.EOF || n != 0 {
+	// Closed is EOF on macOS and, on Linux, ECONNRESET: the server closes
+	// without reading the request this test wrote, and a close with unread
+	// data in the receive buffer resets the connection. Either way nothing
+	// was served, which is the property.
+	if n != 0 || !(errors.Is(err, io.EOF) || errors.Is(err, syscall.ECONNRESET)) {
 		t.Fatalf("the 17th connection read (%d, %v), want it closed", n, err)
 	}
 	// Closing one frees a slot.

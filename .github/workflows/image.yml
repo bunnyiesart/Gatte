@@ -34,10 +34,30 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
+      # sops and age are on the boot path; without them the tests that run
+      # the real vault adapter skip silently and still say ok (Makefile,
+      # "test"). sops from its release, checked against its checksums, as
+      # the image does.
+      - name: sops and age
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq age
+          v=v3.13.2 a=$(dpkg --print-architecture)
+          b=https://github.com/getsops/sops/releases/download/$v
+          cd "$RUNNER_TEMP"
+          curl -fsSLO "$b/sops-$v.linux.$a"
+          curl -fsSLO "$b/sops-$v.checksums.txt"
+          grep " sops-$v.linux.$a\$" "sops-$v.checksums.txt" | sha256sum -c -
+          sudo install -m 0755 "sops-$v.linux.$a" /usr/local/bin/sops
       - name: vet
         run: go vet ./...
+      # The management API refuses a socket in a directory that another
+      # account could write, or under one (design/adr/0040), and /tmp is
+      # such a directory: the tests' t.TempDir() must live in a private one,
+      # as it does on macOS.
       - name: test
-        run: go test ./... -count=1
+        run: |
+          install -d -m 0700 "$HOME/gotmp"
+          TMPDIR="$HOME/gotmp" go test ./... -count=1
 
   image:
     needs: test

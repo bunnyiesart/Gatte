@@ -5,7 +5,7 @@
 # installation is a single `docker run`:
 #
 #     docker run -d --name gatte --restart unless-stopped -p 443:443 \
-#       -e GATTE_DOMAIN=gatte.example.org -v gatte:/gatte \
+#       -p 127.0.0.1:8090:8090 -e GATTE_DOMAIN=gatte.example.org -v gatte:/gatte \
 #       ghcr.io/bunnyiesart/gatte
 #
 # Build from the repository root:
@@ -69,7 +69,7 @@ RUN chmod 0755 /usr/local/bin/gatte-entrypoint /usr/local/bin/gatte /usr/local/s
 
 # Everything that must survive a restart is under /gatte: one volume.
 VOLUME ["/gatte"]
-EXPOSE 443 80
+EXPOSE 443 80 8090
 HEALTHCHECK --interval=30s --timeout=5s --start-period=2m \
   CMD curl -fsS -o /dev/null http://127.0.0.1:8080/.well-known/oauth-protected-resource || exit 1
 ENTRYPOINT ["/usr/bin/tini", "--", "gatte-entrypoint"]

@@ -1,0 +1,96 @@
+{{template "top" .}}
+{{$csrf := .CSRF}}{{$base := .Base}}
+<a class="back" href="{{$base}}/upstreams"><svg viewBox="0 0 8 14" width="8" height="14" aria-hidden="true"><path d="M7 1L1 7l6 6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>Backends</a>
+{{with .Data}}{{with $d := .}}{{with .D}}{{if .Name}}
+<div class="head">
+  <h1 class="mono-title">{{vis .Name}}</h1>
+  <p class="sub">{{if eq .Transport "oci"}}Container{{else if eq .Transport "http"}}REST API{{else}}Process{{end}} · {{if eq .Signature "yes"}}<span class="badge ok">{{template "check"}}Signed</span>{{else if eq .Signature "INVALID"}}<span class="badge danger">{{template "warn"}}Signature invalid</span>{{else}}<span class="badge danger">{{template "warn"}}Not signed</span>{{end}}{{with .Health}} · <span class="badge {{if eq .State "up"}}ok{{else if or (eq .State "reconnecting") (eq .State "down")}}danger{{end}}">{{state .State}}</span>{{end}}</p>
+</div>
+
+<section>
+  <h2>Entry</h2>
+  <div class="group">
+    <dl class="facts pad">
+      {{if .URL}}<div><dt>Base URL</dt><dd class="mono">{{vis .URL}}</dd></div>{{end}}
+      {{if .Command}}<div><dt>Command</dt><dd class="mono">{{vis .Command}}{{range .Args}} {{vis .}}{{end}}</dd></div>{{end}}
+      {{if .Image}}<div><dt>Image</dt><dd class="mono">{{vis .Image}}</dd></div>{{end}}
+      <div><dt>Network</dt><dd>{{if .NetworkError}}<span class="badge danger">Refused</span> {{vis .NetworkError}}{{else}}{{dash .Network}}{{end}}</dd></div>
+      <div><dt>Credentials (vault names)</dt><dd class="mono">{{range $i, $n := .EnvVarNames}}{{if $i}}, {{end}}{{vis $n}}{{else}}None{{end}}</dd></div>
+      {{with .Auth}}<div><dt>Auth</dt><dd>{{if eq .Kind "none"}}None{{else}}{{vis .Kind}}{{if .Name}} <span class="mono">{{vis .Name}}</span>{{end}}{{if .Secret}} from <span class="mono">{{vis .Secret}}</span>{{end}}{{end}}</dd></div>{{end}}
+      <div><dt>Registered</dt><dd>{{time .CreatedAt}} · last changed {{time .UpdatedAt}}</dd></div>
+      {{with .Health}}{{if .Cause}}<div><dt>Last cause</dt><dd class="mono">{{vis .Cause}}</dd></div>{{end}}{{end}}
+    </dl>
+  </div>
+</section>
+
+{{if or .Operations .OperationsError}}
+<section>
+  <h2>Operations</h2>
+  {{if .OperationsError}}<div class="notice danger" role="alert">{{template "warn"}}<p>The stored operation set does not decode: {{vis .OperationsError}}</p></div>{{end}}
+  {{if .Operations}}
+  <div class="group">
+    <table class="list">
+      <thead><tr><th>Tool</th><th>Method</th><th>Path</th><th>Class</th></tr></thead>
+      <tbody>
+      {{range .Operations}}
+        <tr><td class="mono t-title" data-label="Tool">{{vis .Name}}</td><td class="mono t-sub" data-label="Method">{{vis .Method}}</td><td class="mono wrap t-sub2" data-label="Path">{{vis .Path}}</td><td class="t-badge" data-label="Class">{{if eq .Class "sensitive"}}<span class="badge danger">Sensitive</span>{{else}}<span class="badge ok">Safe</span>{{end}}</td></tr>
+      {{end}}
+      </tbody>
+    </table>
+  </div>
+  <p class="caption">The signature covers this set: sha256:{{short .OperationsSHA256}}.</p>
+  {{end}}
+</section>
+{{end}}
+
+<section>
+  <div class="section-head"><h2>Tools in review</h2><a href="{{$base}}/tools?server={{.Name}}">All its tools</a></div>
+  {{if .Tools}}
+  <ul class="group">
+    {{range .Tools}}
+    <li><a class="row" href="{{$base}}/tools/show?server={{.Server}}&amp;tool={{.Tool}}">
+      <span class="row-text"><span class="row-title mono">{{vis .Tool}}</span><span class="row-detail">{{if .Usable}}Served{{else if eq .Status "approved"}}Approved, not served{{if eq .Class "sensitive"}}: clear it{{end}}{{else if eq .Status "changed"}}Changed since approved{{else}}Needs review{{end}}{{if eq .Class "sensitive"}} · sensitive{{end}}</span></span>
+      {{template "chev"}}
+    </a></li>
+    {{end}}
+  </ul>
+  {{else}}
+  <div class="group empty-state"><p><b>No tool seen yet.</b> The gateway lists its tools once it is signed and dialled.</p></div>
+  {{end}}
+</section>
+
+<div class="actions">
+  {{if ne .Signature "yes"}}
+  {{if $d.Root}}
+  <form method="post" action="{{$base}}/upstreams/sign">
+    <input type="hidden" name="csrf" value="{{$csrf}}">
+    <input type="hidden" name="name" value="{{.Name}}">
+    <button class="btn primary">Sign</button>
+  </form>
+  <p class="caption">Signs this entry as it is now with root's key. The gateway serves only signed entries; each tool still needs your approval.</p>
+  {{else}}
+  <p class="caption">Signing needs root's key: start the console with <code>sudo mcp-gateway ui -manage-users</code>, or run <code>sudo mcp-gateway sign {{vis .Name}}</code>.</p>
+  {{end}}
+  {{end}}
+  {{if $d.Redial}}
+  <form method="post" action="{{$base}}/upstreams/redial">
+    <input type="hidden" name="csrf" value="{{$csrf}}">
+    <input type="hidden" name="name" value="{{.Name}}">
+    <button class="btn">Redial</button>
+  </form>
+  <p class="caption">The running gateway drops its connection and dials it again, with the vault's current key. Calls in flight finish first.</p>
+  {{end}}
+</div>
+
+<section>
+  <h2>Remove</h2>
+  <form class="group form" method="post" action="{{$base}}/upstreams/remove">
+    <input type="hidden" name="csrf" value="{{$csrf}}">
+    <input type="hidden" name="name" value="{{.Name}}">
+    <label class="field wide"><span>Type {{vis .Name}} to confirm</span><input name="confirm" required autocomplete="off" spellcheck="false" class="mono"></label>
+    <div class="form-end"><button class="btn destructive">Remove backend</button></div>
+  </form>
+  <p class="caption">Deregisters it and removes its signature and every approval of its tools. A running gateway closes it at its next round. Registering it again starts its review from zero.</p>
+</section>
+{{end}}{{end}}{{end}}{{end}}
+{{template "bottom" .}}

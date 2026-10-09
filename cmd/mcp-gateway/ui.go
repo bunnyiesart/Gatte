@@ -29,6 +29,15 @@ import (
 // uiDefaultListen is not serve's 8080, so both can run side by side.
 const uiDefaultListen = "127.0.0.1:8090"
 
+// uiMaxBody bounds a POST to the console. frontkit's default, 64 KiB, fits
+// every form of a few short fields; the Add an API form of design/adr/0050
+// uploads or pastes an OpenAPI document of up to
+// adminapi.MaxUpstreamDocumentBytes (4 MiB) as multipart, and the Roles
+// form sends a roles file of up to 1 MiB url-encoded (up to three bytes per
+// byte). 6 MiB holds either with room for the other fields; the management
+// API holds each document to its own bound after that.
+const uiMaxBody = 6 << 20
+
 // uiOptions is what `ui` is started with.
 type uiOptions struct {
 	Listen         string
@@ -66,7 +75,7 @@ func cmdUI(args []string, stdout, stderr io.Writer) int {
 
 // runUI serves the console until ctx ends.
 func runUI(ctx context.Context, o uiOptions, stdout, stderr io.Writer) int {
-	kit, err := frontkit.New(frontkit.Config{Listen: o.Listen})
+	kit, err := frontkit.New(frontkit.Config{Listen: o.Listen, MaxBody: uiMaxBody})
 	if err != nil {
 		fmt.Fprintf(stderr, "ui: %v (design/adr/0036)\n", err)
 		return exitCannotRun
@@ -140,8 +149,13 @@ and quota spend.
 It is a client of the management API (mcp-gateway admin): every page is a
 call to it over the operator socket, and every button is the API's action
 of the same name, with the same checks and the same audit rows. It reads
-no configuration file and opens no database. Registering and signing a
-backend stay in the terminal.
+no configuration file and opens no database.
+
+With [admin] console_manages = true (design/adr/0050) it also adds REST
+APIs from their OpenAPI document, removes and redials backends, clears
+sensitive tools and reloads the configuration; with -manage-users as well,
+it signs backends and edits the vault's secrets and the roles file. With
+the key off, registering and signing a backend stay in the terminal.
 
 Run it as yourself, as a member of the operator socket's group; the audit
 trail names you from the kernel's credentials, not from anything you type.

@@ -146,6 +146,12 @@ by `[via ACCOUNT]`; `[signal]` for a bare `SIGHUP`.
 | `(config reload)` | `serve`, for `reload`, the API, or a bare `SIGHUP` | `allowed` when applied, `denied` when refused | `TAG applied: SUMMARY` or `TAG refused (CODE): ERROR`; a request answered by a restarted `serve` reads `TAG refused`. `SUMMARY` is `; `-separated parts: `role "R"` with ` added` or ` removed`, `+TOOL` gained, `-TOOL` lost, ` grant +G -G` for a rewritten grant, and ` non_read=true` or ` non_read=false` when the marking changed; `group "G": "FROM" -> "TO"` (`(none)` for no role); `quota "ACCOUNT" added\|removed\|changed`; `quota.free_tools changed`; or `no change to roles, groups or quota`; then `NOT applied until restart: KEYS`. Cut at 4000 bytes, ending ` ... (truncated; the full diff is in the request result)`. |
 | `(upstream redial)` | `serve`, for `upstream redial` or the API | `allowed` when done, `denied` when refused | UPSTREAM is the backend's name. `TAG was connected: true\|false; live after the round: true\|false`, with ` (CAUSE)` when not live; or `TAG refused (not_servable\|held_back): ERROR` |
 | `(upstream update)` | `upstream update` | `allowed` | `upstream "NAME" image OLD -> NEW; quarantine kept: A approved, P pending, C changed; approvals hold only for identical definitions; signature must be renewed TAG` |
+| `(upstream register)` | API/console operator socket, with `console_manages` (`design/adr/0050`) | `allowed` | `upstream "NAME" registered: http URL, N operation(s) (S safe, K sensitive), auth KIND[ NAME][ <SECRET>] TAG`; `SECRET` is the vault name, never a value |
+| `(upstream deregister)` | API/console operator socket, with `console_manages` | `allowed` | `upstream "NAME" deregistered: registered true\|false, signature removed true\|false, N quarantine entr(y\|ies) removed TAG`. A name with nothing left under it writes no row. |
+| `(upstream sign)` | API/console accounts socket, with `console_manages` | `allowed` | `upstream "NAME" signed with key FINGERPRINT TAG` |
+| `(secret set)` | API/console accounts socket, with `console_manages` | `allowed` | `secret "NAME" created\|replaced TAG`. The value is never in the row. |
+| `(secret delete)` | API/console accounts socket, with `console_manages` | `allowed` | `secret "NAME" deleted TAG`. Deleting a name the vault does not hold writes no row. |
+| `(roles set)` | API/console accounts socket, with `console_manages` | `allowed` | `roles file PATH set to sha256:HEX TAG`, the SHA-256 of the text written. The text is not applied until a `reload`, which writes its own `(config reload)` row. Writing the text already there writes no row. |
 | `(restore)` | `restore` | `allowed` | `TAG restored from a backup, sha256:SUM, N audit record(s), head HEAD`; with `; the database it replaced is kept as "PATH"`. Written into the restored trail, linked to the backup's head. |
 | `(account add)` | API/console accounts socket | `allowed` | `account "USER": groups G1, G2 TAG` (`(none)` for no group) |
 | `(account groups)` | API/console accounts socket | `allowed` | `account "USER": groups G1, G2 TAG` |
@@ -158,7 +164,9 @@ by `[via ACCOUNT]`; `[signal]` for a bare `SIGHUP`.
 The accounts backend runs as root and never opens the database: its rows,
 and the block of an offboard, are written by a short-lived child
 (`admin -audit-writer`, `admin -block-writer`) running as the database's
-owner. That child appends only account rows and `(access block)`.
+owner. That child appends only account rows, `(access block)`, and since
+`design/adr/0050` `(upstream sign)`, `(secret set)`, `(secret delete)` and
+`(roles set)`.
 
 A row that cannot be written after its change took effect leaves the
 change in force; the command exits `1`, and the API answers
@@ -183,7 +191,11 @@ ANALYST is `(gateway)` for all of these.
 
 ### What is not recorded
 
-`upstream register`, `upstream deregister` and `sign` write no row. Reads
+`upstream register`, `upstream deregister` and `sign` run from the
+terminal write no row; the same actions through the API write
+`(upstream register)`, `(upstream deregister)` and `(upstream sign)`.
+A hand edit of the vault (`sops secrets.json`) or of `roles_file` writes no
+row either. Reads
 (`list`, `show`, `review`, `audit`, `quota`, `check`, `backup`) write no
 row.
 

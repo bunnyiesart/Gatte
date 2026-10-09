@@ -11,10 +11,11 @@ import (
 	"github.com/bunnyiesart/Gatte/pkg/frontkit"
 )
 
-// ---- backends: the registry (read-only: registering and signing stay in
-// the terminal, because signing needs root's key), each backend's health,
-// and planned maintenance (design/adr/0041), which is an operator action
-// like a block.
+// ---- backends: the registry, each backend's health, and planned
+// maintenance (design/adr/0041), which is an operator action like a block.
+// With FeatureConsoleManages the page also registers an http API and links
+// each backend's own page (manage.go, design/adr/0050); without it the
+// registry is read-only here and registering stays in the terminal.
 
 type backendsData struct {
 	Upstreams []adminapi.Upstream
@@ -27,6 +28,13 @@ type backendsData struct {
 	// InMaintenance is the backends in maintenance, by name, for an
 	// older backend that serves maintenance and not health.
 	InMaintenance map[string]adminapi.Maintenance
+	// Manages is FeatureConsoleManages: the Add an API form and each
+	// backend's page. Root is -manage-users: the key's value and the
+	// signature in the same action.
+	Manages, Root bool
+	Form          registerForm
+	AuthKinds     []struct{ Value, Label string }
+	MaxDocMiB     int
 }
 
 // features asks the backend what it serves. A backend that does not
@@ -40,10 +48,21 @@ func (f *Front) features(ctx context.Context) (health, maintenance bool) {
 }
 
 func (f *Front) upstreamsPage(w http.ResponseWriter, r *http.Request) {
+	f.renderUpstreams(w, r, registerForm{}, "")
+}
+
+// renderUpstreams draws the Backends page; form and refusal are a register
+// the backend refused, shown again as typed with its reason.
+func (f *Front) renderUpstreams(w http.ResponseWriter, r *http.Request, form registerForm, refusal string) {
 	list, err := f.op.ListUpstreams(r.Context())
-	d := backendsData{Upstreams: list.Upstreams, InMaintenance: map[string]adminapi.Maintenance{}}
+	d := backendsData{Upstreams: list.Upstreams, InMaintenance: map[string]adminapi.Maintenance{},
+		Manages: f.feature(r.Context(), adminapi.FeatureConsoleManages), Root: f.acc != nil,
+		Form: form, AuthKinds: authKinds, MaxDocMiB: adminapi.MaxUpstreamDocumentBytes >> 20}
 	d.Health, d.Maintenance = f.features(r.Context())
 	errs := []string{}
+	if refusal != "" {
+		errs = append(errs, "Not registered: "+refusal)
+	}
 	if err != nil {
 		errs = append(errs, errText(err))
 	}
@@ -57,7 +76,7 @@ func (f *Front) upstreamsPage(w http.ResponseWriter, r *http.Request) {
 			d.InMaintenance[u.Upstream] = u.Maintenance
 		}
 	}
-	f.render(w, "upstreams", "Backends", page{Data: d, Error: strings.Join(errs, "\n")})
+	f.render(w, r, "upstreams", "Backends", page{Data: d, Error: strings.Join(errs, "\n")})
 }
 
 // untilOf reads the form's until: empty for none, a duration from now
@@ -119,12 +138,12 @@ func (f *Front) maintenanceOn(w http.ResponseWriter, r *http.Request) {
 	until, ok := untilOf(r.PostForm.Get("until"), time.Now())
 	if !ok {
 		text := "The end time is not a duration (2h, 90m) or a UTC date and time (2026-09-29T15:00)."
-		f.showResult(w, "upstreams", title, "/upstreams", result{Summary: text, Output: text})
+		f.showResult(w, r, "upstreams", title, "/upstreams", result{Summary: text, Output: text})
 		return
 	}
 	res, err := f.op.StartMaintenance(r.Context(), adminapi.MaintenanceRequest{Scope: scope, Upstream: upstream,
 		Message: r.PostForm.Get("message"), Until: until})
-	f.showResult(w, "upstreams", title, "/upstreams", actionResult(res.ActionResult, err))
+	f.showResult(w, r, "upstreams", title, "/upstreams", actionResult(res.ActionResult, err))
 }
 
 func (f *Front) maintenanceOff(w http.ResponseWriter, r *http.Request) {
@@ -133,7 +152,7 @@ func (f *Front) maintenanceOff(w http.ResponseWriter, r *http.Request) {
 	}
 	scope, upstream := r.PostForm.Get("scope"), r.PostForm.Get("upstream")
 	res, err := f.op.EndMaintenance(r.Context(), adminapi.MaintenanceTarget{Scope: scope, Upstream: upstream})
-	f.showResult(w, "upstreams", "End the maintenance of "+maintenanceTitle(scope, upstream), "/upstreams", actionResult(res.ActionResult, err))
+	f.showResult(w, r, "upstreams", "End the maintenance of "+maintenanceTitle(scope, upstream), "/upstreams", actionResult(res.ActionResult, err))
 }
 
 // stateLabel is how a page names a backend state; an unknown one is shown

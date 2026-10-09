@@ -32,6 +32,11 @@ BOOTSTRAP_USER=gatte-bootstrap      # disabled; see cmd_init
 RUN_DIR=/run/gatte
 OPERATOR_SOCKET=$RUN_DIR/op/operator.sock
 ACCOUNTS_SOCKET=$RUN_DIR/accounts/accounts.sock
+# The console (design/adr/0050 §4): frontkit on the container's loopback,
+# Caddy forwarding the container's CONSOLE_PORT to it, published only on the
+# host's loopback (-p 127.0.0.1:8090:8090) for an SSH tunnel.
+CONSOLE_INNER=127.0.0.1:8091
+CONSOLE_PORT=8090
 
 SERVICE_USER=gatte
 
@@ -141,17 +146,18 @@ mcp() {
 	esac
 }
 
-# assemble writes config.toml from base.toml and the operator's site files.
+# assemble writes config.toml from base.toml and the operator's extra.toml;
+# the roles stay in their own file, which config.toml names (roles_file).
 # root-owned and group-readable by the service: the gateway reads its policy
 # and cannot change it (README, "Who owns what").
 assemble_config() {
 	[ -s "$BASE" ] || die "$BASE is missing: the container has not finished its first start"
 	[ -s "$GATTE_SITE/roles.toml" ] || install -m 0644 "$TEMPLATES/roles.toml" "$GATTE_SITE/roles.toml"
+	chown root:root "$GATTE_SITE/roles.toml"
+	chmod 0644 "$GATTE_SITE/roles.toml"
 	tmp=$CONFIG.new
 	{
 		cat "$BASE"
-		printf '\n# ---- site/roles.toml ----\n'
-		cat "$GATTE_SITE/roles.toml"
 		if [ -s "$GATTE_SITE/extra.toml" ]; then
 			printf '\n# ---- site/extra.toml ----\n'
 			cat "$GATTE_SITE/extra.toml"

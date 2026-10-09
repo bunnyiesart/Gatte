@@ -1,0 +1,20 @@
+{{template "top" .}}
+{{$csrf := .CSRF}}{{$base := .Base}}
+{{with .Data}}
+<div class="head">
+  <h1>Roles</h1>
+  <p class="sub">The roles file: <code>[[role]]</code> and <code>[group_to_role]</code>. Applying writes it and reloads the gateway.</p>
+</div>
+
+{{if .Loaded}}
+<section>
+  <form class="group form" method="post" action="{{$base}}/roles">
+    <input type="hidden" name="csrf" value="{{$csrf}}">
+    <label class="field full"><span>{{if .Path}}<span class="mono">{{vis .Path}}</span>{{else}}Roles{{end}}</span><textarea class="tall" name="text" spellcheck="false" autocomplete="off">{{.Text}}</textarea></label>
+    <div class="form-end"><button class="btn primary">Apply</button></div>
+  </form>
+  <p class="caption">A text the configuration would not load is refused before anything is written, and stays here for you to fix. Then the running gateway applies the new roles without a restart.{{if .SHA256}} Read as sha256:{{short .SHA256}}.{{end}}</p>
+</section>
+{{end}}
+{{end}}
+{{template "bottom" .}}

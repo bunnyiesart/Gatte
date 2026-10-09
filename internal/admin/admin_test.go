@@ -672,3 +672,72 @@ func TestAccounts_ARootPeerReachesEveryAccount(t *testing.T) {
 		t.Fatalf("root disable of an account with no group: %v", err)
 	}
 }
+
+// TestCheckServiceKey_TheAgeIdentityMayBeTheServiceAccounts pins the rule of
+// design/adr/0050 for the vault's age identity: the directories above it are
+// held to the root rule, the file itself may belong to root or to the
+// service account, and nothing of it may be open to group or others. The
+// plain root rule refused the service account's file, which is how every
+// install documented in the README lays it out, so the console could write
+// no secret (found in the Docker image, 09 Oct 2026).
+func TestCheckServiceKey_TheAgeIdentityMayBeTheServiceAccounts(t *testing.T) {
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	me := uint32(os.Getuid())
+	key := filepath.Join(base, "age.key")
+	if err := os.WriteFile(key, []byte("AGE-SECRET-KEY-1X\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Every directory above the file is this test's user's, and the test
+	// cannot chown; so "root" is played by a trust that accepts this uid
+	// for the directories only, and the file passes only as the service
+	// account's.
+	dirs := 0
+	for d := filepath.Dir(key); ; d = filepath.Dir(d) {
+		dirs++
+		if d == filepath.Dir(d) {
+			break
+		}
+	}
+	dirsOnly := func() func(uint32) bool {
+		n := 0
+		return func(uid uint32) bool { n++; return n <= dirs && (uid == 0 || uid == me) }
+	}
+	if err := admin.CheckServiceKey(key, dirsOnly(), me); err != nil {
+		t.Fatalf("the service account's own 0600 key was refused: %v", err)
+	}
+	if err := admin.CheckServiceKey(key, dirsOnly(), me+1); err == nil {
+		t.Fatal("a key owned by neither root nor the service account was accepted")
+	}
+
+	if err := os.Chmod(key, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	err = admin.CheckServiceKey(key, dirsOnly(), me)
+	var ae *adminapi.Error
+	if !errors.As(err, &ae) || ae.Details["problem"] != "group_or_other_writable" {
+		t.Errorf("a group-readable key: %v, want group_or_other_writable", err)
+	}
+	if err := os.Chmod(key, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	link := filepath.Join(base, "link.key")
+	if err := os.Symlink(key, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := admin.CheckServiceKey(link, dirsOnly(), me); !errors.As(err, &ae) || ae.Details["problem"] != "symlink" {
+		t.Errorf("a symbolic link: %v, want symlink", err)
+	}
+
+	d := filepath.Dir(key)
+	if err := os.Chmod(d, 0o775); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(d, 0o755) })
+	if err := admin.CheckServiceKey(key, dirsOnly(), me); !errors.As(err, &ae) || ae.Details["path"] != d {
+		t.Errorf("a group-writable directory above: %v, want it named", err)
+	}
+}

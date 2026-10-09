@@ -94,6 +94,9 @@ type Deps struct {
 	// ServeWait is how long reload and redial wait for serve's answer
 	// before answering pending. Zero: DefaultServeWait.
 	ServeWait time.Duration
+
+	// ManageDeps are the ports of design/adr/0050 (manage.go).
+	ManageDeps
 }
 
 // Service is the management service. Its methods are safe for concurrent

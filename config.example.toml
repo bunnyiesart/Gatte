@@ -79,6 +79,17 @@ listen = "127.0.0.1:8080"
 # unico registro de quem chamou o que.
 database = "/var/db/mcp-gateway/mcp-gateway.db"
 
+# roles_file -- os papeis num arquivo proprio (ADR-0050 §3). Com ela, os
+# [[role]] e o [group_to_role] vem desse arquivo, que segue as mesmas regras
+# deste (chave desconhecida ou repetida e recusada), e ESTE arquivo nao pode
+# te-los: a carga recusa os dois lugares, dizendo qual. Caminho relativo e
+# resolvido contra o diretorio deste arquivo. `reload` rele os dois. E o
+# arquivo que o console escreve com [admin] console_manages = true, depois
+# de valida-lo; continua revisavel e versionavel (ADR-0009). Chave de topo:
+# fica aqui, antes de qualquer tabela.
+#
+# roles_file = "roles.toml"
+
 
 # ===========================================================================
 # [oidc] -- identidade (ADR-0008)
@@ -573,9 +584,19 @@ max_concurrent_calls_per_analyst = 4
 #                     cujos grupos estao todos em [group_to_role]; as outras
 #                     contas do IdP sao so do root (account_not_managed).
 #
+#   console_manages -- liga a gestao completa pelo console (ADR-0050): registrar,
+#                     ver, assinar e desregistrar backends http, gravar e
+#                     apagar valores do cofre (pelo sops, sem texto claro em
+#                     disco) e escrever o arquivo de papeis (roles_file).
+#                     Padrao false: com ela desligada essas operacoes
+#                     respondem feature_disabled e o binario mantem a relacao
+#                     so de leitura com o cofre. A imagem Docker a liga. Lida
+#                     a cada operacao.
+#
 # [admin]
-# operator_group = "gatte-operators"
-# account_group  = "gatte-accounts"
+# operator_group  = "gatte-operators"
+# account_group   = "gatte-accounts"
+# console_manages = false
 
 
 # ===========================================================================

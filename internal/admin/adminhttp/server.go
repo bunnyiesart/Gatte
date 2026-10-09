@@ -264,18 +264,24 @@ type request struct {
 	actor admin.Actor
 	peer  *peer
 	front string
+	// maxBody is the route's body limit; zero is MaxBody.
+	maxBody int64
 }
 
 // decode reads the JSON body into v, refusing unknown fields, a body over
 // MaxBody and a body that is not JSON. An absent body leaves v as it is.
 // It runs before the service takes its lock.
 func (r *request) decode(v any) error {
-	body := http.MaxBytesReader(r.w, r.Body, MaxBody)
+	limit := r.maxBody
+	if limit <= 0 {
+		limit = MaxBody
+	}
+	body := http.MaxBytesReader(r.w, r.Body, limit)
 	data, err := io.ReadAll(body)
 	if err != nil {
 		var mbe *http.MaxBytesError
 		if errors.As(err, &mbe) {
-			return adminapi.NewError(adminapi.CodePayloadTooLarge, "the body is over %d bytes", MaxBody)
+			return adminapi.NewError(adminapi.CodePayloadTooLarge, "the body is over %d bytes", limit)
 		}
 		return adminapi.NewError(adminapi.CodeBadRequest, "reading the body: %v", err)
 	}

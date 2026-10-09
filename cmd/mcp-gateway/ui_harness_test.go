@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bunnyiesart/Gatte/internal/admin"
 	"github.com/bunnyiesart/Gatte/internal/admin/adminhttp"
 	"github.com/bunnyiesart/Gatte/internal/config"
 	"github.com/bunnyiesart/Gatte/internal/front/gatteweb"
@@ -49,7 +50,7 @@ func uiSocketDir(t *testing.T) string {
 // uiServeBackend serves one management socket over e's database and
 // configuration, and returns its path. The configuration is read again on
 // every request: e.configPath when a test sets it, e.cfg otherwise.
-func uiServeBackend(t *testing.T, e opTestEnv, socket string) string {
+func uiServeBackend(t *testing.T, e opTestEnv, socket string, opts ...func(*admin.Deps)) string {
 	t.Helper()
 	loadCfg := func() (*config.Config, error) {
 		if e.configPath != "" {
@@ -57,7 +58,7 @@ func uiServeBackend(t *testing.T, e opTestEnv, socket string) string {
 		}
 		return e.cfg, nil
 	}
-	svc, err := newAdminService(e.db, loadCfg, io.Discard, "", nil)
+	svc, err := newAdminService(e.db, loadCfg, io.Discard, "", nil, opts...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,13 +109,21 @@ type uiHarness struct {
 // refuses a server that is not root, and this one is the test's user.
 func newUIFront(t *testing.T, e opTestEnv, manage bool) *uiHarness {
 	t.Helper()
-	h := &uiHarness{opSock: uiServeBackend(t, e, adminapi.SocketOperator)}
-	var acc *adminapi.Client
+	return newUIFrontWith(t, e, manage, nil, nil)
+}
+
+// newUIFrontWith is newUIFront with options on each backend's ports: the
+// accounts socket's root ports (signing, the vault, the roles file) are
+// the test's to give, as the real accounts backend's are root's.
+func newUIFrontWith(t *testing.T, e opTestEnv, manage bool, op, acc []func(*admin.Deps)) *uiHarness {
+	t.Helper()
+	h := &uiHarness{opSock: uiServeBackend(t, e, adminapi.SocketOperator, op...)}
+	var accClient *adminapi.Client
 	if manage {
-		h.accSock = uiServeBackend(t, e, adminapi.SocketAccounts)
-		acc = adminapi.New(h.accSock, adminapi.WithFront("ui"))
+		h.accSock = uiServeBackend(t, e, adminapi.SocketAccounts, acc...)
+		accClient = adminapi.New(h.accSock, adminapi.WithFront("ui"))
 	}
-	return startUIFront(t, h, acc)
+	return startUIFront(t, h, accClient)
 }
 
 // newUIFrontOn starts the console over whatever serves the operator socket
@@ -126,7 +135,7 @@ func newUIFrontOn(t *testing.T, sock string) *uiHarness {
 
 func startUIFront(t *testing.T, h *uiHarness, acc *adminapi.Client) *uiHarness {
 	t.Helper()
-	kit, err := frontkit.New(frontkit.Config{Listen: "127.0.0.1:0"})
+	kit, err := frontkit.New(frontkit.Config{Listen: "127.0.0.1:0", MaxBody: uiMaxBody})
 	if err != nil {
 		t.Fatal(err)
 	}

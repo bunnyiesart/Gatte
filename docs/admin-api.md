@@ -135,7 +135,9 @@ Every rule lives in the backend, so a front cannot forget one:
   `(access block)`,
   `(access unblock)`, `(maintenance on)`, `(maintenance off)`, `(config
   reload)` and `(upstream redial)` (written by `serve`),
-  `(account add|groups|disable|enable|reset password)`.
+  `(account add|groups|disable|enable|reset password)`, and with
+  `console_manages` (1.6.0) `(upstream register|deregister|sign)`,
+  `(secret set|delete)` and `(roles set)`.
 - **An approval is of the fingerprint you were shown.** Approve refuses
   without one, refuses another, and refuses if the definition moved while
   approving. A backend's whole review set is approved by its manifest,
@@ -274,6 +276,71 @@ With the feature `serve_control` (contract 1.3.0, design/adr/0044):
   whether it is live after the round.
 - `serve` writes the operator rows, `(config reload)` and `(upstream
   redial)`; `recorded` and `audit` are its.
+
+## The console manages everything
+
+With the feature `console_manages` (contract 1.6.0, design/adr/0050),
+listed in `GET /v1/whoami` only while `[admin] console_manages = true`.
+With the key off every operation below answers `feature_disabled` (403,
+`details.key` `admin.console_manages`): show no button for them.
+
+On the **operator socket**:
+
+- `GET /v1/upstreams/{name}`: one entry in detail. For http, `auth` (kind,
+  header or parameter name, and the vault NAME injected -- never a value)
+  and `operations`, each with `method`, `path` and `class`; the signature
+  state; and `tools`, every quarantine entry under the name.
+- `POST /v1/upstreams`: register a REST API. `{"name", "url",
+  "openapi_url" | "openapi_document", "auth_kind", "auth_name",
+  "key_name"}`: exactly one of the URL (http or https only, fetched once
+  under the adapter's egress guard) and the document text (at most 4 MiB);
+  a path is never read. It is `upstream register -transport http`, the
+  same ingestion and the same refusals, answered `invalid_argument` with
+  the CLI's message; `201` carries the report: `tools` with their class,
+  `skipped`, `ingest_warnings`, the effective `auth` and `auth_derived`.
+  Not idempotent: `upstream_exists` on a second call. Registering does not
+  sign. stdio and oci stay in the terminal.
+- `DELETE /v1/upstreams/{name}` with `{"confirm": NAME}`: deregister, with
+  the signature, the approvals and the health keyed by the name. Ask the
+  operator to type the name; a mismatch is `invalid_argument`
+  (`details.field` `confirm`).
+
+On the **accounts socket** (root). Signing and the writes of the vault and
+the roles are an operator's acts: a peer that is neither root nor in
+`[admin] operator_group` -- a member of `[admin] account_group` only -- is
+refused with `forbidden_peer`, as an offboard's block is.
+
+- `POST /v1/upstreams/{name}/sign`: sign with `signer.key_file`, by a
+  child `mcp-gateway sign` that drops to the database's owner before it
+  opens the database. `key_fingerprint` and `trusted`; an untrusted key
+  carries the warning `key_not_trusted` (the gateway does not serve the
+  entry until `signer.trusted_keys` lists it, which takes a restart).
+- `GET /v1/secrets`: the vault's names, never a value, and for each name a
+  registered entry declares, `declared_by` and whether it is `in_vault`.
+  The registry is read by a child running as the database's owner; when
+  that fails, `registry_read` is false and only the vault's names come
+  back -- `GET /v1/upstreams` on the operator socket has each entry's
+  `env_var_names`.
+- `PUT /v1/secrets/{name}` with `{"value": ...}` and `DELETE
+  /v1/secrets/{name}`. The name is an environment variable name; the value
+  is not empty and at most 64 KiB, and is never returned, recorded,
+  logged, or in an error. The vault is decrypted and encrypted by `sops`
+  on standard input and output (plaintext never on disk), checked to
+  decrypt again, and replaced atomically keeping its owner and mode. A
+  vault encrypted for any key besides age is refused. A connected backend
+  keeps its old value until `POST /v1/upstreams/redial` on the operator
+  socket.
+- `GET /v1/roles` and `PUT /v1/roles` with `{"text": ...}`: the
+  `roles_file`. Without `roles_file` both answer `feature_disabled` with
+  `details.key` `roles_file`. A text the configuration load would refuse
+  is answered `invalid_argument` with the load's message and not written.
+  **A write is not applied**: after a `200` with `reload_needed`, call
+  `POST /v1/reload` on the operator socket and show its diff.
+
+On the accounts socket the vault's two files and `roles_file` are held to
+the same ownership check as `config.toml` (`config_unavailable`). A hand
+edit (`sops secrets.json`, an editor on `roles_file`) at the same moment
+is not coordinated with: the last write wins.
 
 ## Backend health and maintenance
 

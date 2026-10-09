@@ -492,3 +492,47 @@ func TestReload_ARequestThatNamesNobodyStillGetsItsRow(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 }
+
+// TestReload_PicksUpAChangeInTheRolesFile is design/adr/0050 §3: with
+// roles_file the roles live in their own file, and a reload re-reads it as
+// well as the main file -- moving the roles out changes nothing anyone
+// reaches, and an edit of the roles file alone is applied.
+func TestReload_PicksUpAChangeInTheRolesFile(t *testing.T) {
+	rs := startServe(t, nil)
+	e := rs.operatorEnv(t)
+	svc, err := e.service()
+	if err != nil {
+		t.Fatal(err)
+	}
+	const roles = "[[role]]\nname = \"n1-triage\"\ntools = [\"casemgmt.list_cases\"]\n[group_to_role]\n\"soc-n1\" = \"n1-triage\"\n"
+	rolesPath := filepath.Join(filepath.Dir(rs.fx.configPath), "roles.toml")
+	if err := os.WriteFile(rolesPath, []byte(roles), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rs.rewriteConfig(t, func(s string) string {
+		moved := strings.Replace(s, "[[role]]\nname = \"n1-triage\"\ntools = [\"casemgmt.list_cases\"]\n[group_to_role]\n\"soc-n1\" = \"n1-triage\"\n", "", 1)
+		if moved == s {
+			t.Fatal("the fixture's roles are not where this test expects them")
+		}
+		return "roles_file = \"roles.toml\"\n" + moved
+	})
+	res, err := svc.Reload(context.Background(), alice)
+	if err != nil || res.Outcome != adminapi.ServeOutcomeApplied || len(res.Reload.Roles)+len(res.Reload.Groups) != 0 || len(res.Reload.NotReloaded) != 0 {
+		t.Fatalf("moving the roles into roles_file: %+v, %v", res, err)
+	}
+
+	if err := os.WriteFile(rolesPath, []byte(roles+"\"soc-hunt\" = \"n1-triage\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	res, err = svc.Reload(context.Background(), alice)
+	if err != nil || res.Outcome != adminapi.ServeOutcomeApplied {
+		t.Fatalf("Reload after editing the roles file: %+v, %v", res, err)
+	}
+	if len(res.Reload.Groups) != 1 || res.Reload.Groups[0] != (adminapi.GroupChange{Group: "soc-hunt", To: "n1-triage"}) {
+		t.Fatalf("groups = %+v", res.Reload.Groups)
+	}
+	hunter := access.Identity{Subject: "sub-2", Groups: []string{"soc-hunt"}}
+	if got := rs.stack.gateway.Policy().RolesFor(hunter); len(got) != 1 || got[0].Name != "n1-triage" {
+		t.Fatalf("after the reload soc-hunt maps to %v", got)
+	}
+}

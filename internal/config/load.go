@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 
@@ -25,6 +26,41 @@ import (
 // number is the single most useful thing in the message -- preserving it
 // is worth more than a tidier prefix.
 func Load(path string) (*Config, error) {
+	return load(path, nil)
+}
+
+// ValidateRolesText reports whether the configuration at cfgPath would
+// load with text as its roles file, without writing anything
+// (design/adr/0050 §2: "a text the configuration load would refuse is
+// refused before it is written, with the same message"). It is Load, run
+// on the file at cfgPath with text standing in for the file roles_file
+// names, so every check a later reload makes -- unknown and repeated keys
+// in the roles text, and the whole of Validate over the combined
+// configuration -- is made now.
+//
+// Pre-condition: cfgPath names a configuration with roles_file set; a
+// configuration without one is refused, since there is no roles file for
+// the text to be. Post-condition: nil means Load would accept the main
+// file with these roles; nothing on disk changed either way.
+func ValidateRolesText(cfgPath string, text []byte) error {
+	if text == nil {
+		text = []byte{}
+	}
+	_, err := load(cfgPath, text)
+	return err
+}
+
+// rolesDoc is the whole of a roles file: [[role]] and [group_to_role],
+// and nothing else -- any other key is refused as unknown, like in the
+// main file.
+type rolesDoc struct {
+	Roles       []Role            `toml:"role"`
+	GroupToRole map[string]string `toml:"group_to_role"`
+}
+
+// load is Load, with rolesText, when not nil, read in place of the file
+// roles_file names (ValidateRolesText).
+func load(path string, rolesText []byte) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("config: reading %s: %w", path, err)
@@ -43,10 +79,76 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 
+	rolesPath, err := loadRolesFile(path, md, &c, rolesText)
+	if err != nil {
+		return nil, err
+	}
+
 	if err := c.Validate(); err != nil {
-		return nil, &fileInvalidError{path: path, err: err}
+		return nil, &fileInvalidError{path: path, rolesPath: rolesPath, err: err}
 	}
 	return &c, nil
+}
+
+// loadRolesFile resolves roles_file and, when it is set, fills c.Roles and
+// c.GroupToRole from it (design/adr/0050 §3). It returns the resolved path,
+// "" when roles_file is not set.
+//
+// The main file may not also carry [[role]] or [group_to_role]: two places
+// for the roles would leave a reader of either one wrong about who reaches
+// what, and merging them would be a rule an operator has to know. The
+// roles file is held to what the main file is held to: an unknown key is
+// refused, and so is a key repeated where TOML itself keeps the last value.
+func loadRolesFile(path string, md toml.MetaData, c *Config, rolesText []byte) (string, error) {
+	if c.RolesFile == "" {
+		if rolesText != nil {
+			return "", fmt.Errorf("%w: %s: roles_file is not set, so there is no roles file for this text to be", ErrInvalid, path)
+		}
+		return "", nil
+	}
+	if strings.TrimSpace(c.RolesFile) != c.RolesFile {
+		return "", fmt.Errorf("%w: %s: roles_file %q has leading or trailing whitespace", ErrInvalid, path, c.RolesFile)
+	}
+	var both []string
+	if md.IsDefined("role") {
+		both = append(both, "[[role]]")
+	}
+	if md.IsDefined("group_to_role") {
+		both = append(both, "[group_to_role]")
+	}
+	if len(both) > 0 {
+		return "", fmt.Errorf("%w: %s: roles_file is set, and this file also has %s -- with roles_file the roles and the group mapping live in that file only (design/adr/0050 §3). Move them there, or remove roles_file",
+			ErrInvalid, path, strings.Join(both, " and "))
+	}
+	rolesPath := c.RolesFile
+	if !filepath.IsAbs(rolesPath) {
+		rolesPath = filepath.Join(filepath.Dir(path), rolesPath)
+	}
+	if abs, err := filepath.Abs(rolesPath); err == nil {
+		rolesPath = abs
+	}
+	c.RolesFile = rolesPath
+
+	data := rolesText
+	if data == nil {
+		var err error
+		if data, err = os.ReadFile(rolesPath); err != nil {
+			return "", fmt.Errorf("config: reading roles_file %s (named by %s): %w", rolesPath, path, err)
+		}
+	}
+	var doc rolesDoc
+	rmd, err := toml.Decode(string(data), &doc)
+	if err != nil {
+		return "", fmt.Errorf("config: parsing roles_file %s: %w", rolesPath, err)
+	}
+	if err := rejectUnknownKeys(rolesPath, rmd); err != nil {
+		return "", err
+	}
+	c.Roles, c.GroupToRole = doc.Roles, doc.GroupToRole
+	if err := rejectCollapsedMapKeys(rolesPath, rmd, &Config{Roles: doc.Roles}); err != nil {
+		return "", err
+	}
+	return rolesPath, nil
 }
 
 // fileInvalidError names the file a [Config.Validate] failure came from.
@@ -56,17 +158,26 @@ func Load(path string) (*Config, error) {
 // twice ("config: <path>: config: invalid"). This renders it once, in the
 // same "config: invalid: <path>: ..." shape as the other refusals in this
 // file, and still unwraps to the original error for errors.Is.
+//
+// With roles_file set the roles were validated from that file, so the
+// prefix names both: a role problem would otherwise send the operator to
+// a file that has no roles in it.
 type fileInvalidError struct {
-	path string
-	err  error
+	path      string
+	rolesPath string
+	err       error
 }
 
 func (e *fileInvalidError) Error() string {
+	where := e.path
+	if e.rolesPath != "" {
+		where += " (roles from " + e.rolesPath + ")"
+	}
 	msg := e.err.Error()
 	if rest, ok := strings.CutPrefix(msg, ErrInvalid.Error()); ok {
-		return ErrInvalid.Error() + ": " + e.path + ":" + rest
+		return ErrInvalid.Error() + ": " + where + ":" + rest
 	}
-	return "config: " + e.path + ": " + msg
+	return "config: " + where + ": " + msg
 }
 
 func (e *fileInvalidError) Unwrap() error { return e.err }

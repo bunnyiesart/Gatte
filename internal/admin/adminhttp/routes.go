@@ -25,6 +25,17 @@ type route struct {
 	h handle
 }
 
+// bodyLimit overrides MaxBody, by operation, for the routes whose body
+// carries a document (design/adr/0050): an OpenAPI document, a roles file,
+// a vault value. Each is the service's own bound times six, for JSON's
+// worst-case escaping (\u00XX), plus the envelope; every other route
+// keeps the 64 KiB of design/adr/0040 §4.
+var bodyLimit = map[string]int64{
+	"registerUpstream": 6*adminapi.MaxUpstreamDocumentBytes + MaxBody,
+	"setSecret":        6*adminapi.MaxSecretValueBytes + MaxBody,
+	"putRoles":         6*adminapi.MaxRolesTextBytes + MaxBody,
+}
+
 var (
 	opSock   = []string{adminapi.SocketOperator}
 	accSock  = []string{adminapi.SocketAccounts}
@@ -195,6 +206,70 @@ var table = []route{
 		_, _ = r.w.Write([]byte(sc.Content))
 		return 0, nil, nil
 	}},
+	// design/adr/0050: the console manages everything, behind [admin]
+	// console_manages. The registry's operations are the operator
+	// socket's (the service account owns the database); signing, the
+	// vault and the roles file need root and are the accounts socket's.
+	{Route{"GET", "/v1/upstreams/{name}", "getUpstream", opSock}, func(s *Server, r *request) (int, any, error) {
+		v, err := s.o.Service.GetUpstream(r.Context(), r.PathValue("name"))
+		return 200, v, err
+	}},
+	{Route{"POST", "/v1/upstreams", "registerUpstream", opSock}, func(s *Server, r *request) (int, any, error) {
+		var req adminapi.RegisterUpstreamRequest
+		if err := r.decode(&req); err != nil {
+			return 0, nil, err
+		}
+		v, err := s.o.Service.RegisterUpstream(r.Context(), r.actor, req)
+		return 201, v, err
+	}},
+	{Route{"DELETE", "/v1/upstreams/{name}", "deregisterUpstream", opSock}, func(s *Server, r *request) (int, any, error) {
+		var req adminapi.DeregisterRequest
+		if err := r.decode(&req); err != nil {
+			return 0, nil, err
+		}
+		v, err := s.o.Service.DeregisterUpstream(r.Context(), r.actor, r.PathValue("name"), req)
+		return 200, v, err
+	}},
+	{Route{"POST", "/v1/upstreams/{name}/sign", "signUpstream", accSock}, func(s *Server, r *request) (int, any, error) {
+		var none struct{}
+		if err := r.decode(&none); err != nil {
+			return 0, nil, err
+		}
+		v, err := s.o.Service.SignUpstream(r.Context(), r.actor, r.PathValue("name"))
+		return 200, v, err
+	}},
+	{Route{"GET", "/v1/secrets", "listSecrets", accSock}, func(s *Server, r *request) (int, any, error) {
+		v, err := s.o.Service.ListSecrets(r.Context(), r.actor)
+		return 200, v, err
+	}},
+	{Route{"PUT", "/v1/secrets/{name}", "setSecret", accSock}, func(s *Server, r *request) (int, any, error) {
+		var req adminapi.SecretValue
+		if err := r.decode(&req); err != nil {
+			return 0, nil, err
+		}
+		v, err := s.o.Service.SetSecret(r.Context(), r.actor, r.PathValue("name"), req)
+		return 200, v, err
+	}},
+	{Route{"DELETE", "/v1/secrets/{name}", "deleteSecret", accSock}, func(s *Server, r *request) (int, any, error) {
+		var none struct{}
+		if err := r.decode(&none); err != nil {
+			return 0, nil, err
+		}
+		v, err := s.o.Service.DeleteSecret(r.Context(), r.actor, r.PathValue("name"))
+		return 200, v, err
+	}},
+	{Route{"GET", "/v1/roles", "getRoles", accSock}, func(s *Server, r *request) (int, any, error) {
+		v, err := s.o.Service.GetRoles(r.Context(), r.actor)
+		return 200, v, err
+	}},
+	{Route{"PUT", "/v1/roles", "putRoles", accSock}, func(s *Server, r *request) (int, any, error) {
+		var req adminapi.RolesRequest
+		if err := r.decode(&req); err != nil {
+			return 0, nil, err
+		}
+		v, err := s.o.Service.PutRoles(r.Context(), r.actor, req)
+		return 200, v, err
+	}},
 	{Route{"GET", "/v1/groups", "assignableGroups", accSock}, func(s *Server, r *request) (int, any, error) {
 		v, err := s.o.Service.AssignableGroups(r.Context())
 		return 200, v, err
@@ -271,17 +346,23 @@ func setDisabled(disabled bool) handle {
 }
 
 func whoami(s *Server, r *request) (int, any, error) {
+	// A front asks for a feature, not a version.
+	features := []string{adminapi.FeatureMaintenance, adminapi.FeatureBackendHealth, adminapi.FeatureToolReviewSet, adminapi.FeatureServeControl,
+		adminapi.FeatureAuditFilters, adminapi.FeatureBlockUntil, adminapi.FeatureAccountDelete, adminapi.FeatureOffboard, adminapi.FeatureToolClear}
+	// Listed only when the configuration turns the operations on
+	// (design/adr/0050 §1): "the console does not show the buttons".
+	if s.o.Service.ConsoleManages() {
+		features = append(features, adminapi.FeatureConsoleManages)
+	}
 	return 200, adminapi.WhoAmI{
 		APIVersions:     []string{"v1"},
 		ContractVersion: adminapi.ContractVersion,
-		// A front asks for a feature, not a version.
-		Features: []string{adminapi.FeatureMaintenance, adminapi.FeatureBackendHealth, adminapi.FeatureToolReviewSet, adminapi.FeatureServeControl,
-			adminapi.FeatureAuditFilters, adminapi.FeatureBlockUntil, adminapi.FeatureAccountDelete, adminapi.FeatureOffboard, adminapi.FeatureToolClear},
-		GatewayVersion: s.o.GatewayVersion,
-		Socket:         s.o.Socket,
-		ConfigPath:     s.o.ConfigPath,
-		Operator:       adminapi.Operator{UID: r.peer.uid, Name: r.peer.name, Identity: admin.OperatorIdentity(r.peer.name), Via: r.peer.via},
-		Front:          r.front,
+		Features:        features,
+		GatewayVersion:  s.o.GatewayVersion,
+		Socket:          s.o.Socket,
+		ConfigPath:      s.o.ConfigPath,
+		Operator:        adminapi.Operator{UID: r.peer.uid, Name: r.peer.name, Identity: admin.OperatorIdentity(r.peer.name), Via: r.peer.via},
+		Front:           r.front,
 	}, nil
 }
 
@@ -353,7 +434,7 @@ func (s *Server) routes() *http.ServeMux {
 			}
 			p := hr.Context().Value(peerKey{}).(*peer)
 			front := hr.Header.Get(adminapi.FrontHeader)
-			req := &request{Request: hr, w: w, peer: p, front: front,
+			req := &request{Request: hr, w: w, peer: p, front: front, maxBody: bodyLimit[rt.OperationID],
 				actor: admin.Actor{Name: p.name, Via: p.via, Front: front, Root: p.uid == 0, Operator: p.operator}}
 			status, body, err := rt.h(s, req)
 			if err != nil {

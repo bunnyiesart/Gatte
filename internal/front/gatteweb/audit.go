@@ -107,7 +107,7 @@ func formTime(label, v string) (time.Time, error) {
 func (f *Front) auditPage(w http.ResponseWriter, r *http.Request) {
 	d, aq, err := f.auditForm(r)
 	if err != nil {
-		f.render(w, "audit", "Audit trail", page{Data: d, Error: err.Error()})
+		f.render(w, r, "audit", "Audit trail", page{Data: d, Error: err.Error()})
 		return
 	}
 	p, err := f.op.ListAudit(r.Context(), aq)
@@ -118,7 +118,7 @@ func (f *Front) auditPage(w http.ResponseWriter, r *http.Request) {
 		older.Set("limit", strconv.Itoa(d.Limit))
 		d.Older = template.URL(older.Encode()) // #nosec G203 -- url.Values.Encode escapes every value
 	}
-	f.render(w, "audit", "Audit trail", page{Data: d, Error: errText(err)})
+	f.render(w, r, "audit", "Audit trail", page{Data: d, Error: errText(err)})
 }
 
 // auditExport serves the filtered rows as a download, newest first, from

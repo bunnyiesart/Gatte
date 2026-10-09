@@ -78,9 +78,10 @@ func TestAudit_UntilIsParsedLikeSince(t *testing.T) {
 			t.Errorf("whoami does not list feature %s: %v", f, me.Features)
 		}
 	}
-	// 1.5.0 since design/adr/0048 (feature tool_clear); the whoami
-	// features of 1.4.0 are still listed above.
-	if me.ContractVersion != "1.5.0" {
+	// 1.6.0 since design/adr/0050 (feature console_manages, listed only
+	// when the configuration turns it on); the whoami features of 1.4.0
+	// and 1.5.0 are still listed above.
+	if me.ContractVersion != "1.6.0" {
 		t.Errorf("contract version %s", me.ContractVersion)
 	}
 }

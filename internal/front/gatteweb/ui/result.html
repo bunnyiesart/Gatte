@@ -29,7 +29,7 @@
 <div class="result">
   <span class="result-icon {{if .OK}}ok{{else}}danger{{end}}">{{if .OK}}{{template "check"}}{{else}}{{template "warn"}}{{end}}</span>
   <h1>{{$title}}</h1>
-  <p class="sub">{{if .OK}}Done.{{else}}{{vistext .Summary}}{{end}}</p>
+  <p class="sub">{{if .Summary}}{{vistext .Summary}}{{else}}Done.{{end}}</p>
   {{if .Secret}}
   <div class="secret" role="note">
     <span class="secret-label">One-time password for {{vis .SecretFor}}</span>
@@ -43,7 +43,8 @@
     <ol class="steps">{{range .Remaining}}<li>{{vis .}}</li>{{end}}</ol>
   </section>
   {{end}}
-  <a class="btn primary" href="{{.Back}}">Done</a>
+  {{if .Refresh}}<p class="actions-inline"><a class="btn" href="{{.Refresh}}">Refresh</a> <a class="btn primary" href="{{.Back}}">Done</a></p>
+  {{else}}<a class="btn primary" href="{{.Back}}">Done</a>{{end}}
 </div>
 <details class="group">
   <summary>Command output{{template "chev"}}</summary>

@@ -3,12 +3,14 @@ package adminapi_test
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -82,7 +84,9 @@ func newBackend(t *testing.T) backend {
 			{Name: "ir-act", Tools: []string{"casemgmt.close_case"}, NonRead: true}},
 		IdP:     config.IdP{UsersFile: users},
 		OIDC:    config.OIDC{Audience: "https://gateway.example.internal/mcp"},
-		Connect: config.Connect{ClientID: "claude-code", CallbackPort: 33418}}
+		Connect: config.Connect{ClientID: "claude-code", CallbackPort: 33418},
+		// design/adr/0050, so the 1.6.0 operations answer.
+		Admin: config.Admin{ConsoleManages: true}, RolesFile: "/etc/gatte/roles.toml"}
 	trail := auditsqlite.New(db)
 	tools := quarantinesqlite.New(db)
 	ctl := controlsqlite.New(db)
@@ -108,6 +112,10 @@ func newBackend(t *testing.T) backend {
 		Record:   func(ctx context.Context, _ *config.Config, rec audit.Record) error { return trail.Record(ctx, rec) },
 		Accounts: func(c *config.Config) (idp.Directory, error) { return autheliafile.New(c.IdP.UsersFile), nil },
 		IsBusy:   store.IsBusy,
+		// The ports of design/adr/0050 are adapters of the composition
+		// root (cmd/mcp-gateway, tested there); here they are stand-ins,
+		// and the rules in front of them are the real service's.
+		ManageDeps: manageStandIns(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -124,7 +132,10 @@ func serve(t *testing.T, b backend, socket string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv, err := adminhttp.New(adminhttp.Options{Socket: socket, Service: b.svc, ServiceUID: 1 << 30,
+	// The test's own group as [admin] operator_group: on the accounts
+	// socket, signing and the vault are an operator's acts (design/adr/0050).
+	gid := uint32(os.Getgid())
+	srv, err := adminhttp.New(adminhttp.Options{Socket: socket, Service: b.svc, ServiceUID: 1 << 30, OperatorGID: &gid,
 		LookupUser: func(uint32) (string, error) { return "alice", nil }})
 	if err != nil {
 		t.Fatal(err)
@@ -299,6 +310,60 @@ func TestClient_CoversEveryOperationOfTheContractAgainstTheRealBackend(t *testin
 	}
 	_, err = acc.DeleteAccount(ctx, "ana")
 	do("deleteAccount", err)
+	// 1.6.0 (design/adr/0050).
+	if me, err := op.WhoAmI(ctx); err != nil || !slices.Contains(me.Features, adminapi.FeatureConsoleManages) {
+		t.Errorf("whoami with console_manages on: %+v, %v", me.Features, err)
+	}
+	reg, err := op.RegisterUpstream(ctx, adminapi.RegisterUpstreamRequest{Name: "intel", URL: "https://api.example.org", OpenAPIDocument: "{}", AuthKind: "bearer", KeyName: "INTEL_KEY"})
+	do("registerUpstream", err)
+	if err == nil && (!reg.Changed || !reg.Recorded || len(reg.Tools) != 1 || reg.Audit.Tool != "(upstream register)") {
+		t.Errorf("registerUpstream = %+v", reg)
+	}
+	detail, err := op.GetUpstream(ctx, "intel")
+	do("getUpstream", err)
+	if err == nil && (detail.Name != "intel" || detail.Auth == nil || detail.Auth.Secret != "INTEL_KEY") {
+		t.Errorf("getUpstream = %+v", detail)
+	}
+	signed, err := acc.SignUpstream(ctx, "intel")
+	do("signUpstream", err)
+	if err == nil && (signed.KeyFingerprint == "" || signed.Audit == nil || !strings.Contains(signed.Audit.Reason, signed.KeyFingerprint)) {
+		t.Errorf("signUpstream = %+v", signed)
+	}
+	const marker = "client-marker-value-31c7"
+	setRes, err := acc.SetSecret(ctx, "INTEL_KEY", marker)
+	do("setSecret", err)
+	if err == nil && (!setRes.Changed || setRes.Audit == nil || setRes.Audit.Tool != "(secret set)") {
+		t.Errorf("setSecret = %+v", setRes)
+	}
+	secrets, err := acc.ListSecrets(ctx)
+	do("listSecrets", err)
+	if err == nil && (len(secrets.Secrets) != 1 || secrets.Secrets[0].Name != "INTEL_KEY" || !secrets.Secrets[0].InVault) {
+		t.Errorf("listSecrets = %+v", secrets)
+	}
+	if b, _ := json.Marshal([]any{setRes, secrets}); strings.Contains(string(b), marker) {
+		t.Error("a secret value came back")
+	}
+	_, err = acc.DeleteSecret(ctx, "INTEL_KEY")
+	do("deleteSecret", err)
+	roles, err := acc.GetRoles(ctx)
+	do("getRoles", err)
+	if err == nil && roles.Path != "/etc/gatte/roles.toml" {
+		t.Errorf("getRoles = %+v", roles)
+	}
+	put, err := acc.PutRoles(ctx, roles.Text+"\n# edited\n")
+	do("putRoles", err)
+	if err == nil && (!put.Changed || !put.ReloadNeeded) {
+		t.Errorf("putRoles = %+v", put)
+	}
+	if _, err := op.DeregisterUpstream(ctx, "intel", "inte"); !adminapi.IsCode(err, adminapi.CodeInvalidArgument) {
+		t.Errorf("deregister with a wrong confirm: %v", err)
+	}
+	dereg, err := op.DeregisterUpstream(ctx, "intel", "intel")
+	do("deregisterUpstream", err)
+	if err == nil && (!dereg.Changed || !dereg.Registered) {
+		t.Errorf("deregisterUpstream = %+v", dereg)
+	}
+
 	// Last: with no group left, the account is out of a non-root peer's
 	// reach (design/adr/0040 §1).
 	_, err = acc.SetAccountGroups(ctx, "bruno", []string{})
@@ -374,5 +439,65 @@ func TestClient_OmitsOptionalFieldsLeftAtZero(t *testing.T) {
 	}
 	if got := <-bodies; strings.Contains(got, "expect_head") {
 		t.Fatalf("body %s carries the unset optional field", got)
+	}
+}
+
+// memVault and memRoles are in-memory stand-ins for the vault and the
+// roles file.
+type memVault struct{ values map[string][]byte }
+
+func (v *memVault) Names(context.Context, *config.Config) ([]string, error) {
+	var out []string
+	for n := range v.values {
+		out = append(out, n)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+func (v *memVault) Set(_ context.Context, _ *config.Config, name string, value []byte) (bool, error) {
+	_, ok := v.values[name]
+	v.values[name] = append([]byte(nil), value...)
+	return ok, nil
+}
+
+func (v *memVault) Delete(_ context.Context, _ *config.Config, name string) (bool, error) {
+	_, ok := v.values[name]
+	delete(v.values, name)
+	return ok, nil
+}
+
+type memRoles struct{ text []byte }
+
+func (r *memRoles) Read(*config.Config) ([]byte, error)    { return r.text, nil }
+func (r *memRoles) Write(_ *config.Config, b []byte) error { r.text = b; return nil }
+
+func manageStandIns() admin.ManageDeps {
+	registered := map[string]adminapi.RegisterUpstreamRequest{}
+	return admin.ManageDeps{
+		UpstreamDetail: func(_ context.Context, _ *config.Config, name string) (adminapi.UpstreamDetail, error) {
+			r, ok := registered[name]
+			if !ok {
+				return adminapi.UpstreamDetail{}, adminapi.NewError(adminapi.CodeNotFound, "no registered backend is named %q", name)
+			}
+			return adminapi.UpstreamDetail{Upstream: adminapi.Upstream{Name: name, Transport: "http", URL: r.URL, EnvVarNames: []string{r.KeyName}, Signature: "no"},
+				Auth: &adminapi.UpstreamAuth{Kind: r.AuthKind, Secret: r.KeyName}}, nil
+		},
+		RegisterHTTP: func(_ context.Context, _ *config.Config, req adminapi.RegisterUpstreamRequest) (adminapi.RegisterUpstreamResult, error) {
+			registered[req.Name] = req
+			return adminapi.RegisterUpstreamResult{Name: req.Name, URL: req.URL, Source: "the document sent", Signature: "no",
+				Auth: adminapi.UpstreamAuth{Kind: req.AuthKind, Secret: req.KeyName}, Tools: []adminapi.UpstreamOperation{{Name: "list", Method: "GET", Path: "/items"}}}, nil
+		},
+		Deregister: func(_ context.Context, _ *config.Config, name string) (adminapi.DeregisterResult, error) {
+			_, ok := registered[name]
+			delete(registered, name)
+			return adminapi.DeregisterResult{Registered: ok}, nil
+		},
+		Sign: func(context.Context, *config.Config, string) (admin.SignOutcome, error) {
+			return admin.SignOutcome{KeyFingerprint: "SHA256:stand-in", Trusted: true}, nil
+		},
+		Vault:         &memVault{values: map[string][]byte{}},
+		Roles:         &memRoles{text: []byte("[[role]]\nname = \"ir\"\ntools = []\n")},
+		ValidateRoles: func([]byte) error { return nil },
 	}
 }

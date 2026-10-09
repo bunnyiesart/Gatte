@@ -44,7 +44,7 @@ func (f *Front) peoplePage(w http.ResponseWriter, r *http.Request) {
 		}
 		d.Accounts = list.Accounts
 	}
-	f.render(w, "people", "People", page{Data: d, Error: strings.Join(errs, "\n")})
+	f.render(w, r, "people", "People", page{Data: d, Error: strings.Join(errs, "\n")})
 }
 
 type accountData struct {
@@ -69,7 +69,7 @@ func (f *Front) accountPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		f.render(w, "account", "Account", page{Nav: "people", Error: errText(err)})
+		f.render(w, r, "account", "Account", page{Nav: "people", Error: errText(err)})
 		return
 	}
 	d := accountData{Account: a, Has: map[string]bool{}}
@@ -87,7 +87,7 @@ func (f *Front) accountPage(w http.ResponseWriter, r *http.Request) {
 			d.Seen = p.Seen
 		}
 	}
-	f.render(w, "account", frontkit.VisibleText(a.DisplayName), page{Nav: "people", Data: d, Error: errText(err)})
+	f.render(w, r, "account", frontkit.VisibleText(a.DisplayName), page{Nav: "people", Data: d, Error: errText(err)})
 }
 
 // accountAction runs one account change and shows its result. A one-time
@@ -119,7 +119,7 @@ func (f *Front) accountAction(w http.ResponseWriter, r *http.Request, title stri
 		panel := f.connectPanelFor(r, username)
 		res.Connect = &panel
 	}
-	f.render(w, "result", title+" "+frontkit.VisibleText(username), page{Nav: "people", Data: res.withBack(f.kit.Base() + back)})
+	f.render(w, r, "result", title+" "+frontkit.VisibleText(username), page{Nav: "people", Data: res.withBack(f.kit.Base() + back)})
 }
 
 // lostAnswer reports whether err is a call that got no answer from the
@@ -197,7 +197,7 @@ func (f *Front) accountOffboard(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	f.render(w, "result", "Offboard "+frontkit.VisibleText(u), page{Nav: "people", Data: out.withBack(f.kit.Base() + "/people/account?u=" + url.QueryEscape(u))})
+	f.render(w, r, "result", "Offboard "+frontkit.VisibleText(u), page{Nav: "people", Data: out.withBack(f.kit.Base() + "/people/account?u=" + url.QueryEscape(u))})
 }
 
 // accountDelete removes the account. The form carries a confirmation the
@@ -209,12 +209,12 @@ func (f *Front) accountDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	u := r.PostForm.Get("username")
 	if r.PostForm.Get("confirm") != "yes" {
-		f.showResult(w, "people", "Delete "+frontkit.VisibleText(u), "/people/account?u="+url.QueryEscape(u),
+		f.showResult(w, r, "people", "Delete "+frontkit.VisibleText(u), "/people/account?u="+url.QueryEscape(u),
 			result{Summary: "Nothing was deleted: tick the confirmation first."})
 		return
 	}
 	res, err := f.acc.DeleteAccount(r.Context(), u)
-	f.showResult(w, "people", "Delete "+frontkit.VisibleText(u), "/people", actionResult(res.ActionResult, err))
+	f.showResult(w, r, "people", "Delete "+frontkit.VisibleText(u), "/people", actionResult(res.ActionResult, err))
 }
 
 // ---- connect
@@ -241,7 +241,7 @@ func (f *Front) connectPanelFor(r *http.Request, username string) connectPanel {
 
 func (f *Front) connectPage(w http.ResponseWriter, r *http.Request) {
 	p := f.connectPanelFor(r, r.URL.Query().Get("u"))
-	f.render(w, "connect", "Connect a computer", page{Nav: "people", Data: p, Error: p.Error})
+	f.render(w, r, "connect", "Connect a computer", page{Nav: "people", Data: p, Error: p.Error})
 }
 
 var fileNameRe = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
@@ -336,5 +336,5 @@ func (f *Front) newPersonPage(w http.ResponseWriter, r *http.Request) {
 			d.Step = 3
 		}
 	}
-	f.render(w, "newperson", "Add a person", page{Nav: "people", Data: d, Error: strings.Join(errs, "\n")})
+	f.render(w, r, "newperson", "Add a person", page{Nav: "people", Data: d, Error: strings.Join(errs, "\n")})
 }

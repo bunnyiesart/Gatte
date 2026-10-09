@@ -1,0 +1,96 @@
+{{template "top" .}}
+{{$title := .Title}}{{$base := .Base}}
+{{with .Data}}
+<div class="result">
+  <span class="result-icon {{if or (not .Secret) .SecretOK}}ok{{else}}danger{{end}}">{{if or (not .Secret) .SecretOK}}{{template "check"}}{{else}}{{template "warn"}}{{end}}</span>
+  <h1>{{$title}}</h1>
+  <p class="sub">{{len .Res.Tools}} {{if eq (len .Res.Tools) 1}}tool{{else}}tools{{end}}: {{.Safe}} safe, {{.Sensitive}} sensitive. Each waits for your review.</p>
+</div>
+
+<section>
+  <h2>What was done</h2>
+  <ul class="group">
+    <li class="row">
+      <span class="lead-icon ok">{{template "check"}}</span>
+      <span class="row-text"><span class="row-title">Registered</span><span class="row-detail"><span class="mono">{{vis .Res.URL}}</span> · from {{vis .Res.Source}}{{if .Res.FetchedBytes}} ({{.Res.FetchedBytes}} bytes){{end}}</span></span>
+    </li>
+    <li class="row">
+      <span class="lead-icon {{if .Res.AuthDerived}}changed{{else}}ok{{end}}">{{if .Res.AuthDerived}}{{template "warn"}}{{else}}{{template "check"}}{{end}}</span>
+      <span class="row-text"><span class="row-title">Auth: {{if eq .Res.Auth.Kind "none"}}none{{else}}{{vis .Res.Auth.Kind}}{{if .Res.Auth.Name}} <span class="mono">{{vis .Res.Auth.Name}}</span>{{end}}{{if .Res.Auth.Secret}} from <span class="mono">{{vis .Res.Auth.Secret}}</span>{{end}}{{end}}</span>
+      <span class="row-detail">{{if .Res.AuthDerived}}Derived from the document's securitySchemes, not chosen by you: check it. The gateway injects the key there on every call.{{else}}As you chose it.{{end}}</span></span>
+    </li>
+    {{if .Secret}}
+    <li class="row">
+      <span class="lead-icon {{if .SecretOK}}ok{{else}}changed{{end}}">{{if .SecretOK}}{{template "check"}}{{else}}{{template "warn"}}{{end}}</span>
+      <span class="row-text"><span class="row-title">Key</span><span class="row-detail">{{vis .Secret}}</span></span>
+    </li>
+    {{end}}
+    <li class="row">
+      {{if .Root}}
+      <span class="lead-icon unsigned">{{template "warn"}}</span>
+      <span class="row-text"><span class="row-title">Not signed yet</span><span class="row-detail">Check the address, where the key goes and the operations on this page, then sign. Until then it isn't served.</span></span>
+      <form method="post" action="{{$base}}/upstreams/sign"><input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="name" value="{{.Res.Name}}"><button class="btn primary small">Sign {{vis .Res.Name}}</button></form>
+      {{else}}
+      <span class="lead-icon unsigned">{{template "warn"}}</span>
+      <span class="row-text"><span class="row-title">Not signed</span><span class="row-detail">Signing needs root's key: <code>sudo mcp-gateway sign {{vis .Res.Name}}</code>, or a console started with <code>sudo mcp-gateway ui -manage-users</code>. Until then it isn't served.</span></span>
+      {{end}}
+    </li>
+    {{if .Grant}}
+    <li class="row">
+      <span class="lead-icon {{if .GrantOK}}ok{{else}}changed{{end}}">{{if .GrantOK}}{{template "check"}}{{else}}{{template "warn"}}{{end}}</span>
+      <span class="row-text"><span class="row-title">Access</span><span class="row-detail">{{vistext .Grant}}</span></span>
+    </li>
+    {{end}}
+  </ul>
+</section>
+
+{{if .Warnings}}
+<section>
+  <h2>Warnings</h2>
+  <ul class="group">{{range .Warnings}}<li class="row"><span class="lead-icon changed">{{template "warn"}}</span><span class="row-text"><span class="row-detail">{{vis .}}</span></span></li>{{end}}</ul>
+</section>
+{{end}}
+
+<section>
+  <h2>Tools</h2>
+  {{if .Res.Tools}}
+  <div class="group">
+    <table class="list">
+      <thead><tr><th>Tool</th><th>Method</th><th>Path</th><th>Class</th></tr></thead>
+      <tbody>
+      {{range .Res.Tools}}
+        <tr><td class="mono t-title" data-label="Tool">{{vis .Name}}</td><td class="mono t-sub" data-label="Method">{{vis .Method}}</td><td class="mono wrap t-sub2" data-label="Path">{{vis .Path}}</td><td class="t-badge" data-label="Class">{{if eq .Class "sensitive"}}<span class="badge danger">Sensitive</span>{{else}}<span class="badge ok">Safe</span>{{end}}</td></tr>
+      {{end}}
+      </tbody>
+    </table>
+  </div>
+  {{else}}
+  <div class="group empty-state"><p><b>No operation became a tool.</b></p></div>
+  {{end}}
+</section>
+
+{{if .Res.Skipped}}
+<section>
+  <h2>Skipped</h2>
+  <ul class="group">{{range .Res.Skipped}}<li class="row"><span class="row-text"><span class="row-detail mono">{{vis .}}</span></span></li>{{end}}</ul>
+  <p class="caption">Operations the gateway cannot serve, left out of the entry.</p>
+</section>
+{{end}}
+
+<section>
+  <h2>Next</h2>
+  <ol class="steps">
+    <li><span class="step-body"><p><b>Review and approve its tools.</b> Nothing is served before you approve it.</p><a class="btn primary small" href="{{$base}}{{.ReviewAt}}">Review the tools</a></span></li>
+    {{if .Sensitive}}<li><span class="step-body"><p><b>Clear the sensitive ones you want served.</b> {{.Sensitive}} {{if eq .Sensitive 1}}tool can{{else}}tools can{{end}} act: after approving, open each and clear it. Only a role marked <code>non_read</code> that names it reaches it.</p></span></li>{{end}}
+    {{if not .Signed}}<li><span class="step-body"><p><b>Sign it.</b> An unsigned backend isn't served.</p></span></li>{{end}}
+    {{if not .GrantOK}}<li><span class="step-body"><p><b>Grant it to a role.</b> No analyst sees its tools until a role grants them.</p>{{if .Root}}<a class="btn small" href="{{$base}}/roles">Roles</a>{{end}}</span></li>{{end}}
+  </ol>
+  <p class="center"><a class="btn" href="{{$base}}/upstreams/show?name={{.Res.Name}}">Open {{vis .Res.Name}}</a></p>
+</section>
+
+<details class="group">
+  <summary>Command output{{template "chev"}}</summary>
+  <pre>{{vistext .Output}}</pre>
+</details>
+{{end}}
+{{template "bottom" .}}

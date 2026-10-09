@@ -26,7 +26,11 @@ import (
 // not among them: the MCP endpoint builds its instructions once, when
 // serve starts, so a change to them is reported by NotReloaded until the
 // next restart.
-var Reloadable = []string{"role", "group_to_role", "quota"}
+//
+// roles_file is among them (design/adr/0050 §3): a reload re-reads the
+// main file and the roles file it names, so pointing roles_file at
+// another file is applied as the roles that file holds.
+var Reloadable = []string{"role", "group_to_role", "quota", "roles_file"}
 
 // RoleChange is what one role reaches before and after the reload, over
 // the tools the gateway routes now.

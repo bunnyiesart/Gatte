@@ -14,7 +14,7 @@ original, with the reasoning behind each key, is
 | No secret values | The file holds paths and identifiers only. Credentials live in the sops-encrypted vault; keys live in owner-only files. |
 | Unknown key | Refused at load, naming the key. A misspelled key never loads silently. Comment a key out with `#`; do not rename it. |
 | Repeated key | `signer.trusted_keys`, a role's `tools` and a key inside one `[role.grants]` are refused when written twice, even where TOML itself would keep the last value. Two different `[[role]]` blocks granting the same backend are fine. |
-| Every problem at once | Validation reports every problem in the file in one error, prefixed `config: invalid: PATH:`. |
+| Every problem at once | Validation reports every problem in the file in one error, prefixed `config: invalid: PATH:` (`config: invalid: PATH (roles from ROLES_PATH):` with `roles_file`). |
 | Durations | A string with a unit: `"5m"`, `"30s"`, `"24h"`. A bare integer is read as nanoseconds; the minimums below exist to catch that. |
 | Paths | `database`, `vault.secrets_file`, `vault.age_key_file` and `signer.key_file` are used as written: leading or trailing whitespace is refused, not trimmed. |
 | Who reads it | `serve`, every operator command (on every run), `admin` (on every operation), `admin -accounts` (on every request, after checking the file's ownership), `check`, `sign`, `backup`, `restore`. `ui` and `sign -generate-key` read no configuration file. |
@@ -23,10 +23,10 @@ original, with the reasoning behind each key, is
 
 | Keys | How to apply | Takes effect |
 |---|---|---|
-| `[[role]]` (`tools`, `non_read`), `[role.grants]`, `[group_to_role]`, `[[quota.provider]]`, `quota.free_tools` | `mcp-gateway reload` (or `SIGHUP`) | `serve`'s next call; a client sees tools it gained after it reconnects |
+| `[[role]]` (`tools`, `non_read`), `[role.grants]`, `[group_to_role]`, `roles_file` and the file it names, `[[quota.provider]]`, `quota.free_tools` | `mcp-gateway reload` (or `SIGHUP`) | `serve`'s next call; a client sees tools it gained after it reconnects |
 | `signer.key_file` | nothing | the next `sign` run |
-| `[connect]`, `[idp]` | nothing | the management backend's next operation |
-| `[admin]` | restart the management backend | when `admin` next starts (a socket-activated backend exits after 5 minutes idle) |
+| `[connect]`, `[idp]`, `admin.console_manages` | nothing | the management backend's next operation |
+| `admin.operator_group`, `admin.account_group` | restart the management backend | when `admin` next starts (a socket-activated backend exits after 5 minutes idle) |
 | Every other key: `listen`, `database`, `[oidc]`, `[vault]`, `signer.trusted_keys`, `signer.require_signed`, `[quarantine]`, `[response]`, `[audit.siem]`, `[telemetry]`, `[oci]`, `[upstreams]`, `[analyst]` | restart `serve` | after the restart |
 
 `reload` validates the whole file and applies only the reloadable part. It
@@ -42,6 +42,7 @@ already applies to them while `serve` still runs with the old value.
 |---|---|---|---|---|
 | `listen` | string | `"127.0.0.1:8080"` | no | The MCP endpoint's `host:port`. The host must be `localhost` or a loopback address; any other bind is refused, with no override (`design/adr/0011`). The port must be present, a number from 0 to 65535 or a known service name; an explicit `:0` is accepted. `restore` binds this address to confirm `serve` is stopped. |
 | `database` | string | none | yes | Path of the SQLite file: registry, quarantine, audit trail, signatures, quota counters, blocklist, health and maintenance, operator requests. Its directory must be writable by the service account. |
+| `roles_file` | string | `""` | no | A file holding the `[[role]]` blocks and the `[group_to_role]` table instead of this one (`design/adr/0050` §3). Held to this file's rules: an unknown key, or a key repeated where TOML keeps the last value, is refused, naming the roles file. With it set, this file may hold neither: a file with both is refused at load. A relative path is resolved against this file's directory. `reload` re-reads both files. With `[admin] console_manages` it is the file the console writes (`PUT /v1/roles`), after validating the text as this load would; on the accounts socket it must pass the same ownership check as `config.toml`. No leading or trailing whitespace. |
 
 ## [oidc]
 
@@ -171,6 +172,7 @@ The socket file's group and mode are the first barrier.
 |---|---|---|---|---|
 | `operator_group` | string | `""` | no | The group an operator-socket peer must have, unless it is root or the service account. When set, an operator socket open to a group must be of this group. The group must exist when `admin` starts. |
 | `account_group` | string | `""` | no | Delegates account editing to a group without `sudo`. Takes effect only with an accounts socket of that group and mode `0660`; a mismatch stops `admin -accounts` from starting. The group reaches only accounts whose groups are all in `[group_to_role]`. |
+| `console_manages` | bool | `false` | no | Turns on the management operations of `design/adr/0050`: on the operator socket, an entry in detail, registering an http backend from its OpenAPI document and deregistering; on the accounts socket, signing, writing and deleting vault values (through `sops`, plaintext never on disk; `[vault]`'s two files held to the ownership check) and writing `roles_file`. Off, each answers `feature_disabled` and the binary's relationship with the vault stays read-only. Read on every operation. |
 
 ## [connect]
 

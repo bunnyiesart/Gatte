@@ -18,8 +18,8 @@ You need Docker (or Podman), and DNS for two names pointing at the host:
 
 ```sh
 docker run -d --name gatte --restart unless-stopped \
-  -p 443:443 -e GATTE_DOMAIN=gatte.example.org \
-  -v gatte:/gatte ghcr.io/bunnyiesart/gatte:0.2.0
+  -p 443:443 -p 127.0.0.1:8090:8090 -e GATTE_DOMAIN=gatte.example.org \
+  -v gatte:/gatte ghcr.io/bunnyiesart/gatte:0.3.0
 ```
 
 The first start makes every key, the encrypted vault, a private certificate
@@ -43,6 +43,24 @@ Every command below is `docker exec -it gatte gatte ...`. To shorten it:
 ```sh
 alias gatte='docker exec -it gatte gatte'
 ```
+
+## The web console
+
+Everything below can also be done in the browser: add, sign and remove
+APIs, approve and clear tools, set and delete API keys, edit the roles,
+manage people, read the audit trail (design/adr/0050). The console is never
+exposed to the network: the container publishes it on the host's loopback
+only (`-p 127.0.0.1:8090:8090`), and you reach it through SSH. Other
+containers on the same Docker network can reach the container's 8090; what
+stops them is the one-time login link, which only `docker exec` prints.
+
+```sh
+docker exec gatte gatte console            # prints a one-time login link
+ssh -L 8090:127.0.0.1:8090 you@the-host    # from your machine, then open the link
+```
+
+The link works once. Running `gatte console` again ends the session and
+prints a new one; `gatte console stop` closes it.
 
 ## Add an API
 
@@ -174,7 +192,7 @@ against the key beside them.
 
 ```sh
 docker run -d --name gatte -p 8443:8443 -e GATTE_DOMAIN=gatte.localtest.me \
-  -e GATTE_PORT=8443 -v gatte:/gatte ghcr.io/bunnyiesart/gatte:0.2.0
+  -e GATTE_PORT=8443 -v gatte:/gatte ghcr.io/bunnyiesart/gatte:0.3.0
 ```
 
 ## Build it yourself
@@ -190,8 +208,9 @@ keep their services in a compose file.
 
 - Gatte refuses an API on a private or loopback address (`10.x`,
   `192.168.x`, `127.x`). This is its egress guard (`design/adr/0048`).
-- The web console is not exposed yet. Everything it does for people and
-  tools is a `gatte` command above.
+- The console has one session at a time, and records its actions in the
+  audit trail as `root`: who was at the other end of the SSH tunnel is in
+  the host's SSH log.
 - `upstream update` does not re-read an OpenAPI document. To pick up a new
   version: `gatte api rm NAME`, then `gatte api add` again.
 - No backup timer. With the container stopped,

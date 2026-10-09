@@ -232,6 +232,9 @@ cmd_run() {
 	PIDS="$AUTHELIA_PID $CADDY_PID"
 
 	mkdirs 0755 root:root "$RUN_DIR"
+	# A console of a previous start is gone with its process; its pidfile
+	# would name whatever reuses the number.
+	rm -f "$RUN_DIR"/console.*
 	mkdirs 0700 "$SERVICE_USER:$SERVICE_USER" "$RUN_DIR/op"
 	mkdirs 0700 root:root "$RUN_DIR/accounts"
 	keep "$OPERATOR_SOCKET" as_service mcp-gateway admin -config "$CONFIG" -socket "$OPERATOR_SOCKET" -idle 0 &

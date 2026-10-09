@@ -205,6 +205,21 @@ that only exists inside a closed section is an item nobody re-reads:
   `_`/`-` folded in header names, `..;` segments and `//` base paths refused.
   Until step 4 above landed, an `http` entry had no operation set and could
   not be registered.
+- ✅ **The console manages everything (ADR-0050, 0.3.0) — 09 Oct 2026.**
+  With `[admin] console_manages = true` (the Docker image sets it; a host
+  install keeps ADR-0036/0040/0009 unless it does): register a REST API from
+  its OpenAPI (URL, pasted or uploaded), sign it (a second click, on the page
+  that shows what is signed), remove it (the name typed), clear a sensitive
+  tool, set and delete vault secrets (never shown; sops through stdin), edit
+  the roles (`roles_file`, validated before it is written), reload and
+  redial. Admin contract 1.6.0. In the image the console is reached only
+  through an SSH tunnel (`-p 127.0.0.1:8090:8090`, `gatte console` prints a
+  one-time link). Verified end to end in the container through the console
+  alone, then an analyst's PKCE call through the gateway; an adversarial
+  review caught a template the `.gitignore` dropped, a `-h` backend name that
+  recorded a signature that never happened, and signing in the same click
+  as registering — all fixed before release. Open: one console session at a
+  time; the console's actions are attributed to `root` in the image.
 - ✅ **Gatte in one container (ADR-0049, 0.2.0) — 09 Oct 2026.** Caddy and
   Authelia now ship inside the image: installing is one `docker run` with
   `-e GATTE_DOMAIN` and a volume, no file on the host. Each process runs as

@@ -72,6 +72,15 @@ type Config struct {
 	Admin      Admin      `toml:"admin"`
 	Analyst    Analyst    `toml:"analyst"`
 
+	// RolesFile, when set, is the file the [[role]] blocks and the
+	// [group_to_role] table come from instead of this one
+	// (design/adr/0050 §3): the roles stay a reviewable, versionable file
+	// (design/adr/0009), and the console can write it after validating.
+	// A relative path is resolved against this file's directory by Load,
+	// which stores the absolute path here, so every reader (serve, reload,
+	// check, admin) sees the same file. This file may then hold neither.
+	RolesFile string `toml:"roles_file"`
+
 	// Roles defines what each role may call. Order is irrelevant.
 	Roles []Role `toml:"role"`
 
@@ -1489,6 +1498,13 @@ type Admin struct {
 	// takes effect only with the accounts socket file of that group and
 	// 0660; the backend refuses a mismatch at startup.
 	AccountGroup string `toml:"account_group"`
+	// ConsoleManages turns on the management operations of
+	// design/adr/0050: registering, signing and deregistering http
+	// backends, and editing the vault and the roles file, through the
+	// management API and the console. Off by default: with it off a host
+	// install is exactly what 0009, 0036 and 0040 decided, and each of
+	// those operations answers feature_disabled.
+	ConsoleManages bool `toml:"console_manages"`
 }
 
 // Connect is what the console's connect scripts put on an analyst's

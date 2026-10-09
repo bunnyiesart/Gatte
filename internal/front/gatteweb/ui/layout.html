@@ -18,6 +18,10 @@
       <a href="{{$.Base}}/access" {{if eq .Nav "access"}}aria-current="page"{{end}}>Access</a>
       <a href="{{$.Base}}/audit" {{if eq .Nav "audit"}}aria-current="page"{{end}}>Audit</a>
       <a href="{{$.Base}}/upstreams" {{if eq .Nav "upstreams"}}aria-current="page"{{end}}>Backends</a>
+      {{if and .Manages .Root}}
+      <a href="{{$.Base}}/secrets" {{if eq .Nav "secrets"}}aria-current="page"{{end}}>Secrets</a>
+      <a href="{{$.Base}}/roles" {{if eq .Nav "roles"}}aria-current="page"{{end}}>Roles</a>
+      {{end}}
       <a href="{{$.Base}}/quota" {{if eq .Nav "quota"}}aria-current="page"{{end}}>Quota</a>
     </nav>
   </div>

@@ -7,12 +7,12 @@
 # The one-command install needs no file at all:
 #
 #     docker run -d --name gatte --restart unless-stopped -p 443:443 \
-#       -e GATTE_DOMAIN=gatte.example.org -v gatte:/gatte \
+#       -p 127.0.0.1:8090:8090 -e GATTE_DOMAIN=gatte.example.org -v gatte:/gatte \
 #       ghcr.io/bunnyiesart/gatte
 
 services:
   gatte:
-    # Pin a release (GATTE_VERSION=0.2.0) in production; latest moves.
+    # Pin a release (GATTE_VERSION=0.3.0) in production; latest moves.
     image: ${GATTE_IMAGE:-ghcr.io/bunnyiesart/gatte:${GATTE_VERSION:-latest}}
     container_name: gatte
     environment:
@@ -24,6 +24,8 @@ services:
     ports:
       - "${GATTE_PORT:-443}:${GATTE_PORT:-443}"
       - "${GATTE_HTTP_PORT:-80}:80"
+      # The web console, on the host's loopback only (design/adr/0050 §4).
+      - "127.0.0.1:8090:8090"
     volumes:
       - gatte:/gatte
     # The gateway drains calls for up to 15 s before the others stop.

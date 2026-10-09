@@ -1,8 +1,10 @@
 package frontkit
 
 import (
+	"bytes"
 	"context"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -182,6 +184,74 @@ func TestPost_BodyIsBounded(t *testing.T) {
 	form := url.Values{"csrf": {k.CSRFToken()}, "big": {strings.Repeat("a", DefaultMaxBody+1)}}
 	if w := do(k, "POST", k.Base()+"/x", form, cookie, nil); w.Code == http.StatusOK || *ran {
 		t.Fatalf("an oversized body: %d ran=%v", w.Code, *ran)
+	}
+}
+
+// multipartBody is a multipart/form-data body with fields and one file.
+func multipartBody(t *testing.T, fields map[string]string, file string) (io.Reader, string) {
+	t.Helper()
+	var b bytes.Buffer
+	mw := multipart.NewWriter(&b)
+	for k, v := range fields {
+		if err := mw.WriteField(k, v); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fw, err := mw.CreateFormFile("doc", "doc.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.WriteString(fw, file)
+	if err := mw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return &b, mw.FormDataContentType()
+}
+
+// TestPost_AMultipartFormIsHeldToTheSameChecks: a form that uploads a file
+// carries the form token as one of its parts, and is refused without it,
+// from another origin, and over the bound, exactly as a url-encoded one.
+func TestPost_AMultipartFormIsHeldToTheSameChecks(t *testing.T) {
+	k, ran := testKit(t)
+	var got string
+	k.inner = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		*ran = true
+		f, _, err := r.FormFile("doc")
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		defer f.Close()
+		b, _ := io.ReadAll(f)
+		got = r.PostForm.Get("name") + ":" + string(b)
+	})
+	cookie := login(t, k)
+	send := func(fields map[string]string, file string, mutate func(*http.Request)) *httptest.ResponseRecorder {
+		body, ct := multipartBody(t, fields, file)
+		r := httptest.NewRequest("POST", "http://127.0.0.1:8090"+k.Base()+"/x", body)
+		r.Header.Set("Content-Type", ct)
+		r.AddCookie(cookie)
+		if mutate != nil {
+			mutate(r)
+		}
+		w := httptest.NewRecorder()
+		k.handler().ServeHTTP(w, r)
+		return w
+	}
+	if w := send(map[string]string{"name": "a"}, "{}", nil); w.Code != http.StatusForbidden || *ran {
+		t.Fatalf("multipart without the form token: %d ran=%v", w.Code, *ran)
+	}
+	if w := send(map[string]string{"csrf": "wrong"}, "{}", nil); w.Code != http.StatusForbidden || *ran {
+		t.Fatalf("multipart with a wrong form token: %d ran=%v", w.Code, *ran)
+	}
+	if w := send(map[string]string{"csrf": k.CSRFToken()}, "{}", func(r *http.Request) { r.Header.Set("Origin", "https://attacker.example") }); w.Code != http.StatusForbidden || *ran {
+		t.Fatalf("multipart from another origin: %d ran=%v", w.Code, *ran)
+	}
+	if w := send(map[string]string{"csrf": k.CSRFToken()}, strings.Repeat("a", DefaultMaxBody+1), nil); w.Code == http.StatusOK || *ran {
+		t.Fatalf("an oversized multipart body: %d ran=%v", w.Code, *ran)
+	}
+	if w := send(map[string]string{"csrf": k.CSRFToken(), "name": "api"}, `{"openapi":"3.0.0"}`, nil); w.Code != http.StatusOK || !*ran || got != `api:{"openapi":"3.0.0"}` {
+		t.Fatalf("a multipart form with the token: %d ran=%v got=%q", w.Code, *ran, got)
 	}
 }
 

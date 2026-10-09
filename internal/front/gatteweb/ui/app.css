@@ -242,6 +242,21 @@ input.mono { font-family: var(--mono); font-size: 14px; }
 .unit { display: inline-flex; align-items: center; gap: 8px; color: var(--text-2); font-size: 14px; }
 input::placeholder { color: var(--text-3); }
 input:focus-visible, select:focus-visible { background: var(--surface); border-color: var(--accent); outline: 3px solid var(--accent-soft); outline-offset: 0; }
+textarea {
+  width: 100%; min-height: 140px; padding: 10px 12px; border: 1px solid transparent; border-radius: 8px;
+  background: var(--fill); color: var(--text); font: 400 13px/1.5 var(--mono); resize: vertical;
+  caret-color: var(--accent);
+}
+textarea.tall { min-height: 420px; }
+textarea:focus-visible { background: var(--surface); border-color: var(--accent); outline: 3px solid var(--accent-soft); outline-offset: 0; }
+input[type="file"] { padding: 6px 8px; }
+.field.full { flex: 1 1 100%; }
+.facts.pad { padding: 16px 18px; }
+.form-inline { display: flex; align-items: center; gap: 8px; }
+.form-inline input[type="password"] { width: 190px; }
+.row:has(.form-inline) { flex-wrap: wrap; }
+.row .form-inline + .form-inline { margin-left: 0; }
+.actions-inline { display: flex; gap: 10px; justify-content: center; margin: 0; }
 
 /* ---- notices ---- */
 

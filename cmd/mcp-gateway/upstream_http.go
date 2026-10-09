@@ -52,6 +52,8 @@ type httpIngestReport struct {
 	authDerived bool
 	skipped     []string
 	warnings    []string
+	// bytes is the document's size.
+	bytes int
 }
 
 // httpFlagsRefusal reports why the three http-only flags cannot accompany a
@@ -77,33 +79,96 @@ func httpFlagsRefusal(transport registry.Transport, openapi, authKind, authName 
 		strings.Join(given, ", "), opPlural(len(given), "applies", "apply"), transport)
 }
 
-// ingestForRegister fills an http entry's URL, auth descriptor and
-// Operations from the -openapi document, and returns the report the
-// console prints after registering. It runs BEFORE the configuration is
-// read or the database opened, like every other refusal in
-// upstreamRegister, so a document the gateway cannot serve costs nothing
-// and names the rule it broke.
+// httpRegistration is the http half of a register request, as the
+// console's flags and the management API's body both give it
+// (design/adr/0050 §2: "the same path as upstream register -transport
+// http: same ingestion, same refusals, same report").
+type httpRegistration struct {
+	// openapi is the -openapi argument: an http(s) URL, or, only with
+	// allowFile, a file path. Unused when document is set.
+	openapi string
+	// document is the document itself (the API's openapi_document);
+	// source is how the report names it.
+	document []byte
+	source   string
+	// allowFile lets openapi name a file. The CLI runs as the operator, at
+	// their prompt; the API never reads a path a client named.
+	allowFile          bool
+	authKind, authName string
+	// fetched, when set, is told the size and source of a document read
+	// over the network, the moment it was read.
+	fetched func(n int, source string)
+}
+
+// ingestRefusal is a refusal of the http ingestion: the text the console
+// writes to stderr, and whether its usage follows. The API answers msg.
+type ingestRefusal struct {
+	msg   string
+	usage bool
+}
+
+func (e *ingestRefusal) Error() string { return strings.TrimSpace(e.msg) }
+
+func refuse(usage bool, format string, args ...any) error {
+	return &ingestRefusal{msg: fmt.Sprintf(format, args...), usage: usage}
+}
+
+// ingestForRegister is the console's ingestHTTP: it writes a refusal, and
+// the usage when the refusal is about a flag, to stderr, and the one
+// network read to stdout.
 //
-// Order, and why: the flags are checked first, without I/O (-openapi given,
-// -url acceptable to the adapter, -auth-kind one of the four words, and the
-// registry's document-independent rules -- name, env names and their count
-// -- by preIngestRefusal), so an operator who mistyped a flag is not made
-// to wait for a fetch that was going to be thrown away; then the document
-// is read (file, or one guarded GET); then resthttp.Ingest translates it
-// under the operator's descriptor, or derives one. The entry comes back with URL = the ingestion's BaseURL
-// (the -url with the document's base path folded in, ADR-0047 §6), the
-// effective descriptor and the canonical, already-validated Operations.
-// registry.Validate and dialTimeRefusal still run on it afterwards, in
-// upstreamRegister, as for any entry.
-//
-// Pre-condition: entry.Transport is http. Post-condition: on exitOK the
-// entry's Operations decode under its AuthKind/AuthName (Ingest's
-// post-condition) and the returned report describes them; on any other
-// code the reason was written to stderr and nothing was registered. No
-// credential value is available to this function, so none can be in what
-// it prints.
+// Post-condition: on exitOK the entry's Operations decode under its
+// AuthKind/AuthName (Ingest's post-condition) and the returned report
+// describes them; on any other code the reason was written to stderr and
+// nothing was registered.
 func ingestForRegister(entry *registry.UpstreamServer, openapi, authKind, authName string, stdout, stderr io.Writer) (*httpIngestReport, int) {
-	if openapi == "" {
+	report, err := ingestHTTP(context.Background(), entry, httpRegistration{openapi: openapi, allowFile: true, authKind: authKind, authName: authName,
+		// Said now, on stdout, because it is the one network read this
+		// command makes and the operator should see that it happened and
+		// what it read -- the URL names no credential (parseBase refused
+		// userinfo and a query before the request was built).
+		fetched: func(n int, source string) { fmt.Fprintf(stdout, "Fetched %d bytes from %s.\n", n, source) }})
+	if err != nil {
+		var ir *ingestRefusal
+		if !errors.As(err, &ir) {
+			ir = &ingestRefusal{msg: err.Error() + "\n"}
+		}
+		fmt.Fprint(stderr, ir.msg)
+		if ir.usage {
+			upstreamUsage(stderr)
+		}
+		return nil, exitCannotRun
+	}
+	return report, exitOK
+}
+
+// ingestHTTP fills an http entry's URL, auth descriptor and Operations
+// from its OpenAPI document, and returns the report the console prints
+// after registering. It runs BEFORE the configuration is read or the
+// database opened, like every other refusal in upstreamRegister, so a
+// document the gateway cannot serve costs nothing and names the rule it
+// broke. The CLI and the management API both register through it.
+//
+// Order, and why: the arguments are checked first, without I/O (a document
+// given, the url acceptable to the adapter, the auth kind one of the four
+// words, and the registry's document-independent rules -- name, env names
+// and their count -- by preIngestRefusal), so an operator who mistyped a
+// flag is not made to wait for a fetch that was going to be thrown away;
+// then the document is read (file, one guarded GET, or the bytes sent);
+// then resthttp.Ingest translates it under the operator's descriptor, or
+// derives one. The entry comes back with URL = the ingestion's BaseURL
+// (the url with the document's base path folded in, ADR-0047 §6), the
+// effective descriptor and the canonical, already-validated Operations.
+// registry.Validate and dialTimeRefusal still run on it afterwards
+// (validateEntry), as for any entry.
+//
+// Pre-condition: entry.Transport is http. Post-condition: on nil the
+// entry's Operations decode under its AuthKind/AuthName; on error it is an
+// *ingestRefusal and nothing was registered. No credential value is
+// available to this function, so none can be in what it returns.
+func ingestHTTP(ctx context.Context, entry *registry.UpstreamServer, in httpRegistration) (*httpIngestReport, error) {
+	authKind, authName := in.authKind, in.authName
+	if in.openapi == "" && in.document == nil {
 		// The registry's own words for what is missing (the URL first, then
 		// the operation set), plus the flag that fills the set -- Validate
 		// cannot know about -openapi, and "requires a non-empty operation
@@ -113,9 +178,7 @@ func ingestForRegister(entry *registry.UpstreamServer, openapi, authKind, authNa
 		if err == nil {
 			err = errors.New("http transport requires an operation set")
 		}
-		fmt.Fprintf(stderr, "%v\n\n-openapi FILE|URL is required for -transport http: the operation set the entry\nsigns is generated from an OpenAPI 3.x document (design/adr/0047 §3), and\nnothing re-reads it after registration.\n\n", err)
-		upstreamUsage(stderr)
-		return nil, exitCannotRun
+		return nil, refuse(true, "%v\n\n-openapi FILE|URL is required for -transport http: the operation set the entry\nsigns is generated from an OpenAPI 3.x document (design/adr/0047 §3), and\nnothing re-reads it after registration.\n\n", err)
 	}
 
 	// -auth-kind, before any I/O. "none" is the console's spelling of the
@@ -128,28 +191,20 @@ func ingestForRegister(entry *registry.UpstreamServer, openapi, authKind, authNa
 		authKind = ""
 	}
 	if !registry.AuthKind(authKind).Valid() {
-		fmt.Fprintf(stderr, "-auth-kind %q is not one of %q, %q, %q or %q.\n\n", authKind, registry.AuthBearer, registry.AuthHeader, registry.AuthQuery, authKindNone)
-		upstreamUsage(stderr)
-		return nil, exitCannotRun
+		return nil, refuse(true, "-auth-kind %q is not one of %q, %q, %q or %q.\n\n", authKind, registry.AuthBearer, registry.AuthHeader, registry.AuthQuery, authKindNone)
 	}
 	if authName != "" && !registry.AuthKind(authKind).NamesLocation() {
-		fmt.Fprintf(stderr, "-auth-name applies to -auth-kind %q or %q only: bearer injects a fixed Authorization\nheader, and a keyless entry injects nothing.\n\n", registry.AuthHeader, registry.AuthQuery)
-		upstreamUsage(stderr)
-		return nil, exitCannotRun
+		return nil, refuse(true, "-auth-name applies to -auth-kind %q or %q only: bearer injects a fixed Authorization\nheader, and a keyless entry injects nothing.\n\n", registry.AuthHeader, registry.AuthQuery)
 	}
 	if forceKeyless && authName != "" {
-		fmt.Fprintf(stderr, "-auth-name was given with -auth-kind none; a keyless entry injects nothing.\n\n")
-		upstreamUsage(stderr)
-		return nil, exitCannotRun
+		return nil, refuse(true, "-auth-name was given with -auth-kind none; a keyless entry injects nothing.\n\n")
 	}
 
 	// The -url, by the adapter's rule, before the document is read: a URL
 	// the adapter would refuse at every start makes the fetch pointless,
 	// and ValidateBaseURL does no I/O.
 	if err := gwrest.ValidateBaseURL(entry.URL); err != nil {
-		fmt.Fprintf(stderr, "-url: %v\n\n", err)
-		upstreamUsage(stderr)
-		return nil, exitCannotRun
+		return nil, refuse(true, "-url: %v\n\n", err)
 	}
 	// The registry's own rules that do not depend on the document -- the
 	// name, the env names, and, when the operator chose the descriptor,
@@ -159,22 +214,25 @@ func ingestForRegister(entry *registry.UpstreamServer, openapi, authKind, authNa
 	// descriptor still to be derived is checked only as far as no derived
 	// outcome could pass: more than one -env is wrong keyed or keyless.
 	if err := preIngestRefusal(*entry, authKind, authName, forceKeyless); err != nil {
-		fmt.Fprintf(stderr, "%v\n\n", err)
-		upstreamUsage(stderr)
-		return nil, exitCannotRun
+		return nil, refuse(true, "%v\n\n", err)
 	}
 
-	doc, report, err := loadOpenAPIDocument(openapi)
-	if err != nil {
-		fmt.Fprintf(stderr, "-openapi: %s\n", visible.Escape(err.Error()))
-		return nil, exitCannotRun
+	var doc []byte
+	var report *httpIngestReport
+	if in.document != nil {
+		if len(in.document) > gwrest.MaxDocumentBytes {
+			return nil, refuse(false, "-openapi: the document is over the %d-byte limit the ingestion reads\n", gwrest.MaxDocumentBytes)
+		}
+		doc, report = in.document, &httpIngestReport{source: in.source}
+	} else {
+		var err error
+		doc, report, err = loadOpenAPIDocument(ctx, in.openapi, in.allowFile)
+		if err != nil {
+			return nil, refuse(false, "-openapi: %s\n", visible.Escape(err.Error()))
+		}
 	}
-	if report.fetched {
-		// Said now, on stdout, because it is the one network read this
-		// command makes and the operator should see that it happened and
-		// what it read -- the URL names no credential (parseBase refused
-		// userinfo and a query before the request was built).
-		fmt.Fprintf(stdout, "Fetched %d bytes from %s.\n", len(doc), report.source)
+	if report.fetched && in.fetched != nil {
+		in.fetched(len(doc), report.source)
 	}
 
 	res, err := gwrest.Ingest(doc, gwrest.IngestOptions{AuthKind: authKind, AuthName: authName, BaseURL: entry.URL, NoDerive: forceKeyless})
@@ -182,8 +240,7 @@ func ingestForRegister(entry *registry.UpstreamServer, openapi, authKind, authNa
 		// The error quotes the document (a path, a key, a scheme's name):
 		// escaped like everything else the console prints that a third
 		// party chose (internal/visible).
-		fmt.Fprintf(stderr, "refusing to register %q: %s: %s\n", entry.Name, report.source, visible.Escape(err.Error()))
-		return nil, exitCannotRun
+		return nil, refuse(false, "refusing to register %q: %s: %s\n", entry.Name, report.source, visible.Escape(err.Error()))
 	}
 
 	entry.URL = res.BaseURL
@@ -195,7 +252,35 @@ func ingestForRegister(entry *registry.UpstreamServer, openapi, authKind, authNa
 	report.authDerived = res.AuthDerived
 	report.skipped = res.Skipped
 	report.warnings = res.Warnings
-	return report, exitOK
+	report.bytes = len(doc)
+	return report, nil
+}
+
+// validateEntry is what every entry passes before the database is opened,
+// whatever its transport and whoever registers it: the registry's rules,
+// then the dialer's (podman's, the REST adapter's), which the domain
+// package cannot know -- an entry the dialer would refuse forever must not
+// register, sign and then fail at every restart. report is the http
+// ingestion's, or nil. The error is an *ingestRefusal.
+func validateEntry(entry registry.UpstreamServer, report *httpIngestReport) error {
+	// Validated here rather than left to the adapter: a malformed entry is
+	// bad usage, and reporting it before the database is even opened means
+	// the operator sees the rule they broke and nothing else.
+	if err := entry.Validate(); err != nil {
+		msg := fmt.Sprintf("%v\n\n", err)
+		if report != nil && report.authDerived {
+			// The rule Validate just applied -- a keyed entry names exactly
+			// one secret -- was triggered by a descriptor the operator did
+			// not type, so say where it came from and the three ways out.
+			msg += fmt.Sprintf("The auth kind %q%s was derived from the document's securitySchemes, which\nmakes this a keyed entry. Pass -env NAME with the secret to inject there,\n-auth-kind to choose another location, or -auth-kind none to register keyless.\n\n",
+				entry.AuthKind, nameNote(entry.AuthName))
+		}
+		return &ingestRefusal{msg: msg, usage: true}
+	}
+	if err := dialTimeRefusal(entry); err != nil {
+		return refuse(true, "%v\n\n", err)
+	}
+	return nil
 }
 
 // preIngestRefusal is the document-independent half of registry.Validate
@@ -235,10 +320,14 @@ func preIngestRefusal(entry registry.UpstreamServer, authKind, authName string, 
 // console runs on the gateway's host, inside its network, and a document
 // URL is an operator-typed string that could name the metadata endpoint as
 // easily as a spec (ADR-0048 Decisão 6).
-func loadOpenAPIDocument(ref string) ([]byte, *httpIngestReport, error) {
+//
+// allowFile false refuses anything but a URL: the management API never
+// reads a path a client named (design/adr/0050 §2). ctx bounds the fetch
+// along with fetchTimeout -- the API's request has a shorter deadline.
+func loadOpenAPIDocument(ctx context.Context, ref string, allowFile bool) ([]byte, *httpIngestReport, error) {
 	lower := strings.ToLower(ref)
 	if strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") {
-		ctx, cancel := context.WithTimeout(context.Background(), fetchTimeout)
+		ctx, cancel := context.WithTimeout(ctx, fetchTimeout)
 		defer cancel()
 		d := gwrest.New(nil, gwrest.WithHTTPClientTimeout(fetchTimeout))
 		doc, err := d.FetchDocument(ctx, ref, gwrest.MaxDocumentBytes)
@@ -250,6 +339,9 @@ func loadOpenAPIDocument(ref string) ([]byte, *httpIngestReport, error) {
 			return nil, nil, err
 		}
 		return doc, &httpIngestReport{source: ref, fetched: true}, nil
+	}
+	if !allowFile {
+		return nil, nil, errors.New("the document must be an http(s) URL, or sent as the document itself")
 	}
 
 	f, err := os.Open(ref)

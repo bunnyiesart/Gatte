@@ -1,0 +1,58 @@
+{{template "top" .}}
+{{$csrf := .CSRF}}{{$base := .Base}}
+{{with .Data}}
+<div class="head">
+  <h1>Secrets</h1>
+  <p class="sub">The vault's names and which backends need them. Values go in once and are never shown.</p>
+</div>
+
+{{if .Missing}}
+<div class="notice danger" role="alert">{{template "warn"}}<p><b>{{.Missing}} {{if eq .Missing 1}}name a backend declares is{{else}}names backends declare are{{end}} missing from the vault.</b> A backend fails to dial without its key: set {{if eq .Missing 1}}it{{else}}them{{end}} below.</p></div>
+{{end}}
+
+<section>
+  <h2>In the vault</h2>
+  {{if .List.Secrets}}
+  <ul class="group">
+    {{range .List.Secrets}}
+    <li class="row">
+      <span class="lead-icon {{if .InVault}}ok{{else}}changed{{end}}">{{if .InVault}}{{template "check"}}{{else}}{{template "warn"}}{{end}}</span>
+      <span class="row-text">
+        <span class="row-title mono">{{vis .Name}}</span>
+        <span class="row-detail">{{if .InVault}}Set{{else}}Missing{{end}}{{if .DeclaredBy}} · needed by {{range $i, $u := .DeclaredBy}}{{if $i}}, {{end}}{{vis $u}}{{end}}{{else if $.Data.List.RegistryRead}} · no backend declares it{{end}}</span>
+      </span>
+      <form class="form-inline" method="post" action="{{$base}}/secrets/set">
+        <input type="hidden" name="csrf" value="{{$csrf}}">
+        <input type="hidden" name="name" value="{{.Name}}">
+        <input type="password" name="value" required autocomplete="new-password" spellcheck="false" aria-label="New value for {{vis .Name}}" placeholder="{{if .InVault}}New value{{else}}Value{{end}}">
+        <button class="btn small{{if not .InVault}} primary{{end}}">{{if .InVault}}Replace{{else}}Set{{end}}</button>
+      </form>
+      {{if .InVault}}
+      <form class="form-inline" method="post" action="{{$base}}/secrets/delete">
+        <input type="hidden" name="csrf" value="{{$csrf}}">
+        <input type="hidden" name="name" value="{{.Name}}">
+        <label class="check"><input type="checkbox" name="confirm" value="yes" required><span>Delete</span></label>
+        <button class="btn small destructive">Delete</button>
+      </form>
+      {{end}}
+    </li>
+    {{end}}
+  </ul>
+  {{else if not $.Error}}
+  <div class="group empty-state"><p><b>The vault is empty.</b></p></div>
+  {{end}}
+  <p class="caption">A connected backend keeps the key it was dialled with: redial it from its page after replacing the key.</p>
+</section>
+
+<section>
+  <h2>Add a secret</h2>
+  <form class="group form" method="post" action="{{$base}}/secrets/set">
+    <input type="hidden" name="csrf" value="{{$csrf}}">
+    <label class="field"><span>Name</span><input name="name" required maxlength="128" autocomplete="off" spellcheck="false" class="mono" placeholder="INTEL_API_KEY"></label>
+    <label class="field wide"><span>Value</span><input type="password" name="value" required autocomplete="new-password" spellcheck="false"></label>
+    <div class="form-end"><button class="btn primary">Save to the vault</button></div>
+  </form>
+  <p class="caption">An environment variable name: a letter or _ first, then letters, digits or _. The value is encrypted into the vault and never displayed, logged or put in the audit trail; the trail records the name.</p>
+</section>
+{{end}}
+{{template "bottom" .}}

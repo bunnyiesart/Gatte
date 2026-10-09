@@ -54,6 +54,11 @@ Roles (who may call what; design/adr/0009)
   gatte roles edit           edit it in vi; applied on save, undone if refused
   gatte roles set            replace it from standard input (docker exec -i ... < roles.toml)
 
+Web console (design/adr/0050; reached only through an SSH tunnel)
+  gatte console              start the console and print its one-time login link;
+                             a new link ends the previous session
+  gatte console stop
+
 Running
   gatte status               backends, tools waiting for review
   gatte reload               re-read the roles without a restart
@@ -173,9 +178,9 @@ add_grant() {
 			rm -f "$f.new"
 			die "role \"$role\" with a [role.grants] table not found in the roles; add the grant with gatte roles edit"
 		}
-	cat "$f.new" >"$f"
+	apply_roles "$f.new" >/dev/null
 	rm -f "$f.new"
-	say "roles.toml: $role may call every safe tool of $backend"
+	say "roles: $role may call every safe tool of $backend"
 }
 
 cmd_reload() {
@@ -183,21 +188,19 @@ cmd_reload() {
 	mcp reload -wait 1m
 }
 
-# apply_roles NEWFILE puts NEWFILE in place of roles.toml and reloads; if the
-# gateway refuses the result, the previous file is put back, so a typo never
-# reaches the next restart.
+# apply_roles FILE sends FILE's text to the management API (PUT /v1/roles),
+# which refuses a text the configuration load would refuse -- with the same
+# message -- before writing anything (design/adr/0050 §2), then asks the
+# running gateway to reload. A refused text never reaches roles.toml.
 apply_roles() {
-	f=$GATTE_SITE/roles.toml
-	cp "$f" "$f.previous"
-	install -m 0644 "$1" "$f"
-	if cmd_reload; then
-		rm -f "$f.previous"
-		say "Roles applied."
-	else
-		mv "$f.previous" "$f"
-		assemble_config
-		die "the roles were refused (above); the previous ones are back in place"
+	body=$(jq -Rs '{text: .}' "$1")
+	r=$(api_call PUT "$ACCOUNTS_SOCKET" /v1/roles "$body")
+	if printf '%s' "$r" | jq -e 'has("error")' >/dev/null 2>&1; then
+		printf '%s' "$r" | jq -r '"refused: " + (.error.message // .error.code)' >&2
+		die "the roles were not changed"
 	fi
+	mcp reload -wait 1m
+	say "Roles applied."
 }
 
 cmd_roles() {
@@ -286,7 +289,6 @@ cmd_api_add() {
 	mcp-gateway sign -config "$CONFIG" "$name"
 	if [ -n "$grant" ]; then
 		add_grant "$grant" "$name"
-		cmd_reload >/dev/null
 	fi
 	say ""
 	if [ -z "$keyless" ] && ! vault_has "$key"; then
@@ -422,6 +424,69 @@ cmd_connect() {
 	cat "$w/r"
 }
 
+# --- console -----------------------------------------------------------
+
+# cmd_console starts `mcp-gateway ui -manage-users` on the container's
+# loopback, behind Caddy's plain-HTTP forward on CONSOLE_PORT (design/adr/0050
+# §4), and prints its one-time login link to this terminal only: the link
+# never reaches the container's log. The console is started on demand, not at
+# boot, for the same reason.
+cmd_console() {
+	pidf=$RUN_DIR/console.pid
+	# One at a time: two runs would share console.out and the second would
+	# remove the first's pidfile, orphaning a console nothing could stop.
+	exec 9>"$RUN_DIR/console.lock"
+	flock -n 9 || die "another gatte console is running; wait for it"
+	if [ -s "$pidf" ]; then
+		p=$(cat "$pidf")
+		# Only a pid that is still our console: after a restart or a crash
+		# the number can belong to anything, and this runs as root.
+		if tr '\0' ' ' <"/proc/$p/cmdline" 2>/dev/null | grep -q '^mcp-gateway ui '; then
+			kill "$p" 2>/dev/null || true
+			sleep 1
+		fi
+		rm -f "$pidf"
+	fi
+	[ "${1:-start}" = stop ] && { say "Console stopped."; return 0; }
+	[ "${1:-start}" = start ] || die "usage: gatte console [stop]"
+	[ -S "$OPERATOR_SOCKET" ] && [ -S "$ACCOUNTS_SOCKET" ] || die "the management API is not up yet: wait for 'gatte: up at' in docker logs"
+	out=$RUN_DIR/console.out
+	(umask 077 && : >"$out")
+	setsid mcp-gateway ui -manage-users -listen "$CONSOLE_INNER" \
+		-socket "$OPERATOR_SOCKET" -accounts-socket "$ACCOUNTS_SOCKET" >"$out" 2>&1 </dev/null &
+	echo $! >"$pidf"
+	i=0 url=''
+	while [ "$i" -lt 50 ]; do
+		url=$(grep -o 'http://[^ ]*/login?token=[A-Za-z0-9_-]*' "$out" 2>/dev/null | head -n 1) || url=''
+		[ -n "$url" ] && break
+		kill -0 "$(cat "$pidf")" 2>/dev/null || break
+		i=$((i + 1))
+		sleep 0.2
+	done
+	if [ -z "$url" ]; then
+		cat "$out" >&2
+		rm -f "$out" "$pidf"
+		die "the console did not start (above)"
+	fi
+	# The link carries a one-time token: drop the copy on disk now.
+	: >"$out"
+	url=$(printf '%s' "$url" | sed "s|//$CONSOLE_INNER/|//127.0.0.1:$CONSOLE_PORT/|")
+	cat <<MSG
+The console is up. From your own machine:
+
+  1. Open a tunnel to this host (keep it open while you use the console):
+
+         ssh -L $CONSOLE_PORT:127.0.0.1:$CONSOLE_PORT USER@THIS-HOST
+
+  2. Open this link in your browser. It works once; keep it private:
+
+         $url
+
+It needs the container published with -p 127.0.0.1:$CONSOLE_PORT:$CONSOLE_PORT.
+Running "gatte console" again ends this session and prints a new link.
+MSG
+}
+
 # --- main --------------------------------------------------------------
 
 case "${1:-help}" in
@@ -442,6 +507,7 @@ status)
 	;;
 reload) cmd_reload ;;
 roles) shift; cmd_roles "$@" ;;
+console) shift; cmd_console "$@" ;;
 selftest) shift; exec /usr/local/share/gatte/selftest.sh "$@" ;;
 ca)
 	[ -s "$GATTE_EDGE/public/ca.crt" ] || die "no private CA: GATTE_TLS=acme uses a public certificate"

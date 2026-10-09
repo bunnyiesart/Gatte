@@ -3,8 +3,11 @@
 {{with .Data}}
 <div class="head">
   <h1>Backends</h1>
-  <p class="sub">Register and sign backends in the terminal. An unsigned backend isn't served.</p>
+  <p class="sub">{{if .Manages}}Add a REST API below; register stdio and container backends in the terminal.{{else}}Register and sign backends in the terminal.{{end}} An unsigned backend isn't served.</p>
 </div>
+{{if and .Manages (not .Root)}}
+<div class="notice" role="note">{{template "dot"}}<p>Signing a backend and writing its key to the vault need root's accounts socket: start the console with <code>sudo mcp-gateway ui -manage-users</code>. Without it, an API you add here waits unsigned until you run <code>sudo mcp-gateway sign NAME</code>.</p></div>
+{{end}}
 
 {{if .Maintenance}}
 <section>
@@ -52,9 +55,9 @@
       <tbody>
       {{range .Upstreams}}
         <tr>
-          <td data-label="Name"><b>{{vis .Name}}</b></td>
+          <td data-label="Name">{{if $.Data.Manages}}<a class="cell-link" href="{{$.Base}}/upstreams/show?name={{.Name}}"><b>{{vis .Name}}</b></a>{{else}}<b>{{vis .Name}}</b>{{end}}</td>
           {{if $.Data.Health}}<td data-label="State">{{with .Health}}<span class="badge {{if eq .State "up"}}ok{{else if or (eq .State "reconnecting") (eq .State "down")}}danger{{end}}">{{state .State}}</span>{{if .Since}}<span class="cell-sub">since {{since .Since}}</span>{{end}}{{if .NextAttempt}}<span class="cell-sub">next attempt around {{since .NextAttempt}}</span>{{end}}{{if .Cause}}<span class="cell-sub mono">{{vis .Cause}}</span>{{end}}{{else}}<span class="muted">-</span>{{end}}</td>{{end}}
-          <td class="muted" data-label="Runs as">{{if eq .Transport "oci"}}Container{{else}}Process{{end}}{{if .Image}}<span class="mono cell-sub image" title="{{vis .Image}}"><span>{{vis (imgname .Image)}}</span>{{with imgdig .Image}}<span>{{vis .}}</span>{{end}}</span>{{else}}<span class="mono wrap cell-sub">{{vis .Command}}</span>{{end}}</td>
+          <td class="muted" data-label="Runs as">{{if eq .Transport "oci"}}Container{{else if eq .Transport "http"}}REST API{{else}}Process{{end}}{{if .URL}}<span class="mono wrap cell-sub">{{vis .URL}}</span>{{else if .Image}}<span class="mono cell-sub image" title="{{vis .Image}}"><span>{{vis (imgname .Image)}}</span>{{with imgdig .Image}}<span>{{vis .}}</span>{{end}}</span>{{else}}<span class="mono wrap cell-sub">{{vis .Command}}</span>{{end}}</td>
           <td data-label="Network">{{if .NetworkError}}<span class="badge danger">Refused</span>{{else}}{{.Network}}{{end}}</td>
           <td class="mono" data-label="Credentials">{{range $i, $n := .EnvVarNames}}{{if $i}}, {{end}}{{vis $n}}{{else}}<span class="muted">None</span>{{end}}</td>
           <td data-label="Signed">{{if eq .Signature "yes"}}<span class="badge ok">{{template "check"}}Signed</span>{{else}}<span class="badge danger">{{template "warn"}}Not signed</span>{{end}}</td>
@@ -64,9 +67,34 @@
     </table>
   </div>
   {{else if not $.Error}}
-  <div class="group empty-state"><p><b>No backends yet.</b> Register one with <code>mcp-gateway upstream register</code>, then sign it.</p></div>
+  <div class="group empty-state"><p><b>No backends yet.</b> {{if .Manages}}Add a REST API below, or register{{else}}Register{{end}} one with <code>mcp-gateway upstream register</code>, then sign it.</p></div>
   {{end}}
 </section>
+
+{{if .Manages}}
+<section>
+  <h2>Add an API</h2>
+  {{with .Form}}
+  <form class="group form" method="post" action="{{$.Base}}/upstreams/register" enctype="multipart/form-data">
+    <input type="hidden" name="csrf" value="{{$csrf}}">
+    <label class="field"><span>Name</span><input name="name" required maxlength="128" autocomplete="off" spellcheck="false" class="mono" placeholder="intel" value="{{.Name}}"></label>
+    <label class="field wide"><span>Base URL</span><input name="url" required autocomplete="off" spellcheck="false" class="mono" placeholder="https://api.example.com" value="{{.URL}}"></label>
+    <label class="field full"><span>OpenAPI document by URL</span><input name="openapi_url" autocomplete="off" spellcheck="false" class="mono" placeholder="https://api.example.com/openapi.json" value="{{.OpenAPIURL}}"></label>
+    <label class="field full"><span>Or paste the document</span><textarea name="openapi_text" spellcheck="false" autocomplete="off">{{.OpenAPIText}}</textarea></label>
+    <label class="field full"><span>Or upload it (JSON or YAML, up to {{$.Data.MaxDocMiB}} MiB)</span><input type="file" name="openapi_file" accept=".json,.yaml,.yml,application/json,application/yaml,text/yaml"></label>
+    <label class="field"><span>Auth</span>
+      <select name="auth_kind">{{$k := .AuthKind}}{{range $.Data.AuthKinds}}<option value="{{.Value}}" {{if eq .Value $k}}selected{{end}}>{{.Label}}</option>{{end}}</select>
+    </label>
+    <label class="field"><span>Header or parameter name</span><input name="auth_name" autocomplete="off" spellcheck="false" class="mono" placeholder="X-API-Key" value="{{.AuthName}}"></label>
+    <label class="field"><span>Key's name in the vault</span><input name="key_name" autocomplete="off" spellcheck="false" class="mono" placeholder="NAME_API_KEY" value="{{.KeyName}}"></label>
+    {{if $.Data.Root}}<label class="field"><span>Key's value (optional)</span><input type="password" name="key_value" autocomplete="new-password" spellcheck="false"></label>{{end}}
+    {{if $.Data.Root}}<label class="field"><span>Grant its read-only tools to role</span><input name="grant_role" autocomplete="off" spellcheck="false" class="mono" value="{{if .GrantRole}}{{.GrantRole}}{{else}}analyst{{end}}"></label>{{end}}
+    <div class="form-end"><button class="btn primary">Add API</button></div>
+  </form>
+  {{end}}
+  <p class="caption">One way to give the document: a URL (fetched once, under the gateway's egress rules), pasted text, or a file (use the file for a large document: pasted text counts up to three times its size against the form's limit). Registering does not call the API. Every operation becomes a tool waiting for your review; a POST, PUT, PATCH or DELETE is sensitive and also needs clearing.{{if .Root}} The key's value, if you give one, goes straight to the vault and is never shown again; then the API is signed in the same step.{{end}} An empty key name is NAME_API_KEY for a keyed API.{{if .Root}} The role you name gets every safe tool of the API once approved; leave it empty to grant nothing.{{end}}</p>
+</section>
+{{end}}
 
 {{if and .Maintenance .Upstreams}}
 <section>

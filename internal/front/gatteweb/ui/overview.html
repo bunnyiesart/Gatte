@@ -79,5 +79,21 @@
   <p class="muted">No refusals.</p>
   {{end}}
 </section>
+
+{{if .Reload}}
+<section>
+  <h2>Configuration</h2>
+  <div class="group row">
+    <span class="row-text">
+      <span class="row-title">Reload the configuration</span>
+      <span class="row-detail">The running gateway re-reads its file and applies roles, groups and quota without a restart. A file that does not load is refused, and what is in force stays.</span>
+    </span>
+    <form method="post" action="{{$.Base}}/reload">
+      <input type="hidden" name="csrf" value="{{$.CSRF}}">
+      <button class="btn small">Reload configuration</button>
+    </form>
+  </div>
+</section>
+{{end}}
 {{end}}
 {{template "bottom" .}}

@@ -136,6 +136,21 @@ func (f *Front) routes() *http.ServeMux {
 	mux.HandleFunc("POST /upstreams/maintenance/on", f.maintenanceOn)
 	mux.HandleFunc("POST /upstreams/maintenance/off", f.maintenanceOff)
 	mux.HandleFunc("GET /quota", f.quotaPage)
+	// design/adr/0050: each answers 404 unless the backend lists
+	// FeatureConsoleManages (and, for root's, the console has -manage-users).
+	mux.HandleFunc("POST /upstreams/register", f.upstreamRegister)
+	mux.HandleFunc("GET /upstreams/show", f.upstreamShowPage)
+	mux.HandleFunc("POST /upstreams/sign", f.upstreamSign)
+	mux.HandleFunc("POST /upstreams/redial", f.upstreamRedial)
+	mux.HandleFunc("POST /upstreams/remove", f.upstreamRemove)
+	mux.HandleFunc("POST /tools/clear", f.toolClear)
+	mux.HandleFunc("POST /reload", f.reload)
+	mux.HandleFunc("GET /serve-requests", f.serveRequestPage)
+	mux.HandleFunc("GET /secrets", f.secretsPage)
+	mux.HandleFunc("POST /secrets/set", f.secretSet)
+	mux.HandleFunc("POST /secrets/delete", f.secretDelete)
+	mux.HandleFunc("GET /roles", f.rolesPage)
+	mux.HandleFunc("POST /roles", f.rolesApply)
 	mux.HandleFunc("GET /app.css", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/css; charset=utf-8")
 		_, _ = w.Write(f.css)
@@ -149,6 +164,12 @@ type page struct {
 	Nav   string
 	Base  string
 	CSRF  string
+	// Manages is the backend listing FeatureConsoleManages
+	// (design/adr/0050), and Root the console holding the accounts socket
+	// (-manage-users): together they decide the navigation's Secrets and
+	// Roles entries.
+	Manages bool
+	Root    bool
 	// Notice is what the backend answered to the action that led here,
 	// when the page shown next is not its result page.
 	Notice string
@@ -158,11 +179,12 @@ type page struct {
 
 // render executes the template named tmpl. p.Nav, when empty, is tmpl: the
 // page highlights its own entry in the navigation.
-func (f *Front) render(w http.ResponseWriter, tmpl, title string, p page) {
+func (f *Front) render(w http.ResponseWriter, r *http.Request, tmpl, title string, p page) {
 	if p.Nav == "" {
 		p.Nav = tmpl
 	}
 	p.Title, p.CSRF, p.Base = title, f.kit.CSRFToken(), f.kit.Base()
+	p.Manages, p.Root = f.feature(r.Context(), adminapi.FeatureConsoleManages), f.acc != nil
 	var b bytes.Buffer
 	if err := f.pages.ExecuteTemplate(&b, tmpl+".html", p); err != nil {
 		http.Error(w, "rendering: "+err.Error(), http.StatusInternalServerError)
@@ -207,6 +229,9 @@ type result struct {
 	// Remaining is what the operator still has to do by hand, as the
 	// backend said it (an offboard, design/adr/0046).
 	Remaining []string
+	// Refresh, for a request to the gateway process still pending, is the
+	// page that reads it again (no script refreshes anything).
+	Refresh string
 }
 
 // actionResult is the result page of a state change. A change the trail
@@ -237,8 +262,8 @@ func actionResult(res adminapi.ActionResult, err error) result {
 
 func (r result) withBack(back string) result { r.Back = back; return r }
 
-func (f *Front) showResult(w http.ResponseWriter, nav, title, back string, r result) {
-	f.render(w, "result", title, page{Nav: nav, Data: r.withBack(f.kit.Base() + back)})
+func (f *Front) showResult(w http.ResponseWriter, r *http.Request, nav, title, back string, res result) {
+	f.render(w, r, "result", title, page{Nav: nav, Data: res.withBack(f.kit.Base() + back)})
 }
 
 func firstLine(text string) string {

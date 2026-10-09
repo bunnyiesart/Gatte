@@ -284,10 +284,7 @@ func opUpstreams(e *opEnv) ([]adminapi.Upstream, error) {
 		if err != nil {
 			return nil, err
 		}
-		r := upstreamRow(entry, state)
-		out = append(out, adminapi.Upstream{Name: r.Name, Transport: r.Transport, Command: r.Command, Args: r.Args, URL: r.URL,
-			Image: r.Image, Network: r.Network, NetworkError: r.NetworkError, EnvVarNames: r.EnvVarNames, Signature: r.Signature,
-			CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt})
+		out = append(out, apiUpstream(upstreamRow(entry, state)))
 	}
 	return out, nil
 }
@@ -361,26 +358,13 @@ func upstreamRegister(args []string, stdout, stderr io.Writer) int {
 		upstreamUsage(stderr)
 		return exitCannotRun
 	}
-	// Validated here rather than left to the adapter: a malformed entry is
-	// bad usage, and reporting it before the database is even opened means
-	// the operator sees the rule they broke and nothing else.
-	if err := entry.Validate(); err != nil {
-		fmt.Fprintf(stderr, "%v\n\n", err)
-		if report != nil && report.authDerived {
-			// The rule Validate just applied -- a keyed entry names exactly
-			// one secret -- was triggered by a descriptor the operator did
-			// not type, so say where it came from and the three ways out.
-			fmt.Fprintf(stderr, "The auth kind %q%s was derived from the document's securitySchemes, which\nmakes this a keyed entry. Pass -env NAME with the secret to inject there,\n-auth-kind to choose another location, or -auth-kind none to register keyless.\n\n",
-				entry.AuthKind, nameNote(entry.AuthName))
+	// The registry's rules and the dialer's, for every transport
+	// (validateEntry, shared with the management API's register).
+	if err := validateEntry(entry, report); err != nil {
+		var ir *ingestRefusal
+		if errors.As(err, &ir) {
+			fmt.Fprint(stderr, ir.msg)
 		}
-		upstreamUsage(stderr)
-		return exitCannotRun
-	}
-	// podman's rules, which the domain package cannot know: an entry the
-	// oci dialer would refuse forever must not register, sign and then
-	// fail at every restart.
-	if err := dialTimeRefusal(entry); err != nil {
-		fmt.Fprintf(stderr, "%v\n\n", err)
 		upstreamUsage(stderr)
 		return exitCannotRun
 	}
@@ -566,6 +550,84 @@ func upstreamDeregister(args []string, stdout, stderr io.Writer) int {
 	})
 }
 
+// Stages of deregisterEntry, in order; a failed stage stops the ones
+// after it.
+const (
+	deregRegistry   = "registry"
+	deregSignature  = "signature"
+	deregQuarantine = "quarantine"
+	deregHealth     = "health"
+)
+
+// deregisterOutcome is what deregisterEntry removed, and the stage that
+// failed, if one did.
+type deregisterOutcome struct {
+	registered       bool
+	signatureRemoved bool
+	forgotten        int
+	failed           string
+	err              error
+}
+
+// deregisterEntry removes the registry row, then the stored signature,
+// then the quarantine state, then the maintenance and health state, all
+// keyed by name -- the CLI's `upstream deregister` and the management
+// API's DELETE /v1/upstreams/{name} both go through it (design/adr/0050
+// §2), so the order and the "a missing row does not stop the rest" rule
+// below exist once.
+//
+// The signature is keyed by entry name and would outlive the entry.
+// Left behind, it would authenticate a *future* entry registered under
+// the same name with the same command -- exactly the transplant that
+// including Name in the canonical form (ADR-0006 item 3) exists to
+// prevent, handed over for free by a name being reused. Removing it is
+// part of deregistering, not a separate chore to remember.
+//
+// Same argument as the signature, one component over (ADR-0013 item 2):
+// quarantine state is keyed by upstream *name*, so an approval left
+// behind here does not merely go stale -- it vouches for whatever is
+// registered under that name next. This was reproduced on the live
+// deployment: an upstream removed and re-registered with a different
+// command, different credentials and a new signature had all three of
+// its tools still approved and servable the moment it came up, because
+// the quarantine never saw a new upstream at all. The fingerprint cannot
+// cover this: a replacement advertising byte-identical definitions hashes
+// to the approved baseline, because it *is* the approved baseline.
+//
+// The maintenance, health and last live listing (design/adr/0041) are
+// keyed by name too. None of them vouches for anything, but a name
+// registered again would come up "in maintenance" with another backend's
+// message, or listed with another backend's tools while it is down.
+func deregisterEntry(e *opEnv, name string) deregisterOutcome {
+	var out deregisterOutcome
+	switch err := e.upstreams().Deregister(e.ctx(), name); {
+	case errors.Is(err, registry.ErrNotFound):
+	case err != nil:
+		out.failed, out.err = deregRegistry, err
+		return out
+	default:
+		out.registered = true
+	}
+	switch err := e.signatures().Delete(e.ctx(), name); {
+	case errors.Is(err, signer.ErrNotFound):
+	case err != nil:
+		out.failed, out.err = deregSignature, err
+		return out
+	default:
+		out.signatureRemoved = true
+	}
+	n, err := e.tools().Forget(e.ctx(), name)
+	if err != nil {
+		out.failed, out.err = deregQuarantine, err
+		return out
+	}
+	out.forgotten = n
+	if err := e.health().Forget(e.ctx(), name); err != nil {
+		out.failed, out.err = deregHealth, err
+	}
+	return out
+}
+
 // runUpstreamDeregister removes everything this gateway holds under one
 // upstream name: the registry row, the stored signature, and the quarantine
 // state. All three are keyed by name, which is why all three are this
@@ -580,14 +642,12 @@ func upstreamDeregister(args []string, stdout, stderr io.Writer) int {
 // database is the worst of both: nothing was cleaned, and the operator was
 // told there was nothing to clean.
 func runUpstreamDeregister(e *opEnv, name string) int {
-	registryHadIt := true
-	switch err := e.upstreams().Deregister(e.ctx(), name); {
-	case errors.Is(err, registry.ErrNotFound):
-		registryHadIt = false
-	case err != nil:
-		fmt.Fprintf(e.stderr, "registry: %v\n", err)
+	out := deregisterEntry(e, name)
+	if out.failed == deregRegistry {
+		fmt.Fprintf(e.stderr, "registry: %v\n", out.err)
 		return exitCannotRun
 	}
+	registryHadIt := out.registered
 
 	if registryHadIt {
 		fmt.Fprintf(e.stdout, "Deregistered %q.\n", name)
@@ -600,66 +660,32 @@ func runUpstreamDeregister(e *opEnv, name string) int {
 		fmt.Fprintf(e.stdout, "\nChecking anyway for state left behind under that name -- a signature and\nany approvals are keyed by name, not by the entry, so they can outlive it.\n")
 	}
 
-	// The signature is keyed by entry name and would outlive the entry.
-	// Left behind, it would authenticate a *future* entry registered under
-	// the same name with the same command -- exactly the transplant that
-	// including Name in the canonical form (ADR-0006 item 3) exists to
-	// prevent, handed over for free by a name being reused. Removing it is
-	// part of deregistering, not a separate chore to remember.
-	//
-	// cleaned counts what was actually removed here, so that the closing
-	// message for a name with no registry row can say which of the two it
-	// is: an operator's typo, or a database that was carrying state for an
-	// entry that no longer exists.
 	cleaned := 0
-	switch err := e.signatures().Delete(e.ctx(), name); {
-	case errors.Is(err, signer.ErrNotFound):
-		fmt.Fprintf(e.stdout, "There was no stored signature under this name.\n")
-	case err != nil:
-		fmt.Fprintf(e.stderr, "\nWARNING: the stored signature under %q was NOT removed: %v\nA signature left behind would authenticate a future entry registered under\nthe same name. Remove it before reusing %q.\n", name, err, name)
+	switch {
+	case out.failed == deregSignature:
+		fmt.Fprintf(e.stderr, "\nWARNING: the stored signature under %q was NOT removed: %v\nA signature left behind would authenticate a future entry registered under\nthe same name. Remove it before reusing %q.\n", name, out.err, name)
 		return exitProblem
+	case !out.signatureRemoved:
+		fmt.Fprintf(e.stdout, "There was no stored signature under this name.\n")
 	default:
 		cleaned++
 		fmt.Fprintf(e.stdout, "Its stored signature was removed too, so the name cannot be reused by an\nentry nobody signed.\n")
 	}
 
-	// Same argument as the signature, one component over (ADR-0013 item 2).
-	// Quarantine state is keyed by upstream *name*, so an approval left
-	// behind here does not merely go stale -- it vouches for whatever is
-	// registered under that name next. This was reproduced on the live
-	// deployment: an upstream removed and re-registered with a different
-	// command, different credentials and a new signature had all three of
-	// its tools still approved and servable the moment it came up, because
-	// the quarantine never saw a new upstream at all.
-	//
-	// The fingerprint cannot cover this. A replacement advertising
-	// byte-identical definitions -- which is exactly what swapping a
-	// backend's binary would arrange, the tool list being the part an
-	// attacker controls -- hashes to the approved baseline, because it *is*
-	// the approved baseline. Only removing the state closes it.
-	//
-	// Not fatal on failure, and reported the same way the signature is: the
-	// entry is already gone, and leaving the operator believing otherwise
-	// would be worse than an exit code.
-	switch n, err := e.tools().Forget(e.ctx(), name); {
-	case err != nil:
-		fmt.Fprintf(e.stderr, "\nWARNING: the quarantine state under %q was NOT removed: %v\nApprovals left behind are keyed by name, so anything registered under %q\nnext would be served under the approvals a human gave to the entry this\nstate belonged to. Clear them before reusing the name.\n", name, err, name)
+	switch {
+	case out.failed == deregQuarantine:
+		fmt.Fprintf(e.stderr, "\nWARNING: the quarantine state under %q was NOT removed: %v\nApprovals left behind are keyed by name, so anything registered under %q\nnext would be served under the approvals a human gave to the entry this\nstate belonged to. Clear them before reusing the name.\n", name, out.err, name)
 		return exitProblem
-	case n == 0:
+	case out.forgotten == 0:
 		fmt.Fprintf(e.stdout, "There were no observed tools under this name, so there was no quarantine\nstate to remove.\n")
 	default:
-		cleaned += n
+		cleaned += out.forgotten
 		fmt.Fprintf(e.stdout, "%d quarantine %s removed with it, so a future upstream registered under\nthis name starts from pending and has to be approved on its own -- an\nidentical-looking replacement does not inherit the review this one had.\n",
-			n, opPlural(n, "entry was", "entries were"))
+			out.forgotten, opPlural(out.forgotten, "entry was", "entries were"))
 	}
 
-	// The maintenance, health and last live listing (design/adr/0041) are
-	// keyed by name too. None of them vouches for anything, but a name
-	// registered again would come up "in maintenance" with another
-	// backend's message, or listed with another backend's tools while it
-	// is down.
-	if err := e.health().Forget(e.ctx(), name); err != nil {
-		fmt.Fprintf(e.stderr, "\nWARNING: the maintenance and health state under %q was NOT removed: %v\nClear it before reusing %q: a backend registered under the name would inherit it.\n", name, err, name)
+	if out.failed == deregHealth {
+		fmt.Fprintf(e.stderr, "\nWARNING: the maintenance and health state under %q was NOT removed: %v\nClear it before reusing %q: a backend registered under the name would inherit it.\n", name, out.err, name)
 		return exitProblem
 	}
 

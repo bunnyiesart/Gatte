@@ -23,12 +23,18 @@ type overviewData struct {
 	// Health is what the backend answered with feature backend_health,
 	// nil from an older backend or when it could not be read.
 	Health *adminapi.Health
+	// Reload is the Reload the configuration button: FeatureConsoleManages
+	// and FeatureServeControl.
+	Reload bool
 }
 
 func (f *Front) overview(w http.ResponseWriter, r *http.Request) {
 	ov, err := f.op.Overview(r.Context())
 	d := overviewData{Attention: ov.Attention, Approved: ov.Counts.ApprovedUsable, Upstreams: ov.Counts.Upstreams,
 		Blocked: ov.Counts.Blocked, Denied: ov.RecentDenied, Health: ov.Health}
+	if me, werr := f.op.WhoAmI(r.Context()); werr == nil {
+		d.Reload = slices.Contains(me.Features, adminapi.FeatureConsoleManages) && slices.Contains(me.Features, adminapi.FeatureServeControl)
+	}
 	errs := []string{}
 	if err != nil {
 		errs = append(errs, errText(err))
@@ -36,7 +42,7 @@ func (f *Front) overview(w http.ResponseWriter, r *http.Request) {
 	for _, p := range ov.Problems {
 		errs = append(errs, p.Part+": "+p.Message)
 	}
-	f.render(w, "overview", "Overview", page{Data: d, Error: strings.Join(errs, "\n")})
+	f.render(w, r, "overview", "Overview", page{Data: d, Error: strings.Join(errs, "\n")})
 }
 
 // ---- tools
@@ -85,7 +91,7 @@ func (f *Front) toolsPage(w http.ResponseWriter, r *http.Request) {
 	if me, werr := f.op.WhoAmI(r.Context()); werr == nil {
 		d.ReviewSet = slices.Contains(me.Features, adminapi.FeatureToolReviewSet)
 	}
-	f.render(w, "tools", "Tools", page{Data: d, Error: errText(err)})
+	f.render(w, r, "tools", "Tools", page{Data: d, Error: errText(err)})
 }
 
 // toolReview is the review page's content, drawn from the segments the
@@ -105,6 +111,11 @@ type toolReview struct {
 	Hidden       int
 	Diff         []reviewLine
 	Output       string
+	// Sensitive is the tool's class (design/adr/0048): approval is not
+	// enough to serve it. Cleared says it is cleared at the approved
+	// fingerprint; CanClear that this console offers the button
+	// (FeatureConsoleManages and FeatureToolClear).
+	Sensitive, Cleared, CanClear bool
 }
 
 // reviewLine is one drawn line of review text, classed for colour.
@@ -123,7 +134,10 @@ func (f *Front) toolShowPage(w http.ResponseWriter, r *http.Request) {
 func (f *Front) showTool(w http.ResponseWriter, r *http.Request, server, tool, notice string) {
 	rv, err := f.op.ReviewTool(r.Context(), server, tool)
 	d := reviewOf(rv, err == nil)
-	f.render(w, "tool", frontkit.VisibleText(server+"."+tool), page{Nav: "tools", Data: d, Notice: notice, Error: errText(err)})
+	if d.Sensitive {
+		d.CanClear = f.feature(r.Context(), adminapi.FeatureConsoleManages) && f.feature(r.Context(), adminapi.FeatureToolClear)
+	}
+	f.render(w, r, "tool", frontkit.VisibleText(server+"."+tool), page{Nav: "tools", Data: d, Notice: notice, Error: errText(err)})
 }
 
 // reviewOf is the page's view of one review. ok is whether the read
@@ -135,7 +149,9 @@ func reviewOf(rv adminapi.ToolReview, ok bool) toolReview {
 		// backend refuses the approval if the tool advertises another by
 		// the time the form is sent.
 		d = toolReview{Server: rv.Tool.Server, Tool: rv.Tool.Tool, Status: rv.Tool.Status, Usable: rv.Tool.Usable,
-			Fingerprint: rv.Tool.ObservedHash, Approved: rv.Tool.ApprovedHash, Output: rv.ReviewText}
+			Fingerprint: rv.Tool.ObservedHash, Approved: rv.Tool.ApprovedHash, Output: rv.ReviewText,
+			Sensitive: rv.Tool.Class == adminapi.ClassSensitive,
+			Cleared:   rv.Tool.SensitiveClearedHash != "" && rv.Tool.SensitiveClearedHash == rv.Tool.ApprovedHash}
 	}
 	if ok && rv.Observed.Kept {
 		d.Shown = true
@@ -178,13 +194,13 @@ func (f *Front) reviewSetPage(w http.ResponseWriter, r *http.Request) {
 			d.Tools = append(d.Tools, t)
 		}
 	}
-	f.render(w, "reviewset", "Review "+frontkit.VisibleText(server), page{Nav: "tools", Data: d, Error: errText(err)})
+	f.render(w, r, "reviewset", "Review "+frontkit.VisibleText(server), page{Nav: "tools", Data: d, Error: errText(err)})
 }
 
 func (f *Front) toolApproveSet(w http.ResponseWriter, r *http.Request) {
 	server, manifest := r.PostForm.Get("server"), r.PostForm.Get("manifest")
 	res, err := f.op.ApproveToolSet(r.Context(), adminapi.ApproveSetRequest{Server: server, Manifest: manifest})
-	f.showResult(w, "tools", "Approve the tools of "+frontkit.VisibleText(server), "/tools?server="+url.QueryEscape(server), actionResult(res.ActionResult, err))
+	f.showResult(w, r, "tools", "Approve the tools of "+frontkit.VisibleText(server), "/tools?server="+url.QueryEscape(server), actionResult(res.ActionResult, err))
 }
 
 // splitLines cuts segments at each line feed, which the backend sends as a
@@ -264,7 +280,7 @@ func (f *Front) toolApprove(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	f.showResult(w, "tools", "Approve "+frontkit.VisibleText(server+"."+tool), "/tools", out)
+	f.showResult(w, r, "tools", "Approve "+frontkit.VisibleText(server+"."+tool), "/tools", out)
 }
 
 // nextToReview is the first tool waiting for review other than the one
@@ -287,7 +303,7 @@ func (f *Front) nextToReview(r *http.Request, server, tool string) (adminapi.Too
 func (f *Front) toolRevoke(w http.ResponseWriter, r *http.Request) {
 	server, tool := r.PostForm.Get("server"), r.PostForm.Get("tool")
 	res, err := f.op.RevokeTool(r.Context(), adminapi.ToolRef{Server: server, Tool: tool})
-	f.showResult(w, "tools", "Revoke "+frontkit.VisibleText(server+"."+tool), "/tools", actionResult(res.ActionResult, err))
+	f.showResult(w, r, "tools", "Revoke "+frontkit.VisibleText(server+"."+tool), "/tools", actionResult(res.ActionResult, err))
 }
 
 // ---- access
@@ -305,7 +321,7 @@ func (f *Front) accessPage(w http.ResponseWriter, r *http.Request) {
 	if me, werr := f.op.WhoAmI(r.Context()); werr == nil {
 		d.Until = slices.Contains(me.Features, adminapi.FeatureBlockUntil)
 	}
-	f.render(w, "access", "Access", page{Data: d, Error: errText(err)})
+	f.render(w, r, "access", "Access", page{Data: d, Error: errText(err)})
 }
 
 func (f *Front) accessBlock(w http.ResponseWriter, r *http.Request)   { f.accessChange(w, r, true) }
@@ -322,14 +338,14 @@ func (f *Front) accessChange(w http.ResponseWriter, r *http.Request, block bool)
 		if v := strings.TrimSpace(r.PostForm.Get("until")); v != "" {
 			until, err := blockEnd(v, time.Now())
 			if err != nil {
-				f.showResult(w, "access", verb+" "+frontkit.VisibleText(req.Subject), "/access", result{Summary: err.Error(), Output: err.Error()})
+				f.showResult(w, r, "access", verb+" "+frontkit.VisibleText(req.Subject), "/access", result{Summary: err.Error(), Output: err.Error()})
 				return
 			}
 			req.Until = &until
 		}
 	}
 	res, err := call(r.Context(), req)
-	f.showResult(w, "access", verb+" "+frontkit.VisibleText(req.Subject), "/access", actionResult(res.ActionResult, err))
+	f.showResult(w, r, "access", verb+" "+frontkit.VisibleText(req.Subject), "/access", actionResult(res.ActionResult, err))
 }
 
 // blockEnd reads the Access form's end: a duration from now ("8h") or a
@@ -350,7 +366,7 @@ func blockEnd(v string, now time.Time) (time.Time, error) {
 
 func (f *Front) auditVerify(w http.ResponseWriter, r *http.Request) {
 	res, err := f.op.VerifyAudit(r.Context(), adminapi.VerifyRequest{ExpectHead: strings.TrimSpace(r.PostForm.Get("expect_head"))})
-	f.showResult(w, "audit", "Verify the audit chain", "/audit", verifyResult(res, err))
+	f.showResult(w, r, "audit", "Verify the audit chain", "/audit", verifyResult(res, err))
 }
 
 // verifyResult says whether the chain holds and, when a head was given,
@@ -392,5 +408,5 @@ func verifyResult(v adminapi.VerifyResult, err error) result {
 
 func (f *Front) quotaPage(w http.ResponseWriter, r *http.Request) {
 	list, err := f.op.QuotaUsage(r.Context(), adminapi.QuotaQuery{})
-	f.render(w, "quota", "Quota", page{Data: list.Usage, Error: errText(err)})
+	f.render(w, r, "quota", "Quota", page{Data: list.Usage, Error: errText(err)})
 }

@@ -67,9 +67,16 @@ Without -accounts it serves the operator socket and runs as the gateway's
 service account (root is refused): overview, tools, access, audit,
 backends, quota, people, connect. With -accounts it serves the identity
 provider's accounts and runs only as root; it re-checks before every
-request that config.toml, [idp] users_file and every directory above them
-are root's, not symbolic links, and not writable by group or others
-(reading is allowed).
+request that config.toml, [idp] users_file, roles_file and every directory
+above them are root's, not symbolic links, and not writable by group or
+others (reading is allowed).
+
+With [admin] console_manages = true (design/adr/0050), the operator socket
+also registers http backends from their OpenAPI document, shows one entry
+in detail and deregisters; the accounts socket also signs an entry (a child
+"sign" process), writes and deletes vault values through sops (the vault's
+two files held to the same ownership rule) and writes the roles file. Off,
+each of those answers feature_disabled.
 
 Under systemd the socket comes from the .socket unit (examples/systemd/)
 and the process exits after -idle (default 5m) with no request. In the
@@ -91,6 +98,7 @@ func cmdAdmin(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	accounts := fs.Bool("accounts", false, "serve the accounts socket (root only)")
 	writer := fs.Bool("audit-writer", false, "internal: append the one operator row read from standard input, as the database's owner")
 	blockWriter := fs.Bool("block-writer", false, "internal: place the one block read from standard input, as the database's owner")
+	registryReader := fs.Bool("registry-reader", false, "internal: print the vault names the registry's entries declare, as the database's owner")
 	socket := fs.String("socket", "", "socket path, in the foreground (default: the one for the mode)")
 	group := fs.String("socket-group", "", "the socket file's group")
 	modeFlag := fs.String("socket-mode", "", "the socket file's mode: 0600, or 0660 with -socket-group")
@@ -106,6 +114,9 @@ func cmdAdmin(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 	if *blockWriter {
 		return runBlockWriter(*configPath, stdin, stdout, stderr)
+	}
+	if *registryReader {
+		return runRegistryReader(*configPath, stdout, stderr)
 	}
 	if *accounts && adminGeteuid() != 0 {
 		fmt.Fprint(stderr, "admin -accounts edits the identity provider's accounts, so it runs only as root.\n"+
@@ -303,6 +314,9 @@ func runAdminAccounts(configPath, socket string, p adminhttp.SocketPolicy, idle 
 		Accounts: openDirectory,
 		IsBusy:   store.IsBusy,
 		Log:      logger,
+		// design/adr/0050: signing, the vault and the roles file, which
+		// need root.
+		ManageDeps: accountsManageDeps(configPath, serviceUID, serviceGID),
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "%v\n", err)
@@ -390,8 +404,12 @@ func auditWriterRecord(r audit.Record) auditWriterInput {
 
 // accountTools are the only rows the audit writer appends: the accounts
 // socket's actions, and the block of an offboard (design/adr/0046).
+//
+// Since design/adr/0050 also its management rows: signing, the vault and
+// the roles file are the accounts socket's too.
 var accountTools = map[string]bool{admin.AccountAdd: true, admin.AccountGroups: true, admin.AccountDisable: true, admin.AccountEnable: true, admin.AccountReset: true,
-	admin.AccountDelete: true, admin.AccountOffboard: true, admin.AccessBlock: true}
+	admin.AccountDelete: true, admin.AccountOffboard: true, admin.AccessBlock: true,
+	admin.UpstreamSign: true, admin.SecretSet: true, admin.SecretDelete: true, admin.RolesSet: true}
 
 // spawnAuditWriter is the accounts backend's Record: a child that runs as
 // the database's owner, with no supplementary groups and an empty
@@ -499,6 +517,9 @@ func newAdminService(db *sql.DB, loadCfg func() (*config.Config, error), stderr 
 		// SIGHUP, rung at the pid serve recorded in the same database.
 		Control: controlsqlite.New(db),
 		Ring:    ringServe,
+		// design/adr/0050: the registry's side of "the console manages
+		// everything", over the same database.
+		ManageDeps: operatorManageDeps(envFor),
 	}
 	for _, o := range opts {
 		o(&d)

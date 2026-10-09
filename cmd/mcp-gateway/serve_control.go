@@ -205,6 +205,9 @@ func (s *serveStack) reloadConfig(ctx context.Context, logger *slog.Logger) (out
 	// booted with, so the next reload still says what needs a restart.
 	applied := *s.cfg
 	applied.Roles, applied.GroupToRole, applied.Quota = next.Roles, next.GroupToRole, next.Quota
+	// The roles came from the file roles_file names now (design/adr/0050
+	// §3), so the path in force is the one just read.
+	applied.RolesFile = next.RolesFile
 	s.cfg = &applied
 
 	res = adminapi.ServeRequest{Reload: changes}

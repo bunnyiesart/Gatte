@@ -537,24 +537,29 @@ mcp-gateway admin -accounts [-config FILE] [-socket PATH] [-socket-group GROUP] 
 | `-socket-group GROUP` | the process's group | The socket file's group. |
 | `-socket-mode MODE` | `0600`; `0660` with `-socket-group` | Octal. `0600`, or `0660` with a group; nothing for others. |
 | `-idle D` | `5m` | Exit after this long with no request; `0` never exits. In the foreground the default is `0` unless `-idle` is given. |
-| `-audit-writer`, `-block-writer` | off | Internal: the accounts backend's children, run as the database's owner. Not for operators. |
+| `-audit-writer`, `-block-writer`, `-registry-reader` | off | Internal: the accounts backend's children, run as the database's owner. Not for operators. |
 
 | | |
 |---|---|
 | Runs as | operator socket: the service account; root is refused. `-accounts`: root only. |
 | Socket rules | Under systemd the socket comes from the `.socket` unit (`examples/systemd/`). In the foreground, the socket's directory and every directory above it must be root's, not a symbolic link, and not writable by group or others; the operator socket's own directory may be the service account's. An operator socket open to others, or whose group differs from `[admin] operator_group`, refuses to start. An accounts socket open to others, or not matching `[admin] account_group` (group and `0660`), refuses to start. See [Files and permissions](files-and-permissions.md). |
-| Per request | The operator backend re-reads the configuration for every operation. The accounts backend first checks that `config.toml`, `[idp] users_file` and every directory above them are root's, regular, not symbolic links and not writable by group or others. |
+| Per request | The operator backend re-reads the configuration for every operation. The accounts backend first checks that `config.toml`, `[idp] users_file`, `roles_file` and every directory above them are root's, regular, not symbolic links and not writable by group or others; its vault operations check `[vault]`'s two files the same way. |
+| With `console_manages` | `[admin] console_manages = true` (`design/adr/0050`): the operator socket also shows one entry, registers an http backend and deregisters; the accounts socket also signs (a child `sign`), writes and deletes vault values through `sops`, and writes `roles_file`. Off, each answers `feature_disabled`. |
 | Exit codes | `0` stopped cleanly (idle or signal); `2` could not run |
 | Audit rows | the rows of each action it serves; see [Audit trail](audit-trail.md) |
-| Decision records | `design/adr/0038`, `0040`, `0046` |
+| Decision records | `design/adr/0038`, `0040`, `0046`, `0050` |
 
 ## ui
 
 Serves the operator console as a web page on loopback. It is a client of
 the management API: every page is a call over the operator socket, and
 every button is the API's action of the same name. It reads no
-configuration file and opens no database. Registering and signing a backend
-stay in the terminal.
+configuration file and opens no database. With `[admin] console_manages =
+true` (`design/adr/0050`) it also adds REST APIs from their OpenAPI
+document, shows, redials and removes backends, clears sensitive tools and
+reloads the configuration; with `-manage-users` as well it signs backends
+and edits the vault's secrets and the roles file. With the key off,
+registering and signing a backend stay in the terminal.
 
 ```
 mcp-gateway ui [-socket PATH] [-listen 127.0.0.1:8090] [-manage-users [-accounts-socket PATH]]

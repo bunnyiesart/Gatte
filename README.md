@@ -136,8 +136,8 @@ all three on its first start; every task after that is one `gatte` command
 ([deploy/docker/README.md](deploy/docker/README.md), `design/adr/0049`):
 
 ```sh
-docker run -d --name gatte --restart unless-stopped -p 443:443 \
-  -e GATTE_DOMAIN=gatte.example.org -v gatte:/gatte ghcr.io/bunnyiesart/gatte:0.2.0
+docker run -d --name gatte --restart unless-stopped -p 443:443 -p 127.0.0.1:8090:8090 \
+  -e GATTE_DOMAIN=gatte.example.org -v gatte:/gatte ghcr.io/bunnyiesart/gatte:0.3.0
 ```
 
 The rest of this section sets up a gateway by hand on one Linux or FreeBSD
@@ -834,8 +834,12 @@ Every button is the management API's action of the same name, the one the
 commands above call too, with the same checks and the same audit rows
 (tagged `[ui]`); the page shows what the backend answered. `-manage-users`
 opens the accounts socket as well and refuses one whose server is not
-root. Registering and signing stay in the terminal, because signing needs
-root's key.
+root. With `[admin] console_manages = false`, the default, registering and
+signing stay in the terminal, because signing needs root's key; with it
+on, the console also adds REST APIs, removes, redials and signs backends,
+clears sensitive tools, reloads, and edits the vault's secrets and the
+roles file, the last three and signing with `-manage-users`
+(`design/adr/0050`, [Run the management API and the web console](docs/how-to/run-the-management-api-and-console.md#what-the-console-does-and-does-not-do)).
 
 The console runs only while you run it (Ctrl-C stops it) and binds
 loopback only. It uses no JavaScript and a strict Content-Security-Policy.

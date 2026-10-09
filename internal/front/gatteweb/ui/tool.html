@@ -4,14 +4,14 @@
 {{with .Data}}{{if .Server}}
 <div class="head">
   <h1 class="mono-title">{{vis .Tool}}</h1>
-  <p class="sub">{{vis .Server}} · {{template "status" .Status}}</p>
+  <p class="sub">{{vis .Server}} · {{template "status" .Status}}{{if .Sensitive}} · <span class="badge danger">Sensitive</span>{{if eq .Status "approved"}} · {{if .Cleared}}<span class="badge ok">{{template "check"}}Cleared</span>{{else}}<span class="badge">Not cleared</span>{{end}}{{end}}{{end}}</p>
 </div>
 
 {{template "definition" .}}
 
 {{if .Shown}}
 <div class="actions">
-  {{if not .Usable}}
+  {{if and (not .Usable) (ne .Status "approved")}}
   <form method="post" action="{{$base}}/tools/approve">
     <input type="hidden" name="csrf" value="{{$csrf}}">
     <input type="hidden" name="server" value="{{.Server}}">
@@ -20,6 +20,19 @@
     <button class="btn{{if not .Hidden}} primary{{end}}">Approve this version</button>
   </form>
   <p class="caption">Approves exactly what's shown here (sha256:{{short .Fingerprint}}). If the backend changes it before you click, nothing is approved. Then the next tool waiting for review opens.</p>
+  {{end}}
+  {{if and .Sensitive (eq .Status "approved") (not .Cleared)}}
+  {{if .CanClear}}
+  <form method="post" action="{{$base}}/tools/clear">
+    <input type="hidden" name="csrf" value="{{$csrf}}">
+    <input type="hidden" name="server" value="{{.Server}}">
+    <input type="hidden" name="tool" value="{{.Tool}}">
+    <button class="btn primary">Clear for serving</button>
+  </form>
+  <p class="caption">This tool can act, so approving it was not enough: clearing serves it at the approved version, and only to a role marked non_read that names it in its tools. If no role does, nothing is cleared and the result says why.</p>
+  {{else}}
+  <p class="caption">This tool can act: it's approved and not served until it's cleared, with <code>mcp-gateway tool clear {{vis .Server}} {{vis .Tool}}</code>.</p>
+  {{end}}
   {{end}}
   {{if eq .Status "approved"}}
   <form method="post" action="{{$base}}/tools/revoke">

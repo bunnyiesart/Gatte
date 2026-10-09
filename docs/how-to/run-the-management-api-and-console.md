@@ -4,7 +4,7 @@ This guide is for the operator who sets up the management API
 (`mcp-gateway admin`) on a systemd host, gives operators access to it, and
 opens the web console (`mcp-gateway ui`) on the host or from their own
 machine. Writing another front is [Writing a Gatte front](../admin-api.md);
-the decision records are `design/adr/0036` and `0040`.
+the decision records are `design/adr/0036`, `0040` and `0050`.
 
 You need:
 
@@ -195,15 +195,58 @@ socket.
 before any page exists. The person-level steps are in
 [Add and remove people](add-and-remove-people.md).
 
-## What the console does not do
+## What the console does and does not do
 
-- **Register and sign backends.** Signing needs root's key; both stay in the
-  terminal ([Add a backend](add-a-backend.md)).
-- **Reload the configuration or redial a backend.** The management API has
-  both (`POST /v1/reload`, `POST /v1/upstreams/redial`), and this console
-  has no button for them: use `mcp-gateway reload` and `mcp-gateway
-  upstream redial` ([Change roles, groups and quota](change-roles-and-quota.md)).
-- **Move a backend to a new image** ([Update a backend's container image](update-a-backend-image.md)).
+With `[admin] console_manages = false`, the default, the console approves,
+revokes and reviews tools, blocks and unblocks, reads and verifies the
+audit trail, announces maintenance, reads quota, and with `-manage-users`
+edits accounts. Nothing else below appears, and its routes answer 404.
+
+With `[admin] console_manages = true` (`design/adr/0050`) it also:
+
+- **Adds a REST API** on **Backends**, from its OpenAPI document by URL,
+  pasted or uploaded as a file (up to 4 MiB), with the auth kind (derived
+  from the document, none, bearer, header or query), the header or
+  parameter name and the key's vault name (`NAME_API_KEY` when left empty
+  for a keyed API). The report lists each tool as safe or sensitive, the
+  operations skipped and the ingestion's warnings, and links to the review.
+  Registering does not call the API.
+- **Shows each backend's page**: its entry, auth, operations with method,
+  path and class, signature and state, and its tools in review.
+- **Redials** a backend and **reloads** the configuration (Overview); a
+  request `serve` has not answered yet shows a Refresh link.
+- **Removes** a backend once you type its name; its signature and every
+  approval of its tools go with it.
+- **Clears** an approved sensitive tool from its page, when a role marked
+  `non_read` names it.
+
+With `console_manages = true` **and** `-manage-users` (the accounts socket,
+root's), it also:
+
+- **Writes the key's value** you give in the Add an API form to the vault,
+  and **signs** the new backend in the same step; a backend's page has a
+  **Sign** button while it is not signed.
+- **Secrets**: the vault's names, the names a backend declares that the
+  vault lacks, and forms to set, replace or delete a value. A value is
+  entered in a password field, written once and never shown again, in a
+  page, a log or the audit trail, which records the name only.
+- **Roles**: the `roles_file` as text. **Apply** writes it only if the
+  configuration would load with it (otherwise the text stays on the page
+  with the reason) and then reloads the running gateway. This needs
+  `roles_file` set; with the roles in `config.toml` the page says so.
+
+Without `-manage-users`, the Backends page says to start the console with
+`sudo mcp-gateway ui -manage-users` to sign and to write keys, and an API
+added there waits unsigned until `sudo mcp-gateway sign NAME`.
+
+The console never:
+
+- **Registers stdio or container backends**, or moves a backend to a new
+  image: those stay in the terminal ([Add a backend](add-a-backend.md),
+  [Update a backend's container image](update-a-backend-image.md)).
+- **Shows a secret's value**, once written.
+- **Is reachable from the network**: it binds loopback, and from elsewhere
+  you reach it through `ssh -L` (step 4).
 
 ## Without systemd
 

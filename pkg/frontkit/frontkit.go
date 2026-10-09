@@ -16,7 +16,8 @@
 //     port: a page another process serves on another localhost port is
 //     "same site" and gets the cookie, but never learns the path;
 //   - every POST carries the form token and, when the browser sends an
-//     Origin, it is the page's own; the body is bounded;
+//     Origin, it is the page's own; the body is bounded, url-encoded or
+//     multipart (a file upload) alike;
 //   - every response says Content-Security-Policy default-src 'none',
 //     X-Frame-Options DENY, nosniff, no-referrer and no-store.
 //
@@ -50,7 +51,7 @@ const CookieName = "gatte_ui"
 const DefaultSessionLifetime = 12 * time.Hour
 
 // DefaultMaxBody bounds a POST body. Every form of a console is a few
-// short fields.
+// short fields; a front whose form uploads a document sets Config.MaxBody.
 const DefaultMaxBody = 64 << 10
 
 // CSP is the policy every response carries: no script, styles only from
@@ -238,9 +239,12 @@ func (k *Kit) handler() http.Handler {
 				http.Error(w, "forbidden: cross-origin request", http.StatusForbidden)
 				return
 			}
-			if err := r.ParseForm(); err != nil {
+			if err := parseForm(r, k.cfg.MaxBody); err != nil {
 				http.Error(w, "forbidden: the form could not be read (too large?)", http.StatusRequestEntityTooLarge)
 				return
+			}
+			if r.MultipartForm != nil {
+				defer func() { _ = r.MultipartForm.RemoveAll() }()
 			}
 			if !equal(r.PostForm.Get("csrf"), k.csrf) {
 				http.Error(w, "forbidden: missing or wrong form token; reload the page and try again", http.StatusForbidden)
@@ -253,6 +257,20 @@ func (k *Kit) handler() http.Handler {
 		}
 		k.inner.ServeHTTP(w, r)
 	})
+}
+
+// parseForm reads a POST body into r.PostForm: url-encoded, or
+// multipart/form-data for a form that uploads a file. A multipart form is
+// held in memory up to the body's own bound, which MaxBytesReader already
+// enforces, so no part spills to a temporary file; its fields, the form
+// token among them, land in r.PostForm like any other form's, and every
+// check after this one reads them from there. A file part is in
+// r.MultipartForm.File.
+func parseForm(r *http.Request, maxBody int64) error {
+	if ct, _, _ := strings.Cut(r.Header.Get("Content-Type"), ";"); strings.EqualFold(strings.TrimSpace(ct), "multipart/form-data") {
+		return r.ParseMultipartForm(maxBody)
+	}
+	return r.ParseForm()
 }
 
 // authenticate checks the session in the path and in the cookie, and

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Gatte management API
-  version: 1.5.0
+  version: 1.6.0
   summary: The backend every Gatte front talks to (design/adr/0040).
   description: |
     Served by `mcp-gateway admin` over UNIX sockets only. There is no TCP
@@ -127,6 +127,20 @@ info:
       and `no_non_read_grant`). A sensitive tool -- one that can act -- is
       approved like any other and NOT served until it is also cleared;
       approving a set never clears.
+    - 1.6.0 (design/adr/0050): feature `console_manages`, listed ONLY when
+      `[admin] console_manages = true` -- the console manages backends,
+      the vault and the roles. Operator socket: `GET
+      /v1/upstreams/{name}`, `POST /v1/upstreams` (register an http
+      backend from its OpenAPI document), `DELETE /v1/upstreams/{name}`.
+      Accounts socket: `POST /v1/upstreams/{name}/sign`, `GET
+      /v1/secrets`, `PUT` and `DELETE /v1/secrets/{name}`, `GET` and `PUT
+      /v1/roles`; the changes among them answer `forbidden_peer` to a peer
+      that is neither root nor in `[admin] operator_group`. Operator rows `(upstream register)`, `(upstream
+      deregister)`, `(upstream sign)`, `(secret set)`, `(secret delete)`,
+      `(roles set)`; error codes `feature_disabled` and `upstream_exists`.
+      With the key off every one of these operations answers
+      `feature_disabled`. Body limits are larger for the three routes that
+      carry a document (see each).
   license:
     name: Apache-2.0
 servers:
@@ -146,6 +160,8 @@ tags:
     description: Planned maintenance of one backend or of the whole gateway (design/adr/0041). Feature `maintenance`.
   - name: serve
     description: Requests to the running gateway process -- reload the reloadable configuration, re-dial one backend (design/adr/0044). Feature `serve_control`.
+  - name: manage
+    description: The console manages everything (design/adr/0050), behind `[admin] console_manages`. Feature `console_manages`.
   - name: accounts
     description: Account socket only (root, or `[admin] account_group` when delegated). Identity provider accounts (design/adr/0038).
 components:
@@ -250,6 +266,8 @@ components:
         | internal | 500 | anything else; see `x-gatte-idempotent` before retrying |
         | config_unavailable | 503 | the configuration does not load, or fails the ownership check; `details.path` |
         | store_busy | 503 | the database stayed locked through every retry; nothing was written |
+        | feature_disabled | 403 | the operation exists and the configuration does not turn it on; `details.key` names the key: `admin.console_manages`, or `roles_file` for the roles text when the roles live in the main file (1.6.0) |
+        | upstream_exists | 409 | register of a name already registered (1.6.0) |
         | serve_not_running | 503 | no gateway process (`serve`) recorded itself in this database, or the one recorded could not be signalled; nothing was filed (1.3.0) |
       examples: [fingerprint_mismatch]
     Fingerprint:
@@ -341,7 +359,9 @@ components:
             endpoint, only when its feature is listed. Known: `maintenance`
             and `backend_health` (1.1.0), `tool_review_set` (1.2.0),
             `serve_control` (1.3.0), `audit_filters`, `block_until`,
-            `account_delete` and `offboard` (1.4.0), `tool_clear` (1.5.0).
+            `account_delete` and `offboard` (1.4.0), `tool_clear` (1.5.0),
+            `console_manages` (1.6.0; listed only while `[admin]
+            console_manages` is true in the configuration).
           items:
             type: string
         gateway_version:
@@ -1416,6 +1436,183 @@ components:
                 as an argon2id hash; never in `messages`, `warnings`, an error,
                 the trail or the backend's log. A front shows it once and keeps
                 no copy.
+    UpstreamAuth:
+      type: object
+      description: An http entry's credential-injection descriptor. Names only, never a value.
+      required: [kind]
+      properties:
+        kind: {type: string, x-gatte-open-enum: true, enum: [none, bearer, header, query]}
+        name: {type: string, description: The header or query parameter, for `header` and `query`.}
+        secret: {type: string, description: The vault NAME injected there.}
+    UpstreamOperation:
+      type: object
+      required: [name, method, path, class]
+      properties:
+        name: {type: string}
+        method: {type: string}
+        path: {type: string}
+        class: {type: string, x-gatte-open-enum: true, enum: ['', sensitive], description: 'Empty: safe (GET, HEAD, OPTIONS). `sensitive`: approval alone does not serve it (design/adr/0048).'}
+    UpstreamDetail:
+      description: One entry in detail (1.6.0, `console_manages`).
+      allOf:
+        - $ref: '#/components/schemas/Upstream'
+        - type: object
+          required: [tools]
+          properties:
+            auth: {$ref: '#/components/schemas/UpstreamAuth'}
+            operations:
+              type: array
+              description: http only; the frozen set, sorted by name.
+              items: {$ref: '#/components/schemas/UpstreamOperation'}
+            operations_sha256: {type: string, description: The digest of the stored set the signature covers.}
+            operations_error: {type: string, description: The stored set does not decode; the entry is not servable.}
+            tools:
+              type: array
+              description: Every quarantine entry under the name.
+              items: {$ref: '#/components/schemas/Tool'}
+    RegisterUpstreamRequest:
+      type: object
+      additionalProperties: false
+      required: [name, url]
+      description: |
+        Exactly one of `openapi_url` (http or https, fetched once with the
+        adapter's egress guard: no private or loopback address, no redirect
+        off its origin, no userinfo or query) and `openapi_document` (the
+        document itself, JSON or YAML, at most 4 MiB). A path is never
+        read. `auth_kind` `none` registers keyless whatever the document
+        declares; left out, one apiKey or bearer scheme of the document is
+        derived (`auth_derived`). `key_name` is the vault NAME of the one
+        secret a keyed entry injects; never a value (`NAME=value` is
+        refused without repeating it).
+      properties:
+        name: {type: string}
+        url: {type: string, description: 'Base URL: scheme, host, port, base path; no userinfo, query or fragment.'}
+        openapi_url: {type: string}
+        openapi_document: {type: string}
+        auth_kind: {type: string, enum: [bearer, header, query, none]}
+        auth_name: {type: string}
+        key_name: {type: string, pattern: '^[A-Za-z_][A-Za-z0-9_]*$'}
+    RegisterUpstreamResult:
+      allOf:
+        - $ref: '#/components/schemas/ActionResult'
+        - type: object
+          required: [name, url, source, auth, auth_derived, tools, skipped, ingest_warnings, signature]
+          properties:
+            name: {type: string}
+            url: {type: string, description: As registered, with a base path of the document folded in.}
+            source: {type: string, description: The URL read, or `the document sent`.}
+            fetched_bytes: {type: integer}
+            base_path: {type: string}
+            auth: {$ref: '#/components/schemas/UpstreamAuth'}
+            auth_derived: {type: boolean}
+            tools:
+              type: array
+              items: {$ref: '#/components/schemas/UpstreamOperation'}
+            skipped:
+              type: array
+              description: Operations the document declares and the set does not carry, and why. Quotes the document, escaped.
+              items: {type: string}
+            ingest_warnings:
+              type: array
+              items: {type: string}
+            signature:
+              type: string
+              x-gatte-open-enum: true
+              enum: ['no', 'yes', INVALID, unknown]
+              description: '`yes` or `INVALID` right after registering means a signature was left under the name by an earlier entry (warning `signature_left_under_name`).'
+    DeregisterRequest:
+      type: object
+      additionalProperties: false
+      required: [confirm]
+      properties:
+        confirm: {type: string, description: The backend's name again, exactly. A mismatch is `invalid_argument` with `details.field` `confirm`.}
+    DeregisterResult:
+      allOf:
+        - $ref: '#/components/schemas/ActionResult'
+        - type: object
+          required: [name, registered, signature_removed, tools_forgotten]
+          properties:
+            name: {type: string}
+            registered: {type: boolean}
+            signature_removed: {type: boolean}
+            tools_forgotten: {type: integer}
+    SignResult:
+      allOf:
+        - $ref: '#/components/schemas/ActionResult'
+        - type: object
+          required: [name, key_fingerprint, trusted]
+          properties:
+            name: {type: string}
+            key_fingerprint: {type: string}
+            trusted:
+              type: boolean
+              description: The key is in `signer.trusted_keys`. false also carries warning `key_not_trusted`; the gateway does not serve the entry until the key is listed (a restart).
+    Secret:
+      type: object
+      required: [name, in_vault]
+      properties:
+        name: {type: string}
+        in_vault: {type: boolean, description: 'The vault holds a value under the name. A name declared by an entry and not in the vault is `false`: that entry cannot dial.'}
+        declared_by:
+          type: array
+          items: {type: string}
+    SecretList:
+      type: object
+      required: [secrets, registry_read]
+      properties:
+        secrets:
+          type: array
+          items: {$ref: '#/components/schemas/Secret'}
+        registry_read:
+          type: boolean
+          description: false when the registry could not be read (`problems` says why); then only the vault's names are listed and `declared_by` is absent.
+        problems:
+          type: array
+          items:
+            type: object
+            required: [code, part, message]
+            properties:
+              code: {type: string, description: 'Open set: `registry_not_read`.'}
+              part: {type: string, x-gatte-open-enum: true, enum: [declared_by]}
+              message: {type: string}
+    SecretValue:
+      type: object
+      additionalProperties: false
+      required: [value]
+      properties:
+        value:
+          type: string
+          description: Not empty, at most 64 KiB. Written once; never returned, recorded, logged, or in an error.
+    SecretResult:
+      allOf:
+        - $ref: '#/components/schemas/ActionResult'
+        - type: object
+          required: [name, existed]
+          properties:
+            name: {type: string}
+            existed: {type: boolean}
+    RolesText:
+      type: object
+      required: [text, path, sha256]
+      properties:
+        text: {type: string}
+        path: {type: string}
+        sha256: {type: string}
+    RolesRequest:
+      type: object
+      additionalProperties: false
+      required: [text]
+      properties:
+        text: {type: string, description: 'The whole roles file: `[[role]]` and `[group_to_role]` only. At most 1 MiB.'}
+    RolesResult:
+      allOf:
+        - $ref: '#/components/schemas/ActionResult'
+        - type: object
+          required: [path, sha256, reload_needed]
+          properties:
+            path: {type: string}
+            sha256: {type: string, description: Of the text written; it is in the `(roles set)` row.}
+            reload_needed: {type: boolean, description: true when the file changed. NOT applied until `POST /v1/reload` on the operator socket.}
 paths:
   /v1/whoami:
     get:
@@ -1743,7 +1940,7 @@ paths:
       operationId: listUpstreams
       tags: [upstreams]
       x-gatte-socket: [operator]
-      summary: Registered backends, whether each is signed (`upstream list`) and, with `backend_health`, its health. Read only; register, sign and deregister stay in the terminal; maintenance is under `/v1/maintenance`.
+      summary: Registered backends, whether each is signed (`upstream list`) and, with `backend_health`, its health. Maintenance is under `/v1/maintenance`; with `console_manages`, register is `POST` here, deregister `DELETE /v1/upstreams/{name}` and sign is on the accounts socket.
       responses:
         '200':
           description: OK
@@ -1757,6 +1954,228 @@ paths:
                     type: array
                     items: {$ref: '#/components/schemas/Upstream'}
         default: {$ref: '#/components/responses/Error'}
+    post:
+      operationId: registerUpstream
+      x-gatte-idempotent: false
+      tags: [upstreams, manage]
+      x-gatte-socket: [operator]
+      summary: Register a REST API from its OpenAPI document -- the same ingestion, refusals and report as `upstream register -transport http` (1.6.0, `console_manages`). Writes `(upstream register)`. Only http; stdio and oci stay in the terminal.
+      description: |
+        Not idempotent: a second call answers `upstream_exists`. After an
+        `internal` or a dropped connection, `GET /v1/upstreams/{name}` first.
+        The entry is NOT signed by this: sign it on the accounts socket.
+        Each tool waits in the quarantine. Body at most 24 MiB.
+      parameters: [{$ref: '#/components/parameters/GatteFront'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/RegisterUpstreamRequest'}
+      responses:
+        '201':
+          description: Registered; the ingestion's report.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/RegisterUpstreamResult'}
+        default:
+          description: feature_disabled, invalid_argument (any refusal of the ingestion, with its message), upstream_exists, payload_too_large, ...
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorResponse'}
+  /v1/upstreams/{name}:
+    get:
+      operationId: getUpstream
+      tags: [upstreams, manage]
+      x-gatte-socket: [operator]
+      summary: One entry in detail -- for http its descriptor (names only) and each operation with method, path and class -- with its signature state and every tool the quarantine holds under the name (1.6.0, `console_manages`).
+      parameters:
+        - {name: name, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/UpstreamDetail'}
+        default:
+          description: feature_disabled, not_found, ...
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorResponse'}
+    delete:
+      operationId: deregisterUpstream
+      x-gatte-idempotent: true
+      tags: [upstreams, manage]
+      x-gatte-socket: [operator]
+      summary: Deregister a backend, as `upstream deregister` does -- the registry row, its signature, every approval of its tools and its health, all keyed by the name (1.6.0, `console_manages`). Writes `(upstream deregister)`.
+      description: |
+        The body repeats the name (`confirm`); a front asks the operator to
+        type it, because the approvals go with the entry. A name with
+        nothing left under it answers `changed: false` and writes no row.
+      parameters:
+        - {name: name, in: path, required: true, schema: {type: string}}
+        - {$ref: '#/components/parameters/GatteFront'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/DeregisterRequest'}
+      responses:
+        '200':
+          description: Deregistered, or nothing was there.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/DeregisterResult'}
+        default:
+          description: feature_disabled, invalid_argument (confirm), internal (a later step failed; the earlier ones took effect and repeating is safe), ...
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorResponse'}
+  /v1/upstreams/{name}/sign:
+    post:
+      operationId: signUpstream
+      x-gatte-idempotent: true
+      tags: [upstreams, manage]
+      x-gatte-socket: [accounts]
+      summary: Sign an entry with the root signing key (`signer.key_file`), by a child `mcp-gateway sign` that reads the key as root and stores the signature as the database's owner (1.6.0, `console_manages`). Writes `(upstream sign)` with the key's fingerprint.
+      description: |
+        Every call signs again (a new row). The approval of each tool stays
+        the human gate; a sensitive tool still needs `clearTool` and a role
+        marked `non_read` naming it. `messages` carry what `sign` printed.
+      parameters:
+        - {name: name, in: path, required: true, schema: {type: string}}
+        - {$ref: '#/components/parameters/GatteFront'}
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {type: object, additionalProperties: false}
+      responses:
+        '200':
+          description: Signed.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SignResult'}
+        default:
+          description: feature_disabled, not_found, invalid_argument (sign refused it, or no key_file), config_unavailable, ...
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorResponse'}
+  /v1/secrets:
+    get:
+      operationId: listSecrets
+      tags: [manage]
+      x-gatte-socket: [accounts]
+      summary: The vault's names -- never a value -- and, for each name a registered entry declares, whether the vault has it (1.6.0, `console_manages`).
+      description: |
+        The registry is read by a child running as the database's owner
+        (root never opens the service account's database); when that
+        fails, `registry_read` is false and only the vault's names are
+        listed. The vault is decrypted by `sops` from standard input; its
+        two files are held to the same ownership check as `config.toml`.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SecretList'}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/secrets/{name}:
+    put:
+      operationId: setSecret
+      x-gatte-idempotent: true
+      tags: [manage]
+      x-gatte-socket: [accounts]
+      summary: Write one vault value (1.6.0, `console_manages`). Writes `(secret set)` with the name, never the value.
+      description: |
+        `name` is an environment variable name (`[A-Za-z_][A-Za-z0-9_]*`,
+        at most 128). The vault is decrypted and encrypted again by `sops`
+        on standard input and output, for the file's own age recipients;
+        the plaintext never reaches the disk; the new file is decrypted
+        once more and compared before it replaces the old one (temporary
+        file and rename, owner and mode kept). A vault encrypted for any
+        key other than age is refused. A connected backend keeps the old
+        value until `POST /v1/upstreams/redial`. Body at most 448 KiB.
+      parameters:
+        - {name: name, in: path, required: true, schema: {type: string}}
+        - {$ref: '#/components/parameters/GatteFront'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SecretValue'}
+      responses:
+        '200':
+          description: Written; `existed` says it replaced a value.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SecretResult'}
+        default:
+          description: feature_disabled, invalid_argument (name, empty value), payload_too_large, config_unavailable, internal, ...
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorResponse'}
+    delete:
+      operationId: deleteSecret
+      x-gatte-idempotent: true
+      tags: [manage]
+      x-gatte-socket: [accounts]
+      summary: Remove one vault value (1.6.0, `console_manages`). Writes `(secret delete)`; a name the vault does not hold answers `changed` false.
+      parameters:
+        - {name: name, in: path, required: true, schema: {type: string}}
+        - {$ref: '#/components/parameters/GatteFront'}
+      responses:
+        '200':
+          description: Deleted, or not there.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SecretResult'}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/roles:
+    get:
+      operationId: getRoles
+      tags: [manage]
+      x-gatte-socket: [accounts]
+      summary: The roles file (`roles_file`) as it is on disk (1.6.0, `console_manages`). `feature_disabled` with `details.key` `roles_file` when the roles live in the main file.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/RolesText'}
+        default: {$ref: '#/components/responses/Error'}
+    put:
+      operationId: putRoles
+      x-gatte-idempotent: true
+      tags: [manage]
+      x-gatte-socket: [accounts]
+      summary: Validate and write the roles file (1.6.0, `console_manages`). Writes `(roles set)` with the text's SHA-256. Does NOT apply it.
+      description: |
+        The text is validated as the configuration load would read it --
+        unknown and repeated keys, and the whole configuration validated
+        with these roles -- and a text it would refuse is answered
+        `invalid_argument` (`details.field` `text`) with the load's message,
+        and not written. A valid text is written atomically (temporary file
+        and rename, owner and mode kept). The running gateway applies roles
+        on a reload only: a front calls `POST /v1/reload` on the OPERATOR
+        socket next. The same text again answers `changed` false. Body at
+        most 6 MiB.
+      parameters: [{$ref: '#/components/parameters/GatteFront'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/RolesRequest'}
+      responses:
+        '200':
+          description: Written (`reload_needed`), or already this text.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/RolesResult'}
+        default:
+          description: feature_disabled, invalid_argument, payload_too_large, config_unavailable, ...
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorResponse'}
   /v1/maintenance:
     get:
       operationId: listMaintenance

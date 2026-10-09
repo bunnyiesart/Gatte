@@ -37,3 +37,13 @@
 @TLS@
 	reverse_proxy 127.0.0.1:9091
 }
+
+# The web console (design/adr/0050 §4): plain HTTP on the container's
+# 8090, which `docker run -p 127.0.0.1:8090:8090` publishes on the HOST's
+# loopback only, for `ssh -L 8090:127.0.0.1:8090 HOST`. Host is passed
+# through untouched: the console accepts only a loopback Host and an Origin
+# that matches it, which is exactly what a browser at the tunnel's end
+# sends. Nothing here answers until `gatte console` starts the console.
+http://:8090 {
+	reverse_proxy 127.0.0.1:8091
+}

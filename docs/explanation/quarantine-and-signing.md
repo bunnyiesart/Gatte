@@ -175,7 +175,10 @@ account can read the key or write its directory (`design/adr/0045`).
 The provisioning recipe got this wrong until 16 Sep 2026 and left the key
 readable by the service account (`README.md`, Security model). Signing
 stays in the terminal, never in the web console or the management API,
-because it needs root's key (`design/adr/0036`, `design/adr/0040`).
+because it needs root's key (`design/adr/0036`, `design/adr/0040`) --
+unless `[admin] console_manages = true`, with which the accounts socket,
+root's, signs through a child `sign` and the console started with
+`-manage-users` has a Sign button (`design/adr/0050`).
 
 `sign -all`, used after a key rotation, signs only a plan it printed
 first, bound by a manifest (`design/adr/0044`). An entry that no longer

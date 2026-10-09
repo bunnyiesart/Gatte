@@ -2,11 +2,52 @@
 
 **Status:** Accepted — 09 out 2026.
 
-**Estado de implementação (09 out 2026):** `deploy/docker/` (Dockerfile,
-`compose.yaml`, `compose.build.yaml`, `entrypoint.sh`, `lib.sh`, o comando
-`gatte`, `smoke.sh` e os modelos de configuração), o `.dockerignore` da raiz e
-o workflow `.github/workflows/image.yml`. Testado numa VM podman (6.1, arm64)
-com `docker compose`: ver "Verificação" abaixo.
+**Correção de 09 out 2026 (0.2.0): um contêiner, não quatro.** A 0.1.0 saiu
+como abaixo, com `compose.yaml` e quatro contêineres num namespace de rede
+compartilhado. O dono recusou o resultado: instalar ainda exigia baixar dois
+arquivos e editar um `.env`, e o pedido era "baixar a imagem e rodar". Na
+0.2.0, Caddy e Authelia vão **dentro** da imagem do Gatte, e a instalação é
+um `docker run` com `-e GATTE_DOMAIN` e um volume (`-v gatte:/gatte`). As
+Decisões 1, 2 e 3 ficam abaixo como registro da 0.1.0; o que mudou:
+
+- **Um processo por conta, num contêiner.** O entrypoint sobe o Authelia como
+  `authelia`, o Caddy como `caddy` (porta 443 por `cap_net_bind_service` no
+  binário, não como root), o gateway e o socket do operador como `gatte`, e
+  o socket de contas como root, como numa instalação em host (`0038`). Se o
+  Authelia, o Caddy ou o gateway sai, os outros param e o contêiner sai, para
+  a política de reinício trazer o conjunto inteiro de volta. O loopback é o
+  do próprio contêiner, então o `0011` continua intacto sem contêiner
+  `pause`.
+- **A base passa a ser Debian, não Alpine:** o binário de release do
+  Authelia é ligado à glibc. Caddy e Authelia vêm das imagens oficiais, e
+  toda imagem de origem é fixada pelo digest do seu índice multiarquitetura.
+  O digest que o podman mostra é o de uma arquitetura só, e fixá-lo teria
+  quebrado o build amd64.
+- **Um volume, `/gatte`.** As configurações (`GATTE_DOMAIN`, `GATTE_PORT`,
+  `GATTE_TLS`, `GATTE_ACME_EMAIL`) são gravadas nele na primeira execução, e
+  um contêiner recriado sem os `-e` (um upgrade) as lê de volta.
+- **Os papéis ficam no volume**, editados por `gatte roles edit` ou
+  carregados por `gatte roles set < roles.toml`. Um arquivo que o gateway
+  recusa no `reload` não é aplicado: o anterior volta. Continua sendo um
+  arquivo revisável e versionável, como o `0009` pede; o que mudou é onde ele
+  mora.
+- **A conta de arranque desabilitada é permanente.** Na 0.1.0 o primeiro
+  `gatte user add` a apagava. O teste da 0.2.0 apanhou o defeito: apagar a
+  última pessoa deixava o arquivo de usuários vazio, e o Authelia não subia
+  mais. Agora ela nunca é apagada, todo arranque a recoloca se o arquivo
+  ficar vazio, e `gatte user list` não a mostra.
+- **O teste ponta a ponta vai dentro da imagem**: `gatte selftest`. Ele
+  passa pelos nomes públicos e pelo TLS de dentro do contêiner, não pela
+  porta publicada no host.
+- **O OpenAPI chega pela URL ou pela entrada padrão** (`-openapi -`), sem
+  diretório no host.
+
+**Estado de implementação (09 out 2026, 0.2.0):** `deploy/docker/`
+(Dockerfile, `entrypoint.sh`, `lib.sh`, o comando `gatte`, `selftest.sh`, os
+modelos de configuração e um `compose.yaml` opcional de um serviço), o
+`.dockerignore` da raiz e o workflow `.github/workflows/image.yml`, que
+publica `ghcr.io/bunnyiesart/gatte`. Na 0.1.0 eram também `compose.build.yaml`,
+`.env.example` e `smoke.sh`, removidos na 0.2.0.
 
 ## Contexto
 
@@ -138,7 +179,29 @@ Tags: `vX.Y.Z` publica `X.Y.Z`, `X.Y` e `latest`; o `main` publica `edge`.
 Instalar passa a ser baixar `compose.yaml` e `.env.example` e rodar
 `docker compose up -d`. Quem quer compilar do código soma `compose.build.yaml`.
 
-## Verificação (09 out 2026)
+## Verificação da 0.2.0 (09 out 2026)
+
+Numa VM podman 6.1.2 (arm64), sem nenhum arquivo no host:
+
+1. `docker run -d --name gatte -p 8443:8443 -e GATTE_DOMAIN=gatte.localtest.me
+   -e GATTE_PORT=8443 -v gatte:/gatte gatte:local`: subiu de primeira, com
+   `check` sem falhas.
+2. Pelo `docker exec`: segredo pela entrada padrão, a Petstore registrada pela
+   URL do OpenAPI, aprovação com `-yes`, e `gatte selftest` com todas as
+   verificações passando.
+3. Cada processo roda com a sua conta (lido de `/proc`). O segredo aparece 0
+   vezes no log.
+4. `docker stop` parou os três em menos de 2 s.
+5. Recriado sem nenhum `-e`, o contêiner leu as configurações do volume. O
+   mesmo teste apanhou o defeito da conta de arranque: o arquivo de usuários
+   tinha ficado vazio depois do `selftest`. Corrigido; o arranque seguinte
+   consertou o volume sozinho.
+6. `gatte roles set` com uma chave inválida foi recusado e o arquivo anterior
+   voltou; com um papel `non_read` válido foi aplicado, e o `clear` passou.
+7. `-openapi -` registrou a API a partir da entrada padrão.
+8. Com `GATTE_PORT=443`, o Caddy abriu a 443 como usuário `caddy`.
+
+## Verificação da 0.1.0 (09 out 2026)
 
 Numa VM podman 6.1.2 (arm64), com `docker compose` 5.2, do zero (volumes e
 `config/` apagados), com `GATTE_DOMAIN=gatte.localtest.me` e `GATTE_PORT=8443`:

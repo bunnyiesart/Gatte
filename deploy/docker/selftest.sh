@@ -1,37 +1,34 @@
 #!/bin/sh
-# smoke.sh -- end-to-end check of a running deploy/docker stack (ADR-0049).
+# gatte selftest (design/adr/0049): end-to-end check of a running container.
 #
-#     cd deploy/docker && ./smoke.sh [SERVER SAFE_TOOL [SENSITIVE_TOOL [SAFE_ARGS_JSON]]]
-#     e.g. ./smoke.sh petstore findPetsByStatus addPet '{"query_status":"available"}'
+#     docker exec gatte gatte selftest [SERVER SAFE_TOOL [SENSITIVE_TOOL [ARGS_JSON]]]
+#     e.g. docker exec gatte gatte selftest petstore findPetsByStatus addPet '{"query_status":"available"}'
 #
-# From the host, as an analyst would: creates a throwaway person, signs in
-# at Authelia with the public client's authorization-code + PKCE flow (curl
-# stands in for the browser), opens an MCP session at the gateway with the access token, lists
-# the tools, calls SAFE_TOOL (it must answer) and SENSITIVE_TOOL (it must be
-# refused), and deletes the person. The password and the tokens stay in
-# shell variables and a private temporary directory; nothing prints them.
-#
-# Needs on the host: docker compose, curl, jq, openssl.
+# As an analyst would, through the public names and TLS: creates a throwaway
+# person, signs in at Authelia with the public client's authorization-code +
+# PKCE flow (curl stands in for the browser), opens an MCP session at the
+# gateway with the access token, lists the tools, calls SAFE_TOOL (it must
+# answer) and SENSITIVE_TOOL (it must be neither listed nor served), and
+# deletes the person. The password and the tokens stay in shell variables
+# and a private temporary directory; nothing prints them.
 
-set -eu
-cd "$(dirname "$0")"
+. /usr/local/share/gatte/lib.sh
+derive
+
 SERVER=${1:-}
 SAFE=${2:-}
 SENSITIVE=${3:-}
 SAFE_ARGS=${4:-'{}'}
 
-. ./.env
-[ "${GATTE_PORT:-443}" = 443 ] && sfx= || sfx=:$GATTE_PORT
-GATEWAY=https://$GATTE_DOMAIN$sfx/
-ISSUER=https://auth.$GATTE_DOMAIN$sfx
-AUDIENCE=$GATEWAY
+GATEWAY=$AUDIENCE
 CLIENT_ID=claude-code
 REDIRECT_URI=http://127.0.0.1:47823/callback
-U=smoke$(openssl rand -hex 3)
+U=selftest$(openssl rand -hex 3)
 
+umask 077
 W=$(mktemp -d)
 cleanup() {
-	docker compose exec -T gatte gatte user rm "$U" >/dev/null 2>&1 || true
+	gatte user rm "$U" >/dev/null 2>&1 || true
 	rm -rf "$W"
 }
 trap cleanup EXIT INT TERM
@@ -42,9 +39,8 @@ fail() {
 	exit 1
 }
 
-if [ "${GATTE_TLS:-internal}" = internal ]; then
-	docker compose exec -T gatte gatte ca >"$W/ca.crt" || fail "gatte ca"
-	CURL="curl -sS --cacert $W/ca.crt"
+if [ "$GATTE_TLS" = internal ]; then
+	CURL="curl -sS --cacert $GATTE_EDGE/public/ca.crt"
 else
 	CURL="curl -sS"
 fi
@@ -55,7 +51,7 @@ c=$($CURL -o /dev/null -w '%{http_code}' -X POST "$GATEWAY" -H 'Content-Type: ap
 ok "anonymous call refused with 401"
 
 # 2. A throwaway person.
-docker compose exec -T gatte gatte user add "$U" -name "Smoke Test" >"$W/add" 2>&1 || fail "user add: $(cat "$W/add")"
+gatte user add "$U" -name "Self Test" >"$W/add" 2>&1 || fail "user add: $(cat "$W/add")"
 PASSWORD=$(sed -n 's/^One-time password, shown only now: //p' "$W/add")
 [ -n "$PASSWORD" ] || fail "user add printed no password"
 rm -f "$W/add"
@@ -108,22 +104,24 @@ rm -f "$W/token"
 ok "access token from the public client with PKCE (no secret)"
 
 # 4. MCP over streamable HTTP with that token.
+SID=
 rpc() { # ID METHOD PARAMS-JSON OUT
 	jq -nc --argjson id "$1" --arg m "$2" --argjson p "$3" '{jsonrpc:"2.0", id:$id, method:$m, params:$p}' >"$W/req"
-	$CURL -o "$W/$4.raw" -D "$W/$4.h" -w '%{http_code}' -X POST "$GATEWAY" \
+	if [ -n "$SID" ]; then set -- "$1" "$2" "$3" "$4" -H "Mcp-Session-Id: $SID"; fi
+	o=$4
+	shift 4
+	$CURL -o "$W/$o.raw" -D "$W/$o.h" -w '%{http_code}' -X POST "$GATEWAY" \
 		-H "Authorization: Bearer $AT" -H 'Content-Type: application/json' \
-		-H 'Accept: application/json, text/event-stream' ${SID:+-H "Mcp-Session-Id: $SID"} \
-		--data @"$W/req"
-	{ sed -n 's/^data: //p' "$W/$4.raw"; grep -v '^\(data\|event\|id\):' "$W/$4.raw" || true; } |
-		jq -s 'map(select(type == "object")) | last' >"$W/$4"
+		-H 'Accept: application/json, text/event-stream' "$@" --data @"$W/req"
+	{ sed -n 's/^data: //p' "$W/$o.raw"; grep -v '^\(data\|event\|id\):' "$W/$o.raw" || true; } |
+		jq -s 'map(select(type == "object")) | last' >"$W/$o"
 }
-SID=
-c=$(rpc 1 initialize '{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"gatte-smoke","version":"1"}}' init)
+c=$(rpc 1 initialize '{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"gatte-selftest","version":"1"}}' init)
 [ "$c" = 200 ] || fail "initialize: http $c"
 SID=$(awk 'tolower($1)=="mcp-session-id:"{print $2}' "$W/init.h" | tr -d '\r')
 jq -nc '{jsonrpc:"2.0", method:"notifications/initialized"}' >"$W/req"
 $CURL -o /dev/null -X POST "$GATEWAY" -H "Authorization: Bearer $AT" -H 'Content-Type: application/json' \
-	-H 'Accept: application/json, text/event-stream' ${SID:+-H "Mcp-Session-Id: $SID"} --data @"$W/req" || true
+	-H 'Accept: application/json, text/event-stream' -H "Mcp-Session-Id: $SID" --data @"$W/req" || true
 c=$(rpc 2 tools/list '{}' list)
 [ "$c" = 200 ] || fail "tools/list: http $c"
 ok "gateway session open; $U sees: $(jq -r '[.result.tools[].name] | join(" ")' "$W/list")"

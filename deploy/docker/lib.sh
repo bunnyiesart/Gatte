@@ -1,21 +1,25 @@
-# Shared by gatte-entrypoint and gatte (design/adr/0049). POSIX sh: the
-# image's shell is busybox ash.
+# Shared by gatte-entrypoint, gatte and the self-test (design/adr/0049).
+# POSIX sh (the image's /bin/sh is dash).
 #
-# Every path and URL the container uses is derived here from four .env
-# values, so the entrypoint, the operator's commands, the generated
-# configuration files and the compose file cannot disagree about them.
+# Every path lives under /gatte, the one volume, and every URL is derived
+# here from the settings, so the entrypoint, the operator's commands and the
+# generated configuration files cannot disagree about them.
 
 set -eu
 
-GATTE_ETC=/etc/gatte
-GATTE_SITE=$GATTE_ETC/site          # the host's deploy/docker/config/
+ROOT=/gatte
+GATTE_ETC=$ROOT/etc
+GATTE_SITE=$ROOT/site               # roles.toml, extra.toml, OpenAPI documents
 GATTE_KEYS=$GATTE_ETC/keys
 GATTE_CA=$GATTE_ETC/ca
-GATTE_DATA=/var/lib/gatte
-GATTE_EDGE=/etc/gatte-edge          # what Caddy reads: Caddyfile, certificate
-AUTHELIA_ETC=/etc/authelia
+GATTE_DATA=$ROOT/data               # the database: the service account's
+GATTE_EDGE=$ROOT/edge               # what Caddy reads
+CADDY_HOME=$ROOT/caddy              # Caddy's own state (ACME account, certs)
+AUTHELIA_ETC=$ROOT/authelia
+AUTHELIA_DATA=$ROOT/authelia-data
 TEMPLATES=/usr/local/share/gatte/templates
 
+SETTINGS=$GATTE_ETC/settings
 CONFIG=$GATTE_ETC/config.toml
 BASE=$GATTE_ETC/base.toml
 SIGNING_KEY=$GATTE_KEYS/signing.key
@@ -30,7 +34,6 @@ OPERATOR_SOCKET=$RUN_DIR/op/operator.sock
 ACCOUNTS_SOCKET=$RUN_DIR/accounts/accounts.sock
 
 SERVICE_USER=gatte
-SERVICE_HOME=$GATTE_DATA
 
 die() {
 	printf 'gatte: %s\n' "$*" >&2
@@ -41,13 +44,39 @@ say() {
 	printf '%s\n' "$*"
 }
 
-# derive computes every URL from GATTE_DOMAIN and GATTE_PORT. The port is
-# part of every URL when it is not 443, because the issuer and the audience
-# are compared as strings: a client that reached https://auth.D:8443 must be
-# handed an issuer that says :8443.
+# load_settings: a value given to `docker run -e` wins and is remembered;
+# one left out is read back from the volume, so a container re-created
+# without the -e flags (an upgrade) keeps its domain.
+SETTING_NAMES="GATTE_DOMAIN GATTE_PORT GATTE_TLS GATTE_ACME_EMAIL"
+load_settings() {
+	for n in $SETTING_NAMES; do
+		eval "v=\${$n:-}"
+		if [ -z "$v" ] && [ -r "$SETTINGS" ]; then
+			v=$(sed -n "s/^$n=//p" "$SETTINGS" | head -n 1)
+			[ -n "$v" ] && eval "$n=\$v"
+		fi
+	done
+	return 0
+}
+
+save_settings() {
+	{
+		for n in $SETTING_NAMES; do
+			eval "v=\${$n:-}"
+			if [ -n "$v" ]; then printf '%s=%s\n' "$n" "$v"; fi
+		done
+	} >"$SETTINGS.new"
+	chmod 0644 "$SETTINGS.new"
+	mv "$SETTINGS.new" "$SETTINGS"
+}
+
+# derive validates the settings and computes every URL. The port is part of
+# every URL when it is not 443, because the issuer and the audience are
+# compared as strings.
 derive() {
+	load_settings
 	: "${GATTE_DOMAIN:=}"
-	[ -n "$GATTE_DOMAIN" ] || die "GATTE_DOMAIN is not set: copy .env.example to .env and set it"
+	[ -n "$GATTE_DOMAIN" ] || die "GATTE_DOMAIN is not set: docker run ... -e GATTE_DOMAIN=gatte.example.org ..."
 	case "$GATTE_DOMAIN" in
 	*.*) ;;
 	*) die "GATTE_DOMAIN=$GATTE_DOMAIN needs at least one dot: Authelia sets its session cookie on it" ;;
@@ -78,11 +107,20 @@ derive() {
 	IDP_SITE=$IDP_HOST$sfx
 }
 
+# as_user USER CMD... runs a command as one of the image's accounts, with
+# that account's home.
+as_user() {
+	u=$1
+	shift
+	h=$(getent passwd "$u" | cut -d: -f6)
+	setpriv --reuid="$u" --regid="$u" --init-groups env HOME="$h" "$@"
+}
+
 # as_service runs a command as the service account, which owns the
 # database: an operator command run as root would leave root-owned files
 # the gateway cannot write.
 as_service() {
-	su-exec "$SERVICE_USER" env HOME="$SERVICE_HOME" "$@"
+	as_user "$SERVICE_USER" "$@"
 }
 
 # mcp runs an mcp-gateway operator command as the service account, with
@@ -107,15 +145,15 @@ mcp() {
 # root-owned and group-readable by the service: the gateway reads its policy
 # and cannot change it (README, "Who owns what").
 assemble_config() {
-	[ -s "$BASE" ] || die "$BASE is missing: the first run (the init service) has not completed"
+	[ -s "$BASE" ] || die "$BASE is missing: the container has not finished its first start"
 	[ -s "$GATTE_SITE/roles.toml" ] || install -m 0644 "$TEMPLATES/roles.toml" "$GATTE_SITE/roles.toml"
 	tmp=$CONFIG.new
 	{
 		cat "$BASE"
-		printf '\n# ---- config/roles.toml ----\n'
+		printf '\n# ---- site/roles.toml ----\n'
 		cat "$GATTE_SITE/roles.toml"
 		if [ -s "$GATTE_SITE/extra.toml" ]; then
-			printf '\n# ---- config/extra.toml ----\n'
+			printf '\n# ---- site/extra.toml ----\n'
 			cat "$GATTE_SITE/extra.toml"
 		fi
 	} >"$tmp"
@@ -129,7 +167,7 @@ assemble_config() {
 api_call() {
 	method=$1 sock=$2 path=$3
 	shift 3
-	[ -S "$sock" ] || die "the management API socket $sock is not there: is the gatte service running?"
+	[ -S "$sock" ] || die "the management API socket $sock is not there: has the container finished starting?"
 	if [ $# -gt 0 ]; then
 		curl -sS --unix-socket "$sock" -X "$method" -H 'Gatte-Front: docker' \
 			-H 'Content-Type: application/json' --data-binary "$1" "http://gatte$path"

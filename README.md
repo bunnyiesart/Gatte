@@ -130,11 +130,15 @@ covers other kinds of blue team tooling.
 
 ## Quick start
 
-**The short way, for REST APIs: Docker.** Two files and one
-`docker compose up` bring up the gateway, its TLS proxy and its identity
-provider, from the published image `ghcr.io/bunnyiesart/gatte`; every task
-after that is one `gatte` command
-([deploy/docker/README.md](deploy/docker/README.md), `design/adr/0049`).
+**The short way, for REST APIs: one `docker run`.** The published image
+holds the gateway, its TLS proxy and its identity provider, and configures
+all three on its first start; every task after that is one `gatte` command
+([deploy/docker/README.md](deploy/docker/README.md), `design/adr/0049`):
+
+```sh
+docker run -d --name gatte --restart unless-stopped -p 443:443 \
+  -e GATTE_DOMAIN=gatte.example.org -v gatte:/gatte ghcr.io/bunnyiesart/gatte:0.2.0
+```
 
 The rest of this section sets up a gateway by hand on one Linux or FreeBSD
 host, with one backend. Use it for MCP servers that run as a process or a

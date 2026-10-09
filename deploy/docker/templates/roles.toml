@@ -1,6 +1,8 @@
-# Who may call what (design/adr/0009). This file is yours: it lives in
-# config/ next to compose.yaml on the host, so it can be reviewed and versioned.
-# After editing it:  docker compose exec gatte gatte reload
+# Who may call what (design/adr/0009). This file is yours: edit it with
+#     docker exec -it gatte gatte roles edit
+# (it is checked and applied when you save), or keep it in version control
+# and load it with
+#     docker exec -i gatte gatte roles set < roles.toml
 #
 # An analyst's IdP group picks the role. `gatte user add NAME` puts a new
 # person in soc-analysts unless told otherwise (-group).

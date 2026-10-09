@@ -1,7 +1,7 @@
 #!/bin/sh
 # gatte: the operator's commands inside the container (design/adr/0049).
 #
-#     docker compose exec gatte gatte help
+#     docker exec -it gatte gatte help
 #
 # Each command is a short composition of mcp-gateway's own commands and the
 # management API, run as the account each one needs (the service account
@@ -14,12 +14,14 @@ derive
 
 usage() {
 	cat <<EOF
-gatte -- Gatte operator commands (run with: docker compose exec gatte gatte ...)
+gatte -- Gatte operator commands. Run each as:  docker exec -it gatte gatte ...
 
 APIs (REST backends from an OpenAPI document)
-  gatte api add NAME -url BASE-URL -openapi FILE|URL [options]
-        Register, sign and grant a REST API. FILE is a path under
-        config/ next to compose.yaml on the host (e.g. -openapi abuseipdb.json).
+  gatte api add NAME -url BASE-URL -openapi URL|-|FILE [options]
+        Register, sign and grant a REST API. The document is an http(s)
+        URL, "-" to read it from standard input
+            docker exec -i gatte gatte api add NAME -url ... -openapi - < spec.json
+        or a file already in /gatte/site.
         options: -auth-kind bearer|header|query  -auth-name NAME
                  -key VAR      vault entry holding the key (default NAME_API_KEY, upper case)
                  -keyless      the API takes no key
@@ -30,7 +32,7 @@ APIs (REST backends from an OpenAPI document)
   gatte api rm NAME
   gatte clear SERVER TOOL
         Let a SENSITIVE (POST/PUT/PATCH/DELETE) tool be served, to a
-        non_read role that names it in config/roles.toml.
+        non_read role that names it in the roles (gatte roles edit).
 
 Credentials (sops+age vault; values are never printed)
   gatte secret set NAME      reads the value from your terminal (or stdin)
@@ -47,9 +49,17 @@ People (Authelia accounts, through the root-only accounts socket)
         The script that connects that person's Claude Code; hand it over
         with the password.
 
+Roles (who may call what; design/adr/0009)
+  gatte roles show           print roles.toml
+  gatte roles edit           edit it in vi; applied on save, undone if refused
+  gatte roles set            replace it from standard input (docker exec -i ... < roles.toml)
+
 Running
   gatte status               backends, tools waiting for review
-  gatte reload               apply config/roles.toml without a restart
+  gatte reload               re-read the roles without a restart
+  gatte selftest SERVER SAFE_TOOL [SENSITIVE_TOOL [ARGS_JSON]]
+                             sign in as a throwaway analyst, call SAFE_TOOL,
+                             check SENSITIVE_TOOL is refused
   gatte ca                   the private CA certificate (GATTE_TLS=internal)
   gatte mcp ARGS...          any mcp-gateway command, e.g. gatte mcp audit -limit 20
 EOF
@@ -141,7 +151,7 @@ vault_has() {
 # --- roles -------------------------------------------------------------
 
 # add_grant ROLE BACKEND puts `BACKEND = ["*"]` on the line after ROLE's
-# [role.grants] header in config/roles.toml, unless it is there already.
+# [role.grants] header in roles.toml, unless it is there already.
 add_grant() {
 	role=$1 backend=$2 f=$GATTE_SITE/roles.toml
 	if awk -v role="$role" -v b="$backend" '
@@ -161,7 +171,7 @@ add_grant() {
 		END { exit done ? 0 : 1 }' "$f" >"$f.new" ||
 		{
 			rm -f "$f.new"
-			die "role \"$role\" with a [role.grants] table not found in config/roles.toml; add the grant by hand"
+			die "role \"$role\" with a [role.grants] table not found in the roles; add the grant with gatte roles edit"
 		}
 	cat "$f.new" >"$f"
 	rm -f "$f.new"
@@ -171,6 +181,50 @@ add_grant() {
 cmd_reload() {
 	assemble_config
 	mcp reload -wait 1m
+}
+
+# apply_roles NEWFILE puts NEWFILE in place of roles.toml and reloads; if the
+# gateway refuses the result, the previous file is put back, so a typo never
+# reaches the next restart.
+apply_roles() {
+	f=$GATTE_SITE/roles.toml
+	cp "$f" "$f.previous"
+	install -m 0644 "$1" "$f"
+	if cmd_reload; then
+		rm -f "$f.previous"
+		say "Roles applied."
+	else
+		mv "$f.previous" "$f"
+		assemble_config
+		die "the roles were refused (above); the previous ones are back in place"
+	fi
+}
+
+cmd_roles() {
+	case "${1:-show}" in
+	show) cat "$GATTE_SITE/roles.toml" ;;
+	edit)
+		[ -t 0 ] || die "roles edit needs a terminal: docker exec -it gatte gatte roles edit"
+		w=$(private_dir)
+		trap 'rm -rf "$w"' EXIT INT TERM
+		cp "$GATTE_SITE/roles.toml" "$w/roles.toml"
+		"${EDITOR:-vi}" "$w/roles.toml"
+		if cmp -s "$w/roles.toml" "$GATTE_SITE/roles.toml"; then
+			say "No change."
+			return 0
+		fi
+		apply_roles "$w/roles.toml"
+		;;
+	set)
+		[ ! -t 0 ] || die "roles set reads the file from standard input: docker exec -i gatte gatte roles set < roles.toml"
+		w=$(private_dir)
+		trap 'rm -rf "$w"' EXIT INT TERM
+		cat >"$w/roles.toml"
+		[ -s "$w/roles.toml" ] || die "standard input was empty"
+		apply_roles "$w/roles.toml"
+		;;
+	*) die "usage: gatte roles show|edit|set" ;;
+	esac
 }
 
 # --- APIs --------------------------------------------------------------
@@ -194,19 +248,24 @@ cmd_api_add() {
 		esac
 	done
 	[ -n "$url" ] || die "-url is required: the API's base URL (scheme, host, port, base path)"
-	[ -n "$spec" ] || die "-openapi is required: a file in config/ next to compose.yaml, or an http(s) URL"
+	[ -n "$spec" ] || die "-openapi is required: an http(s) URL, - for standard input, or a file in /gatte/site"
+	# A document from standard input is kept in /gatte/site, so what was
+	# registered can be read again later.
 	case "$spec" in
 	http://* | https://*) ;;
-	/*) ;;
-	*)
-		[ -f "$GATTE_SITE/$spec" ] || die "$spec is not in config/ next to compose.yaml (put the OpenAPI document there)"
-		spec=$GATTE_SITE/$spec
+	-)
+		[ ! -t 0 ] || die "-openapi - reads the document from standard input: docker exec -i gatte gatte api add ... -openapi - < spec.json"
+		cat >"$GATTE_SITE/$name.openapi"
+		[ -s "$GATTE_SITE/$name.openapi" ] || die "standard input was empty"
+		spec=$GATTE_SITE/$name.openapi
 		;;
+	/*) ;;
+	*) spec=$GATTE_SITE/$spec ;;
 	esac
-	# The service account reads the document; a copy it owns avoids
-	# depending on the host's ownership of the bind-mounted file.
+	# The service account reads the document: hand it a copy it can read.
 	case "$spec" in
 	/*)
+		[ -f "$spec" ] || die "$spec does not exist"
 		w=$(mktemp -d)
 		chown "$SERVICE_USER" "$w"
 		install -m 0644 "$spec" "$w/openapi"
@@ -232,11 +291,11 @@ cmd_api_add() {
 	say ""
 	if [ -z "$keyless" ] && ! vault_has "$key"; then
 		say "Next: store the key, then review the tools (they are observed within a minute):"
-		say "    docker compose exec gatte gatte secret set $key"
+		say "    docker exec -it gatte gatte secret set $key"
 	else
 		say "Next: review the tools (they are observed within a minute):"
 	fi
-	say "    docker compose exec gatte gatte api approve $name"
+	say "    docker exec -it gatte gatte api approve $name"
 }
 
 cmd_api_approve() {
@@ -253,7 +312,7 @@ cmd_api_approve() {
 		i=$((i + 1))
 		if [ "$i" -ge 45 ]; then
 			cat "$w/review"
-			die "no tools of $name are waiting for review after 90 seconds (gatte status; docker compose logs gatte)"
+			die "no tools of $name are waiting for review after 90 seconds (gatte status; docker logs gatte)"
 		fi
 		[ "$i" -eq 1 ] && say "waiting for the gateway to observe $name's tools..."
 		sleep 2
@@ -283,7 +342,7 @@ cmd_api() {
 			case "$a" in y | Y | yes | sim | s) ;; *) die "nothing removed" ;; esac
 		fi
 		mcp upstream deregister "$1"
-		say "The grant for $1 in config/roles.toml is still there; delete it and run gatte reload."
+		say "The grant for $1 in the roles is still there: gatte roles edit."
 		;;
 	*) die "usage: gatte api add|approve|list|rm" ;;
 	esac
@@ -327,13 +386,8 @@ cmd_user() {
 		api_call POST "$ACCOUNTS_SOCKET" /v1/accounts "$body" >"$w/r"
 		api_or_die "$w/r"
 		say "Created $u (groups:$groups)."
-		# The first run's disabled placeholder (cmd_init) is no longer
-		# needed once a real account exists.
-		if [ "$u" != "$BOOTSTRAP_USER" ] && grep -q "^  $BOOTSTRAP_USER:" "$USERS_FILE" 2>/dev/null; then
-			api_call DELETE "$ACCOUNTS_SOCKET" "/v1/accounts/$BOOTSTRAP_USER" >/dev/null || true
-		fi
 		say "One-time password, shown only now: $(jq -r .one_time_password "$w/r")"
-		say "Then: docker compose exec gatte gatte connect $u -os macos > connect-$u.sh"
+		say "Then: docker exec gatte gatte connect $u -os macos > connect-$u.sh"
 		;;
 	list)
 		api_call GET "$ACCOUNTS_SOCKET" /v1/accounts >"$w/r"
@@ -348,6 +402,7 @@ cmd_user() {
 		;;
 	rm)
 		[ $# -eq 1 ] || die "usage: gatte user rm USERNAME"
+		[ "$1" != "$BOOTSTRAP_USER" ] || die "$BOOTSTRAP_USER is the disabled account Authelia needs to start; it cannot sign in"
 		api_call DELETE "$ACCOUNTS_SOCKET" "/v1/accounts/$1" >"$w/r"
 		api_or_die "$w/r"
 		say "Deleted $1. To also cut off a token already issued: gatte mcp access block $1"
@@ -386,6 +441,8 @@ status)
 	mcp tool list
 	;;
 reload) cmd_reload ;;
+roles) shift; cmd_roles "$@" ;;
+selftest) shift; exec /usr/local/share/gatte/selftest.sh "$@" ;;
 ca)
 	[ -s "$GATTE_EDGE/public/ca.crt" ] || die "no private CA: GATTE_TLS=acme uses a public certificate"
 	cat "$GATTE_EDGE/public/ca.crt"

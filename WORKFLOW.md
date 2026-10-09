@@ -205,6 +205,14 @@ that only exists inside a closed section is an item nobody re-reads:
   `_`/`-` folded in header names, `..;` segments and `//` base paths refused.
   Until step 4 above landed, an `http` entry had no operation set and could
   not be registered.
+- ✅ **Gatte in one container (ADR-0049, 0.2.0) — 09 Oct 2026.** Caddy and
+  Authelia now ship inside the image: installing is one `docker run` with
+  `-e GATTE_DOMAIN` and a volume, no file on the host. Each process runs as
+  its own account; settings and roles live in the volume (`gatte roles
+  edit|set`, with rollback on a refused file); `gatte selftest` is in the
+  image. The 0.2.0 test caught a 0.1.0 defect: deleting the last person
+  emptied Authelia's users file and it would not start again; the disabled
+  bootstrap account is now permanent. The entry below is 0.1.0's.
 - ✅ **Gatte as one OCI image (ADR-0049) — 09 Oct 2026.** `deploy/docker/`:
   a multi-stage Dockerfile (static gateway, sops from its release checked
   against its checksums, age, openssl), and a `compose.yaml` whose four

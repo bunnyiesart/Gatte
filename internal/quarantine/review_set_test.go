@@ -8,11 +8,11 @@ import (
 // reviewSetFixture is one backend with a pending tool, a changed tool and
 // an approved one, plus another backend's pending tool.
 func reviewSetFixture() []Tool {
-	pending := NewTool("casemgmt", "list_cases", "p1", testTime)
-	approved := NewTool("casemgmt", "get_case", "a1", testTime).Approved(testTime)
-	changed := NewTool("casemgmt", "close_case", "c1", testTime).Approved(testTime)
-	changed, _ = changed.Observed("c2", testTime)
-	other := NewTool("logsearch", "search", "s1", testTime)
+	pending := NewTool("casemgmt", "list_cases", "p1", ClassSafe, testTime)
+	approved := NewTool("casemgmt", "get_case", "a1", ClassSafe, testTime).Approved(testTime)
+	changed := NewTool("casemgmt", "close_case", "c1", ClassSafe, testTime).Approved(testTime)
+	changed, _ = changed.Observed("c2", ClassSafe, testTime)
+	other := NewTool("logsearch", "search", "s1", ClassSafe, testTime)
 	return []Tool{pending, approved, changed, other}
 }
 
@@ -38,8 +38,8 @@ func TestReviewSet_IsThePendingAndChangedEntriesInNameOrder(t *testing.T) {
 // every observed fingerprint, status, the baseline of a diff, and the
 // backend. It does not move with the order the entries were read in.
 func TestManifest_ChangesWithEverythingShownAndNothingElse(t *testing.T) {
-	a := NewTool("casemgmt", "a", "h1", testTime)
-	b := NewTool("casemgmt", "b", "h2", testTime)
+	a := NewTool("casemgmt", "a", "h1", ClassSafe, testTime)
+	b := NewTool("casemgmt", "b", "h2", ClassSafe, testTime)
 	base := Manifest("casemgmt", []Tool{a, b})
 	if Manifest("casemgmt", []Tool{b, a}) != base {
 		t.Fatal("the manifest depends on the order of the slice")
@@ -48,12 +48,12 @@ func TestManifest_ChangesWithEverythingShownAndNothingElse(t *testing.T) {
 	moved.ObservedHash = "h3"
 	changedB := b
 	changedB.Status, changedB.ApprovedHash = StatusChanged, "h0"
-	boundary := []Tool{NewTool("casemgmt", "ab", "h", testTime), NewTool("casemgmt", "c", "h", testTime)}
-	boundary2 := []Tool{NewTool("casemgmt", "a", "h", testTime), NewTool("casemgmt", "bc", "h", testTime)}
+	boundary := []Tool{NewTool("casemgmt", "ab", "h", ClassSafe, testTime), NewTool("casemgmt", "c", "h", ClassSafe, testTime)}
+	boundary2 := []Tool{NewTool("casemgmt", "a", "h", ClassSafe, testTime), NewTool("casemgmt", "bc", "h", ClassSafe, testTime)}
 	for name, other := range map[string]string{
 		"a fingerprint moved":   Manifest("casemgmt", []Tool{a, moved}),
 		"a tool left the set":   Manifest("casemgmt", []Tool{a}),
-		"a tool joined the set": Manifest("casemgmt", []Tool{a, b, NewTool("casemgmt", "c", "h4", testTime)}),
+		"a tool joined the set": Manifest("casemgmt", []Tool{a, b, NewTool("casemgmt", "c", "h4", ClassSafe, testTime)}),
 		"a status or baseline":  Manifest("casemgmt", []Tool{a, changedB}),
 		"another backend":       Manifest("logsearch", []Tool{a, b}),
 		"the empty set":         Manifest("casemgmt", nil),
@@ -102,7 +102,7 @@ func TestApprovedSet_ApprovesAllOrNothing(t *testing.T) {
 		t.Fatalf("after a move: %+v, %v; want ErrReviewSetMoved and nothing", got, err)
 	}
 	// A tool joins the set after the review: nothing.
-	joined := append(append([]Tool(nil), tools...), NewTool("casemgmt", "new_tool", "n1", testTime))
+	joined := append(append([]Tool(nil), tools...), NewTool("casemgmt", "new_tool", "n1", ClassSafe, testTime))
 	if _, err := ApprovedSet("casemgmt", joined, manifest, testTime); !errors.Is(err, ErrReviewSetMoved) {
 		t.Fatalf("after a join: %v; want ErrReviewSetMoved", err)
 	}

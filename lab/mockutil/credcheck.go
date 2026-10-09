@@ -39,6 +39,26 @@ type CredCheckResult struct {
 	Fingerprint string `json:"fingerprint"`
 }
 
+// Check is the one comparison every credcheck in the lab makes: whether
+// received -- the credential this mock actually got, by whatever channel
+// -- equals MOCK_EXPECT from the process environment, and a fingerprint of
+// received. It exists as its own function because the mocks receive their
+// credential two different ways and the comparison must not be written
+// twice: the stdio mocks get it in their environment (AddCredCheck reads
+// MOCK_SECRET), the REST mock (lab/servers/restmock) gets it on each
+// request in a header, and both report the same shape with the same rule.
+//
+// Pre-condition: none. Post-condition: the result holds no byte of
+// received beyond the first 8 hex digits of its SHA-256.
+func Check(received string) CredCheckResult {
+	expect := os.Getenv("MOCK_EXPECT")
+	sum := sha256.Sum256([]byte(received))
+	return CredCheckResult{
+		ReceivedExpectedSecret: received != "" && received == expect,
+		Fingerprint:            hex.EncodeToString(sum[:])[:8],
+	}
+}
+
 // AddCredCheck registers a tool named toolName on server implementing
 // the <name>_credcheck pattern (lab/README.md): it reads MOCK_SECRET and
 // MOCK_EXPECT from its own process environment (set by whatever spawned
@@ -57,14 +77,7 @@ func AddCredCheck(server *mcp.Server, toolName string) {
 			"via the MOCK_SECRET environment variable, and a fingerprint of what " +
 			"it actually received. Never returns the secret value itself.",
 	}, func(_ context.Context, _ *mcp.CallToolRequest, _ CredCheckArgs) (*mcp.CallToolResult, any, error) {
-		secret := os.Getenv("MOCK_SECRET")
-		expect := os.Getenv("MOCK_EXPECT")
-
-		sum := sha256.Sum256([]byte(secret))
-		result := CredCheckResult{
-			ReceivedExpectedSecret: secret != "" && secret == expect,
-			Fingerprint:            hex.EncodeToString(sum[:])[:8],
-		}
+		result := Check(os.Getenv("MOCK_SECRET"))
 
 		text, err := json.Marshal(result)
 		if err != nil {

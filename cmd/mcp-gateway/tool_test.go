@@ -229,7 +229,9 @@ func TestRunToolApprove_UnobservedToolIsAProblem(t *testing.T) {
 		{
 			name:   "server observed, tool not",
 			server: "casemgmt", tool: "delete_everything",
-			setup: func(e opTestEnv) { e.tools().Observe(context.Background(), "casemgmt", irisListCases) }, //nolint:errcheck // fixture
+			setup: func(e opTestEnv) {
+				e.tools().Observe(context.Background(), "casemgmt", irisListCases, quarantine.ClassSafe)
+			}, //nolint:errcheck // fixture
 		},
 	}
 

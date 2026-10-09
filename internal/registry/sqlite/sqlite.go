@@ -40,6 +40,20 @@ CREATE TABLE IF NOT EXISTS upstream_servers (
 	if _, err := db.Exec(`ALTER TABLE upstream_servers ADD COLUMN image TEXT NOT NULL DEFAULT ''`); err != nil && !isDuplicateColumn(err) {
 		return fmt.Errorf("sqlite: migrate upstream_servers: %w", err)
 	}
+	// The http transport's credential-injection descriptor and frozen
+	// operation set, added with ADR-0047. Same retrofit discipline as image:
+	// guarded ALTERs so a database made before them gains the columns.
+	// auth_kind/auth_name default to '' (what every stdio and oci entry
+	// holds); operations is a BLOB defaulting to the empty blob.
+	for _, alter := range []string{
+		`ALTER TABLE upstream_servers ADD COLUMN auth_kind TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE upstream_servers ADD COLUMN auth_name TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE upstream_servers ADD COLUMN operations BLOB NOT NULL DEFAULT x''`,
+	} {
+		if _, err := db.Exec(alter); err != nil && !isDuplicateColumn(err) {
+			return fmt.Errorf("sqlite: migrate upstream_servers: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -80,6 +94,12 @@ func (r *Repository) Register(ctx context.Context, s registry.UpstreamServer) er
 	if s.EnvVarNames == nil {
 		s.EnvVarNames = []string{}
 	}
+	// A nil []byte parameter would store SQL NULL and violate operations'
+	// NOT NULL; a non-nil empty slice stores the empty blob the column
+	// defaults to. Non-http entries carry no operations and land here.
+	if s.Operations == nil {
+		s.Operations = []byte{}
+	}
 
 	args, err := json.Marshal(s.Args)
 	if err != nil {
@@ -95,8 +115,8 @@ func (r *Repository) Register(ctx context.Context, s registry.UpstreamServer) er
 	s.UpdatedAt = now
 
 	const stmt = `
-INSERT INTO upstream_servers (name, transport, command, args, url, image, env_var_names, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+INSERT INTO upstream_servers (name, transport, command, args, url, image, env_var_names, created_at, updated_at, auth_kind, auth_name, operations)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	_, err = r.db.ExecContext(ctx, stmt,
 		s.Name,
 		string(s.Transport),
@@ -107,6 +127,9 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
 		string(envVarNames),
 		s.CreatedAt.Format(time.RFC3339),
 		s.UpdatedAt.Format(time.RFC3339),
+		string(s.AuthKind),
+		s.AuthName,
+		s.Operations,
 	)
 	if err != nil {
 		if isUniqueConstraintErr(err) {
@@ -120,7 +143,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
 // Get implements registry.Repository.
 func (r *Repository) Get(ctx context.Context, name string) (registry.UpstreamServer, error) {
 	const stmt = `
-SELECT name, transport, command, args, url, image, env_var_names, created_at, updated_at
+SELECT name, transport, command, args, url, image, env_var_names, created_at, updated_at, auth_kind, auth_name, operations
 FROM upstream_servers
 WHERE name = ?`
 	row := r.db.QueryRowContext(ctx, stmt, name)
@@ -138,7 +161,7 @@ WHERE name = ?`
 // List implements registry.Repository.
 func (r *Repository) List(ctx context.Context) ([]registry.UpstreamServer, error) {
 	const stmt = `
-SELECT name, transport, command, args, url, image, env_var_names, created_at, updated_at
+SELECT name, transport, command, args, url, image, env_var_names, created_at, updated_at, auth_kind, auth_name, operations
 FROM upstream_servers
 ORDER BY name`
 	rows, err := r.db.QueryContext(ctx, stmt)
@@ -177,7 +200,7 @@ func (r *Repository) UpdateImage(ctx context.Context, name, image string) (regis
 	defer tx.Rollback() //nolint:errcheck // no-op once Commit succeeded
 
 	const read = `
-SELECT name, transport, command, args, url, image, env_var_names, created_at, updated_at
+SELECT name, transport, command, args, url, image, env_var_names, created_at, updated_at, auth_kind, auth_name, operations
 FROM upstream_servers
 WHERE name = ?`
 	s, err := scanUpstreamServer(tx.QueryRowContext(ctx, read, name))
@@ -235,13 +258,21 @@ func scanUpstreamServer(row rowScanner) (registry.UpstreamServer, error) {
 		transport            string
 		args, envVarNames    string
 		createdAt, updatedAt string
+		authKind             string
 	)
 
-	if err := row.Scan(&s.Name, &transport, &s.Command, &args, &s.URL, &s.Image, &envVarNames, &createdAt, &updatedAt); err != nil {
+	if err := row.Scan(&s.Name, &transport, &s.Command, &args, &s.URL, &s.Image, &envVarNames, &createdAt, &updatedAt, &authKind, &s.AuthName, &s.Operations); err != nil {
 		return registry.UpstreamServer{}, err
 	}
 
 	s.Transport = registry.Transport(transport)
+	s.AuthKind = registry.AuthKind(authKind)
+	// An empty blob round-trips to a zero-length (possibly nil) slice; keep
+	// it nil for a non-http entry so Validate's "operations must be empty"
+	// check and equality in tests see the same shape Register was given.
+	if len(s.Operations) == 0 {
+		s.Operations = nil
+	}
 
 	if err := json.Unmarshal([]byte(args), &s.Args); err != nil {
 		return registry.UpstreamServer{}, fmt.Errorf("unmarshal args: %w", err)

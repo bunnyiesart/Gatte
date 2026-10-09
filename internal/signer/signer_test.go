@@ -31,6 +31,90 @@ func irisEntry() registry.UpstreamServer {
 	}
 }
 
+// httpEntry is a well-formed keyed http entry (ADR-0047): reached by URL,
+// injecting one secret as an X-API-Key header, serving a frozen operation
+// set. It is the v3-http counterpart of irisEntry.
+func httpEntry() registry.UpstreamServer {
+	return registry.UpstreamServer{
+		Name:        "abuseipdb",
+		Transport:   registry.TransportHTTP,
+		URL:         "https://api.abuseipdb.com/api/v2",
+		AuthKind:    registry.AuthHeader,
+		AuthName:    "X-API-Key",
+		EnvVarNames: []string{"ABUSEIPDB_KEY"},
+		Operations:  []byte(`[{"name":"check","method":"GET","path":"/check"}]`),
+		CreatedAt:   time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC),
+		UpdatedAt:   time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC),
+	}
+}
+
+// TestCanonicalHTTPUsesADistinctTag pins that an http entry signs under
+// canonical/v3-http and never collides with a v1 (stdio) or v2 (oci) layout:
+// the tag is the first field, so no stdio or oci signature can authenticate
+// an http entry and vice versa.
+func TestCanonicalHTTPUsesADistinctTag(t *testing.T) {
+	http := Canonical(httpEntry())
+	if !bytes.Contains(http, []byte(canonicalTagV3HTTP)) {
+		t.Fatalf("http entry canonical does not carry the v3-http tag")
+	}
+	if bytes.Contains(http, []byte(canonicalTag)) || bytes.Contains(http, []byte(canonicalTagImage)) {
+		t.Errorf("http canonical carries a v1 or v2 tag; the tags share a prefix and must not both appear")
+	}
+	// An otherwise-identical stdio entry (same Name) must produce different
+	// bytes: the transport and tag both differ, so a signature over one can
+	// never verify the other.
+	stdio := irisEntry()
+	stdio.Name = "abuseipdb"
+	if bytes.Equal(Canonical(stdio), http) {
+		t.Error("http and stdio entries of the same name produced equal canonical bytes")
+	}
+}
+
+// TestCanonicalHTTPCoversAuthAndOperations is the heart of ADR-0048's
+// phase-split decision: the injection location and the frozen operation set
+// are signed, so a direct database write that redirects the secret or
+// repoints an approved tool's path changes the canonical bytes and breaks the
+// signature.
+func TestCanonicalHTTPCoversAuthAndOperations(t *testing.T) {
+	base := Canonical(httpEntry())
+
+	cases := []struct {
+		name  string
+		mutUp func(s *registry.UpstreamServer)
+	}{
+		{"auth kind moved to query", func(s *registry.UpstreamServer) { s.AuthKind = registry.AuthQuery; s.AuthName = "key" }},
+		{"auth header renamed", func(s *registry.UpstreamServer) { s.AuthName = "Authorization" }},
+		{"operation path repointed", func(s *registry.UpstreamServer) {
+			s.Operations = []byte(`[{"name":"check","method":"GET","path":"/exfil"}]`)
+		}},
+		{"operation added", func(s *registry.UpstreamServer) {
+			s.Operations = []byte(`[{"name":"check","method":"GET","path":"/check"},{"name":"report","method":"POST","path":"/report"}]`)
+		}},
+		{"url port changed", func(s *registry.UpstreamServer) { s.URL = "https://api.abuseipdb.com:8443/api/v2" }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := httpEntry()
+			tc.mutUp(&e)
+			if bytes.Equal(Canonical(e), base) {
+				t.Errorf("canonical bytes unchanged after %s; the field is not covered by the signature", tc.name)
+			}
+		})
+	}
+}
+
+// TestCanonicalHTTPStableAcrossTimestamps keeps the v3-http form honest about
+// what it ignores: timestamps still move without changing the signed bytes.
+func TestCanonicalHTTPStableAcrossTimestamps(t *testing.T) {
+	a := httpEntry()
+	b := httpEntry()
+	b.CreatedAt = b.CreatedAt.Add(72 * time.Hour)
+	b.UpdatedAt = b.UpdatedAt.Add(72 * time.Hour)
+	if !bytes.Equal(Canonical(a), Canonical(b)) {
+		t.Error("http canonical changed when only timestamps moved")
+	}
+}
+
 func newSigner(t *testing.T) *Signer {
 	t.Helper()
 

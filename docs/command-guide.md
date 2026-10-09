@@ -56,7 +56,7 @@ round** (within one `quarantine.refresh_interval`, default 5 minutes),
 |---|---|---|---|
 | `serve` | Run the gateway | svc (under systemd) | [README, Quick start](../README.md#quick-start) |
 | `upstream list` | List backends, their signature and network | svc | [Add a backend](how-to/add-a-backend.md) |
-| `upstream register` | Register a stdio or container backend | svc | [Add a backend](how-to/add-a-backend.md) |
+| `upstream register` | Register a stdio, container or REST (OpenAPI) backend | svc | [Add a backend](how-to/add-a-backend.md) |
 | `upstream update` | Move a container backend to a new image digest | svc | [Update a backend's image](how-to/update-a-backend-image.md) |
 | `upstream deregister` | Remove a backend and forget its approvals | svc | [Add a backend](how-to/add-a-backend.md) |
 | `upstream redial` | Re-dial one backend with the vault as it is now | svc | [Rotate credentials and keys](how-to/rotate-credentials-and-keys.md) |
@@ -68,6 +68,7 @@ round** (within one `quarantine.refresh_interval`, default 5 minutes),
 | `tool review` | Every waiting tool of one backend, and the set's manifest | svc | [Review and approve tools](how-to/review-and-approve-tools.md) |
 | `tool approve` | Approve one fingerprint, or a backend's set by manifest | svc | [Review and approve tools](how-to/review-and-approve-tools.md) |
 | `tool revoke` | Withdraw an approval | svc | [Review and approve tools](how-to/review-and-approve-tools.md) |
+| `tool clear` | Clear an approved sensitive tool for serving | svc | [Review and approve tools](how-to/review-and-approve-tools.md) |
 | `access block\|unblock\|list` | Cut one analyst off, for good or until a time | svc | [Respond to an incident](how-to/respond-to-an-incident.md) |
 | `audit` | Read and filter the trail | svc | [Audit trail reference](reference/audit-trail.md) |
 | `audit -verify` | Check the hash chain, optionally against the SIEM's head | svc | [Respond to an incident](how-to/respond-to-an-incident.md) |
@@ -118,9 +119,24 @@ sudo mcp-gateway sign -config "$CFG" edr
 ```
 
 For a local process, `-transport stdio -command /usr/local/bin/edr-mcp`.
+For a REST API the gateway calls itself, one tool per operation of its
+OpenAPI document, with the credential injected server-side where
+`-auth-kind` says:
+
+```sh
+sudo -u mcpgw mcp-gateway upstream register -config "$CFG" -name ioc -transport http \
+    -url https://api.example.com -openapi /usr/local/etc/mcp-gateway/ioc-openapi.json \
+    -auth-kind header -auth-name X-API-Key -env IOC_API_KEY
+sudo mcp-gateway sign -config "$CFG" ioc
+```
+
+`-openapi` also takes an `https://` URL, fetched once under the gateway's
+egress guard; the operation set is frozen with the entry. `POST`/`PUT`/
+`PATCH`/`DELETE` tools are sensitive and need `tool clear` after approval.
 Its tools then wait in the queue ([Tools](#tools)), and a role must grant
 them ([Configuration changes](#configuration-changes)).
-→ [Add a backend](how-to/add-a-backend.md)
+→ [Add a backend](how-to/add-a-backend.md); for `-transport http`,
+[upstream register](reference/cli.md#upstream-register)
 
 **I want to move a container backend to a new image.** svc, then root;
 takes effect after the signature, in one round.
@@ -176,6 +192,17 @@ sudo -u mcpgw mcp-gateway tool approve -config "$CFG" -server edr -manifest SHA2
 
 ```sh
 sudo -u mcpgw mcp-gateway tool revoke -config "$CFG" edr get_host
+```
+
+**I want to serve a sensitive tool I approved.** svc; next call. A
+sensitive tool -- one that can act, a REST operation with any method but
+GET/HEAD/OPTIONS -- is approved like any other and NOT served until it is
+also cleared. Clearing refuses unless a `[[role]]` with `non_read = true`
+names the tool in its `tools` list; a `"*"` grant never reaches it.
+Approving a set never clears.
+
+```sh
+sudo -u mcpgw mcp-gateway tool clear -config "$CFG" edr isolate_host
 ```
 
 Approving is not granting: a tool is callable only when it is approved and

@@ -45,6 +45,13 @@ type RoleChange struct {
 	// changes nothing in Gained and would otherwise go unrecorded.
 	GrantsAdded   []string
 	GrantsRemoved []string
+	// NonReadChanged reports the role's non_read marking flipped
+	// (design/adr/0048 Decisão 5). It moves no routed tool in Gained or
+	// Lost -- Allows is class-blind -- but it changes which sensitive
+	// tools the role's holders reach, from the next call on, so a reload
+	// that flips it is not "no change". NonRead is the value after.
+	NonReadChanged bool
+	NonRead        bool
 }
 
 // GroupChange is one [group_to_role] key whose role changed. From or To is
@@ -101,8 +108,12 @@ func sortedCopy(xs []string) []string {
 	return out
 }
 
+// toAccess is the file's role as the policy sees it, field for field.
+// NonRead is carried: until ADR-0048 this dropped it, which is the
+// "silent widening by omission" the ADR names -- a check made only at
+// clearance time would not survive the policy being rebuilt here.
 func toAccess(r config.Role) access.Role {
-	return access.Role{Name: r.Name, Tools: r.Tools, Grants: r.Grants}
+	return access.Role{Name: r.Name, Tools: r.Tools, Grants: r.Grants, NonRead: r.NonRead}
 }
 
 func reach(r config.Role, routed []string) map[string]bool {
@@ -170,11 +181,14 @@ func roleChanges(old, next []config.Role, routed []string) []RoleChange {
 		}
 		slices.Sort(ch.GrantsAdded)
 		slices.Sort(ch.GrantsRemoved)
+		ch.NonRead = a.NonRead
+		ch.NonReadChanged = hadB && hasA && b.NonRead != a.NonRead
 		// A role is shown when what it reaches now changed, or when what
 		// its grant says changed -- even if it reaches the same routed
 		// tools today, it will not tomorrow. An added or removed role is
-		// always shown, even reaching nothing.
-		if ch.Added || ch.Removed || len(ch.Gained) > 0 || len(ch.Lost) > 0 || len(ch.GrantsAdded) > 0 || len(ch.GrantsRemoved) > 0 {
+		// always shown, even reaching nothing. A flipped non_read marking
+		// is shown too: it changes which sensitive tools are reachable.
+		if ch.Added || ch.Removed || len(ch.Gained) > 0 || len(ch.Lost) > 0 || len(ch.GrantsAdded) > 0 || len(ch.GrantsRemoved) > 0 || ch.NonReadChanged {
 			out = append(out, ch)
 		}
 	}
@@ -342,6 +356,9 @@ func Summary(c Changes, max int) string {
 			for _, g := range r.GrantsRemoved {
 				s.WriteString(" -" + g)
 			}
+		}
+		if r.NonReadChanged {
+			fmt.Fprintf(&s, " non_read=%v", r.NonRead)
 		}
 		parts = append(parts, s.String())
 	}

@@ -164,6 +164,36 @@ type Role struct {
 	// registry refuses an upstream *name* containing the separator -- and
 	// [Role.Allows] says why both halves are needed.
 	Grants map[string][]string
+	// NonRead marks a role whose holders may ACT through the gateway, not
+	// only read (design/adr/0048 Decisão 5). It is a marking on the role,
+	// set by the operator in the file, and this package attaches no meaning
+	// to it: [Allows] ignores it, so every grant above reads exactly as it
+	// did before the field existed.
+	//
+	// Who reads it is the gateway's class-aware gate at the dispatch edge,
+	// through [Policy.AuthorizeNonRead]: a tool the quarantine classes as
+	// sensitive is reachable only through a role carrying this marking AND
+	// naming the tool in Tools, never through a Grants wildcard. The gate
+	// lives at the edge rather than here so that this package keeps matching
+	// by name and never learns what an HTTP method or a security class is
+	// -- the owner's decision, recorded in that ADR.
+	NonRead bool
+}
+
+// AllowsExplicitly reports whether this role names tool in its flat Tools
+// list -- and nothing else. A Grants entry does not count, and neither does
+// [GrantAll]: this is the one predicate in the package for which "every
+// tool that backend advertises, now and later" is the wrong answer.
+//
+// It exists for the gateway's class-aware gate (design/adr/0048 Decisão 5).
+// A sensitive tool -- one that can act, not only read -- must be reached by
+// a grant a human wrote for that tool by name, because a wildcard written
+// before the backend advertised the tool is not a decision anybody took
+// about it. [Allows] is unchanged and still the answer to "may this role
+// call this tool at all"; this is the narrower question the gate asks
+// afterwards, by name, with no knowledge of why.
+func (r Role) AllowsExplicitly(tool string) bool {
+	return slices.Contains(r.Tools, tool)
 }
 
 // Allows reports whether this role may call the named tool.
@@ -453,7 +483,9 @@ func NewPolicy(roles []Role, groupToRole map[string]string) (*Policy, error) {
 		}
 		// Clone Tools and Grants: see the note on Policy. Without this the
 		// policy shares a backing array -- and a map -- with the caller.
-		byName[r.Name] = Role{Name: r.Name, Tools: slices.Clone(r.Tools), Grants: cloneGrants(r.Grants)}
+		// NonRead is a value and is simply carried; dropping it here is the
+		// silent-widening-by-omission reload.toAccess once had (ADR-0048).
+		byName[r.Name] = Role{Name: r.Name, Tools: slices.Clone(r.Tools), Grants: cloneGrants(r.Grants), NonRead: r.NonRead}
 	}
 
 	mapping := make(map[string]string, len(groupToRole))
@@ -494,7 +526,7 @@ func (p *Policy) RolesFor(id Identity) []Role {
 		// hand the caller -- which is the request path -- a slice aliasing
 		// the policy's own storage, so `p.RolesFor(id)[0].Tools[0] = ...`
 		// would rewrite what the gateway authorizes. See the note on Policy.
-		out = append(out, Role{Name: r.Name, Tools: slices.Clone(r.Tools), Grants: cloneGrants(r.Grants)})
+		out = append(out, Role{Name: r.Name, Tools: slices.Clone(r.Tools), Grants: cloneGrants(r.Grants), NonRead: r.NonRead})
 	}
 	return out
 }
@@ -528,6 +560,40 @@ func cloneGrants(g map[string][]string) map[string][]string {
 func (p *Policy) Authorize(id Identity, tool string) error {
 	for _, r := range p.RolesFor(id) {
 		if r.Allows(tool) {
+			return nil
+		}
+	}
+	return fmt.Errorf("%w: %q may not call %q", ErrForbidden, id.Subject, tool)
+}
+
+// AuthorizeNonRead reports whether id holds a role that is marked
+// [Role.NonRead] AND names tool explicitly ([Role.AllowsExplicitly]) --
+// both on the same role -- returning nil if so and ErrForbidden if not.
+//
+// It is the seam the gateway's class-aware gate asks through
+// (design/adr/0048 Decisão 5), and it is deliberately a second, narrower
+// question rather than a parameter on Authorize. Authorize is the gate
+// every call passes; this one the gateway asks AFTER it, only for a tool
+// whose quarantine class is sensitive -- and that is the whole of the
+// class's involvement. Nothing here knows why the question is being asked:
+// the policy matches names and role markings, which is what this package
+// has always done, and the decision of WHEN to ask is taken at the edge,
+// where the class is read as metadata. That split is what keeps Allows
+// intact and the matcher class-blind, per the owner's decision in the ADR.
+//
+// A wildcard grant does not satisfy it, and neither does an explicit name
+// on a role that is not marked NonRead: a read-only role that happens to
+// list a sensitive tool was written by someone who was not thinking about
+// acting, and a NonRead role with a wildcard was written by someone who
+// was not thinking about this tool. Both halves are needed on one role so
+// that the file states, for this tool, that somebody meant it.
+//
+// The error wraps ErrForbidden with the same text Authorize produces: at
+// the boundary the two refusals are one class, and the trail -- not the
+// caller -- is told which it was.
+func (p *Policy) AuthorizeNonRead(id Identity, tool string) error {
+	for _, r := range p.RolesFor(id) {
+		if r.NonRead && r.AllowsExplicitly(tool) {
 			return nil
 		}
 	}

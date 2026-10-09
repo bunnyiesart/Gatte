@@ -239,20 +239,19 @@ func TestUpstreamRegister_InvalidEntryIsRejected(t *testing.T) {
 			want: "command must not be empty for stdio transport",
 		},
 		{
-			// GAB-19: this used to be refused for the missing URL, which
-			// meant `-transport http -url ...` was accepted and then failed
-			// at dial time. It is now refused on the transport, with or
-			// without a URL -- so both spellings are pinned here, and an
-			// http dialer landing later will fail this case loudly rather
-			// than quietly re-accepting the old behaviour.
-			name: "http is refused: no dialer serves it",
+			// Since ADR-0047 http is a real transport, so it is validated
+			// rather than refused: an http entry needs a URL. (The OpenAPI/
+			// auth flags that make a full http registration succeed land with
+			// the CLI surface in a later step; here the flagless attempt is
+			// refused on the missing URL, then on the missing operation set.)
+			name: "http without a url is refused",
 			args: []string{"register", "-name", "casemgmt", "-transport", "http"},
-			want: "this build dials \"stdio\" and \"oci\" only",
+			want: "url must not be empty for http transport",
 		},
 		{
-			name: "http with a url is refused just the same",
+			name: "http with a url but no operation set is refused",
 			args: []string{"register", "-name", "casemgmt", "-transport", "http", "-url", "https://casemgmt.internal/mcp"},
-			want: "this build dials \"stdio\" and \"oci\" only",
+			want: "requires a non-empty operation set",
 		},
 		{
 			name: "oci without an image",

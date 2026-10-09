@@ -232,6 +232,14 @@ func (c *Client) RevokeTool(ctx context.Context, r ToolRef) (RevokeResult, error
 	return v, c.do(ctx, http.MethodPost, "/v1/tools/revoke", nil, r, &v)
 }
 
+// ClearTool clears an approved sensitive tool for serving at its approved
+// fingerprint (1.5.0, FeatureToolClear). Send only when the backend lists
+// the feature.
+func (c *Client) ClearTool(ctx context.Context, r ToolRef) (ClearResult, error) {
+	var v ClearResult
+	return v, c.do(ctx, http.MethodPost, "/v1/tools/clear", nil, r, &v)
+}
+
 // ListBlocks returns the blocklist.
 func (c *Client) ListBlocks(ctx context.Context) (BlockList, error) {
 	var v BlockList

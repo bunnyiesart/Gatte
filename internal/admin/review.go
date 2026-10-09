@@ -388,13 +388,56 @@ func CallableBy(roles []config.Role, server, tool string) []adminapi.RoleCoverag
 	name := server + "." + tool
 	out := []adminapi.RoleCoverage{}
 	for _, r := range roles {
-		if !(access.Role{Name: r.Name, Tools: r.Tools, Grants: r.Grants}).Allows(name) {
+		if !toAccess(r).Allows(name) {
 			continue
 		}
 		how, wildcard := grantReason(r, name)
-		out = append(out, adminapi.RoleCoverage{Role: r.Name, How: how, Wildcard: wildcard})
+		out = append(out, adminapi.RoleCoverage{Role: r.Name, How: how, Wildcard: wildcard, NonRead: r.NonRead})
 	}
 	return out
+}
+
+// ClearableBy names the roles that reach server.tool as a SENSITIVE tool
+// (design/adr/0048 Decisão 5): marked non_read AND naming it in `tools`,
+// decided by access.Role.AllowsExplicitly -- the predicate the gateway's
+// class gate asks on every call, through access.Policy.AuthorizeNonRead --
+// so this is never a second opinion either. It is a subset of CallableBy;
+// a wildcard or a [role.grants] name is not in it, whatever the marking.
+// ClearTool refuses when it is empty.
+func ClearableBy(roles []config.Role, server, tool string) []adminapi.RoleCoverage {
+	name := server + "." + tool
+	out := []adminapi.RoleCoverage{}
+	for _, r := range roles {
+		ar := toAccess(r)
+		if !ar.NonRead || !ar.AllowsExplicitly(name) {
+			continue
+		}
+		out = append(out, adminapi.RoleCoverage{Role: r.Name, How: fmt.Sprintf("tools = [%q]", name), NonRead: true})
+	}
+	return out
+}
+
+// ReachableBy is the honest `callable_by` for t: CallableBy for a safe
+// tool, ClearableBy for a sensitive one (design/adr/0048 Decisão 5). The
+// gateway's class gate refuses a sensitive tool to every role CallableBy
+// lists and ClearableBy does not -- a wildcard, a [role.grants] name, an
+// explicit name on a read role -- so listing those under "callable by"
+// would tell the operator that an approval reaches analysts it never
+// reaches, and the wildcard warning built on it would call the approval
+// "the only human act" when the clearance is still to come. Class is read
+// from the entry as metadata, like everywhere else; nothing here learns
+// what a method is.
+func ReachableBy(roles []config.Role, t quarantine.Tool) []adminapi.RoleCoverage {
+	if sensitive(t) {
+		return ClearableBy(roles, t.ServerName, t.ToolName)
+	}
+	return CallableBy(roles, t.ServerName, t.ToolName)
+}
+
+// toAccess is the file's role as the policy sees it, field for field, so
+// the predicates above run on the same value the gate runs on.
+func toAccess(r config.Role) access.Role {
+	return access.Role{Name: r.Name, Tools: r.Tools, Grants: r.Grants, NonRead: r.NonRead}
 }
 
 // grantReason describes which line of the configuration covers name, and

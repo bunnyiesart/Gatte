@@ -36,6 +36,12 @@ process. The backend's name becomes the prefix of each of its tools
   with `-env` credentials is refused unless the configuration sets
   `[upstreams] allow_credentialed_stdio = true`, and every boot then logs a
   WARN. That key needs a restart of `serve`.
+- **`http`**, for a REST API the gateway calls itself, one tool per
+  operation of its OpenAPI document, the credential injected server-side.
+  This page walks the two MCP transports; for `-transport http` the flags
+  (`-url`, `-openapi`, `-auth-kind`, `-auth-name`) are in the
+  [CLI reference](../reference/cli.md#upstream-register), and steps 3 to 5
+  below apply unchanged, plus a `tool clear` for each sensitive tool.
 
 ## 1. Put the credentials in the vault
 

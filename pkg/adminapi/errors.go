@@ -35,6 +35,15 @@ const (
 	// Since 1.2.0 (design/adr/0043).
 	CodeManifestRequired = "manifest_required"
 	CodeManifestMismatch = "manifest_mismatch"
+	// Since 1.5.0 (design/adr/0048): clearing a sensitive tool.
+	// not_sensitive: the tool is safe, served on approval alone, nothing
+	// to clear. not_approved: no approved baseline to clear at (pending or
+	// changed). no_non_read_grant: no role marked non_read names the tool
+	// in `tools`; `details.callable_by` lists the roles that cover it
+	// without reaching it.
+	CodeNotSensitive   = "not_sensitive"
+	CodeNotApproved    = "not_approved"
+	CodeNoNonReadGrant = "no_non_read_grant"
 )
 
 // codeStatus is the HTTP status each known code travels with.
@@ -64,6 +73,9 @@ var codeStatus = map[string]int{
 	CodeAccountNotManaged:     http.StatusForbidden,
 	CodeManifestRequired:      http.StatusBadRequest,
 	CodeManifestMismatch:      http.StatusConflict,
+	CodeNotSensitive:          http.StatusConflict,
+	CodeNotApproved:           http.StatusConflict,
+	CodeNoNonReadGrant:        http.StatusConflict,
 }
 
 // StatusOf returns the HTTP status of a known code, 500 otherwise.

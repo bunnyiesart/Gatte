@@ -636,6 +636,17 @@ max_concurrent_calls_per_analyst = 4
 #
 # [upstreams]
 # allow_credentialed_stdio = true
+#
+# Um upstream `http` (ADR-0047/0048) NAO e afetado por esta chave e nao tem
+# nada a configurar aqui: e uma API REST que o proprio gateway chama, com a
+# credencial resolvida do cofre e injetada em cada requisicao (nunca entregue
+# a um processo), as tools geradas do documento OpenAPI no `upstream register
+# -transport http -openapi FILE|URL`, congeladas e assinadas na entrada, e o
+# egresso guardado pelo IP resolvido (loopback, privado, link-local e a faixa
+# de metadados recusados). Toda operacao nao-safe (POST/PUT/PATCH/DELETE) e
+# uma tool sensivel: alem de `tool approve`, exige `tool clear` e um papel
+# marcado `non_read = true` que a nomeie -- ver "Papel que AGE: non_read"
+# mais abaixo e docs/reference/cli.md.
 
 
 # ===========================================================================
@@ -827,6 +838,32 @@ max_concurrent_calls_per_analyst = 4
 # Residuo conhecido: um coringa em `X` tambem alcanca as ferramentas de um
 # upstream chamado `X.alguma-coisa`, porque o namespace corta no primeiro
 # ponto e os dois casos sao indistinguiveis no nome.
+#
+# ---------------------------------------------------------------------
+# Papel que AGE: non_read (ADR-0048)
+# ---------------------------------------------------------------------
+# Uma ferramenta SENSIVEL -- uma operacao REST com qualquer metodo que nao
+# seja GET/HEAD/OPTIONS, isto e, que pode agir e nao so ler -- precisa de
+# duas decisoes de operador: `tool approve` (a definicao nao esta
+# envenenada) e `tool clear` (este backend pode agir em nome do time por
+# esta operacao). E so e alcancavel por um papel marcado `non_read = true`
+# que a nomeie EXPLICITAMENTE em `tools`, pelo nome completo. Um coringa
+# `["*"]` nunca alcanca uma ferramenta sensivel, com ou sem a marcacao; um
+# nome em `[role.grants]` tambem nao; e um nome explicito num papel sem a
+# marcacao tambem nao. As duas metades no MESMO papel, para que o arquivo
+# diga, para aquela ferramenta, que alguem quis isso.
+#
+#     [[role]]
+#     name     = "dfir-lead"
+#     non_read = true
+#     tools    = ["edr.isolate_host"]     # nomeada: a marcacao vale so aqui
+#
+# `non_read = true` com `tools = []` e RECUSADO na carga: a marcacao so
+# alcanca nomes dessa lista, entao marcaria nada. O gateway faz a mesma
+# pergunta a cada chamada, e o `tool clear` a faz antes de liberar; editar
+# a marcacao vale no proximo `reload`, nos dois sentidos. Nenhum papel
+# deste arquivo e `non_read` de proposito: hoje nenhum backend registrado
+# aqui e REST, e marcar um papel e uma decisao, nao um exemplo.
 
 # ---------------------------------------------------------------------------
 # n1-triage -- o analista de plantao. So consulta.

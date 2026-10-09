@@ -12,7 +12,7 @@ import "time"
 
 // ContractVersion is the api/admin.openapi.yaml info.version these types
 // implement.
-const ContractVersion = "1.4.0"
+const ContractVersion = "1.5.0"
 
 // Default socket paths (design/adr/0040 §1).
 const (
@@ -50,6 +50,10 @@ const (
 	WarnWildcardGrant    = "wildcard_grant"
 	WarnIdPReload        = "idp_reload"
 	WarnAuditWriteFailed = "audit_write_failed"
+	// WarnSensitiveUncleared (1.5.0, design/adr/0048): an approval covered
+	// a sensitive tool, which is approved and NOT served until it is
+	// cleared (clearTool). Not a failure: the default-deny working.
+	WarnSensitiveUncleared = "sensitive_uncleared"
 )
 
 // ActionResult is the common part of every state-changing response.
@@ -147,6 +151,18 @@ const (
 	StatusChanged  = "changed"
 )
 
+// Security classes (design/adr/0048 Decisão 5), as Tool.Class carries
+// them. Open set: an unknown class is served as sensitive by the gateway.
+const (
+	// ClassSafe is the empty string: a tool that only reads.
+	ClassSafe = ""
+	// ClassSensitive is a tool that can act. Approval is not enough for
+	// it: Usable stays false until it is cleared (clearTool) at the
+	// approved fingerprint, and the gateway serves it only to a role
+	// marked non_read that names it explicitly.
+	ClassSensitive = "sensitive"
+)
+
 // Tool is one quarantine entry.
 type Tool struct {
 	Server       string    `json:"server"`
@@ -157,6 +173,13 @@ type Tool struct {
 	ObservedHash string    `json:"observed_hash"`
 	FirstSeenAt  time.Time `json:"first_seen_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
+	// Class is the tool's security class, since 1.5.0: empty (safe) or
+	// "sensitive". SensitiveClearedHash is the approved fingerprint an
+	// operator cleared for serving, empty when never cleared or when the
+	// baseline moved since; a sensitive tool is usable only while it
+	// equals approved_hash. Usable already says so: do not re-derive it.
+	Class                string `json:"class,omitempty"`
+	SensitiveClearedHash string `json:"sensitive_cleared_hash,omitempty"`
 }
 
 // ToolCounts are over every entry, whatever the filter.
@@ -229,11 +252,27 @@ type Definition struct {
 	HiddenCodePoints int          `json:"hidden_code_points"`
 }
 
-// RoleCoverage is a role that can call a tool once it is approved.
+// RoleCoverage is a role that can call a tool once it is approved -- or,
+// for a sensitive tool, once it is cleared.
+//
+// Every `callable_by` (ToolReview, ApproveResult, ApprovedTool) is the
+// honest list for the tool's class (1.5.0, design/adr/0048 Decisão 5): for
+// a safe tool, the roles whose grants cover it; for a sensitive one, ONLY
+// the roles marked non_read that name it in `tools`, since the gateway
+// refuses every other coverage of a sensitive tool -- a wildcard, a
+// [role.grants] name, an explicit name on a read role -- on every call. So
+// for a sensitive tool Wildcard is never true, the wildcard_grant warning
+// never fires, and an empty list means no role could reach it once cleared
+// (no_role_grants says so in those words).
 type RoleCoverage struct {
 	Role     string `json:"role"`
 	How      string `json:"how"`
 	Wildcard bool   `json:"wildcard,omitempty"`
+	// NonRead (1.5.0, design/adr/0048): the role carries `non_read =
+	// true`. A sensitive tool is reachable only through a role with this
+	// marking that names it in `tools` -- Wildcard false and How a
+	// `tools = [...]` line; ClearResult.ClearedBy lists exactly those.
+	NonRead bool `json:"non_read,omitempty"`
 }
 
 // ToolReview answers GET /v1/tools/review.
@@ -318,6 +357,18 @@ type RevokeResult struct {
 	ActionResult
 	WasApprovedAt string `json:"was_approved_at,omitempty"`
 	Tool          Tool   `json:"tool"`
+}
+
+// ClearResult answers POST /v1/tools/clear (1.5.0, design/adr/0048
+// Decisão 5): a sensitive tool cleared for serving at its approved
+// fingerprint. ClearedBy are the roles that reach it -- marked non_read and
+// naming it in `tools` -- which is what the backend required before
+// clearing; a refusal (`no_non_read_grant`) carries `details.callable_by`,
+// the roles that cover the tool without reaching it.
+type ClearResult struct {
+	ActionResult
+	Tool      Tool           `json:"tool"`
+	ClearedBy []RoleCoverage `json:"cleared_by"`
 }
 
 // Block is one blocked subject.
@@ -621,6 +672,12 @@ const (
 	// FeatureToolReviewSet: GET /v1/tools/review-set and POST
 	// /v1/tools/approve-set (design/adr/0043), since 1.2.0.
 	FeatureToolReviewSet = "tool_review_set"
+	// FeatureToolClear: POST /v1/tools/clear, `class` and
+	// `sensitive_cleared_hash` on each Tool, `non_read` on each
+	// RoleCoverage, the (tool clear) operator row, the warning
+	// sensitive_uncleared and the error codes not_sensitive, not_approved
+	// and no_non_read_grant (design/adr/0048), since 1.5.0.
+	FeatureToolClear = "tool_clear"
 )
 
 // Maintenance scopes.

@@ -69,7 +69,7 @@ func TestAudit_UntilIsParsedLikeSince(t *testing.T) {
 	if err := json.Unmarshal(body, &me); err != nil {
 		t.Fatal(err)
 	}
-	for _, f := range []string{adminapi.FeatureAuditFilters, adminapi.FeatureBlockUntil, adminapi.FeatureAccountDelete, adminapi.FeatureOffboard} {
+	for _, f := range []string{adminapi.FeatureAuditFilters, adminapi.FeatureBlockUntil, adminapi.FeatureAccountDelete, adminapi.FeatureOffboard, adminapi.FeatureToolClear} {
 		found := false
 		for _, g := range me.Features {
 			found = found || g == f
@@ -78,7 +78,9 @@ func TestAudit_UntilIsParsedLikeSince(t *testing.T) {
 			t.Errorf("whoami does not list feature %s: %v", f, me.Features)
 		}
 	}
-	if me.ContractVersion != "1.4.0" {
+	// 1.5.0 since design/adr/0048 (feature tool_clear); the whoami
+	// features of 1.4.0 are still listed above.
+	if me.ContractVersion != "1.5.0" {
 		t.Errorf("contract version %s", me.ContractVersion)
 	}
 }

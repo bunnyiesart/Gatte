@@ -557,6 +557,28 @@ type Role struct {
 	// registry and this package holds no handle to it. That is a
 	// serve-time diagnostic; see ADR-0016.
 	Grants map[string][]string `toml:"grants"`
+
+	// NonRead marks a role whose holders may ACT through the gateway, not
+	// only read (design/adr/0048 Decisão 5). It mirrors access.Role.NonRead
+	// and changes nothing about what Tools and Grants grant: a sensitive
+	// tool -- one the registry classes as able to act, every HTTP method
+	// but GET/HEAD/OPTIONS -- is reachable only through a role carrying
+	// this marking AND naming the tool in `tools`, by its full namespaced
+	// name. A `[role.grants]` wildcard never reaches a sensitive tool,
+	// whatever the marking, and an explicit name on a role without the
+	// marking does not either: both halves must sit on one role, so the
+	// file states, for that tool, that somebody meant it.
+	//
+	// Validate refuses `non_read = true` on a role whose `tools` list is
+	// empty: the marking only ever applies to names in that list, so it
+	// would mark nothing -- the same silent-no-op shape as an
+	// un-namespaced name, and refused for the same reason (GAB-30 item 3).
+	//
+	// It is also what `tool clear` checks before it clears a sensitive
+	// tool for serving, and the check in the gateway runs on every call,
+	// so editing this marking takes effect at the next reload -- in both
+	// directions.
+	NonRead bool `toml:"non_read"`
 }
 
 // DefaultListen is the address used when none is configured: loopback,
@@ -1033,7 +1055,10 @@ func (c *Config) Validate() error {
 		// enforced by NewPolicy at serve time and by nothing at all in
 		// front of the operator editing the file, which is GAB-30 exactly.
 		// Caught by TestLoadRejectsMalformedGrants.
-		if err := access.ValidateRole(access.Role{Name: r.Name, Tools: r.Tools, Grants: r.Grants}); err != nil {
+		//
+		// NonRead rides along for the same reason: the role validated here
+		// is the role ToAccessPolicy builds, field for field (ADR-0048).
+		if err := access.ValidateRole(access.Role{Name: r.Name, Tools: r.Tools, Grants: r.Grants, NonRead: r.NonRead}); err != nil {
 			errs = append(errs, fmt.Errorf("role[%d]: %w", i, err))
 		}
 		if strings.TrimSpace(r.Name) == "" {
@@ -1045,6 +1070,19 @@ func (c *Config) Validate() error {
 			errs = append(errs, fmt.Errorf("role %q: defined more than once", r.Name))
 		}
 		seen[r.Name] = true
+
+		// The marking applies to names in `tools` and to nothing else
+		// (access.Role.AllowsExplicitly, design/adr/0048 Decisão 5): a
+		// sensitive tool is never reached through [role.grants], wildcard
+		// or named. So `non_read = true` over an empty list marks nothing,
+		// loads, and is first noticed when `tool clear` refuses -- or
+		// never, if the operator believes the grants did it. Refused, and
+		// the message says where the name has to go.
+		if r.NonRead && len(r.Tools) == 0 {
+			errs = append(errs, fmt.Errorf(
+				"role %q: non_read = true but `tools` is empty -- the marking reaches only the tools named explicitly in `tools`, never a [role.grants] entry, so this role can act on nothing. Name the sensitive tools in `tools = [...]` (full UPSTREAM%sTOOL names), or drop non_read",
+				r.Name, gateway.NameSeparator))
+		}
 
 		// A role granting nothing is legitimate and deliberately not
 		// flagged: it is how someone who may authenticate but may not act

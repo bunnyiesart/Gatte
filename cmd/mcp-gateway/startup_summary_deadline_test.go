@@ -81,7 +81,7 @@ func TestNewStartupSummary_SurvivesASpentConnectDeadline(t *testing.T) {
 		Name:        "list_cases",
 		Description: "list open cases",
 		InputSchema: []byte(`{"type":"object"}`),
-	}); err != nil {
+	}, quarantine.ClassSafe); err != nil {
 		t.Fatalf("observe: %v", err)
 	}
 

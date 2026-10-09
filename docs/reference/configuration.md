@@ -23,7 +23,7 @@ original, with the reasoning behind each key, is
 
 | Keys | How to apply | Takes effect |
 |---|---|---|
-| `[[role]]`, `[role.grants]`, `[group_to_role]`, `[[quota.provider]]`, `quota.free_tools` | `mcp-gateway reload` (or `SIGHUP`) | `serve`'s next call; a client sees tools it gained after it reconnects |
+| `[[role]]` (`tools`, `non_read`), `[role.grants]`, `[group_to_role]`, `[[quota.provider]]`, `quota.free_tools` | `mcp-gateway reload` (or `SIGHUP`) | `serve`'s next call; a client sees tools it gained after it reconnects |
 | `signer.key_file` | nothing | the next `sign` run |
 | `[connect]`, `[idp]` | nothing | the management backend's next operation |
 | `[admin]` | restart the management backend | when `admin` next starts (a socket-activated backend exits after 5 minutes idle) |
@@ -211,6 +211,7 @@ Roles are policy; changing one is a reviewed diff and a `reload`.
 |---|---|---|---|---|
 | `name` | string | none | yes | Unique; not empty; no leading or trailing whitespace. |
 | `tools` | list of strings | `[]` | no | Namespaced names, `BACKEND.TOOL` (`casemgmt.list_cases`), matched exactly. No wildcard: a name ending in `.*` is refused and the message points at `[role.grants]`. An un-namespaced name, an empty name, edge whitespace and a repeated name are refused. An empty list is valid: the role may authenticate and call nothing. |
+| `non_read` | bool | `false` | no | Marks the role as one that may ACT (`design/adr/0048`). A sensitive tool (a REST operation with any method but `GET`/`HEAD`/`OPTIONS`) is served only to a caller holding a role with `non_read = true` that names the tool in `tools`, checked on every call; a `"*"` or named entry under `[role.grants]`, or the name in `tools` of a role without the marking, never reaches a sensitive tool. `tool clear` refuses unless some such role exists. Safe tools are unaffected by the marking. Refused at load: `non_read = true` on a role whose `tools` is empty (the marking reaches nothing). Reloadable; applies on the next call. |
 
 ### [role.grants]
 

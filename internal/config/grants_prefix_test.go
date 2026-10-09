@@ -102,7 +102,7 @@ func TestGrantDoesNotReachAnUpstreamItOnlyPrefixes(t *testing.T) {
 		Description: "threatintel.staging debug_exec",
 		InputSchema: []byte(`{"type":"object"}`),
 	}
-	if _, err := quar.Observe(ctx, "threatintel.staging", staging); err != nil {
+	if _, err := quar.Observe(ctx, "threatintel.staging", staging, quarantine.ClassSafe); err != nil {
 		t.Fatalf("Observe: %v", err)
 	}
 	if _, err := quar.Approve(ctx, "threatintel.staging", "debug_exec"); err != nil {

@@ -193,7 +193,7 @@ func TestConnect_RefusesAToolNameOutsideTheCharset(t *testing.T) {
 
 // TestConnect_ServesAToolNameAtTheLengthLimit pins the other side of the
 // charset's boundary: 64 characters is still a name, so an off-by-one in
-// validToolName would refuse legitimate tools silently.
+// ValidToolName would refuse legitimate tools silently.
 func TestConnect_ServesAToolNameAtTheLengthLimit(t *testing.T) {
 	long := strings.Repeat("x", 64)
 	h := newHarness(t, "casemgmt."+long)
@@ -213,7 +213,7 @@ func TestConnect_ServesAToolNameAtTheLengthLimit(t *testing.T) {
 // TestConnect_RefusesAnOversizedDefinition: every observed definition is
 // stored (design/adr/0032 item 1) on a small VM whose disk also holds the
 // audit trail, and nothing else bounds what a backend sends. A definition
-// over maxToolDefinitionBytes is refused at discovery like a bad name --
+// over MaxToolDefinitionBytes is refused at discovery like a bad name --
 // never observed, never stored, never routed -- and the error names the
 // upstream and the size.
 func TestConnect_RefusesAnOversizedDefinition(t *testing.T) {
@@ -221,7 +221,7 @@ func TestConnect_RefusesAnOversizedDefinition(t *testing.T) {
 	h.register("casemgmt")
 	h.serve("casemgmt",
 		def("list_cases", "list cases"),
-		def("get_case", strings.Repeat("A", maxToolDefinitionBytes)))
+		def("get_case", strings.Repeat("A", MaxToolDefinitionBytes)))
 
 	err := h.connect()
 	if !errors.Is(err, ErrUpstreamUnavailable) {

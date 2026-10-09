@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"time"
 
@@ -56,6 +57,10 @@ func upstreamUsage(w io.Writer) {
   mcp-gateway upstream register [-config FILE] -name NAME -transport oci
                                 -image NAME@sha256:HEX [-arg PODMAN-FLAG ...]
                                 [-env VARNAME ...]
+  mcp-gateway upstream register [-config FILE] -name NAME -transport http
+                                -url BASE-URL -openapi FILE|URL
+                                [-auth-kind bearer|header|query|none [-auth-name NAME]]
+                                [-env VARNAME]
   mcp-gateway upstream update [-config FILE] -image NAME@sha256:HEX NAME
   mcp-gateway upstream deregister [-config FILE] NAME
   mcp-gateway upstream maintenance on|off [-config FILE] NAME [-message TEXT] [-until T]
@@ -91,6 +96,19 @@ For oci, -arg carries podman flags the entry signs (e.g. -arg --network=none).
 name; host, private, container:*, ns:* and ":options" are refused. Which
 hosts a networked backend reaches is the host firewall's job; "upstream list
 -json" states each entry's network for it (design/adr/0033).
+
+-transport http registers a REST API the gateway itself calls: one tool per
+operation of the OpenAPI 3.x document -openapi names (a file, or an http(s)
+URL fetched once, now, with no credential and under the gateway's own egress
+guard). The set is frozen and signed with the entry; the document is never
+re-read. -url is the destination -- scheme, host, port and base path -- and
+the only one: a host the document names is ignored, its base path is folded
+in when -url has none. -auth-kind says where the ONE secret -env names is
+injected on every call (bearer: Authorization; header/query: the location
+-auth-name names); left out, it is derived when the document declares exactly
+one apiKey or bearer scheme, and "none" refuses that and registers keyless.
+POST, PUT, PATCH and DELETE tools are sensitive: approval alone does not make
+one callable (design/adr/0047, 0048).
 
 Exit codes: 0 ok, 1 ran and found a problem, 2 could not run.
 `)
@@ -287,14 +305,17 @@ func envVarNamesOrEmpty(s registry.UpstreamServer) []string {
 func upstreamRegister(args []string, stdout, stderr io.Writer) int {
 	fs, configPath := opFlagSet("upstream register", stderr)
 	name := fs.String("name", "", "name of the entry, e.g. \"casemgmt\" (required)")
-	transport := fs.String("transport", string(registry.TransportStdio), "\"stdio\" (spawn a process) or \"oci\" (an ephemeral podman container). \"http\" is recognised but has no dialer in this build and is refused")
+	transport := fs.String("transport", string(registry.TransportStdio), "\"stdio\" (spawn a process), \"oci\" (an ephemeral podman container) or \"http\" (a REST API the gateway itself calls, one tool per operation of the OpenAPI document -openapi names)")
 	command := fs.String("command", "", "command to spawn, for -transport stdio")
 	image := fs.String("image", "", "digest-pinned image to run, for -transport oci: NAME@sha256:<64 hex>")
-	url := fs.String("url", "", "endpoint URL, for -transport http. Kept for when an http dialer exists; registering http is refused until then")
+	url := fs.String("url", "", "base URL of the API, for -transport http: scheme, host, port and base path, as signed and as the only destination the gateway dials for this entry; no userinfo, query or fragment. A base path the document declares is folded in when this has none")
+	openapi := fs.String("openapi", "", "for -transport http (required): the OpenAPI 3.0.x/3.1.x document, JSON or YAML, as a FILE path or an http(s) URL. A URL is fetched once, now, with no credential and under the same egress guard as the gateway's calls (no private or loopback address, no redirect off its origin, no userinfo or query); a document that needs a credential to read is downloaded by you and passed as a file")
+	authKind := fs.String("auth-kind", "", "for -transport http: where the one secret -env names is injected on every call: \"bearer\" (Authorization: Bearer), \"header\" (the header -auth-name names), \"query\" (the query parameter -auth-name names) or \"none\" (keyless). Left out: keyless, unless the document declares exactly one apiKey or http bearer scheme, which is then derived and printed")
+	authName := fs.String("auth-name", "", "for -auth-kind header or query: the header or query parameter name the secret is injected as; a parameter of the document on the same name is refused (the server-side value wins)")
 	var argv opStringList
 	fs.Var(&argv, "arg", "argument for the spawned command; repeat, in order")
 	var envs opStringList
-	fs.Var(&envs, "env", "NAME of an environment variable the upstream needs; repeat. Names only, never values")
+	fs.Var(&envs, "env", "NAME of an environment variable the upstream needs; repeat. Names only, never values. For -transport http: exactly one, the secret -auth-kind injects, and none for a keyless entry")
 	if code, ok := opParse(fs, args, stdout, stderr, upstreamUsage); !ok {
 		return code
 	}
@@ -324,11 +345,34 @@ func upstreamRegister(args []string, stdout, stderr io.Writer) int {
 		Image:       *image,
 		EnvVarNames: envs,
 	}
+	// An http entry's URL, auth descriptor and operation set come from the
+	// -openapi document, read and translated before the database is opened
+	// like every other refusal here (ADR-0047 §3). The three http-only
+	// flags are refused by name on any other transport.
+	var report *httpIngestReport
+	if entry.Transport == registry.TransportHTTP {
+		r, code := ingestForRegister(&entry, *openapi, *authKind, *authName, stdout, stderr)
+		if code != exitOK {
+			return code
+		}
+		report = r
+	} else if msg := httpFlagsRefusal(entry.Transport, *openapi, *authKind, *authName); msg != "" {
+		fmt.Fprintf(stderr, "%s\n\n", msg)
+		upstreamUsage(stderr)
+		return exitCannotRun
+	}
 	// Validated here rather than left to the adapter: a malformed entry is
 	// bad usage, and reporting it before the database is even opened means
 	// the operator sees the rule they broke and nothing else.
 	if err := entry.Validate(); err != nil {
 		fmt.Fprintf(stderr, "%v\n\n", err)
+		if report != nil && report.authDerived {
+			// The rule Validate just applied -- a keyed entry names exactly
+			// one secret -- was triggered by a descriptor the operator did
+			// not type, so say where it came from and the three ways out.
+			fmt.Fprintf(stderr, "The auth kind %q%s was derived from the document's securitySchemes, which\nmakes this a keyed entry. Pass -env NAME with the secret to inject there,\n-auth-kind to choose another location, or -auth-kind none to register keyless.\n\n",
+				entry.AuthKind, nameNote(entry.AuthName))
+		}
 		upstreamUsage(stderr)
 		return exitCannotRun
 	}
@@ -342,11 +386,30 @@ func upstreamRegister(args []string, stdout, stderr io.Writer) int {
 	}
 
 	return opRun(*configPath, stdout, stderr, func(e *opEnv) int {
-		return runUpstreamRegister(e, entry)
+		return runUpstreamRegisterReport(e, entry, report)
 	})
 }
 
+// nameNote renders " name X" for a descriptor that has a name, or "".
+func nameNote(authName string) string {
+	if authName == "" {
+		return ""
+	}
+	return " name " + strconv.Quote(authName)
+}
+
+// runUpstreamRegister registers entry and reports on it; the http report,
+// when there is one, is printed by runUpstreamRegisterReport.
 func runUpstreamRegister(e *opEnv, entry registry.UpstreamServer) int {
+	return runUpstreamRegisterReport(e, entry, nil)
+}
+
+// runUpstreamRegisterReport is runUpstreamRegister plus, for an http entry,
+// the ingestion report printed right after the entry's own table -- after
+// the registry accepted the entry, so the tools it lists exist, and before
+// the signature-state block, whose warnings are the louder thing and should
+// be the last thing read.
+func runUpstreamRegisterReport(e *opEnv, entry registry.UpstreamServer, report *httpIngestReport) int {
 	// Needs the configuration, so it is here and not beside
 	// dialTimeRefusal in cmdUpstream (design/adr/0034 item 4).
 	if err := credentialedStdioRefusal(entry, e.cfg); err != nil {
@@ -374,7 +437,17 @@ func runUpstreamRegister(e *opEnv, entry registry.UpstreamServer) int {
 		fmt.Fprintf(tw, "  image\t%s\n", entry.Image)
 	}
 	fmt.Fprintf(tw, "  env var names\t%s\n", opDash(strings.Join(entry.EnvVarNames, ", ")))
+	if entry.Transport == registry.TransportHTTP {
+		// The injection location is a signed field (canonical/v3-http) and
+		// the thing an operator most needs to check against the API's
+		// documentation, so it is in the table, not only in the report.
+		fmt.Fprintf(tw, "  auth\t%s\n", opAuthLine(entry))
+		fmt.Fprintf(tw, "  operations\t%s\n", opOperationsLine(entry))
+	}
 	if !opFlushTable(tw, e.stderr) {
+		return exitProblem
+	}
+	if report != nil && !printIngestReport(e.stdout, report, entry.Name, e.cmd) {
 		return exitProblem
 	}
 

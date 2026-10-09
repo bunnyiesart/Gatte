@@ -238,6 +238,13 @@ const (
 	// reasonQuarantined means the tool exists and is not approved, or was
 	// approved and has since changed.
 	reasonQuarantined = "quarantined"
+	// reasonSensitiveNotGranted means the tool's quarantine class is
+	// sensitive and the caller reaches it only through a wildcard or a
+	// read role (design/adr/0048 Decisão 5). Distinct from reasonForbidden
+	// on purpose: the caller IS authorized by name, and what refused them
+	// is the class gate -- which is the row an operator reads when a
+	// wildcard they wrote for reading turned out to cover a tool that acts.
+	reasonSensitiveNotGranted = "sensitive tool requires an explicit grant in a non-read role"
 	// reasonQuarantineUnavailable means the approval store could not be
 	// read, so the gateway refused rather than guessing. An empty tool
 	// list and a broken approval store must not look alike.
@@ -285,30 +292,57 @@ const (
 	reasonSignatureRefused = "signature refused"
 )
 
-// maxToolNameLen and validToolName are the tool-name charset of
+// MaxToolNameLen and ValidToolName are the tool-name charset of
 // design/adr/0032 item 6: ^[A-Za-z0-9_-]{1,64}$. A tool name reaches the
 // model, the operator's terminal, every log line and the audit trail, and it
 // is the backend's choice. Before this it was not checked at all.
+//
+// They are exported so the one predicate has a single home: the REST/OpenAPI
+// ingestion (internal/gateway/resthttp, ADR-0047 §3) derives a tool name from
+// an operationId and must refuse or hash exactly what routesFor and health.go
+// refuse here, rather than growing a second copy that could drift
+// (design/adr/0048, step 1).
 //
 // The dot is outside the set on purpose. It is NameSeparator, and a tool
 // named "b.c" on upstream "a" reads as the same client-facing name as tool
 // "c" on an upstream "a.b" -- the ambiguity the registry already refuses
 // from the other side.
-const maxToolNameLen = 64
+const MaxToolNameLen = 64
 
-// maxToolDefinitionBytes bounds one advertised definition -- name,
+// MaxToolDefinitionBytes bounds one advertised definition -- name,
 // description, input and output schema together -- before the quarantine
 // stores it (design/adr/0032 item 1). The store keeps at most two
 // definitions per tool; this bounds how large each of those is. 64 KiB is
 // far past any real tool definition, and caps one tool at 128 KiB stored.
-const maxToolDefinitionBytes = 64 << 10
+//
+// Exported, like MaxToolNameLen, so the ceiling has one home: the OpenAPI
+// ingestion (internal/gateway/resthttp, ADR-0047 §3) refuses at register
+// time an operation whose definition routesFor would refuse at connect,
+// measured by the same DefinitionSize against the same constant, rather
+// than discovering it as a per-tool failure after the entry was signed.
+const MaxToolDefinitionBytes = 64 << 10
 
-func definitionSize(def ToolDef) int {
+// DefinitionSize is the measurement MaxToolDefinitionBytes bounds: the
+// byte length of the name, description, input and output schema together.
+func DefinitionSize(def ToolDef) int {
 	return len(def.Name) + len(def.Description) + len(def.InputSchema) + len(def.OutputSchema)
 }
 
-func validToolName(name string) bool {
-	if name == "" || len(name) > maxToolNameLen {
+// CheckInputSchema reports, wrapping ErrUnusableSchema, whether raw is an
+// input schema routesFor refuses at connect: it is validateSchema, the
+// same check, exported so the OpenAPI ingestion (internal/gateway/resthttp,
+// ADR-0047 §3) can refuse at register what would otherwise be a per-tool
+// refusal discovered after the entry was signed.
+//
+// Pre-condition: none. Post-condition: nil exactly when routesFor's
+// input-schema step accepts raw.
+func CheckInputSchema(raw json.RawMessage) error { return validateSchema(raw) }
+
+// ValidToolName reports whether name is a legal tool name under the charset
+// documented on MaxToolNameLen: non-empty, at most MaxToolNameLen bytes, and
+// only [A-Za-z0-9_-].
+func ValidToolName(name string) bool {
+	if name == "" || len(name) > MaxToolNameLen {
 		return false
 	}
 	for i := 0; i < len(name); i++ {
@@ -1713,14 +1747,14 @@ func (g *Gateway) routesFor(ctx context.Context, upstream string, defs []ToolDef
 		// charset never gets a quarantine row, an audit row or a route, so
 		// nothing downstream ever has to print it (design/adr/0032 item 6).
 		// A measurement, like the schema checks below.
-		if !validToolName(def.Name) {
+		if !ValidToolName(def.Name) {
 			out.failures = append(out.failures, fmt.Errorf("%w: %q: tool name %s is refused: a tool name must match ^[A-Za-z0-9_-]{1,64}$", ErrUpstreamUnavailable, upstream, shownName(def.Name)))
 			continue
 		}
 		// Same place, same reason: every observed definition is stored, so
 		// its size is bounded before the store sees it. A measurement.
-		if n := definitionSize(def); n > maxToolDefinitionBytes {
-			out.failures = append(out.failures, fmt.Errorf("%w: %q: tool %q is refused: its definition is %d bytes, over the %d-byte limit", ErrUpstreamUnavailable, upstream, def.Name, n, maxToolDefinitionBytes))
+		if n := DefinitionSize(def); n > MaxToolDefinitionBytes {
+			out.failures = append(out.failures, fmt.Errorf("%w: %q: tool %q is refused: its definition is %d bytes, over the %d-byte limit", ErrUpstreamUnavailable, upstream, def.Name, n, MaxToolDefinitionBytes))
 			continue
 		}
 		if err := validateSchema(def.InputSchema); err != nil {
@@ -1755,7 +1789,12 @@ func (g *Gateway) routesFor(ctx context.Context, upstream string, defs []ToolDef
 			out.failures = append(out.failures, fmt.Errorf("%w: %q: tool %q has an unusable output schema: %w", ErrUpstreamUnavailable, upstream, def.Name, err))
 			continue
 		}
-		obs, err := g.quarantine.Observe(ctx, upstream, identityOf(def))
+		// The class rides beside the identity, never inside it (ADR-0048
+		// Decisão 5): identityOf does not read def.SecurityClass, so a
+		// method change re-records the class without moving an approval,
+		// and the quarantine keeps it as the metadata Usable and admit's
+		// class gate read on every call.
+		obs, err := g.quarantine.Observe(ctx, upstream, identityOf(def), def.SecurityClass)
 		if err != nil {
 			// A tool whose quarantine state could not be recorded is a tool
 			// whose approval we cannot check later. Do not route it -- and
@@ -1931,10 +1970,13 @@ func (g *Gateway) resolveEnv(ctx context.Context, entry registry.UpstreamServer)
 //
 // A tool appears only if it passes *both* gates: the access Policy allows
 // this identity to call that namespaced name, and Tool Quarantine reports
-// the tool Usable. The gates are the same two, consulted in the same
-// order, as Dispatch's -- that is what makes the list and the call path
-// agree. A tool in this list is dispatchable; a tool missing from it is
-// not.
+// the tool Usable -- with, for a sensitive tool, the class gate admit runs
+// between the two (design/adr/0048 Decisão 5). The gates are the same,
+// consulted in the same order, as Dispatch's -- that is what makes the
+// list and the call path agree. A tool in this list is dispatchable; a
+// tool missing from it is not. The listing is per caller, so the class
+// gate applies here as it does on a call: a read role with a wildcard
+// does not see the sensitive tool it cannot call.
 //
 // The returned ToolDef carries the namespaced Name (what the client calls)
 // with the Description and InputSchema exactly as the upstream advertised
@@ -1981,7 +2023,7 @@ func (g *Gateway) ListTools(ctx context.Context, id access.Identity) ([]ToolDef,
 		if err := policy.Authorize(id, name); err != nil {
 			continue
 		}
-		switch err := g.admit(ctx, rt.route); {
+		switch err := g.admit(ctx, policy, id, name, rt); {
 		case err == nil:
 			out = append(out, ToolDef{
 				Name:        name,
@@ -1997,7 +2039,12 @@ func (g *Gateway) ListTools(ctx context.Context, id access.Identity) ([]ToolDef,
 				// reason and to keep one standard rather than two.
 				InputSchema: slices.Clone(rt.def.InputSchema),
 			})
-		case errors.Is(err, ErrToolQuarantined):
+		case errors.Is(err, ErrToolQuarantined), errors.Is(err, ErrSensitiveNotGranted):
+			// Left out, not reported: "this tool is not yours" is not an
+			// error at listing time, for either gate. Skipping the
+			// sensitive refusal here is what keeps the listing equal to
+			// what Dispatch would serve this caller (the property
+			// TestListAndDispatchAgree pins).
 			continue
 		default:
 			return nil, err
@@ -2026,7 +2073,17 @@ func (g *Gateway) ListTools(ctx context.Context, id access.Identity) ([]ToolDef,
 //     description, the quarantine flips the tool to changed, and the
 //     client's call -- issued against a list that was true a second ago --
 //     would still land. quarantine.Tool.Usable is the single gate here and
-//     in ListTools (ADR-0007 rule 3).
+//     in ListTools (ADR-0007 rule 3). Inside the same step, for a tool
+//     classed as sensitive (by the quarantine row or the route's signed
+//     metadata), the class gate: step 2 was by name and class-blind, so a
+//     wildcard in a read role would reach a tool that acts; the policy is
+//     asked again, by name, whether a non-read role names this tool
+//     explicitly (design/adr/0048 Decisão 5, admit). The gate is asked
+//     only of a tool approved at the definition it advertises -- an
+//     unapproved sensitive tool is "unknown" like an unapproved safe one,
+//     so a read role cannot enumerate unreviewed sensitive names -- and
+//     before the clearance, so it cannot tell a cleared one from an
+//     uncleared one either; admit's doc comment has the reasoning.
 //  4. Reserve the per-analyst quota for every third-party account this
 //     tool spends (design/adr/0030-quota-por-analista.md). After step 3 so
 //     that a quarantined tool cannot be told apart from an absent one by
@@ -2170,8 +2227,16 @@ func (g *Gateway) Dispatch(ctx context.Context, c Caller, namespacedTool string,
 		return Result{}, err
 	}
 
-	if err := g.admit(ctx, rt.route); err != nil {
-		if errors.Is(err, ErrToolQuarantined) {
+	if err := g.admit(ctx, ctl.policy, c.Identity, namespacedTool, rt); err != nil {
+		switch {
+		case errors.Is(err, ErrSensitiveNotGranted):
+			// The class gate (ADR-0048 Decisão 5). The caller is told
+			// exactly what a policy denial tells them -- err wraps
+			// access.ErrForbidden and reads the same -- and the trail,
+			// not the caller, carries the distinct reason.
+			g.auditRefusal(ctx, c, namespacedTool, rt.route.upstream, reasonSensitiveNotGranted)
+			return Result{}, err
+		case errors.Is(err, ErrToolQuarantined):
 			g.auditRefusal(ctx, c, namespacedTool, rt.route.upstream, reasonQuarantined)
 			// Internally distinct (err is ErrToolQuarantined and the log says
 			// so); opaque on the way out. See the doc comment.
@@ -2728,26 +2793,107 @@ func (g *Gateway) Close() error {
 	return closeAll(conns)
 }
 
-// admit reports whether Tool Quarantine allows r to be listed and called.
+// admit reports whether Tool Quarantine allows rt to be listed and called
+// by id, under policy, as name.
 //
-// It returns nil when the tool is usable, ErrToolQuarantined when the
-// quarantine has not approved this exact definition, and an error wrapping
+// It returns nil when the tool is usable and its class is satisfied,
+// ErrToolQuarantined when the quarantine has not approved this exact
+// definition (or approved it, and a sensitive tool awaits its clearance),
+// an error wrapping ErrSensitiveNotGranted (and access.ErrForbidden) when
+// the tool is sensitive, approved as advertised, and id's roles reach it
+// only by wildcard or from a read role, and an error wrapping
 // ErrQuarantineUnavailable when the state could not be read at all. Both
 // ListTools and Dispatch go through this one function, so "is this tool
 // allowed" has exactly one implementation and the two sites cannot drift
 // apart -- the property quarantine.Tool.Usable's doc comment and ADR-0007
 // rule 3 require.
 //
+// # The class gate
+//
+// The caller has already passed policy.Authorize by name. That gate is
+// class-blind, and Usable is role-blind, and the two never crossed: a
+// cleared sensitive tool plus a read role with a per-backend wildcard would
+// reach a tool that acts through a grant nobody wrote for it
+// (design/adr/0048 Decisão 5, "fecha o bypass"). So for a sensitive tool
+// this asks the policy a second, narrower question --
+// access.Policy.AuthorizeNonRead: does some role of id carry the non-read
+// marking AND name this tool explicitly -- and refuses if not. The class
+// is read here, as metadata, and the policy is asked only by name; nothing
+// in internal/access learns what a class is. It runs on every call, which
+// is what makes it durable across a reload: a check at clearance time
+// would be point-in-time, and the roles are rebuilt under it.
+//
+// # Two sources for the class, OR-ed
+//
+// "Sensitive" is answered by EITHER the quarantine row's Class OR the
+// route's def.SecurityClass. The two coincide in operation -- routesFor
+// writes the second into the first on every observation -- but they have
+// different provenance: the route's class comes from the registry's signed
+// Operations (ADR-0048 Decisão 2), the row's from an unsigned column that
+// whoever can write the database can blank. The database is already the
+// source of approvals, so a writer there is not a new threat; the OR is
+// defence in depth for the one half of the seam whose datum has an
+// independent, signed origin, and it fails closed: a row reading safe
+// under a route reading sensitive is gated, and a route reading safe over
+// a row reading sensitive is gated too. Usable itself still reads the row
+// alone -- the clearance is the row's -- so a row blanked to safe serves
+// without a clearance only to a role that could have cleared it. For a
+// backend served from its last live listing (stableRoutesFor) the route's
+// class is copied from the row, so there the row is the only source; the
+// registry's Operations are the source to prefer once the resthttp
+// adapter exists to read them.
+//
+// # The order: quarantine, then class, then clearance
+//
+// The quarantine answers first for every state but one. A tool that is
+// not approved at the definition it advertises -- pending, changed, no
+// baseline -- is ErrToolQuarantined whatever its class, and Dispatch turns
+// that into the opaque unknown-tool answer. Were the class gate asked
+// first, a read-role caller covered by a wildcard would get "forbidden"
+// for a pending sensitive tool and "unknown" for a pending safe one, and
+// could enumerate, by trying names, which sensitive operations a backend
+// advertises before anyone has reviewed them -- names that come from the
+// backend, not from the operator-authored role lists Dispatch's residual
+// leak is bounded to.
+//
+// The one exception is a sensitive tool approved as advertised and not
+// yet cleared (quarantine.Tool.ApprovedAsAdvertised and not Usable). It is
+// NOT answered as quarantined before the class gate, deliberately: the
+// class gate runs for it, and only then the clearance. So a read-role
+// caller gets the same forbidden answer for a cleared and an uncleared
+// sensitive tool, and learns only that their role does not act -- never
+// which sensitive tools are currently cleared, the SOC's posture. A
+// non-read role naming the tool, which could reach it once cleared, is
+// the one caller that is told it is not served yet (as unknown, like any
+// unapproved tool). What a read role can tell is therefore "approved" from
+// "not approved" for a sensitive tool -- exactly what it can tell for a
+// safe one -- and nothing about clearance.
+//
+// A class this package does not define is gated as sensitive, mirroring
+// Usable: fail-closed, and unreachable until the row is fixed.
+//
 // A route with no quarantine entry is treated as not approved rather than
 // as an error: it means discovery and the store have diverged, and the
 // fail-closed reading of "no record of approval" is "not approved."
-func (g *Gateway) admit(ctx context.Context, r route) error {
+func (g *Gateway) admit(ctx context.Context, policy *access.Policy, id access.Identity, name string, rt routedTool) error {
+	r := rt.route
 	t, err := g.quarantine.Get(ctx, r.upstream, r.originalName)
 	if err != nil {
 		if errors.Is(err, quarantine.ErrNotFound) {
 			return fmt.Errorf("%w: %s: no quarantine entry", ErrToolQuarantined, r)
 		}
 		return fmt.Errorf("%w: %s: %w", ErrQuarantineUnavailable, r, err)
+	}
+	sensitive := t.Class != quarantine.ClassSafe || rt.def.SecurityClass != quarantine.ClassSafe
+	if !t.Usable() && !(sensitive && t.ApprovedAsAdvertised()) {
+		return fmt.Errorf("%w: %s", ErrToolQuarantined, r)
+	}
+	if sensitive {
+		if err := policy.AuthorizeNonRead(id, name); err != nil {
+			// Both sentinels, so the trail can name the gate and the
+			// boundary still sees one forbidden class (httpapi.classify).
+			return fmt.Errorf("%w: %w", ErrSensitiveNotGranted, err)
+		}
 	}
 	if !t.Usable() {
 		return fmt.Errorf("%w: %s", ErrToolQuarantined, r)
@@ -3820,12 +3966,15 @@ func identityOf(def ToolDef) quarantine.ToolIdentity {
 // resolved values and has no business knowing what else the entry names.
 func specFor(entry registry.UpstreamServer) UpstreamSpec {
 	return UpstreamSpec{
-		Name:      entry.Name,
-		Transport: string(entry.Transport),
-		Command:   entry.Command,
-		Args:      slices.Clone(entry.Args),
-		URL:       entry.URL,
-		Image:     entry.Image,
+		Name:       entry.Name,
+		Transport:  string(entry.Transport),
+		Command:    entry.Command,
+		Args:       slices.Clone(entry.Args),
+		URL:        entry.URL,
+		Image:      entry.Image,
+		AuthKind:   string(entry.AuthKind),
+		AuthName:   entry.AuthName,
+		Operations: slices.Clone(entry.Operations),
 	}
 }
 
@@ -3887,6 +4036,10 @@ var ErrUnusableSchema = errors.New("gateway: unusable input schema")
 // bytes an upstream sent are the bytes Tool Quarantine fingerprinted, and
 // normalizing them here would move the hash out from under an operator's
 // approval.
+//
+// CheckInputSchema is the exported name of this check, for the OpenAPI
+// ingestion (internal/gateway/resthttp, ADR-0047 §3): register refuses
+// what routesFor would refuse here, by the same function.
 func validateSchema(raw json.RawMessage) error {
 	if len(raw) == 0 {
 		return fmt.Errorf("%w: absent", ErrUnusableSchema)
@@ -4073,6 +4226,18 @@ func (g *Gateway) rememberCredentials(upstream string, env map[string]string) {
 // crying drift during the incident that makes the vault unreachable is
 // how a warning gets trained out of an operator. The read failure is
 // logged instead.
+//
+// # It does not apply to an http upstream
+//
+// The whole premise -- the value was copied once, at dial, into a process
+// that keeps it -- is false for the REST transport: the resthttp adapter
+// keeps the secret's NAME and re-resolves it through the vault on every
+// call (ADR-0047 §5), so after a rotation the next call already carries the
+// new value and there is nothing a redial would change. Reporting it would
+// be a false warning with a useless remedy, so an upstream whose dialed
+// entry is http is skipped here. Its digests are still recorded by bringUp,
+// because scrubResult reads g.creds for the NAMES to redact with, and those
+// it needs for http as much as for any transport.
 func (g *Gateway) CredentialDrift(ctx context.Context) []CredentialDrift {
 	g.mu.RLock()
 	snapshot := make(map[string]map[string]string, len(g.creds))
@@ -4080,6 +4245,9 @@ func (g *Gateway) CredentialDrift(ctx context.Context) []CredentialDrift {
 		// Only upstreams that are actually connected. A record left over
 		// from one that has since gone away describes nothing running.
 		if _, live := g.conns[upstream]; !live {
+			continue
+		}
+		if g.dialed[upstream].Transport == registry.TransportHTTP {
 			continue
 		}
 		copied := make(map[string]string, len(digests))

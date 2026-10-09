@@ -75,7 +75,11 @@ func newBackend(t *testing.T) backend {
 		t.Fatal(err)
 	}
 	cfg := &config.Config{Database: ":memory:", GroupToRole: map[string]string{"blue-ir": "ir"},
-		Roles:   []config.Role{{Name: "ir", Grants: map[string][]string{"casemgmt": {"*"}}}},
+		// ir-act is the role clearTool needs (design/adr/0048): marked
+		// non_read and naming the sensitive tool in `tools`; ir's
+		// wildcard covers it without reaching it.
+		Roles: []config.Role{{Name: "ir", Grants: map[string][]string{"casemgmt": {"*"}}},
+			{Name: "ir-act", Tools: []string{"casemgmt.close_case"}, NonRead: true}},
 		IdP:     config.IdP{UsersFile: users},
 		OIDC:    config.OIDC{Audience: "https://gateway.example.internal/mcp"},
 		Connect: config.Connect{ClientID: "claude-code", CallbackPort: 33418}}
@@ -160,7 +164,7 @@ func operationIDs(t *testing.T) []string {
 // TestClient_CoversEveryOperationOfTheContractAgainstTheRealBackend.
 func TestClient_CoversEveryOperationOfTheContractAgainstTheRealBackend(t *testing.T) {
 	b := newBackend(t)
-	obs, err := b.tools.Observe(context.Background(), "casemgmt", quarantine.ToolIdentity{Name: "list_cases", Description: "List.", InputSchema: []byte(`{}`)})
+	obs, err := b.tools.Observe(context.Background(), "casemgmt", quarantine.ToolIdentity{Name: "list_cases", Description: "List.", InputSchema: []byte(`{}`)}, quarantine.ClassSafe)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -185,6 +189,19 @@ func TestClient_CoversEveryOperationOfTheContractAgainstTheRealBackend(t *testin
 	do("approveTool", err)
 	_, err = op.RevokeTool(ctx, adminapi.ToolRef{Server: "casemgmt", Tool: "list_cases"})
 	do("revokeTool", err)
+	// clearTool (1.5.0): a sensitive tool, approved through the store so
+	// it is not in the review set below, cleared through the client.
+	if _, err := b.tools.Observe(ctx, "casemgmt", quarantine.ToolIdentity{Name: "close_case", Description: "Close.", InputSchema: []byte(`{}`)}, quarantine.ClassSensitive); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.tools.Approve(ctx, "casemgmt", "close_case"); err != nil {
+		t.Fatal(err)
+	}
+	cleared, err := op.ClearTool(ctx, adminapi.ToolRef{Server: "casemgmt", Tool: "close_case"})
+	do("clearTool", err)
+	if err == nil && (!cleared.Changed || !cleared.Tool.Usable || cleared.Tool.Class != adminapi.ClassSensitive || len(cleared.ClearedBy) != 1 || !cleared.ClearedBy[0].NonRead) {
+		t.Errorf("clearTool = %+v", cleared)
+	}
 	set, err := op.ReviewToolSet(ctx, "casemgmt")
 	do("reviewToolSet", err)
 	if err == nil && (len(set.Tools) != 1 || set.Manifest == "" || !set.Approvable) {

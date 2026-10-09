@@ -207,6 +207,28 @@ no restart. It does not tell the backend anything and does not forget the
 observed definition. To serve it again, review and approve it as above.
 The trail gets a `(tool revoke)` row.
 
+## Clear a sensitive tool
+
+A sensitive tool is one that can act -- a REST backend's operation with
+any method but GET/HEAD/OPTIONS (`design/adr/0048`). Approving it says the
+definition is not poisoned, like any other tool; it is still NOT served
+until you also clear it, and `tool approve` says so ("approved; sensitive:
+run tool clear"). Approving a backend's set never clears anything.
+
+```sh
+sudo -u mcpgw mcp-gateway tool clear -config "$CFG" edr isolate_host
+```
+
+Clearing is refused unless a `[[role]]` with `non_read = true` names the
+tool in its `tools` list, by its full name: a `"*"` grant, a
+`[role.grants]` name, or an explicit name on a role without the marking
+does not count, and the refusal says, role by role, what covers the tool
+and why that does not reach it. The gateway asks the same question on
+every call, so the marking takes effect at the next `reload` in both
+directions. A change to the definition, or `tool revoke`, withdraws the
+clearance together with the approval; after re-approving, clear again.
+The trail gets a `(tool clear)` row.
+
 ## Check it worked
 
 - `tool list -server NAME` shows each tool you approved as `approved`,

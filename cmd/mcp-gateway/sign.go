@@ -313,6 +313,13 @@ func runSign(e *opEnv, name string) int {
 		fmt.Fprintf(tw, "  image\t%s\n", entry.Image)
 	}
 	fmt.Fprintf(tw, "  env var names\t%s\n", opDash(strings.Join(entry.EnvVarNames, ", ")))
+	if entry.Transport == registry.TransportHTTP {
+		// Both are covered by canonical/v3-http (the descriptor as fields,
+		// the set as its digest), and "the signature covers those fields"
+		// below would be false of an http entry that did not show them.
+		fmt.Fprintf(tw, "  auth\t%s\n", opAuthLine(entry))
+		fmt.Fprintf(tw, "  operations\t%s\n", opOperationsLine(entry))
+	}
 	fmt.Fprintf(tw, "  key file\t%s\n", keyFile)
 	fmt.Fprintf(tw, "  public key\t%s\n", signer.KeyFingerprint(s.PublicKey()))
 	if !opFlushTable(tw, e.stderr) {

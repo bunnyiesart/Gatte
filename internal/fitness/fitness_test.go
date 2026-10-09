@@ -48,6 +48,7 @@ import (
 	_ "github.com/bunnyiesart/Gatte/internal/config"
 	_ "github.com/bunnyiesart/Gatte/internal/gateway"
 	_ "github.com/bunnyiesart/Gatte/internal/gateway/httpapi"
+	_ "github.com/bunnyiesart/Gatte/internal/gateway/resthttp"
 	_ "github.com/bunnyiesart/Gatte/internal/gateway/stdio"
 	_ "github.com/bunnyiesart/Gatte/internal/quarantine"
 	_ "github.com/bunnyiesart/Gatte/internal/quarantine/sqlite"

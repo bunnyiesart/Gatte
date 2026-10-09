@@ -28,7 +28,19 @@ import (
 // 1 (30 Sep 2026): the first recorded version. It covers every table the
 // seven adapters create at that date; a file from any binary before it
 // reads user_version 0 and is migrated as it always was.
-const SchemaVersion = 1
+//
+// 2 (ADR-0047): the upstream_servers table gains auth_kind, auth_name and
+// operations, the http transport's signed injection descriptor and frozen
+// operation set. Added by guarded ALTERs, so a version-1 file is migrated in
+// place at the next start.
+//
+// 3 (ADR-0048): the quarantined_tools table gains class and
+// sensitive_cleared_hash, a tool's security class (metadata, outside the
+// fingerprint) and the approved fingerprint an operator cleared it at for
+// serving as a sensitive tool. Guarded ALTERs again; both default to the
+// empty string, which reads as a safe, uncleared tool -- what every tool
+// was before.
+const SchemaVersion = 3
 
 // ErrSchemaTooNew means the file was written by a binary that knows a
 // newer schema than this one.

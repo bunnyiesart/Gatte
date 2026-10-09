@@ -45,7 +45,7 @@ func TestServeStack_HeartbeatCarriesTheQuarantineBacklog(t *testing.T) {
 	ctx := context.Background()
 	mustObs := func(tool, desc string) {
 		t.Helper()
-		if _, err := q.Observe(ctx, "casemgmt", quarantine.ToolIdentity{Name: tool, Description: desc}); err != nil {
+		if _, err := q.Observe(ctx, "casemgmt", quarantine.ToolIdentity{Name: tool, Description: desc}, quarantine.ClassSafe); err != nil {
 			t.Fatalf("Observe: %v", err)
 		}
 	}

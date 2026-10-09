@@ -77,6 +77,14 @@ var table = []route{
 		v, err := s.o.Service.RevokeTool(r.Context(), r.actor, req)
 		return 200, v, err
 	}},
+	{Route{"POST", "/v1/tools/clear", "clearTool", opSock}, func(s *Server, r *request) (int, any, error) {
+		var req adminapi.ToolRef
+		if err := r.decode(&req); err != nil {
+			return 0, nil, err
+		}
+		v, err := s.o.Service.ClearTool(r.Context(), r.actor, req)
+		return 200, v, err
+	}},
 	{Route{"GET", "/v1/access/blocks", "listBlocks", opSock}, func(s *Server, r *request) (int, any, error) {
 		v, err := s.o.Service.ListBlocks(r.Context())
 		return 200, v, err
@@ -268,7 +276,7 @@ func whoami(s *Server, r *request) (int, any, error) {
 		ContractVersion: adminapi.ContractVersion,
 		// A front asks for a feature, not a version.
 		Features: []string{adminapi.FeatureMaintenance, adminapi.FeatureBackendHealth, adminapi.FeatureToolReviewSet, adminapi.FeatureServeControl,
-			adminapi.FeatureAuditFilters, adminapi.FeatureBlockUntil, adminapi.FeatureAccountDelete, adminapi.FeatureOffboard},
+			adminapi.FeatureAuditFilters, adminapi.FeatureBlockUntil, adminapi.FeatureAccountDelete, adminapi.FeatureOffboard, adminapi.FeatureToolClear},
 		GatewayVersion: s.o.GatewayVersion,
 		Socket:         s.o.Socket,
 		ConfigPath:     s.o.ConfigPath,

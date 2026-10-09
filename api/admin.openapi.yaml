@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Gatte management API
-  version: 1.4.0
+  version: 1.5.0
   summary: The backend every Gatte front talks to (design/adr/0040).
   description: |
     Served by `mcp-gateway admin` over UNIX sockets only. There is no TCP
@@ -120,6 +120,13 @@ info:
       /v1/accounts/{username}`, the `(account delete)` row) and `offboard`
       (`POST /v1/accounts/{username}/offboard`, the `(account offboard)`
       row), warning `offboard_incomplete`.
+    - 1.5.0 (design/adr/0048): feature `tool_clear` (`POST /v1/tools/clear`,
+      the `(tool clear)` operator row, `class` and `sensitive_cleared_hash`
+      on each `Tool`, `non_read` on each `RoleCoverage`, warning
+      `sensitive_uncleared`, error codes `not_sensitive`, `not_approved`
+      and `no_non_read_grant`). A sensitive tool -- one that can act -- is
+      approved like any other and NOT served until it is also cleared;
+      approving a set never clears.
   license:
     name: Apache-2.0
 servers:
@@ -233,6 +240,9 @@ components:
         | manifest_mismatch | 409 | the backend's review set is not the one reviewed, or changed while approving; nothing was approved; `details.manifest` when known |
         | definition_unavailable | 409 | the observed definition was not kept; nothing can be approved |
         | changed_not_revocable | 409 | a changed tool cannot be revoked |
+        | not_sensitive | 409 | clear of a safe tool: served on approval alone, nothing to clear (1.5.0) |
+        | not_approved | 409 | clear of a tool with no approved baseline (pending or changed), or whose baseline moved while clearing; `details.status` (1.5.0) |
+        | no_non_read_grant | 409 | clear refused: no role marked `non_read` names the tool in `tools`; `details.callable_by` lists the roles that cover it without reaching it (1.5.0) |
         | account_exists | 409 | username taken |
         | payload_too_large | 413 | body over 64 KiB |
         | connect_not_configured | 404 | `[connect]` is incomplete |
@@ -259,7 +269,9 @@ components:
             Open set. Known: `never_seen`, `no_role_grants`, `wildcard_grant`,
             `idp_reload`, `audit_write_failed` (the change IS in force and the
             trail has no row for it; `recorded` is false), `offboard_incomplete`
-            (1.4.0: an offboard's block is in force and its disable failed).
+            (1.4.0: an offboard's block is in force and its disable failed),
+            `sensitive_uncleared` (1.5.0: an approval covered a sensitive tool,
+            which is approved and not served until cleared with `clearTool`).
         message:
           type: string
           description: English fallback for a person; localise on `code`.
@@ -329,7 +341,7 @@ components:
             endpoint, only when its feature is listed. Known: `maintenance`
             and `backend_health` (1.1.0), `tool_review_set` (1.2.0),
             `serve_control` (1.3.0), `audit_filters`, `block_until`,
-            `account_delete` and `offboard` (1.4.0).
+            `account_delete` and `offboard` (1.4.0), `tool_clear` (1.5.0).
           items:
             type: string
         gateway_version:
@@ -447,6 +459,20 @@ components:
         observed_hash: {$ref: '#/components/schemas/Fingerprint'}
         first_seen_at: {type: string, format: date-time}
         updated_at: {type: string, format: date-time}
+        class:
+          type: string
+          x-gatte-open-enum: true
+          description: |
+            1.5.0 (`tool_clear`, design/adr/0048). The tool's security class:
+            absent or empty for a tool that only reads, `sensitive` for one
+            that can act. Open set; treat an unknown value as sensitive.
+        sensitive_cleared_hash:
+          type: string
+          description: |
+            1.5.0 (`tool_clear`). The approved fingerprint an operator cleared
+            a sensitive tool at; absent when never cleared, or when the
+            baseline moved since. A sensitive tool is usable only while this
+            equals `approved_hash` -- but read `usable`, never re-derive it.
     ToolList:
       type: object
       required: [tools, counts]
@@ -560,6 +586,13 @@ components:
         role: {type: string}
         how: {type: string, description: 'e.g. `grant casemgmt: [list_cases]`, `tools: ["casemgmt.*"]`'}
         wildcard: {type: boolean}
+        non_read:
+          type: boolean
+          description: |
+            1.5.0 (`tool_clear`, design/adr/0048). The role carries
+            `non_read = true`. A sensitive tool is reached only through a role
+            with this marking that names it in `tools` (`wildcard` false, a
+            `tools = [...]` line); `ClearResult.cleared_by` lists exactly those.
     ToolReview:
       type: object
       description: |
@@ -581,7 +614,14 @@ components:
           items: {$ref: '#/components/schemas/DiffLine'}
         callable_by:
           type: array
-          description: Roles that can call this tool once it is approved. Empty means approving makes it servable but callable by nobody.
+          description: |
+            Roles that can call this tool once it is approved. Empty means
+            approving makes it servable but callable by nobody. For a
+            sensitive tool (1.5.0): only the roles marked `non_read` that
+            name it in `tools`, which is who it is callable by once CLEARED
+            -- a wildcard or a `[role.grants]` name never reaches a
+            sensitive tool, so `wildcard` is never true here and
+            `wildcard_grant` is never raised for one.
           items: {$ref: '#/components/schemas/RoleCoverage'}
         review_text:
           type: string
@@ -694,6 +734,20 @@ components:
           properties:
             was_approved_at: {type: string}
             tool: {$ref: '#/components/schemas/Tool'}
+    ClearResult:
+      description: |
+        1.5.0 (`tool_clear`, design/adr/0048). A sensitive tool cleared for
+        serving at its approved fingerprint. `cleared_by` are the roles that
+        reach it: marked `non_read` and naming it in `tools`.
+      allOf:
+        - $ref: '#/components/schemas/ActionResult'
+        - type: object
+          required: [tool, cleared_by]
+          properties:
+            tool: {$ref: '#/components/schemas/Tool'}
+            cleared_by:
+              type: array
+              items: {$ref: '#/components/schemas/RoleCoverage'}
     Block:
       type: object
       required: [subject, blocked_by, blocked_at, reason]
@@ -1440,7 +1494,11 @@ paths:
             schema: {$ref: '#/components/schemas/ApproveRequest'}
       responses:
         '200':
-          description: Approved, or already approved at exactly this fingerprint (`changed` false).
+          description: |
+            Approved, or already approved at exactly this fingerprint (`changed`
+            false). A sensitive tool (1.5.0) is approved and still `usable:
+            false` until cleared with `clearTool`; the warning
+            `sensitive_uncleared` says so. That is not an error.
           content:
             application/json:
               schema: {$ref: '#/components/schemas/ApproveResult'}
@@ -1487,7 +1545,11 @@ paths:
             schema: {$ref: '#/components/schemas/ApproveSetRequest'}
       responses:
         '200':
-          description: Approved, or nothing waited any more (`changed` false).
+          description: |
+            Approved, or nothing waited any more (`changed` false). Approving
+            a set never clears (1.5.0): a sensitive tool of it is approved and
+            `usable: false` until cleared one at a time with `clearTool`; the
+            warning `sensitive_uncleared` names them.
           content:
             application/json:
               schema: {$ref: '#/components/schemas/ApproveSetResult'}
@@ -1517,6 +1579,43 @@ paths:
               schema: {$ref: '#/components/schemas/RevokeResult'}
         default:
           description: changed_not_revocable, not_found, corrupt_state, ...
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorResponse'}
+  /v1/tools/clear:
+    post:
+      operationId: clearTool
+      x-gatte-idempotent: true
+      tags: [tools]
+      x-gatte-socket: [operator]
+      summary: |
+        Clear an approved sensitive tool for serving at its approved
+        fingerprint (1.5.0, feature `tool_clear`, design/adr/0048). Writes
+        `(tool clear)`.
+      description: |
+        The second decision a sensitive tool needs after approval: approval
+        says the definition is not poisoned, clearing says this backend may
+        act on the team's behalf through this operation. Refused unless some
+        role marked `non_read` names the tool in `tools` (`no_non_read_grant`,
+        with what covers it instead in `details.callable_by`): a wildcard or a
+        `[role.grants]` name never reaches a sensitive tool, so a clearance
+        nobody could use is not made. A change to the definition, or a
+        revoke, withdraws the clearance with the approval. The gateway asks
+        the same role question on every call.
+      parameters: [{$ref: '#/components/parameters/GatteFront'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ToolRef'}
+      responses:
+        '200':
+          description: Cleared, or already cleared at exactly this fingerprint (`changed` false).
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ClearResult'}
+        default:
+          description: not_sensitive, not_approved, no_non_read_grant, not_found, corrupt_state, store_busy, ...
           content:
             application/json:
               schema: {$ref: '#/components/schemas/ErrorResponse'}

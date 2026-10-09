@@ -22,6 +22,7 @@ import (
 	"strings"
 
 	"github.com/bunnyiesart/Gatte/internal/access"
+	"github.com/bunnyiesart/Gatte/internal/quarantine"
 )
 
 // Sentinel errors.
@@ -35,6 +36,14 @@ var (
 	// ErrUnknownTool internally, for the audit trail -- but see the note
 	// on Dispatch about what a caller is told.
 	ErrToolQuarantined = errors.New("gateway: tool not approved")
+	// ErrSensitiveNotGranted means the tool's quarantine class is sensitive
+	// -- it can act, not only read -- and none of the caller's roles both
+	// carries the non-read marking and names the tool explicitly
+	// (design/adr/0048 Decisão 5, the class-aware gate). The error returned
+	// to a caller wraps this AND access.ErrForbidden: at the boundary it is
+	// the forbidden class, byte for byte, and only the trail says which
+	// gate refused (reasonSensitiveNotGranted).
+	ErrSensitiveNotGranted = errors.New("gateway: sensitive tool is not explicitly granted in a non-read role")
 	// ErrRegistryUnavailable means the Upstream Registry could not be
 	// read. Per design/adr/0004 the gateway fails closed when this
 	// happens: no tools are served, rather than serving a possibly-stale
@@ -146,6 +155,24 @@ type ToolDef struct {
 	// so nobody has to discover it: an upstream can widen its own output
 	// schema without the quarantine flipping the tool to changed.
 	OutputSchema json.RawMessage
+
+	// SecurityClass is whether the operation behind this tool can only read
+	// (quarantine.ClassSafe, the zero value) or can act
+	// (quarantine.ClassSensitive) -- design/adr/0048 Decisão 5. A Dialer
+	// derives it from the operation's HTTP method; the stdio and oci
+	// adapters leave it zero, since an MCP tool has no method to derive a
+	// class from and every tool of this fleet is safe by that definition.
+	//
+	// Deliberately NOT part of the quarantine fingerprint, and not by
+	// analogy with OutputSchema -- which IS in the fingerprint when declared
+	// (ADR-0014/0019) -- but by construction: identityOf never reads this
+	// field, so it cannot reach quarantine.Hash. It is metadata the gateway
+	// hands to Store.Observe beside the identity, and the quarantine keeps
+	// it as a column of its own. The consequence, stated: an operation
+	// whose method changes keeps its fingerprint and its approval; what
+	// changes is which conditions Usable and the dispatch gate impose, and
+	// those are re-read from the latest observation on every call.
+	SecurityClass quarantine.Class
 }
 
 // Result is an upstream's response to a tool call, passed back to the
@@ -224,29 +251,40 @@ type UpstreamSpec struct {
 	// Name is the upstream's registered name, used to namespace its tools
 	// and to attribute audit records.
 	Name string
-	// Transport is "stdio", "oci" or "http" as a TYPE. "stdio" and "oci"
-	// are servable in this build (oci is a stdio child that is `podman run`,
-	// internal/gateway/oci); registry.Validate refuses an http entry with
-	// ErrTransportUnsupported (GAB-19), so no such entry reaches a Dialer.
-	//
-	// The distinction is worth the extra line. "http" is not invalid and
-	// was not a typo -- it is correct configuration nothing here can honour
-	// yet, and the constant stays declared so the day a dialer lands is a
-	// dialer landing and not a schema change.
+	// Transport is "stdio", "oci" or "http" as a TYPE. "stdio" spawns a
+	// process and "oci" is a stdio child that is `podman run`
+	// (internal/gateway/oci). "http" is a REST API the gateway itself calls,
+	// served by the stateless adapter in internal/gateway/resthttp
+	// (ADR-0047 §2, ADR-0048 Decisões 6, 7, 9): no connection is held, the
+	// entry's secret is re-resolved per call, and health is a fixed "up".
+	// All three are served by this build; cmd/mcp-gateway/dialer.go routes
+	// on this field.
 	Transport string
 	// Command and Args describe the process to spawn, for stdio. For oci,
 	// Command is empty and Args are the extra `podman run` flags the entry
 	// signs (its network policy, ADR-0016 item 5a in the internal line).
+	// Both are empty for http.
 	Command string
 	Args    []string
 	// Image is the digest-pinned image reference, for oci; empty otherwise.
 	// Never a value: credentials reach the container as environment, set by
 	// the dialer from the resolved env map, not through the reference.
 	Image string
-	// URL is the endpoint to reach, for http -- and therefore always
-	// empty in this build, since no http entry survives
-	// registry.Validate to become a spec. See Transport above.
+	// URL is the endpoint to reach, for http: scheme, host, port and base
+	// path, as signed (signer canonical/v3-http). Empty for stdio and oci.
 	URL string
+	// AuthKind and AuthName are the http credential-injection descriptor
+	// (ADR-0047 §5): where on the outbound request the secret is placed. The
+	// secret *value* is not here -- the resthttp adapter re-resolves it per
+	// call from the Credential Vault, using the single name in the resolved
+	// env map as the secret reference. Both empty for stdio and oci.
+	AuthKind string
+	AuthName string
+	// Operations is the frozen REST operation set an http entry serves, as
+	// canonical JSON (ADR-0047 §3): one entry per generated tool, carrying
+	// its method, path, namespaced input schema and security class. Empty for
+	// stdio and oci.
+	Operations []byte
 }
 
 // Caller is everything the Gateway is told about who is making one call:

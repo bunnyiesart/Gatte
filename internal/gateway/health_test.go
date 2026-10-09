@@ -375,7 +375,7 @@ func TestConnect_BootWithABackendNeverListedHasNoStableRoutes(t *testing.T) {
 	h := newHarness(t, "casemgmt.list_cases")
 	h.register("casemgmt")
 	// Approved in the quarantine, never listed by a serve of this version.
-	if _, err := h.quarantine.Observe(context.Background(), "casemgmt", identityOf(def("list_cases", "list cases"))); err != nil {
+	if _, err := h.quarantine.Observe(context.Background(), "casemgmt", identityOf(def("list_cases", "list cases")), quarantine.ClassSafe); err != nil {
 		t.Fatal(err)
 	}
 	h.approve("casemgmt", "list_cases")

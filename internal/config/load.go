@@ -251,7 +251,12 @@ func (c *Config) ToAccessPolicy() (*access.Policy, error) {
 				grants[backend] = slices.Clone(ids)
 			}
 		}
-		roles = append(roles, access.Role{Name: r.Name, Tools: slices.Clone(r.Tools), Grants: grants})
+		// NonRead is carried, not interpreted: the gateway's class gate
+		// reads it from the policy on every call (design/adr/0048 Decisão
+		// 5), and this is the one conversion both boot (serve.go) and a
+		// reload (serve_control.go) go through -- dropping it here would
+		// silently widen nothing and silently deny every sensitive tool.
+		roles = append(roles, access.Role{Name: r.Name, Tools: slices.Clone(r.Tools), Grants: grants, NonRead: r.NonRead})
 	}
 
 	policy, err := access.NewPolicy(roles, c.GroupToRole)

@@ -11,6 +11,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 	"testing"
@@ -77,6 +78,33 @@ func TestSecRedactCoversEscapedForms(t *testing.T) {
 func mustJSON(s string) []byte {
 	b, _ := json.Marshal(s)
 	return b
+}
+
+// TestSecRedactCoversURLEncodedForms is the REST transport's leak shape
+// (ADR-0047 §5, design/adr/0048): a credential injected as a query parameter,
+// or echoed by an API in a Location/Set-Cookie header, arrives
+// percent-encoded. The plaintext holds no percent sequences, so the raw-form
+// match alone would miss it; renderingsOf adds the QueryEscape and PathEscape
+// forms so scrubResult/MaskCredentials still catch it.
+func TestSecRedactCoversURLEncodedForms(t *testing.T) {
+	secret := "k3y /with+special=&chars-TAIL-9f0c"
+	q := url.QueryEscape(secret)
+	p := url.PathEscape(secret)
+	if q == secret || p == secret || q == p {
+		t.Fatalf("test setup: secret must have distinct URL-encodings (q=%q p=%q)", q, p)
+	}
+
+	// A 3xx result reflecting the credential percent-encoded in headers, as
+	// an API that round-trips the key in a redirect target would produce.
+	text := "HTTP/1.1 303 See Other\nLocation: https://api.example.com/cb?token=" + q +
+		"\nSet-Cookie: echo=" + p + "; Path=/"
+	masked, hit := MaskCredentials(text, map[string]string{"TOKEN": secret})
+	if !hit {
+		t.Fatal("MaskCredentials reported no hit on a reflected URL-encoded credential")
+	}
+	if strings.Contains(masked, q) || strings.Contains(masked, p) {
+		t.Fatalf("LEAK: URL-encoded credential survived masking:\n%s", masked)
+	}
 }
 
 // TestSecRedactOverlappingValuesLeaksNoTail: redact used to walk the env

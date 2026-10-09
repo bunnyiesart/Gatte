@@ -22,9 +22,11 @@ pattern and the official `github.com/modelcontextprotocol/go-sdk`:
 
 | Path | What it is |
 |---|---|
-| `lab/mockutil/` | Shared `AddCredCheck(server, toolName)` — the one place the `<name>_credcheck` logic exists, used by every mock below. Reads `MOCK_SECRET`/`MOCK_EXPECT` from its process environment, returns `{received_expected_secret, fingerprint}` — never the secret. |
+| `lab/mockutil/` | Shared `Check(received)` — the one place the credcheck comparison exists — wrapped as `AddCredCheck(server, toolName)` for the stdio mocks (the `<name>_credcheck` tool, reading `MOCK_SECRET`/`MOCK_EXPECT` from its process environment) and called directly by `restmock` with the header it received. Both return `{received_expected_secret, fingerprint}` — never the secret. |
 | `lab/servers/casemgmt/`, `lab/servers/logsearch/`, `lab/servers/docsearch/`, `lab/servers/threatintel/` | One fake MCP server per real backend, each with 2 canned domain tools (no network calls, no real data) plus `<name>_credcheck`. |
+| `lab/servers/restmock/` | The fake **REST API** an `upstream register -transport http` entry points at (`design/adr/0047`, `0048`). Not an MCP server: a stdlib HTTP server that serves its own OpenAPI 3.0 document at `/openapi.json`, demands `MOCK_SECRET` in an `X-API-Key` header on every operation (401 without it), answers `GET /check/{ip}` with the credcheck of the key it received (`mockutil.Check`, same rule and shape as the stdio mocks), takes a `oneOf` body on `POST /report` (the sensitive operation), and **reflects the key** in a `Location`, a `Set-Cookie` and the body on `GET /echo` — the scenario ADR-0048 Decisão 7 says the gateway masks. Its document names a host that does not exist and a base path (`/api/v1`) under which it really serves, so the probe can see that only the base path is folded into the registered URL (ADR-0047 §6). Logs each request's path and credcheck to stdout, never the key. |
 | `lab/probe/` | The verification tool: spawns a mock over stdio with a freshly-generated secret in `MOCK_SECRET`/`MOCK_EXPECT`, calls its credcheck tool, and — independent of that result — scans every raw byte of MCP wire traffic (via `mcp.LoggingTransport`) for the secret. Exit codes: `0` pass, `1` a real problem was found (bad credcheck result and/or a leak — a leak always forces `1`, never masked by a usage-error code), `2` the probe itself couldn't run (bad args, spawn/connect/parse failure). |
+| `internal/gateway/resthttp/lab_probe_test.go` (`make lab-probe-rest`) | **The REST probe**, `TestLabProbeREST`: the end-to-end proof for an http upstream, over the real components. See "The REST probe" below for what it proves and why it is a `go test` in that package rather than a binary here. |
 | `lab/trafficgen/` | Synthetic load against a **running** gateway over streamable HTTP, to populate the Audit Trail without an analyst driving it by hand. Connects as an ordinary authenticated client, enumerates what the token's role can see, and calls it with arguments synthesised from each tool's input schema. Not an extension of `probe` — `probe` asks whether one credential arrived and leaked over stdio; this asks what a busy afternoon looks like in the trail. Same exit-code convention. |
 
 ### Tool naming: the mocks mirror the real fleet, warts included
@@ -87,6 +89,62 @@ spawning rather than in-memory (each package also has its own `go test`
 suite using `mcp.NewInMemoryTransports()` for fast unit-level coverage; the
 probe binary above is the true end-to-end check, same as it was for every
 third-party candidate below).
+
+### The REST probe (07 Oct 2026) — `make lab-probe-rest`
+
+An http upstream (`design/adr/0047`, executed by `0048`) inverts the stdio
+picture: the gateway is the HTTP **client**, the credential is injected into
+each request from the vault, and the backend is a REST API whose tools were
+generated from its OpenAPI document. The same question still has to be asked
+of it — did the key arrive, and did it ever come back? — plus two that only
+exist for REST: is a key the API *reflects* (a redirect, a cookie, a body
+quoting it) masked before the analyst sees it, and is a non-safe operation
+(`POST`) really unreachable until an operator clears it for a non-read role.
+
+`TestLabProbeREST` (`internal/gateway/resthttp/lab_probe_test.go`) proves all
+four, in this order, with the real registry, signer, quarantine, trail,
+adapter and HTTP surface, and `lab/servers/restmock` as a real subprocess:
+
+1. **The mock received the credential.** `GET /check/{ip}` answers with the
+   credcheck of the `X-API-Key` it got; the fingerprint must equal that of the
+   value the probe put in the vault. The analyst's client held no key.
+2. **The secret is in no byte returned to the client, no line of the
+   gateway's log, and no line of the mock's stdout** — the `bytes.Contains`
+   discipline of `lab/probe/main.go`, applied to every session's traffic
+   (headers included), run last so it covers everything.
+3. **A reflected credential comes back masked** in the `Location`, the
+   `Set-Cookie` and the body of `GET /echo`, as `[redacted]`.
+4. **`POST /report` is refused** to a read role that even names it, and to a
+   non-read role until `quarantine.Clear`; the mock sees no request. After
+   the clearance the non-read role that names it is served (201) and the
+   read role is still refused.
+
+It also fetches the document through the adapter's own guarded client
+(`FetchDocument`), derives the auth descriptor from the document's single
+`apiKey` scheme, folds the document's base path into the registered URL
+while ignoring its host, and signs the entry under `canonical/v3-http`,
+showing that the same signature refuses a set with one path changed.
+
+**Why it is a `go test` and not a binary under `lab/`.** The adapter refuses
+loopback by design (`refuseAddr`, ADR-0048 Decisão 6), and the only thing
+that lets a loopback mock through is `AllowLoopbackForTest` in the package's
+`export_test.go` — a hook that exists in that test binary and nowhere else,
+so that a production build has one egress policy. A probe binary could not
+reach it without a seam outside `_test.go`, which this project decided not
+to have. An external test package (`resthttp_test`) in the same directory
+can, and can import the rest of the system because nothing else imports
+`resthttp`. So the probe lives beside the one exception it needs; the mock
+lives here with the other mocks; `make lab-probe-rest` runs it with
+`-count=1`, like the stdio probe runs as a real process rather than from a
+cache. For the same reason the probe registers through the library
+(`resthttp.Ingest` + `registry.Register`), not through the compiled console,
+whose `dialTimeRefusal` would refuse a loopback `-url` at the prompt — that
+refusal has its own tests in `cmd/mcp-gateway/upstream_http_test.go`.
+
+```bash
+make lab-probe-rest          # the proof; prints each of the four steps
+go run ./lab/servers/restmock -listen 127.0.0.1:8099   # by hand; needs MOCK_SECRET/MOCK_EXPECT
+```
 
 ## Re-measuring what Claude Code does with Gatte's answers (design/adr/0041)
 

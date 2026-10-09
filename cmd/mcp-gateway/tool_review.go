@@ -82,6 +82,7 @@ func writeReviewSet(b *bytes.Buffer, rs adminapi.ToolReviewSet) {
 	b.WriteString(strings.Repeat("-", 68))
 	b.WriteString("\nApproving this set makes each tool callable by:\n\n")
 	wildcard := false
+	sensitiveRows := 0
 	for _, rv := range rs.Tools {
 		roles := make([]string, 0, len(rv.CallableBy))
 		for _, c := range rv.CallableBy {
@@ -89,13 +90,27 @@ func writeReviewSet(b *bytes.Buffer, rs adminapi.ToolReviewSet) {
 			wildcard = wildcard || c.Wildcard
 		}
 		who := strings.Join(roles, ", ")
-		if who == "" {
+		switch {
+		case rv.Tool.Class != adminapi.ClassSafe && who == "":
+			// callable_by is admin.ReachableBy: for a sensitive tool, the
+			// non_read roles naming it, which is who the clearance will
+			// reach -- never a wildcard (design/adr/0048 Decisão 5).
+			sensitiveRows++
+			who = "(SENSITIVE -- no non_read role names it; approved and NOT served, and\n" + strings.Repeat(" ", 27) + "`tool clear` will refuse until one does)"
+		case rv.Tool.Class != adminapi.ClassSafe:
+			sensitiveRows++
+			who += "  (SENSITIVE: after `tool clear`, not on this approval)"
+		case who == "":
 			who = "(no role -- servable, callable by nobody)"
 		}
 		fmt.Fprintf(b, "  %-24s %s\n", visible.Escape(rv.Tool.Tool), who)
 	}
 	if wildcard {
 		fmt.Fprintf(b, "\n%s\n", wildcardApprovalNotice)
+	}
+	if sensitiveRows > 0 {
+		fmt.Fprintf(b, "\n%d %s SENSITIVE: approving a set never clears. Each is approved and NOT served\nuntil `tool clear SERVER TOOL`, one at a time; a \"*\" grant never reaches one.\n",
+			sensitiveRows, opPlural(sensitiveRows, "tool is", "tools are"))
 	}
 	if rs.HiddenCodePoints > 0 {
 		fmt.Fprintf(b, "\nWARNING: the definitions above carry %d hidden %s in all, shown as\n\\u{XXXX}. Approving the set approves every one of them.\n",
@@ -202,8 +217,18 @@ func runToolApproveSet(e *opEnv, server, reviewed string) int {
 		if a.PreviousBaseline != "" {
 			was += " (baseline sha256:" + opShortHash(a.PreviousBaseline) + " no longer accepted)"
 		}
-		fmt.Fprintf(tw, "  %s\t%s\tsha256:%s\n", visible.Escape(a.Tool.Tool), was, a.Tool.ApprovedHash)
-		notUsable = notUsable || !a.Tool.Usable
+		now := "sha256:" + a.Tool.ApprovedHash
+		if a.Tool.Class != adminapi.ClassSafe && !a.Tool.Usable {
+			// Approving a set never clears (design/adr/0048 Decisão 5):
+			// a sensitive tool of it is approved and held, and that is
+			// the default-deny, not the bug the flag below reports. The
+			// service's sensitive_uncleared warning, printed after the
+			// table, names the command for each.
+			now += "  (sensitive: NOT served until cleared)"
+		} else {
+			notUsable = notUsable || !a.Tool.Usable
+		}
+		fmt.Fprintf(tw, "  %s\t%s\t%s\n", visible.Escape(a.Tool.Tool), was, now)
 	}
 	if !opFlushTable(tw, e.stderr) {
 		return exitProblem

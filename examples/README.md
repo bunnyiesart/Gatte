@@ -33,9 +33,10 @@ after the gateway has connected to it, never from memory.
   one.** `-transport stdio` spawns a process; `-transport oci -image
   NAME@sha256:<digest>` runs it as an ephemeral `podman run --rm -i`
   container, pinned by digest because the signature covers the image.
-  `-transport http` is recognised and refused at registration ("this build
-  dials \"stdio\" and \"oci\" only"). A vendor-hosted MCP server reachable
-  only over HTTP cannot be registered directly.
+  `-transport http` registers a REST API from its OpenAPI document
+  (`docs/reference/cli.md`, `upstream register`), not an MCP server: a
+  vendor-hosted MCP server reachable only over HTTP cannot be registered
+  directly.
 - **Configured by arguments and environment variables.** The process gets
   its registered arguments, `PATH` and `HOME` from the gateway's
   environment, and each variable it declared with `-env`, set from the

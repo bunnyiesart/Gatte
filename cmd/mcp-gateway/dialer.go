@@ -8,19 +8,27 @@ import (
 	"github.com/bunnyiesart/Gatte/internal/config"
 	"github.com/bunnyiesart/Gatte/internal/gateway"
 	gwoci "github.com/bunnyiesart/Gatte/internal/gateway/oci"
+	gwrest "github.com/bunnyiesart/Gatte/internal/gateway/resthttp"
 	gwstdio "github.com/bunnyiesart/Gatte/internal/gateway/stdio"
 	"github.com/bunnyiesart/Gatte/internal/registry"
+	"github.com/bunnyiesart/Gatte/internal/vault"
 )
 
 // transportDialer routes each registry entry to the adapter for its
-// transport: a local process (stdio) or an ephemeral, digest-pinned
-// container (oci). The oci adapter wraps the stdio one -- the container is a
-// stdio child that is `podman run --rm -i` -- so the protocol handling, the
-// built-not-inherited child environment, and dead-upstream detection are
-// the same code for both (ported from the internal line, 28 Sep 2026).
+// transport: a local process (stdio), an ephemeral, digest-pinned
+// container (oci), or a REST API the gateway itself calls (http). The oci
+// adapter wraps the stdio one -- the container is a stdio child that is
+// `podman run --rm -i` -- so the protocol handling, the built-not-inherited
+// child environment, and dead-upstream detection are the same code for both
+// (ported from the internal line, 28 Sep 2026). The http adapter is a
+// different shape altogether: no process, no connection, one stateless
+// upstream per entry whose every call re-resolves the entry's secret
+// through the vault (design/adr/0047 §2, §5; design/adr/0048 Decisões 6, 7,
+// 9). This struct is the only place the three meet.
 type transportDialer struct {
-	stdio gateway.Dialer
-	oci   gateway.Dialer
+	stdio    gateway.Dialer
+	oci      gateway.Dialer
+	resthttp gateway.Dialer
 	// allowCredentialedStdio is [upstreams] allow_credentialed_stdio. See
 	// credentialedStdioRefusal.
 	allowCredentialedStdio bool
@@ -28,13 +36,33 @@ type transportDialer struct {
 
 var _ gateway.Dialer = transportDialer{}
 
-func newTransportDialer(cfg *config.Config) transportDialer {
+// newTransportDialer wires the three adapters. credentials is the Credential
+// Vault the http adapter resolves a secret through on every call; the stdio
+// and oci adapters never see it, because the gateway hands them the resolved
+// values at dial time and nothing after that (ADR-0047 §5 is explicit that
+// http is the "third place that touches plaintext", and this is where that
+// place is given its vault). A nil credentials is accepted: the adapter then
+// serves keyless http entries and refuses keyed ones at dial.
+func newTransportDialer(cfg *config.Config, credentials vault.Provider) transportDialer {
 	spawn := gwstdio.New(gwstdio.WithClientInfo("mcp-gateway", buildVersion))
 	return transportDialer{
 		stdio: spawn,
 		oci: gwoci.New(spawn,
 			gwoci.WithCleanupEnv(gwstdio.DefaultInheritedEnv()...),
 			gwoci.WithLimits(ociLimits(cfg.OCI))),
+		resthttp: gwrest.New(credentials,
+			// The adapter's own body ceiling is the gateway's result ceiling:
+			// a body the gateway would refuse as a Result (ADR-0014) is not
+			// worth buffering first. Same number, read from the same place
+			// serve.go hands gateway.Config.MaxResultBytes.
+			gwrest.WithMaxBodyBytes(cfg.Response.MaxResultBytes()),
+			// The client's whole-exchange timeout is a backstop for a caller
+			// without a deadline; the gateway always sets one (ADR-0025,
+			// gateway.Config.CallTimeout). Equalising the two means the
+			// backstop can never cut an exchange the operator's call_timeout
+			// still allows, so the error an analyst sees for a slow API is
+			// the gateway's deadline, not the adapter's.
+			gwrest.WithHTTPClientTimeout(cfg.Response.CallTimeoutOrDefault())),
 		allowCredentialedStdio: cfg.Upstreams.AllowCredentialedStdio,
 	}
 }
@@ -71,10 +99,17 @@ func (d transportDialer) Dial(ctx context.Context, spec gateway.UpstreamSpec, en
 		return d.stdio.Dial(ctx, spec, env)
 	case string(registry.TransportOCI):
 		return d.oci.Dial(ctx, spec, env)
+	case string(registry.TransportHTTP):
+		// No policy here, unlike stdio: the http adapter is the one that
+		// uses the credential (it injects it on each request), so handing it
+		// the resolved env is the point, not the hazard. env holds exactly
+		// the one secret-ref name a keyed entry declares; the adapter keeps
+		// the name and drops the value (ADR-0047 §5).
+		return d.resthttp.Dial(ctx, spec, env)
 	default:
 		return nil, fmt.Errorf("gateway: upstream %q declares transport %q, which this gateway does not serve; "+
-			"registered transports are %q (a local process) and %q (an ephemeral container)",
-			spec.Name, spec.Transport, registry.TransportStdio, registry.TransportOCI)
+			"registered transports are %q (a local process), %q (an ephemeral container) and %q (a REST API)",
+			spec.Name, spec.Transport, registry.TransportStdio, registry.TransportOCI, registry.TransportHTTP)
 	}
 }
 
@@ -108,10 +143,19 @@ func credentialedStdioRefusal(entry registry.UpstreamServer, cfg *config.Config)
 
 // dialTimeRefusal reports the error the adapter for entry's transport would
 // return at dial time for reasons registry.Validate cannot know -- podman's
-// rules about wrapper flags and variable names, and the variable names
-// neither adapter will set -- or nil. The console asks it at register and
-// sign so that an entry the serving process would refuse forever is
-// refused at the prompt instead.
+// rules about wrapper flags and variable names, the variable names neither
+// process adapter will set, and for http the base URL and the operation set
+// as the resthttp adapter reads them -- or nil. The console asks it at
+// register and sign so that an entry the serving process would refuse
+// forever is refused at the prompt instead.
+//
+// For http the two checks are the adapter's own functions, not a copy of
+// its rules: resthttp.ValidateBaseURL is parseBase, and resthttp.Decode is
+// what Dial runs on the signed Operations (ADR-0048 Decisão 6: a spec can
+// carry an SSRF inside a path or a header injection inside a parameter
+// name, and the place to refuse it is before it is signed). Neither does
+// I/O. The coherence of AuthKind with EnvVarNames is registry.Validate's
+// rule (validateHTTP) and is not repeated here.
 func dialTimeRefusal(entry registry.UpstreamServer) error {
 	switch entry.Transport {
 	case registry.TransportStdio:
@@ -121,6 +165,12 @@ func dialTimeRefusal(entry registry.UpstreamServer) error {
 			return err
 		}
 		return gwoci.ValidateEnvVarNames(entry.EnvVarNames)
+	case registry.TransportHTTP:
+		if err := gwrest.ValidateBaseURL(entry.URL); err != nil {
+			return err
+		}
+		_, err := gwrest.Decode(entry.Operations, string(entry.AuthKind), entry.AuthName)
+		return err
 	}
 	return nil
 }
@@ -136,8 +186,22 @@ const stdioNetwork = "host"
 // the podman argv, so the list cannot say one network while the dial joins
 // another.
 func entryNetwork(entry registry.UpstreamServer) (string, error) {
-	if entry.Transport != registry.TransportOCI {
+	switch entry.Transport {
+	case registry.TransportOCI:
+		return gwoci.ResolveNetwork(entry.Args)
+	case registry.TransportHTTP:
+		// Deliberately "host", and said out loud rather than left to the
+		// default: for http the gateway process itself is the HTTP client,
+		// so the egress runs in the gateway's own network namespace, and
+		// the host firewall treats it as any outbound connection of the
+		// shared uid. ADR-0033's vocabulary has no word for "this host, to
+		// that host:port"; giving entryNetwork one (e.g. derived from
+		// entry.URL) and teaching the deployment verifier to read it is
+		// Phase D (ADR-0047 §6, "Não casa com entryNetwork"), not this
+		// step. The adapter's own egress guard (resthttp, ADR-0048 Decisão
+		// 6) is what bounds the destination meanwhile.
+		return stdioNetwork, nil
+	default:
 		return stdioNetwork, nil
 	}
-	return gwoci.ResolveNetwork(entry.Args)
 }

@@ -16,6 +16,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/bunnyiesart/Gatte/internal/quarantine"
@@ -49,12 +50,37 @@ CREATE TABLE IF NOT EXISTS quarantined_tools (
 	if _, err := db.Exec(stmt); err != nil {
 		return fmt.Errorf("quarantine/sqlite: migrate: %w", err)
 	}
+	// The security class and the sensitive clearance, added with ADR-0048
+	// (store.SchemaVersion 3). CREATE TABLE IF NOT EXISTS is a no-op
+	// against a file made before them, so the columns are retrofitted by
+	// guarded ALTERs, the discipline internal/registry/sqlite uses for
+	// image and the auth columns. Both default to '': a pre-v3 row reads
+	// ClassSafe with no clearance, which is exactly the state every tool
+	// was in before classes existed, so a retrofitted file keeps serving
+	// what it served.
+	for _, alter := range []string{
+		`ALTER TABLE quarantined_tools ADD COLUMN class TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE quarantined_tools ADD COLUMN sensitive_cleared_hash TEXT NOT NULL DEFAULT ''`,
+	} {
+		if _, err := db.Exec(alter); err != nil && !isDuplicateColumn(err) {
+			return fmt.Errorf("quarantine/sqlite: migrate: %w", err)
+		}
+	}
 	for _, stmt := range definitionsSchema {
 		if _, err := db.Exec(stmt); err != nil {
 			return fmt.Errorf("quarantine/sqlite: migrate tool_definitions: %w", err)
 		}
 	}
 	return nil
+}
+
+// isDuplicateColumn reports the error SQLite gives an ALTER TABLE ADD
+// COLUMN for a column that already exists -- the second and every later
+// run of Migrate. Mirrors internal/registry/sqlite's helper of the same
+// name; it is three lines, and a shared package for it would couple two
+// adapters that otherwise know nothing of each other.
+func isDuplicateColumn(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "duplicate column name")
 }
 
 // definitionsSchema is the table of the tool definitions the quarantine
@@ -149,11 +175,18 @@ func New(db *sql.DB) *Store {
 // same transition. A fingerprint stored with no definition behind it
 // would be the pre-ADR-0032 blind spot again, so the two commit together
 // or not at all.
-func (s *Store) Observe(ctx context.Context, serverName string, t quarantine.ToolIdentity) (quarantine.Observation, error) {
+func (s *Store) Observe(ctx context.Context, serverName string, t quarantine.ToolIdentity, class quarantine.Class) (quarantine.Observation, error) {
 	observedHash := quarantine.Hash(t)
 	now := time.Now().UTC()
 	fail := func(err error) (quarantine.Observation, error) {
 		return quarantine.Observation{}, fmt.Errorf("quarantine/sqlite: observe %q/%q: %w", serverName, t.Name, err)
+	}
+	// Checked before the transaction so a class the domain does not define
+	// is never written: NewTool cannot refuse it, and scanTool would refuse
+	// the row on every later read, taking the whole backend's listing with
+	// it. Tool.Observed makes the same check for the known-tool path.
+	if !class.Valid() {
+		return fail(fmt.Errorf("%w: %q", quarantine.ErrInvalidClass, string(class)))
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -171,7 +204,7 @@ func (s *Store) Observe(ctx context.Context, serverName string, t quarantine.Too
 	switch {
 	case err == nil:
 		// Known tool: let the domain decide the next state.
-		next, err := prev.Observed(observedHash, now)
+		next, err := prev.Observed(observedHash, class, now)
 		if err != nil {
 			return fail(err)
 		}
@@ -185,7 +218,7 @@ func (s *Store) Observe(ctx context.Context, serverName string, t quarantine.Too
 
 	case errors.Is(err, quarantine.ErrNotFound):
 		// First sighting: born pending, never usable until approved.
-		next := quarantine.NewTool(serverName, t.Name, observedHash, now)
+		next := quarantine.NewTool(serverName, t.Name, observedHash, class, now)
 		if err := insert(ctx, tx, next); err != nil {
 			return fail(err)
 		}
@@ -343,6 +376,45 @@ func (s *Store) ApproveReviewSet(ctx context.Context, serverName, manifest strin
 	return approvals, nil
 }
 
+// Clear implements quarantine.Store.
+//
+// Read and write share one transaction, like Revoke's: a discovery cycle
+// moving the tool to changed between a read here and the write would
+// otherwise have the clearance land on a row whose baseline no longer
+// matches what the operator looked at. Inside the transaction the domain
+// sees the row as it is, and Tool.Cleared refuses anything not approved.
+//
+// Nothing here decides anything about class or status; the refusals are
+// the domain's (Tool.Cleared). No definition moves, so nothing is pruned.
+func (s *Store) Clear(ctx context.Context, serverName, toolName string) (quarantine.Tool, error) {
+	fail := func(err error) (quarantine.Tool, error) {
+		return quarantine.Tool{}, fmt.Errorf("quarantine/sqlite: clear %q/%q: %w", serverName, toolName, err)
+	}
+	now := time.Now().UTC()
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fail(err)
+	}
+	defer tx.Rollback() //nolint:errcheck // no-op once Commit succeeded
+
+	prev, err := get(ctx, tx, serverName, toolName)
+	if err != nil {
+		return fail(err)
+	}
+	next, err := prev.Cleared(now)
+	if err != nil {
+		return fail(err)
+	}
+	if err := update(ctx, tx, next); err != nil {
+		return fail(err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fail(fmt.Errorf("commit: %w", err))
+	}
+	return next, nil
+}
+
 // Revoke implements quarantine.Store.
 //
 // Read and write share one transaction for the same reason Observe's do: a
@@ -456,7 +528,7 @@ func list(ctx context.Context, q lister, serverName string) ([]quarantine.Tool, 
 	// as a parameterized OR rather than by building two query strings so
 	// there is only one SELECT to keep in sync.
 	const stmt = `
-SELECT server_name, tool_name, status, approved_hash, observed_hash, first_seen_at, updated_at
+SELECT server_name, tool_name, status, approved_hash, observed_hash, class, sensitive_cleared_hash, first_seen_at, updated_at
 FROM quarantined_tools
 WHERE ? = '' OR server_name = ?
 ORDER BY server_name, tool_name
@@ -492,7 +564,7 @@ type querier interface {
 // callers here to wrap with their own context) when there is no such row.
 func get(ctx context.Context, q querier, serverName, toolName string) (quarantine.Tool, error) {
 	const stmt = `
-SELECT server_name, tool_name, status, approved_hash, observed_hash, first_seen_at, updated_at
+SELECT server_name, tool_name, status, approved_hash, observed_hash, class, sensitive_cleared_hash, first_seen_at, updated_at
 FROM quarantined_tools
 WHERE server_name = ? AND tool_name = ?
 `
@@ -509,11 +581,12 @@ WHERE server_name = ? AND tool_name = ?
 func insert(ctx context.Context, q querier, t quarantine.Tool) error {
 	const stmt = `
 INSERT INTO quarantined_tools
-	(server_name, tool_name, status, approved_hash, observed_hash, first_seen_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?)
+	(server_name, tool_name, status, approved_hash, observed_hash, class, sensitive_cleared_hash, first_seen_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 `
 	_, err := q.ExecContext(ctx, stmt,
 		t.ServerName, t.ToolName, string(t.Status), t.ApprovedHash, t.ObservedHash,
+		string(t.Class), t.SensitiveClearedHash,
 		t.FirstSeenAt.Format(timeLayout), t.UpdatedAt.Format(timeLayout))
 	if err != nil {
 		return fmt.Errorf("insert: %w", err)
@@ -524,11 +597,12 @@ VALUES (?, ?, ?, ?, ?, ?, ?)
 func update(ctx context.Context, q querier, t quarantine.Tool) error {
 	const stmt = `
 UPDATE quarantined_tools
-SET status = ?, approved_hash = ?, observed_hash = ?, updated_at = ?
+SET status = ?, approved_hash = ?, observed_hash = ?, class = ?, sensitive_cleared_hash = ?, updated_at = ?
 WHERE server_name = ? AND tool_name = ?
 `
 	res, err := q.ExecContext(ctx, stmt,
-		string(t.Status), t.ApprovedHash, t.ObservedHash, t.UpdatedAt.Format(timeLayout),
+		string(t.Status), t.ApprovedHash, t.ObservedHash, string(t.Class), t.SensitiveClearedHash,
+		t.UpdatedAt.Format(timeLayout),
 		t.ServerName, t.ToolName)
 	if err != nil {
 		return fmt.Errorf("update: %w", err)
@@ -551,12 +625,12 @@ type rowScanner interface {
 func scanTool(row rowScanner) (quarantine.Tool, error) {
 	var (
 		t                      quarantine.Tool
-		status                 string
+		status, class          string
 		firstSeenAt, updatedAt string
 	)
 
 	if err := row.Scan(&t.ServerName, &t.ToolName, &status, &t.ApprovedHash, &t.ObservedHash,
-		&firstSeenAt, &updatedAt); err != nil {
+		&class, &t.SensitiveClearedHash, &firstSeenAt, &updatedAt); err != nil {
 		return quarantine.Tool{}, err
 	}
 
@@ -566,6 +640,14 @@ func scanTool(row rowScanner) (quarantine.Tool, error) {
 	// happens to answer false for the wrong reason.
 	if !t.Status.Valid() {
 		return quarantine.Tool{}, fmt.Errorf("%w: %q", quarantine.ErrInvalidStatus, status)
+	}
+	t.Class = quarantine.Class(class)
+	// Same guard, same reason, for the class column: Usable would treat an
+	// unknown class as sensitive and answer false, which is safe but
+	// silent, and a silently unservable tool is a row an operator would
+	// never find.
+	if !t.Class.Valid() {
+		return quarantine.Tool{}, fmt.Errorf("%w: %q", quarantine.ErrInvalidClass, class)
 	}
 
 	firstSeen, err := time.Parse(timeLayout, firstSeenAt)

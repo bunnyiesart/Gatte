@@ -77,13 +77,34 @@ const canonicalTag = "mcp-gateway/signer/canonical/v1"
 // verifying instead of keeping its old signature.
 const canonicalTagImage = "mcp-gateway/signer/canonical/v2-image"
 
+// canonicalTagV3HTTP is the tag of the encoding for an http (REST) entry
+// (ADR-0047 §4, ADR-0048). It covers everything v1 covers -- Name, Transport,
+// Command (empty but in the layout), URL, Args, EnvVarNames -- and then the
+// credential-injection descriptor (AuthKind, AuthName) and a SHA-256 digest
+// of the frozen operation set. It never carries an Image field (an http entry
+// has none), so its layout cannot coincide with v2-image's.
+//
+// A separate tag, not optional fields appended to v1, for the same reason
+// v2-image is separate: the two layouts can never coincide, so a v1 signature
+// can never authenticate an http entry, and an http row that lost its
+// descriptor or operation set to a direct database write stops verifying
+// instead of keeping an old signature. The injection location and the method/
+// path set a tool maps to are therefore attested, not merely stored: an
+// attacker who flips AuthKind from a header to a query parameter, or repoints
+// an approved tool's path, breaks the signature (ADR-0048, the reason the
+// operation digest signs in this phase rather than a later one).
+const canonicalTagV3HTTP = "mcp-gateway/signer/canonical/v3-http"
+
 // Canonical returns the exact bytes a signature over s covers.
 //
 // # What is covered, and what is deliberately not
 //
 // Covered: the tag above, Name, Transport, Command, URL, Image (only for an
 // entry that has one, under canonicalTagImage), Args in order, and
-// EnvVarNames *sorted*.
+// EnvVarNames *sorted*. For an http entry (canonicalTagV3HTTP), also the
+// credential-injection descriptor (AuthKind, AuthName) and a SHA-256 digest
+// of the frozen operation set -- so the injection location and the method/
+// path each tool maps to are attested, not just stored (ADR-0047 §4).
 //
 // Name is covered although ADR-0003 lists only command/url, args and env
 // var names. Including it binds a signature to the entry it was made for,
@@ -125,9 +146,13 @@ func Canonical(s registry.UpstreamServer) []byte {
 	var buf []byte
 
 	withImage := s.Image != "" || s.Transport == registry.TransportOCI
-	if withImage {
+	isHTTP := s.Transport == registry.TransportHTTP
+	switch {
+	case isHTTP:
+		buf = appendField(buf, canonicalTagV3HTTP)
+	case withImage:
 		buf = appendField(buf, canonicalTagImage)
-	} else {
+	default:
 		buf = appendField(buf, canonicalTag)
 	}
 	buf = appendField(buf, s.Name)
@@ -153,6 +178,23 @@ func Canonical(s registry.UpstreamServer) []byte {
 	buf = appendCount(buf, len(envVarNames))
 	for _, name := range envVarNames {
 		buf = appendField(buf, name)
+	}
+
+	// http-only tail (ADR-0047 §4): the credential-injection descriptor and a
+	// digest of the frozen operation set. Appended only under v3-http, so
+	// stdio and oci entries produce byte-for-byte the same canonical form
+	// they did before this field existed and their signatures still verify.
+	// AuthKind and AuthName each go through appendField so neither can span a
+	// field boundary; the operation set is hashed first and only its 32-byte
+	// digest is signed, so an entry carrying a large spec does not carry a
+	// proportionally large signing input, while any change to the set still
+	// changes the digest. Operations is already in canonical byte form when
+	// stored (ADR-0048); Canonical hashes it verbatim.
+	if isHTTP {
+		buf = appendField(buf, string(s.AuthKind))
+		buf = appendField(buf, s.AuthName)
+		opsDigest := sha256.Sum256(s.Operations)
+		buf = appendField(buf, string(opsDigest[:]))
 	}
 
 	return buf

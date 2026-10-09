@@ -155,15 +155,30 @@ func (s *Service) ApproveToolSet(ctx context.Context, a Actor, req adminapi.Appr
 	res.Manifest = current
 
 	var pending, changed int
-	var uncovered []string
+	var uncovered, unreachable, held []string
 	wildcard := ""
 	for _, ap := range approvals {
-		if !ap.After.Usable() {
+		switch {
+		case ap.After.Usable():
+		case sensitive(ap.After):
+			// The batch path approves and does NOT clear, explicitly
+			// (design/adr/0048 Decisão 5): a set is one judgement about
+			// definitions, and clearing is a judgement per tool about
+			// acting, made one at a time with the roles in view. Approved
+			// and held is the default-deny working, not a bug -- this
+			// guard used to say it was.
+			held = append(held, visible.Escape(ap.After.ToolName))
+		default:
 			return res, adminapi.NewError(adminapi.CodeInternal, "%s is still not usable after approval (status %s); this is a bug",
 				visible.Escape(ap.After.ServerName+"."+ap.After.ToolName), ap.After.Status)
 		}
+		// ReachableBy: a sensitive item lists only the non_read roles naming
+		// it, so the wildcard chosen below is chosen among the safe items
+		// alone -- a "*" never reaches a sensitive tool, and saying "every
+		// analyst in role X" of a held one would be false twice over
+		// (design/adr/0048 Decisão 5; the gate is gateway.admit).
 		item := adminapi.ApprovedTool{PreviousStatus: string(ap.Before.Status), Tool: ToolOf(ap.After),
-			CallableBy: CallableBy(cfg.Roles, ap.After.ServerName, ap.After.ToolName)}
+			CallableBy: ReachableBy(cfg.Roles, ap.After)}
 		if ap.Before.Status == quarantine.StatusChanged {
 			changed++
 			item.PreviousBaseline = ap.Before.ApprovedHash
@@ -171,7 +186,11 @@ func (s *Service) ApproveToolSet(ctx context.Context, a Actor, req adminapi.Appr
 			pending++
 		}
 		if len(item.CallableBy) == 0 {
-			uncovered = append(uncovered, visible.Escape(ap.After.ToolName))
+			if sensitive(ap.After) {
+				unreachable = append(unreachable, visible.Escape(ap.After.ToolName))
+			} else {
+				uncovered = append(uncovered, visible.Escape(ap.After.ToolName))
+			}
 		}
 		for _, c := range item.CallableBy {
 			if c.Wildcard && wildcard == "" {
@@ -190,9 +209,19 @@ func (s *Service) ApproveToolSet(ctx context.Context, a Actor, req adminapi.Appr
 		res.Warnings = append(res.Warnings, adminapi.Warning{Code: adminapi.WarnNoRoleGrants,
 			Message: "No configured role covers " + strings.Join(uncovered, ", ") + ": approving made them servable, not callable by anyone."})
 	}
+	if len(unreachable) > 0 {
+		res.Warnings = append(res.Warnings, adminapi.Warning{Code: adminapi.WarnNoRoleGrants,
+			Message: "No role marked non_read names " + strings.Join(unreachable, ", ") + " in `tools`: they are sensitive, approving made them servable, and clearing each will be refused until one does. A \"*\" grant or a [role.grants] name does not reach a sensitive tool."})
+	}
 	if wildcard != "" {
 		res.Warnings = append(res.Warnings, adminapi.Warning{Code: adminapi.WarnWildcardGrant,
 			Message: "A \"*\" grant covers these tools: this approval is the only human act between them and every analyst in role " + wildcard + " (design/adr/0016)."})
+	}
+	if len(held) > 0 {
+		msg := fmt.Sprintf("%d of them %s sensitive: approved, and NOT served until cleared one at a time -- approving a set never clears. For each, run `tool clear %s TOOL` (needs a role marked non_read naming it in `tools`): %s.",
+			len(held), plural(len(held), "is", "are"), backend, strings.Join(held, ", "))
+		res.Messages = append(res.Messages, msg)
+		res.Warnings = append(res.Warnings, adminapi.Warning{Code: adminapi.WarnSensitiveUncleared, Message: msg})
 	}
 
 	now := s.d.Now().UTC()
@@ -201,6 +230,9 @@ func (s *Service) ApproveToolSet(ctx context.Context, a Actor, req adminapi.Appr
 		reason := fmt.Sprintf("tool %q approved at sha256:%s", ap.After.ServerName+"."+ap.After.ToolName, ap.After.ApprovedHash)
 		if ap.Before.ApprovedHash != "" && ap.Before.ApprovedHash != ap.After.ApprovedHash {
 			reason += " (was sha256:" + ap.Before.ApprovedHash + ")"
+		}
+		if sensitive(ap.After) {
+			reason += " (sensitive; not served until cleared)"
 		}
 		reason += " in review set sha256:" + current + " " + a.Tag()
 		rec := s.operatorRow(a, ToolApprove, reason, now)

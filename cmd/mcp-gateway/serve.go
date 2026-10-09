@@ -472,7 +472,11 @@ func buildServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) (
 		// request with nothing to reload.
 		Blocklist: stack.blocklist(db),
 		Quota:     quotaGate,
-		Dialer:    newTransportDialer(cfg),
+		// The vault goes to the dialer as well as to the Gateway: the
+		// Gateway resolves the names a stdio/oci entry declares before it
+		// dials, while the http adapter re-resolves its one secret on every
+		// call (ADR-0047 §5), so it needs the provider itself.
+		Dialer: newTransportDialer(cfg, credentials),
 		// Wiring these is GAB-18 plus ADR-0010, and they are the reason
 		// gateway.verifyEntry exists: without a Store the gateway checks no
 		// entry's integrity at all, and without a Verifier it would check
@@ -1407,7 +1411,11 @@ func roleReaches(roles []config.Role, observed map[string]bool) []roleReach {
 		// The domain type, queried directly. config.Role mirrors it field
 		// for field precisely so this conversion is the whole of the
 		// translation, and Allows is then the same code the gate runs.
-		domain := access.Role{Name: r.Name, Tools: r.Tools, Grants: r.Grants}
+		// NonRead is carried although Allows is class-blind and never reads
+		// it: a conversion that drops a marking is the silent drop ADR-0048
+		// Decisão 5 names in reload.toAccess, and the next predicate added
+		// here would inherit it.
+		domain := access.Role{Name: r.Name, Tools: r.Tools, Grants: r.Grants, NonRead: r.NonRead}
 		for _, name := range names {
 			if domain.Allows(name) {
 				reach.Observed++

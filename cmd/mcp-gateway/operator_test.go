@@ -116,7 +116,7 @@ func mustRegister(t *testing.T, e opTestEnv, entry registry.UpstreamServer) {
 // mustObserve records a tool sighting, the way discovery would.
 func mustObserve(t *testing.T, e opTestEnv, server string, id quarantine.ToolIdentity) quarantine.Tool {
 	t.Helper()
-	tool, err := e.tools().Observe(context.Background(), server, id)
+	tool, err := e.tools().Observe(context.Background(), server, id, quarantine.ClassSafe)
 	if err != nil {
 		t.Fatalf("observing %s.%s: %v", server, id.Name, err)
 	}

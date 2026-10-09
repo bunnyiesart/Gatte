@@ -3,6 +3,7 @@ package gateway
 import (
 	"bytes"
 	"encoding/json"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -34,6 +35,35 @@ func MaskCredentials(text string, env map[string]string) (string, bool) {
 	}
 	out, hit := maskSpans(text, forms)
 	return out, slices.Contains(hit, true)
+}
+
+// ScrubJSON is scrubJSON for an adapter: it masks every rendering of every
+// non-empty value of env inside raw, which must be JSON text, with the same
+// discipline scrubResult applies to a Result -- only the forms a value can
+// take inside a JSON string literal are matched, never the bare form of a
+// value JSON would have to escape, so the document's structure survives --
+// and reports whether anything was masked. It returns ErrResultUnscrubbable
+// when a match leaves the text invalid as JSON (a value short enough to be
+// JSON syntax itself); the caller must then refuse the result, not forward
+// it.
+//
+// It exists for internal/gateway/resthttp, which builds the response
+// envelope with the value it injected still in hand and can therefore
+// close the window scrubResult cannot: between the adapter's Resolve and
+// scrubResult's, a vault rotation leaves the server echoing a value only
+// the adapter knew (ADR-0047 §5). scrubResult still runs afterwards; this
+// is the first line, not a replacement.
+//
+// Pre-condition: raw is empty or valid JSON. Post-condition: on nil error
+// the returned bytes are raw unchanged, or a valid JSON document with every
+// matched span replaced by the redaction placeholder.
+func ScrubJSON(raw json.RawMessage, env map[string]string) (json.RawMessage, bool, error) {
+	var hit []string
+	out, err := scrubJSON(raw, env, &hit)
+	if err != nil {
+		return nil, false, err
+	}
+	return out, len(hit) > 0, nil
 }
 
 // maskSpans marks, on a byte mask over text, every occurrence of every
@@ -86,9 +116,17 @@ func maskSpans(text string, formsByValue [][]string) (string, []bool) {
 }
 
 // renderingsOf returns the forms in which value may appear inside an error
-// message: the raw bytes, and the bodies (outer quotes dropped) of %q, %+q
-// and JSON string encodings, with and without JSON's HTML escaping. An
-// empty value has no rendering: masking "" would mask nothing and loop.
+// message: the raw bytes, the bodies (outer quotes dropped) of %q, %+q and
+// JSON string encodings (with and without JSON's HTML escaping), and the
+// URL-encoded forms. An empty value has no rendering: masking "" would mask
+// nothing and loop.
+//
+// The URL-encoded forms exist for the REST transport (ADR-0047 §5,
+// design/adr/0048): a credential injected as a query parameter or reflected
+// by an API in a Location/Set-Cookie header arrives percent-encoded, and the
+// plaintext holds no percent sequences, so without these forms scrubResult
+// would not match it. QueryEscape and PathEscape differ (space as '+' vs
+// '%20', and which sub-delimiters are escaped), so both are added.
 func renderingsOf(value string) []string {
 	if value == "" {
 		return nil
@@ -106,6 +144,14 @@ func renderingsOf(value string) []string {
 	for _, body := range jsonBodies(value) {
 		if !slices.Contains(forms, body) {
 			forms = append(forms, body)
+		}
+	}
+	// URL-encoded forms, added whole (not quote-stripped like the %q forms).
+	// A form equal to the raw value -- when value has nothing to escape --
+	// is already in forms and the dedup drops it.
+	for _, enc := range []string{url.QueryEscape(value), url.PathEscape(value)} {
+		if enc != "" && !slices.Contains(forms, enc) {
+			forms = append(forms, enc)
 		}
 	}
 	return forms

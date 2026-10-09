@@ -37,7 +37,7 @@ const secSchema = `{"type":"object","properties":{"q":{"type":"string"}}}`
 
 func secMustObserve(t *testing.T, s *Store, server string, id quarantine.ToolIdentity) quarantine.Tool {
 	t.Helper()
-	got, err := s.Observe(context.Background(), server, id)
+	got, err := s.Observe(context.Background(), server, id, quarantine.ClassSafe)
 	if err != nil {
 		t.Fatalf("Observe(%s,%s): %v", server, id.Name, err)
 	}
@@ -116,7 +116,7 @@ func TestSecQuarantine_ApproveRacingObserveNeverRevertsObservedHash(t *testing.T
 			defer wg.Done()
 			<-start
 			for i := 0; i < 20; i++ {
-				if _, err := s.Observe(context.Background(), "casemgmt", evil); err == nil {
+				if _, err := s.Observe(context.Background(), "casemgmt", evil, quarantine.ClassSafe); err == nil {
 					mu.Lock()
 					observedEvil = true
 					mu.Unlock()
@@ -174,7 +174,7 @@ func TestSecQuarantine_ConcurrentWritersDoNotFailObserve(t *testing.T) {
 		defer wg.Done()
 		<-start
 		for i := 0; i < 50; i++ {
-			if _, err := gw.Observe(context.Background(), "casemgmt", secIdent("t", "T.", secSchema)); err != nil {
+			if _, err := gw.Observe(context.Background(), "casemgmt", secIdent("t", "T.", secSchema), quarantine.ClassSafe); err != nil {
 				mu.Lock()
 				failures = append(failures, err)
 				mu.Unlock()

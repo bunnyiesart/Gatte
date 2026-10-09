@@ -541,8 +541,15 @@ func (g *Gateway) stableRoutesFor(ctx context.Context, upstream string) upstream
 			out.unmeasured = true
 			continue
 		}
-		def := ToolDef{Name: id.Name, Description: id.Description, InputSchema: id.InputSchema, OutputSchema: id.OutputSchema}
-		if def.Name != lt.Tool || !validToolName(def.Name) || definitionSize(def) > maxToolDefinitionBytes || validateSchema(def.InputSchema) != nil {
+		// The class comes from the quarantine row, not the kept definition:
+		// it was never in the fingerprint (ADR-0048 Decisão 5), and the row
+		// holds what the operation last advertised. admit ORs the route's
+		// class with the row's, so for a backend served this way the row is
+		// the only source of the class -- there is no second, signed one
+		// until the registry's Operations are read here (the resthttp
+		// adapter, ADR-0048 Decisão 8, not in this build).
+		def := ToolDef{Name: id.Name, Description: id.Description, InputSchema: id.InputSchema, OutputSchema: id.OutputSchema, SecurityClass: t.Class}
+		if def.Name != lt.Tool || !ValidToolName(def.Name) || DefinitionSize(def) > MaxToolDefinitionBytes || validateSchema(def.InputSchema) != nil {
 			continue
 		}
 		output, err := resolveOutputSchema(def.OutputSchema)

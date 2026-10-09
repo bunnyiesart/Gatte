@@ -149,7 +149,7 @@ reason with where they came from (`[cli]`, `[cli env]`, `[ui]`,
 - `(account add)`, `(account groups)`, `(account disable)`,
   `(account enable)`, `(account reset password)`, `(account delete)`,
   `(account offboard)`.
-- `(tool approve)`, `(tool approve set)`, `(tool revoke)`,
+- `(tool approve)`, `(tool approve set)`, `(tool revoke)`, `(tool clear)`,
   `(upstream update)`, `(upstream redial)`, `(maintenance on)`,
   `(maintenance off)`, `(restore)`.
 

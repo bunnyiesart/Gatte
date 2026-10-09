@@ -2,6 +2,7 @@ package registry
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -29,21 +30,127 @@ func TestUpstreamServer_Validate(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			// This case asserted `wantErr: false` until GAB-19: a
-			// well-formed http entry WAS accepted, and then failed at dial
-			// time because no dialer serves http. It is kept and inverted
-			// rather than deleted, because deleting it would leave nothing
-			// pinning the new contract -- a test that never existed and a
-			// test that was removed look identical in a year, and the old
-			// behaviour would come back silently.
-			name: "well-formed http entry is refused: nothing dials http",
+			// Accepted again since ADR-0047 closed GAB-19: the resthttp
+			// dialer exists, so a well-formed http entry is valid. This case
+			// has swung from accepted (pre-GAB-19) to refused (GAB-19) to
+			// accepted (ADR-0047), and the comment history on each swing is
+			// why the contract never changed silently.
+			name:    "valid http entry",
+			server:  validHTTP(),
+			wantErr: false,
+		},
+		{
+			name: "http without url is refused",
+			server: func() UpstreamServer {
+				s := validHTTP()
+				s.URL = ""
+				return s
+			}(),
+			wantErr: true,
+		},
+		{
+			name: "http with a command is refused",
+			server: func() UpstreamServer {
+				s := validHTTP()
+				s.Command = "/usr/local/bin/something"
+				return s
+			}(),
+			wantErr: true,
+		},
+		{
+			name: "http with a non-http scheme is refused",
+			server: func() UpstreamServer {
+				s := validHTTP()
+				s.URL = "ftp://api.example.com/v2"
+				return s
+			}(),
+			wantErr: true,
+		},
+		{
+			name: "http header auth without a name is refused",
+			server: func() UpstreamServer {
+				s := validHTTP()
+				s.AuthName = ""
+				return s
+			}(),
+			wantErr: true,
+		},
+		{
+			name: "http header auth with a non-token name is refused",
+			server: func() UpstreamServer {
+				s := validHTTP()
+				s.AuthName = "X API Key"
+				return s
+			}(),
+			wantErr: true,
+		},
+		{
+			name: "http bearer auth with a name is refused",
+			server: func() UpstreamServer {
+				s := validHTTP()
+				s.AuthKind = AuthBearer
+				s.AuthName = "X-API-Key"
+				return s
+			}(),
+			wantErr: true,
+		},
+		{
+			name: "keyed http with no secret-ref is refused",
+			server: func() UpstreamServer {
+				s := validHTTP()
+				s.EnvVarNames = nil
+				return s
+			}(),
+			wantErr: true,
+		},
+		{
+			name: "keyless http with a secret-ref is refused",
+			server: func() UpstreamServer {
+				s := validHTTP()
+				s.AuthKind = AuthNone
+				s.AuthName = ""
+				// keep EnvVarNames set: a keyless entry must resolve nothing
+				return s
+			}(),
+			wantErr: true,
+		},
+		{
+			name: "http with an empty operation set is refused",
+			server: func() UpstreamServer {
+				s := validHTTP()
+				s.Operations = []byte(`[]`)
+				return s
+			}(),
+			wantErr: true,
+		},
+		{
+			name: "http with malformed operations is refused",
+			server: func() UpstreamServer {
+				s := validHTTP()
+				s.Operations = []byte(`{not json`)
+				return s
+			}(),
+			wantErr: true,
+		},
+		{
+			name: "auth kind on a stdio entry is refused",
 			server: UpstreamServer{
-				Name:      "logsearch",
-				Transport: TransportHTTP,
-				URL:       "https://logsearch.internal:9000",
+				Name:      "casemgmt",
+				Transport: TransportStdio,
+				Command:   "/usr/local/bin/casemgmt-mcp",
+				AuthKind:  AuthBearer,
 			},
 			wantErr: true,
-			wantIs:  ErrTransportUnsupported,
+		},
+		{
+			name: "operations on a stdio entry is refused",
+			server: UpstreamServer{
+				Name:       "casemgmt",
+				Transport:  TransportStdio,
+				Command:    "/usr/local/bin/casemgmt-mcp",
+				Operations: []byte(`[{"name":"x"}]`),
+			},
+			wantErr: true,
 		},
 		{
 			name: "empty name",
@@ -80,22 +187,6 @@ func TestUpstreamServer_Validate(t *testing.T) {
 				Command:   "",
 			},
 			wantErr: true,
-		},
-		{
-			// Still refused, but for a different reason than it used to be:
-			// the transport is rejected before the URL is looked at, so this
-			// now wraps ErrTransportUnsupported and not ErrInvalid. Stating
-			// the sentinel is the point -- if a future http dialer lands and
-			// this case starts failing on the empty URL again, that is the
-			// correct new answer and the test will say so plainly.
-			name: "http without url is refused on the transport, not the url",
-			server: UpstreamServer{
-				Name:      "threatintel",
-				Transport: TransportHTTP,
-				URL:       "",
-			},
-			wantErr: true,
-			wantIs:  ErrTransportUnsupported,
 		},
 		{
 			name: "env var name containing = is rejected",
@@ -162,35 +253,30 @@ func TestUpstreamServer_Validate(t *testing.T) {
 	}
 }
 
-// TestHTTPRefusalIsNotConflatedWithMalformed pins the distinction the two
-// sentinels exist to draw. A malformed entry is the operator's mistake; an
-// http entry is correct configuration this build cannot honour yet. Code
-// that reports them identically would tell an operator to fix a typo that
-// is not there.
-//
-// This is the half of the old contract that the table test cannot express:
-// the table asserts which sentinel IS wrapped, and this asserts which one
-// is NOT.
-func TestHTTPRefusalIsNotConflatedWithMalformed(t *testing.T) {
-	err := UpstreamServer{
-		Name:      "logsearch",
-		Transport: TransportHTTP,
-		URL:       "https://logsearch.internal:9000",
-	}.Validate()
-	if err == nil {
-		t.Fatal("a http entry must be refused while no dialer serves it")
+// validHTTP returns a well-formed keyed http entry: an API reached by URL,
+// injecting one secret as an X-API-Key header, serving one frozen operation.
+// Tests mutate one field at a time off this base so each case says exactly
+// what makes it invalid.
+func validHTTP() UpstreamServer {
+	return UpstreamServer{
+		Name:        "abuseipdb",
+		Transport:   TransportHTTP,
+		URL:         "https://api.abuseipdb.com/api/v2",
+		AuthKind:    AuthHeader,
+		AuthName:    "X-API-Key",
+		EnvVarNames: []string{"ABUSEIPDB_KEY"},
+		Operations:  []byte(`[{"name":"check","method":"GET","path":"/check"}]`),
 	}
-	if !errors.Is(err, ErrTransportUnsupported) {
-		t.Errorf("error = %v, want ErrTransportUnsupported", err)
-	}
-	if errors.Is(err, ErrInvalid) {
-		t.Errorf("error = %v, must NOT also wrap ErrInvalid: the entry is well-formed, "+
-			"it is the missing dialer that refuses it", err)
-	}
+}
 
-	// An unrecognised transport is the other side: that one IS malformed,
-	// and must keep saying so.
-	err = UpstreamServer{
+// TestUnrecognisedTransportIsMalformed pins the remaining half of the two
+// sentinels' distinction. Since ADR-0047 every recognised transport has a
+// dialer, so http is valid (asserted in the table). A transport this project
+// does not recognise at all is the operator's mistake and keeps wrapping
+// ErrInvalid, never ErrTransportUnsupported, which is reserved for a
+// recognised-but-undialable transport.
+func TestUnrecognisedTransportIsMalformed(t *testing.T) {
+	err := UpstreamServer{
 		Name:      "docsearch",
 		Transport: Transport("websocket"),
 		Command:   "/usr/local/bin/docsearch-mcp",
@@ -201,5 +287,35 @@ func TestHTTPRefusalIsNotConflatedWithMalformed(t *testing.T) {
 	if errors.Is(err, ErrTransportUnsupported) {
 		t.Errorf("unrecognised transport error = %v, must NOT wrap ErrTransportUnsupported: "+
 			"\"websocket\" is not a transport this project recognises at all", err)
+	}
+	// The message lists the three transports, and does not say http lacks
+	// a dialer: since ADR-0047 step 4 it registers end to end.
+	if msg := err.Error(); !strings.Contains(msg, `"stdio", "oci" or "http"`) || strings.Contains(msg, "no dialer") {
+		t.Errorf("unrecognised transport message = %q, want the three transports and no \"no dialer\" claim", msg)
+	}
+}
+
+// TestHTTPAuthNameIsNotAControlHeader: a header credential cannot be
+// injected into a header net/http drops (Host, Content-Length,
+// Transfer-Encoding) or a proxy strips (hop-by-hop, Proxy-*), nor into
+// Cookie; raw Authorization is legal. Mirrors resthttp's reservedSlots,
+// which TestReservedSlots_RegistryMirrorsTheDenylist pins against this.
+func TestHTTPAuthNameIsNotAControlHeader(t *testing.T) {
+	for _, name := range []string{"Connection", "Proxy-Authorization", "host", "Transfer_Encoding", "Cookie", "TE"} {
+		e := validHTTP()
+		e.AuthName = name
+		if err := e.Validate(); !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "control header") {
+			t.Errorf("auth name %q: %v, want a control-header refusal", name, err)
+		}
+		// As a query parameter the same name is just a name.
+		e.AuthKind = AuthQuery
+		if err := e.Validate(); err != nil {
+			t.Errorf("query auth name %q: %v", name, err)
+		}
+	}
+	e := validHTTP()
+	e.AuthName = "Authorization"
+	if err := e.Validate(); err != nil {
+		t.Errorf("raw Authorization header: %v", err)
 	}
 }

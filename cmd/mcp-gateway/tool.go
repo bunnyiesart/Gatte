@@ -39,6 +39,8 @@ func cmdTool(args []string, stdout, stderr io.Writer) int {
 		return toolApprove(rest, stdout, stderr)
 	case "revoke":
 		return toolRevoke(rest, stdout, stderr)
+	case "clear":
+		return toolClear(rest, stdout, stderr)
 	case "-h", "--help", "help":
 		toolUsage(stdout)
 		return exitOK
@@ -57,11 +59,14 @@ func toolUsage(w io.Writer) {
   mcp-gateway tool review [-config FILE] -server NAME
   mcp-gateway tool approve [-config FILE] -server NAME -manifest SHA256
   mcp-gateway tool revoke [-config FILE] SERVER TOOL
+  mcp-gateway tool clear [-config FILE] SERVER TOOL
 
 "list" is the approval queue: it shows every tool the gateway has observed,
 including the pending and changed ones, which are precisely the ones that
 need a human. A tool is usable only when an operator approved it AND the
-definition being advertised now still matches what was approved.
+definition being advertised now still matches what was approved -- and, for
+a SENSITIVE tool (one that can act: a REST operation with any method but
+GET/HEAD/OPTIONS), when an operator also cleared it, see "clear".
 
 "show" prints the definition the tool is advertising and, when it differs,
 the approved one and a line diff between them. Code points a terminal would
@@ -83,6 +88,15 @@ a set without its manifest (design/adr/0043).
 "revoke" is the way back: it withdraws an approval and returns the tool to
 pending, so a running gateway stops serving it on the very next call. It
 does not need a restart and does not touch the upstream.
+
+"clear" is the second decision a sensitive tool needs, after approval:
+approving says the definition is not poisoned, clearing says this backend
+may ACT on the team's behalf through this operation. It clears the tool at
+its approved fingerprint; a later change to the definition, or a revoke,
+withdraws the clearance with the approval. It refuses unless some [[role]]
+with non_read = true names the tool in its tools list -- a "*" grant never
+reaches a sensitive tool -- and says exactly what is missing. Approving a
+set (-server -manifest) never clears anything (design/adr/0048).
 
 Exit codes: 0 ok, 1 ran and found a problem, 2 could not run.
 `)
@@ -117,6 +131,12 @@ type toolJSON struct {
 	ObservedHash string    `json:"observed_hash"`
 	FirstSeenAt  time.Time `json:"first_seen_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
+	// Class and SensitiveClearedHash (design/adr/0048): the security class
+	// as metadata, and the approved fingerprint the tool was cleared at.
+	// Usable above already folds them in; they are here to be read, not to
+	// re-derive it.
+	Class                string `json:"class,omitempty"`
+	SensitiveClearedHash string `json:"sensitive_cleared_hash,omitempty"`
 }
 
 func runToolList(e *opEnv, server string, asJSON bool) int {
@@ -138,6 +158,9 @@ func runToolList(e *opEnv, server string, asJSON bool) int {
 				ObservedHash: t.ObservedHash,
 				FirstSeenAt:  t.FirstSeenAt,
 				UpdatedAt:    t.UpdatedAt,
+
+				Class:                string(t.Class),
+				SensitiveClearedHash: t.SensitiveClearedHash,
 			})
 		}
 		if err := opJSON(e.stdout, out); err != nil {
@@ -161,11 +184,16 @@ func runToolList(e *opEnv, server string, asJSON bool) int {
 
 	tw := opTable(e.stdout)
 	fmt.Fprintln(tw, "SERVER\tTOOL\tSTATUS\tUSABLE\tOBSERVED FINGERPRINT\tUPDATED")
-	var pending, changed []string
+	var pending, changed, uncleared []string
 	for _, t := range tools {
 		usable := "no"
 		if t.Usable() {
 			usable = "yes"
+		}
+		// Approved, sensitive and held: the one row whose "no" is not
+		// explained by its status column (design/adr/0048 Decisão 5).
+		if t.Status == quarantine.StatusApproved && t.Class != quarantine.ClassSafe && !t.Usable() {
+			uncleared = append(uncleared, visible.Escape(t.ServerName+" "+t.ToolName))
 		}
 		// Names come from the store, and a row can predate the tool-name
 		// charset or be written past it by hand: escaped, like everything
@@ -208,6 +236,13 @@ func runToolList(e *opEnv, server string, asJSON bool) int {
 	}
 	if len(pending) > 0 || len(changed) > 0 {
 		fmt.Fprintf(e.stdout, "\nReview, then approve the fingerprint you reviewed:\n\n    %s SERVER TOOL\n    %s -fingerprint SHA256 SERVER TOOL\n", e.cmd("tool show"), e.cmd("tool approve"))
+	}
+	if len(uncleared) > 0 {
+		fmt.Fprintf(e.stdout, "\n%d SENSITIVE %s approved and not yet cleared -- not served until an operator\nclears it, one at a time, and a role with non_read = true names it in tools:\n",
+			len(uncleared), opPlural(len(uncleared), "tool is", "tools are"))
+		for _, name := range uncleared {
+			fmt.Fprintf(e.stdout, "    %s %s\n", e.cmd("tool clear"), name)
+		}
 	}
 	return exitOK
 }
@@ -297,6 +332,19 @@ func runToolApproveFingerprint(e *opEnv, server, tool, reviewed string) int {
 		fmt.Fprintf(e.stdout, "%s was already approved at exactly this definition (sha256:%s).\nNothing to do; it is usable.\n", name, before.ObservedHash)
 		return exitOK
 	}
+	if before.Status == quarantine.StatusApproved && before.ApprovedHash == before.ObservedHash && before.Class != quarantine.ClassSafe {
+		// Approved at this definition and held: a sensitive tool waiting
+		// for its second decision, not drift to re-approve over
+		// (design/adr/0048 Decisão 5). The service answers the same way;
+		// this is the read-first path saying it before writing nothing.
+		if reviewed != "" && reviewed != before.ObservedHash {
+			fmt.Fprintf(e.stderr, "NOT approved: %s is already approved at sha256:%s, not the\nsha256:%s you named. Nothing changed. Run `%s` to see the definition\nthat is approved.\n",
+				name, before.ObservedHash, visible.Escape(reviewed), e.cmd("tool show"))
+			return exitProblem
+		}
+		fmt.Fprintf(e.stdout, "%s was already approved at exactly this definition (sha256:%s).\nNothing to do.\n\n%s\n", name, before.ObservedHash, sensitiveClearNotice(e, server, tool))
+		return exitOK
+	}
 
 	// Everything that makes this a decision rather than a keystroke is
 	// printed before the change, not after it -- and composed first, so
@@ -341,7 +389,7 @@ func runToolApproveFingerprint(e *opEnv, server, tool, reviewed string) int {
 
 	// Printed before the transition, with everything else that makes this a
 	// decision rather than a keystroke.
-	printGrantCoverage(e.stdout, e.cfg.Roles, server, tool)
+	printGrantCoverage(e.stdout, e.cfg.Roles, server, tool, before.Class != quarantine.ClassSafe)
 
 	svc, err := e.service()
 	if err != nil {
@@ -391,7 +439,18 @@ func runToolApproveFingerprint(e *opEnv, server, tool, reviewed string) int {
 		fmt.Fprintf(e.stdout, "Re-approved %s at sha256:%s.\n", name, after.ApprovedHash)
 	}
 
-	if !after.Usable {
+	switch {
+	case after.Usable:
+	case after.Class != adminapi.ClassSafe:
+		// Approved and held is the default-deny working, not a bug
+		// (design/adr/0048 Decisão 5): the approval wrote "this definition
+		// is sound"; serving a tool that can act is a second decision,
+		// made by `tool clear` with the roles in view. The text above said
+		// "usable again" / "will be served" for a safe tool; correct it
+		// here, where the operator is reading, rather than fork every
+		// branch.
+		fmt.Fprintf(e.stdout, "\n%s\n", sensitiveClearNotice(e, server, tool))
+	default:
 		// Should not happen: Approved() sets the baseline to the observed
 		// fingerprint. If it does, the operator must not be left believing
 		// the tool is now being served.
@@ -401,6 +460,139 @@ func runToolApproveFingerprint(e *opEnv, server, tool, reviewed string) int {
 	}
 	if !res.Recorded {
 		fmt.Fprintf(e.stderr, "\n%s IS APPROVED, but the audit trail could not record it: %s\nRecord it by hand before anything else.\n",
+			name, warningText(res.ActionResult, adminapi.WarnAuditWriteFailed))
+		return exitProblem
+	}
+	return exitOK
+}
+
+// sensitiveClearNotice is what an approval of a sensitive tool has to say
+// before the operator walks away believing it is served: approved, NOT
+// served, and the command that finishes the job (design/adr/0048 Decisão
+// 5). The wording is the service's (admin.clearHint) so the API, the web
+// console and this terminal agree; the command line is spelled for this
+// invocation.
+func sensitiveClearNotice(e *opEnv, server, tool string) string {
+	return fmt.Sprintf("%s is SENSITIVE: it can act, so approval alone does not serve it. Approved,\nNOT served. To clear it at this fingerprint -- which needs a [[role]] with\nnon_read = true naming %q in its tools list -- run:\n\n    %s %s %s",
+		gateway.Namespaced(server, tool), gateway.Namespaced(server, tool), e.cmd("tool clear"), opShellQuote(server), opShellQuote(tool))
+}
+
+// toolClear clears one approved sensitive tool for serving.
+func toolClear(args []string, stdout, stderr io.Writer) int {
+	fs, configPath := opFlagSet("tool clear", stderr)
+	if code, ok := opParse(fs, args, stdout, stderr, toolUsage); !ok {
+		return code
+	}
+	if fs.NArg() != 2 {
+		fmt.Fprint(stderr, "clear takes exactly two arguments: the server name and the tool name\n\n")
+		toolUsage(stderr)
+		return exitCannotRun
+	}
+	server, tool := fs.Arg(0), fs.Arg(1)
+
+	return opRun(*configPath, stdout, stderr, func(e *opEnv) int {
+		return runToolClear(e, server, tool)
+	})
+}
+
+// runToolClear is the second decision a sensitive tool needs
+// (design/adr/0048 Decisão 5). Like approve and revoke it reads first,
+// because what the operator has to be told -- not sensitive, not yet
+// approved, nobody can reach it -- is decided on the state before the
+// transition. The rule itself lives in admin.Service.ClearTool; this
+// prints its answers.
+func runToolClear(e *opEnv, server, tool string) int {
+	before, code, ok := getForConsole(e, server, tool, "clear")
+	if !ok {
+		return code
+	}
+	name := visible.Escape(server + "." + tool)
+
+	// Everything that makes this a decision rather than a keystroke,
+	// before the change: who will reach the tool once cleared. The
+	// service refuses when this is empty; printing it first means a
+	// refusal arrives with the roles that cover the tool but do not reach
+	// it already on screen.
+	covers := admin.CallableBy(e.cfg.Roles, server, tool)
+	reach := admin.ClearableBy(e.cfg.Roles, server, tool)
+	if before.Class != quarantine.ClassSafe && before.Status == quarantine.StatusApproved {
+		if len(reach) > 0 {
+			fmt.Fprintf(e.stdout, "Clearing %s makes it callable by every analyst in %s:\n\n", name, opPlural(len(reach), "this role", "these roles"))
+			width := 0
+			for _, c := range reach {
+				width = max(width, len(c.Role))
+			}
+			for _, c := range reach {
+				fmt.Fprintf(e.stdout, "  %-*s  %s   <- non_read\n", width, c.Role, c.How)
+			}
+			fmt.Fprintln(e.stdout)
+		}
+	}
+
+	svc, err := e.service()
+	if err != nil {
+		fmt.Fprintf(e.stderr, "%v\n", err)
+		return exitCannotRun
+	}
+	actor, err := e.operator()
+	if err != nil {
+		fmt.Fprintf(e.stderr, "%v\n", err)
+		return exitCannotRun
+	}
+	res, err := svc.ClearTool(e.ctx(), actor, adminapi.ToolRef{Server: server, Tool: tool})
+	switch {
+	case adminapi.IsCode(err, adminapi.CodeNotSensitive):
+		fmt.Fprintf(e.stderr, "%s is not a sensitive tool: it only reads, and is served on approval alone.\nThere is nothing to clear. `%s` is the whole of what it needs.\n", name, e.cmd("tool approve"))
+		return exitProblem
+	case adminapi.IsCode(err, adminapi.CodeNotApproved):
+		if before.Status == quarantine.StatusApproved {
+			// The read above saw it approved and the service still answered
+			// not_approved: the baseline moved in between (a discovery saw
+			// a change). The template below would print "is approved, not
+			// approved" and send the operator to approve a fingerprint that
+			// is gone; the service's own sentence says what happened.
+			fmt.Fprintf(e.stderr, "NOT cleared: %s\nRun `%s %s %s` and review the new definition.\n",
+				cliErrText(err), e.cmd("tool show"), opShellQuote(server), opShellQuote(tool))
+			return exitProblem
+		}
+		fmt.Fprintf(e.stderr, "NOT cleared: %s is %s, not approved. A clearance is of an approved\nfingerprint, and there is none. Review it and approve the fingerprint shown\nfirst; then clear it:\n\n    %s %s %s\n    %s -fingerprint SHA256 %s %s\n    %s %s %s\n",
+			name, before.Status, e.cmd("tool show"), opShellQuote(server), opShellQuote(tool), e.cmd("tool approve"), opShellQuote(server), opShellQuote(tool), e.cmd("tool clear"), opShellQuote(server), opShellQuote(tool))
+		return exitProblem
+	case adminapi.IsCode(err, adminapi.CodeNoNonReadGrant):
+		// The message names, role by role, what covers the tool and why
+		// that does not reach it, and the edit that would.
+		fmt.Fprintf(e.stderr, "%s\n", cliErrText(err))
+		if len(covers) == 0 {
+			fmt.Fprintf(e.stderr, "\nNo configured role covers %s at all.\n", name)
+		}
+		return exitProblem
+	case err != nil:
+		fmt.Fprintf(e.stderr, "quarantine: clearing %s: %v\n", name, cliErrText(err))
+		return exitCannotRun
+	}
+	after := res.Tool
+	if !res.Changed {
+		fmt.Fprintf(e.stdout, "%s was already cleared at exactly this definition (sha256:%s).\nNothing to do; it is usable.\n", name, after.ApprovedHash)
+		return exitOK
+	}
+
+	fmt.Fprintf(e.stdout, "Cleared %s.\n\n", name)
+	tw := opTable(e.stdout)
+	fmt.Fprintf(tw, "  class\t%s\n", after.Class)
+	fmt.Fprintf(tw, "  approved fingerprint\tsha256:%s\n", after.ApprovedHash)
+	fmt.Fprintf(tw, "  cleared at\tsha256:%s\n", after.SensitiveClearedHash)
+	if !opFlushTable(tw, e.stderr) {
+		return exitProblem
+	}
+	fmt.Fprint(e.stdout, "\nIt is served from the next call on, and only to the roles above: the gateway\nasks, on every call, whether some non_read role names it -- a \"*\" grant does\nnot count. A change to its definition on the upstream, or `tool revoke`,\nwithdraws this clearance together with the approval; clearing it again after\na re-approval is a new decision.\n")
+
+	if !after.Usable {
+		fmt.Fprintf(e.stdout, "\nWARNING: %s is still NOT usable after being cleared (status %s, approved %q,\ncleared %q). The gateway will keep refusing it. This is a bug -- report it.\n",
+			name, after.Status, after.ApprovedHash, after.SensitiveClearedHash)
+		return exitProblem
+	}
+	if !res.Recorded {
+		fmt.Fprintf(e.stderr, "\n%s IS CLEARED, but the audit trail could not record it: %s\nRecord it by hand before anything else.\n",
 			name, warningText(res.ActionResult, adminapi.WarnAuditWriteFailed))
 		return exitProblem
 	}
@@ -583,8 +775,34 @@ it?" at the same time (design/adr/0016).`
 // the approval must not happen unread; a pending tool is ordinary work,
 // and refusing to approve one because a pipe closed would be a new way for
 // the console to fail at the job it exists for.
-func printGrantCoverage(w io.Writer, roles []config.Role, server, tool string) {
+//
+// For a SENSITIVE tool (design/adr/0048 Decisão 5) the sentence above
+// would be false twice: approving does not make it callable -- clearing
+// does -- and a "*" grant never reaches it, so "every analyst in role X"
+// would name analysts the gateway refuses. The roles printed are then
+// admin.ClearableBy, the ones the clearance will reach, and the wildcard
+// notice is not printed: under a wildcard this approval is NOT the only
+// human act left.
+func printGrantCoverage(w io.Writer, roles []config.Role, server, tool string, sensitive bool) {
 	name := gateway.Namespaced(server, tool)
+	if sensitive {
+		reach := admin.ClearableBy(roles, server, tool)
+		if len(reach) == 0 {
+			fmt.Fprintf(w, "\n%s is SENSITIVE and no [[role]] with non_read = true names it in its tools\nlist. Approving it makes the definition servable; `tool clear` will refuse until\none does. A \"*\" grant or a [role.grants] name does not reach a sensitive tool.\n", name)
+			return
+		}
+		fmt.Fprintf(w, "\n%s is SENSITIVE: approving does not serve it. Once cleared, it is callable\nby every analyst in %s:\n\n",
+			name, opPlural(len(reach), "this role", "these roles"))
+		width := 0
+		for _, c := range reach {
+			width = max(width, len(c.Role))
+		}
+		for _, c := range reach {
+			fmt.Fprintf(w, "  %-*s  %s   <- non_read\n", width, c.Role, c.How)
+		}
+		return
+	}
+
 	covers := admin.CallableBy(roles, server, tool)
 	if len(covers) == 0 {
 		fmt.Fprintf(w, "\nNo configured role covers %s. Approving it makes the definition servable;\nit does not make it callable by anyone. Granting it is a separate edit, to a\n[[role]] in the configuration file.\n", name)

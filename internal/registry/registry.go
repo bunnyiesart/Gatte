@@ -12,8 +12,10 @@ package registry
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -33,11 +35,16 @@ var (
 	ErrInvalid = errors.New("registry: invalid upstream server")
 	// ErrTransportUnsupported means the entry names a transport this build
 	// has no dialer for. Deliberately NOT ErrInvalid: the entry is not
-	// malformed and the operator did not mistype anything -- "http" is a
-	// real transport this project intends to serve. It is refused because
-	// accepting it would store configuration that cannot be honoured, and
-	// the honest moment to say so is now rather than at dial time. A caller
-	// can tell the two apart and say something different about each.
+	// malformed and the operator did not mistype anything -- the transport is
+	// a real one this project intends to serve. It is refused because
+	// accepting it would store configuration that cannot be honoured, and the
+	// honest moment to say so is now rather than at dial time. A caller can
+	// tell the two apart and say something different about each.
+	//
+	// As of ADR-0047 every recognised transport (stdio, oci, http) has a
+	// dialer, so Validate does not currently return this; it is kept for the
+	// next recognised-but-undialable transport, which is how http stood
+	// between GAB-19 and ADR-0047.
 	ErrTransportUnsupported = errors.New("registry: transport has no dialer in this build")
 )
 
@@ -56,6 +63,48 @@ const nameSeparator = "."
 
 // Transport identifies how the gateway reaches an upstream MCP server.
 type Transport string
+
+// AuthKind names where the gateway injects the upstream credential on an
+// outbound REST request (ADR-0047 §5, ADR-0048). It is a signed field of an
+// http entry -- it decides WHERE the live secret is placed, so an attacker
+// who could flip it by a direct database write would redirect the secret
+// (e.g. move it from an Authorization header into a query parameter that the
+// response echoes). Covering it in the signature (signer canonical/v3-http)
+// is what closes that. The AuthKind names the location only; the secret
+// *value* comes from the Credential Vault at call time and is never stored
+// or signed, exactly as EnvVarNames are names only.
+type AuthKind string
+
+const (
+	// AuthNone is the zero value: no credential injection. It is the only
+	// valid AuthKind for a non-http entry, and is refused for http.
+	AuthNone AuthKind = ""
+	// AuthBearer injects the secret as "Authorization: Bearer <value>". The
+	// header name is fixed, so AuthName is unused (and must be empty).
+	AuthBearer AuthKind = "bearer"
+	// AuthHeader injects the secret as the value of the request header named
+	// by AuthName (e.g. "X-API-Key").
+	AuthHeader AuthKind = "header"
+	// AuthQuery injects the secret as the value of the URL query parameter
+	// named by AuthName.
+	AuthQuery AuthKind = "query"
+)
+
+// Valid reports whether k is a recognised injection location.
+func (k AuthKind) Valid() bool {
+	switch k {
+	case AuthNone, AuthBearer, AuthHeader, AuthQuery:
+		return true
+	default:
+		return false
+	}
+}
+
+// NamesLocation reports whether this kind needs an AuthName (a header or
+// query parameter name). AuthBearer and AuthNone do not.
+func (k AuthKind) NamesLocation() bool {
+	return k == AuthHeader || k == AuthQuery
+}
 
 const (
 	// TransportStdio is a locally spawned process communicating over
@@ -83,17 +132,31 @@ type UpstreamServer struct {
 	Command   string // binary/command to spawn, for TransportStdio
 	Args      []string
 	Image     string // digest-pinned image reference, for TransportOCI; never a value
-	// URL is unreachable through Register in this build and that is not a
-	// bug: TransportHTTP is refused at Validate (GAB-19), so the only
-	// transport that reads this field never gets stored. The field, its
-	// column and its round-trip are kept and still correct, because the
-	// day an http dialer lands they are what makes that a dialer landing
-	// rather than a migration. Deliberately not deleted -- undoing that
-	// cleanup would cost more than carrying it.
+	// URL is the endpoint an http entry is reached at (scheme, host, port and
+	// base path). Reachable through Register since ADR-0047 closed GAB-19 and
+	// the resthttp dialer landed; empty for stdio and oci entries. It is a
+	// signed field (the full string, under signer canonical/v3-http).
 	URL         string   // endpoint to call, for TransportHTTP
 	EnvVarNames []string // names only, never values
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
+	// AuthKind and AuthName describe where the credential is injected on an
+	// outbound REST request, for TransportHTTP (ADR-0047 §5). Both are empty
+	// for stdio and oci entries. They are signed fields (signer
+	// canonical/v3-http): the injection location is part of what a signature
+	// attests to, so it cannot be redirected by a direct database write that
+	// still verifies.
+	AuthKind AuthKind
+	AuthName string
+	// Operations is the frozen set of REST operations an http entry serves,
+	// one per generated tool, as canonical JSON (ADR-0047 §3, ADR-0048). It
+	// is produced by ingesting the OpenAPI spec at registration and is empty
+	// for stdio and oci entries. Its *digest* is a signed field: the method
+	// and path a tool maps to live here, not in the tool's quarantine hash
+	// (which covers only name+description+schema), so without signing the set
+	// a database write could repoint an approved tool at a different path and
+	// nothing would notice.
+	Operations []byte
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
 }
 
 // safeUpstreamName is the grammar of an upstream name.
@@ -127,20 +190,23 @@ const ReservedName = "gatte"
 //
 //   - Name must be non-empty, must not contain the namespace separator,
 //     and must match safeUpstreamName.
-//   - Transport must be TransportStdio or TransportOCI. TransportHTTP is a
-//     recognised value with no dialer behind it, so it is refused here
-//     rather than accepted and failed at dial time -- see
-//     ErrTransportUnsupported.
+//   - Transport must be TransportStdio, TransportOCI or TransportHTTP.
 //   - If Transport is TransportStdio, Command must be non-empty and Image
 //     empty; if TransportOCI, Image must be digest-pinned and Command and
-//     URL empty.
+//     URL empty; if TransportHTTP, URL must be a well-formed http(s) URL,
+//     Command and Image empty, the AuthKind/AuthName descriptor consistent
+//     with the single secret it names, and Operations a non-empty JSON array
+//     (ADR-0047). The AuthKind/AuthName/Operations fields are refused on any
+//     non-http entry.
 //   - Every entry in EnvVarNames must look like an environment variable
 //     name: non-empty and free of whitespace.
 //
 // Validate returns ErrInvalid, wrapped with a description of which rule
-// failed, on any violation; it returns nil when s is well-formed. The one
-// exception is a recognised-but-undialable transport, which returns
-// ErrTransportUnsupported.
+// failed, on any violation; it returns nil when s is well-formed. Every
+// recognised transport (stdio, oci, http) now has a dialer, so Validate no
+// longer returns ErrTransportUnsupported; that sentinel is kept for the next
+// recognised-but-undialable transport, should one be declared before its
+// dialer lands, exactly as http was between GAB-19 and ADR-0047.
 func (s UpstreamServer) Validate() error {
 	if strings.TrimSpace(s.Name) == "" {
 		return fmt.Errorf("%w: name must not be empty", ErrInvalid)
@@ -200,23 +266,32 @@ func (s UpstreamServer) Validate() error {
 			return err
 		}
 	case TransportHTTP:
-		// Refused at the point of acceptance, not at dial time. Nothing in
-		// this build dials http: internal/gateway/stdio serves "stdio" only
-		// and returns ErrUnsupportedTransport for anything else. Storing an
-		// entry the system cannot honour buys nothing and costs the
-		// operator a runtime fault, at connect, for a mistake that was
-		// fully knowable at registration -- the same fail-early reasoning
-		// access.NewPolicy uses when it refuses an undefined role mapping
-		// at construction instead of at request time.
-		//
-		// TransportHTTP stays a declared constant on purpose. The type is
-		// not the error; the absence of a dialer is. When one exists, this
-		// case becomes the URL check it used to be and nothing else here
-		// has to move.
-		return fmt.Errorf("%w: upstream %q declares transport %q; this build dials %q and %q only. The constant is reserved for when an http dialer exists -- until then, register this upstream as stdio or oci, or leave it out",
-			ErrTransportUnsupported, s.Name, TransportHTTP, TransportStdio, TransportOCI)
+		// GAB-19 closes here: the http dialer exists (internal/gateway/
+		// resthttp), so an http entry is validated rather than refused. It
+		// reaches a remote API by URL, carries no Command or Image, injects
+		// a credential at the location AuthKind/AuthName name, and serves the
+		// frozen operation set in Operations (ADR-0047).
+		if err := validateHTTP(s); err != nil {
+			return err
+		}
 	default:
-		return fmt.Errorf("%w: transport must be %q or %q (%q is recognised but has no dialer in this build)", ErrInvalid, TransportStdio, TransportOCI, TransportHTTP)
+		return fmt.Errorf("%w: transport must be %q, %q or %q", ErrInvalid, TransportStdio, TransportOCI, TransportHTTP)
+	}
+
+	// The injection descriptor and the operation set belong to http entries
+	// only. Rejecting them on a stdio or oci entry is the same discipline as
+	// rejectUnusedByOCI: a field with no effect on what runs must not sit in
+	// the signature, where it would be attested without meaning anything.
+	if s.Transport != TransportHTTP {
+		if s.AuthKind != AuthNone {
+			return fmt.Errorf("%w: auth kind must be empty for %s transport; only http entries inject a credential on an outbound request", ErrInvalid, s.Transport)
+		}
+		if strings.TrimSpace(s.AuthName) != "" {
+			return fmt.Errorf("%w: auth name must be empty for %s transport", ErrInvalid, s.Transport)
+		}
+		if len(s.Operations) != 0 {
+			return fmt.Errorf("%w: operations must be empty for %s transport; only http entries carry a frozen operation set", ErrInvalid, s.Transport)
+		}
 	}
 
 	for _, name := range s.EnvVarNames {
@@ -285,6 +360,122 @@ func validateImage(image string) error {
 	}
 	if !digestPinned.MatchString(image) {
 		return fmt.Errorf("%w: image %q is not pinned by digest; a tag can be repointed at other bytes without changing this entry, so the signature would attest a name instead of the code that runs. Use \"NAME@sha256:<64 hex chars>\" -- podman inspect --format '{{index .RepoDigests 0}}' NAME:TAG prints the digest", ErrInvalid, image)
+	}
+	return nil
+}
+
+// validateHTTP checks the rules specific to an http entry (ADR-0047 §1): a
+// well-formed URL, no Command or Image, a credential-injection descriptor
+// consistent with the secret it names, and a non-empty frozen operation set.
+//
+// It intentionally does not re-validate the inner shape of each operation
+// (that is the OpenAPI ingestion's job at registration, ADR-0048); it checks
+// only that Operations is well-formed JSON holding at least one operation, so
+// that an entry read back from the database with a corrupted blob is refused
+// here rather than failing deep in the dialer.
+func validateHTTP(s UpstreamServer) error {
+	if err := rejectImage(TransportHTTP, s.Image); err != nil {
+		return err
+	}
+	if strings.TrimSpace(s.Command) != "" {
+		return fmt.Errorf("%w: command must be empty for http transport; an http entry is reached by url, not by spawning a process", ErrInvalid)
+	}
+
+	if strings.TrimSpace(s.URL) == "" {
+		return fmt.Errorf("%w: url must not be empty for http transport", ErrInvalid)
+	}
+	u, err := url.Parse(s.URL)
+	if err != nil {
+		return fmt.Errorf("%w: url %q is not a valid URL: %v", ErrInvalid, s.URL, err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("%w: url %q must use scheme http or https, not %q", ErrInvalid, s.URL, u.Scheme)
+	}
+	if u.Host == "" {
+		return fmt.Errorf("%w: url %q has no host", ErrInvalid, s.URL)
+	}
+
+	if !s.AuthKind.Valid() {
+		return fmt.Errorf("%w: auth kind %q is not one of %q, %q, %q (or empty for a keyless API)", ErrInvalid, s.AuthKind, AuthBearer, AuthHeader, AuthQuery)
+	}
+	switch s.AuthKind {
+	case AuthNone:
+		// A keyless public API: no credential is injected, so no secret-ref
+		// and no injection name may be configured.
+		if len(s.EnvVarNames) != 0 {
+			return fmt.Errorf("%w: auth kind is empty (keyless) but env var names are set; a keyless http entry resolves no secret", ErrInvalid)
+		}
+		if strings.TrimSpace(s.AuthName) != "" {
+			return fmt.Errorf("%w: auth kind is empty (keyless) but auth name is set", ErrInvalid)
+		}
+	default:
+		// A keyed API: exactly one secret-ref names the value the descriptor
+		// injects, so there is no ambiguity about which secret is the key.
+		if len(s.EnvVarNames) != 1 {
+			return fmt.Errorf("%w: http transport with auth kind %q needs exactly one env var name (the secret to inject); got %d", ErrInvalid, s.AuthKind, len(s.EnvVarNames))
+		}
+		if s.AuthKind.NamesLocation() {
+			if err := validateAuthName(s.AuthName); err != nil {
+				return err
+			}
+			if s.AuthKind == AuthHeader && isControlHeaderSlot(s.AuthName) {
+				return fmt.Errorf("%w: auth name %q is a control header; the credential cannot be injected there", ErrInvalid, s.AuthName)
+			}
+		} else if strings.TrimSpace(s.AuthName) != "" {
+			return fmt.Errorf("%w: auth kind %q injects a fixed Authorization header, so auth name must be empty", ErrInvalid, s.AuthKind)
+		}
+	}
+
+	if len(s.Operations) == 0 {
+		return fmt.Errorf("%w: http transport requires a non-empty operation set (generated from the OpenAPI spec at registration)", ErrInvalid)
+	}
+	var ops []json.RawMessage
+	if err := json.Unmarshal(s.Operations, &ops); err != nil {
+		return fmt.Errorf("%w: operations is not a well-formed JSON array: %v", ErrInvalid, err)
+	}
+	if len(ops) == 0 {
+		return fmt.Errorf("%w: operations is an empty array; an http entry must serve at least one operation", ErrInvalid)
+	}
+
+	return nil
+}
+
+// authNameChars is the grammar of a header or query-parameter name the
+// gateway will inject a credential into: a conservative subset with no
+// whitespace, control characters or delimiters, so a signed name can never
+// carry a smuggled second header or a request-splitting sequence.
+var authNameChars = regexp.MustCompile(`^[A-Za-z0-9!#$%&'*+.^_` + "`" + `|~-]+$`)
+
+// controlHeaderSlots mirrors the denylist of internal/gateway/resthttp
+// (operation.go, controlHeaders and IsControlHeader), minus Authorization:
+// the headers a credential may not be injected into, because net/http drops
+// them when it writes the request (Host, Content-Length,
+// Transfer-Encoding) or they are hop-by-hop and a proxy strips them
+// (Connection, Upgrade, TE, Trailer, Keep-Alive, Proxy-*), or they are the
+// other credential channel (Cookie). A mirror, not an import: resthttp
+// imports this package, so the import would be a cycle.
+// resthttp's TestReservedSlots_RegistryMirrorsTheDenylist fails if the two
+// drift.
+var controlHeaderSlots = map[string]bool{
+	"host": true, "content-length": true, "transfer-encoding": true,
+	"connection": true, "upgrade": true, "te": true, "trailer": true,
+	"keep-alive": true, "cookie": true,
+}
+
+// isControlHeaderSlot folds name the way resthttp does (case-insensitive,
+// "_" read as "-") and reports whether it is in controlHeaderSlots or a
+// Proxy-* header.
+func isControlHeaderSlot(name string) bool {
+	folded := strings.ReplaceAll(strings.ToLower(name), "_", "-")
+	return controlHeaderSlots[folded] || strings.HasPrefix(folded, "proxy-")
+}
+
+func validateAuthName(name string) error {
+	if strings.TrimSpace(name) == "" {
+		return fmt.Errorf("%w: auth name must not be empty for a header or query credential", ErrInvalid)
+	}
+	if !authNameChars.MatchString(name) {
+		return fmt.Errorf("%w: auth name %q must be an HTTP token (letters, digits and !#$%%&'*+-.^_`|~)", ErrInvalid, name)
 	}
 	return nil
 }

@@ -621,7 +621,7 @@ func (h *harness) approve(server, tool string) {
 func (h *harness) rugPull(server string, def ToolDef) {
 	h.t.Helper()
 	def.Description += " (rewritten)"
-	got, err := h.quarantine.Observe(context.Background(), server, identityOf(def))
+	got, err := h.quarantine.Observe(context.Background(), server, identityOf(def), quarantine.ClassSafe)
 	if err != nil {
 		h.t.Fatalf("Observe(%q, %q): %v", server, def.Name, err)
 	}
@@ -2774,6 +2774,57 @@ func TestCredentialDrift_NoticesARotationTheConnectionMissed(t *testing.T) {
 	}
 }
 
+// TestCredentialDrift_DoesNotApplyToAnHTTPUpstream: the premise of drift
+// -- the value was copied once, at dial, into a process that keeps it --
+// is false for the REST transport, whose adapter re-resolves the secret
+// through the vault on every call (ADR-0047 §5). A rotation is therefore
+// already in effect at the next call, and reporting it would tell the
+// operator to redial an upstream that holds nothing (serve.go's warning
+// says "STILL USING THE OLD VALUE", which would be false). The digests are
+// still recorded, because scrubResult reads them for the NAMES to redact.
+func TestCredentialDrift_DoesNotApplyToAnHTTPUpstream(t *testing.T) {
+	h := newHarness(t)
+	h.vault.values["IOC_API_KEY"] = "the-value-at-dial-time"
+	h.vault.values["CASEMGMT_API_KEY"] = "the-value-at-dial-time"
+	h.register("casemgmt", "CASEMGMT_API_KEY")
+	entry := registry.UpstreamServer{
+		Name:        "ioc",
+		Transport:   registry.TransportHTTP,
+		URL:         "https://api.example.com/v2",
+		AuthKind:    registry.AuthHeader,
+		AuthName:    "X-API-Key",
+		EnvVarNames: []string{"IOC_API_KEY"},
+		Operations:  []byte(`[{"name":"check","method":"GET","path":"/check","inputSchema":{"type":"object"}}]`),
+	}
+	if err := entry.Validate(); err != nil {
+		t.Fatalf("test http entry is not a valid registry entry: %v", err)
+	}
+	h.reg.mu.Lock()
+	h.reg.entries = append(h.reg.entries, entry)
+	h.reg.mu.Unlock()
+
+	if err := h.gw.Connect(context.Background()); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	h.vault.mu.Lock()
+	h.vault.values["IOC_API_KEY"] = "the-value-after-rotation"
+	h.vault.values["CASEMGMT_API_KEY"] = "the-value-after-rotation"
+	h.vault.mu.Unlock()
+
+	drift := h.gw.CredentialDrift(context.Background())
+	if len(drift) != 1 || drift[0].Upstream != "casemgmt" {
+		t.Fatalf("CredentialDrift = %+v, want exactly the stdio upstream; the http one re-resolves per call", drift)
+	}
+
+	// scrubResult still has the http upstream's variable NAME to redact with.
+	h.gw.mu.RLock()
+	_, recorded := h.gw.creds["ioc"]["IOC_API_KEY"]
+	h.gw.mu.RUnlock()
+	if !recorded {
+		t.Errorf("the http upstream's credential name was not recorded; scrubResult would have nothing to redact with")
+	}
+}
+
 // TestCredentialDrift_NeverCarriesAValue: the report names the upstream
 // and the variable NAME, both of which the registry already stores in
 // plaintext because neither is a secret. It must never carry the value,
@@ -2844,6 +2895,7 @@ func TestAuditReasons_AreAStableWireContract(t *testing.T) {
 		{reasonForbidden, "forbidden"},
 		{reasonQuarantined, "quarantined"},
 		{reasonQuarantineUnavailable, "quarantine unavailable"},
+		{reasonSensitiveNotGranted, "sensitive tool requires an explicit grant in a non-read role"},
 		{reasonNotVisible, "not visible to caller"},
 		{reasonAuthFailed, "authentication failed"},
 		{reasonUpstreamTimeout, "upstream timed out"},
@@ -2872,6 +2924,7 @@ func TestAuditReasons_AreAStableWireContract(t *testing.T) {
 	seen := map[string]bool{}
 	for _, r := range []string{
 		reasonUnknownTool, reasonForbidden, reasonQuarantined, reasonQuarantineUnavailable,
+		reasonSensitiveNotGranted,
 		reasonNotVisible, reasonAuthFailed, reasonUpstreamTimeout, reasonCallCancelled,
 		reasonUpstreamFailed, reasonResultTooLarge, reasonResultSchemaViolation,
 		reasonUpstreamGone, reasonAuthFlood,

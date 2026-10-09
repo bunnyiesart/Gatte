@@ -241,6 +241,22 @@ func validateStructuredContent(schema *jsonschema.Resolved, res Result) error {
 // is correct rather than incidental: fetching a schema over the network,
 // at a URL an upstream chose, would hand a backend a request the gateway
 // makes on its behalf.
+// CheckOutputSchema reports, wrapping ErrUnusableOutputSchema, whether raw
+// is an output schema routesFor refuses at connect ("unusable output
+// schema"): the same resolveOutputSchema, so the answer cannot drift.
+// Exported for the OpenAPI ingestion (internal/gateway/resthttp, ADR-0047
+// §3), which drops at register time an output schema the gateway would
+// refuse, instead of letting a signed entry lose its tool at every
+// connect.
+//
+// Pre-condition: none (empty raw is "no output schema" and passes).
+// Post-condition: nil exactly when routesFor's output-schema step accepts
+// raw.
+func CheckOutputSchema(raw json.RawMessage) error {
+	_, err := resolveOutputSchema(raw)
+	return err
+}
+
 func resolveOutputSchema(raw json.RawMessage) (*jsonschema.Resolved, error) {
 	if len(raw) == 0 {
 		return nil, nil

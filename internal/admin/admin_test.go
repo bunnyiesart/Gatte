@@ -148,7 +148,7 @@ var listCases = quarantine.ToolIdentity{Name: "list_cases", Description: "List c
 
 func (h *harness) observe(t *testing.T, server string, id quarantine.ToolIdentity) quarantine.Tool {
 	t.Helper()
-	o, err := h.tools.Observe(context.Background(), server, id)
+	o, err := h.tools.Observe(context.Background(), server, id, quarantine.ClassSafe)
 	if err != nil {
 		t.Fatal(err)
 	}

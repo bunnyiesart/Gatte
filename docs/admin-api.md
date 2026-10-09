@@ -131,7 +131,8 @@ Every rule lives in the backend, so a front cannot forget one:
 - **The operator is who the kernel says.** Identity comes from the
   socket's peer credentials, never from a request field. Every state change
   writes an operator row, `(operator:NAME)`, to the audit trail:
-  `(tool approve)`, `(tool approve set)`, `(tool revoke)`, `(access block)`,
+  `(tool approve)`, `(tool approve set)`, `(tool revoke)`, `(tool clear)`,
+  `(access block)`,
   `(access unblock)`, `(maintenance on)`, `(maintenance off)`, `(config
   reload)` and `(upstream redial)` (written by `serve`),
   `(account add|groups|disable|enable|reset password)`.
@@ -139,6 +140,16 @@ Every rule lives in the backend, so a front cannot forget one:
   without one, refuses another, and refuses if the definition moved while
   approving. A backend's whole review set is approved by its manifest,
   never "everything pending" (below).
+- **A sensitive tool needs two decisions, and the second is per tool.**
+  A tool whose `class` is `sensitive` (1.5.0, feature `tool_clear`,
+  `design/adr/0048`) is approved like any other and stays `usable: false`
+  until `POST /v1/tools/clear` clears it at its approved fingerprint; the
+  approval answers with the warning `sensitive_uncleared`, not an error,
+  and `approve-set` never clears. Clearing is refused with
+  `no_non_read_grant` unless a role marked `non_read` names the tool in
+  `tools` (`details.callable_by` says what covers it instead); a wildcard
+  never reaches a sensitive tool, and the gateway asks the same question on
+  every call. A definition change or a revoke withdraws the clearance.
 - **Access is only through `[group_to_role]`.** Accounts get only groups
   that map to a role, and a peer that is not root changes only accounts
   whose groups all map to one (`account_not_managed` otherwise).
@@ -166,7 +177,7 @@ set: handle one you do not know by its HTTP status.
 
 ### Retrying
 
-Approve, revoke, block, unblock, maintenance on and off, set groups, disable
+Approve, revoke, clear, block, unblock, maintenance on and off, set groups, disable
 and enable are safe to repeat after `internal` or a dropped connection: a repeat answers
 `changed: false`. Unblock records before it lifts (`design/adr/0031`), so an
 unblock the trail cannot record is not performed and answers an error:

@@ -201,6 +201,14 @@ const (
 	UpstreamUpdate = "(upstream update)"
 )
 
+// Operator rows of design/adr/0048.
+const (
+	// ToolClear is a sensitive tool cleared for serving at its approved
+	// fingerprint: the second human decision such a tool needs, after
+	// approval, and separate from it on purpose.
+	ToolClear = "(tool clear)"
+)
+
 // config reads the configuration for one operation.
 func (s *Service) config() (*config.Config, error) {
 	cfg, err := s.d.Config()

@@ -1,17 +1,18 @@
-.PHONY: require-devtools race-noskip ci nofront cross-vet build test test-race vet lint fmt-check check lab-build lab-probe devtools
+.PHONY: require-devtools race-noskip ci nofront cross-vet build test test-race vet lint fmt-check check lab-build lab-probe lab-probe-rest devtools
 
 build:
 	go build -o bin/mcp-gateway ./cmd/mcp-gateway
 
-# Builds the four fake upstream MCP servers and the probe (lab/README.md,
-# "Go implementation"). Binaries go to bin/lab/, gitignored like bin/
-# itself.
+# Builds the four fake upstream MCP servers, the fake REST API and the
+# probe (lab/README.md, "Go implementation"). Binaries go to bin/lab/,
+# gitignored like bin/ itself.
 lab-build:
 	@mkdir -p bin/lab
 	go build -o bin/lab/casemgmt ./lab/servers/casemgmt
 	go build -o bin/lab/logsearch ./lab/servers/logsearch
 	go build -o bin/lab/docsearch ./lab/servers/docsearch
 	go build -o bin/lab/threatintel ./lab/servers/threatintel
+	go build -o bin/lab/restmock ./lab/servers/restmock
 	go build -o bin/lab/probe ./lab/probe
 
 # Runs the probe against all four fake servers as real subprocesses (not
@@ -23,6 +24,19 @@ lab-probe: lab-build
 		echo "== $$name =="; \
 		./bin/lab/probe --tool $${name}_credcheck -- ./bin/lab/$$name || exit 1; \
 	done
+
+# The REST counterpart of lab-probe (ADR-0047, ADR-0048): spawns the fake
+# REST API as a real subprocess, fetches and ingests its OpenAPI document
+# through the adapter's guarded client, signs and serves the entry through
+# the real gateway, and proves the four claims an http upstream makes --
+# credential injected server-side, never returned to the client or logged,
+# masked when the API reflects it, and a sensitive operation refused until
+# `tool clear` plus a non-read role. It is a `go test` rather than a binary
+# because the adapter refuses loopback and the one test-only allowance for
+# it lives in internal/gateway/resthttp's test binary (lab/README.md, "The
+# REST probe"). -count=1 so the proof is re-run, never served from cache.
+lab-probe-rest:
+	go test -count=1 -v -run '^TestLabProbeREST$$' ./internal/gateway/resthttp/
 
 # -count=1 disables go test's result cache for the whole run. Required for
 # internal/fitness to be trustworthy -- see the comment in

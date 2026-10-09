@@ -4,6 +4,29 @@
 fases (§Fases). Cada fase que tomar uma sub-decisão significativa ganha seu
 próprio ADR, como manda o `AGENTS.md` §6.
 
+**Estado (07 out 2026): Fases A e B landadas.** O transporte `http` é
+registrável, assinável e chamável de ponta a ponta — `upstream register
+-transport http -openapi FILE|URL` gera as tools do OpenAPI (§3), a `v3-http`
+assina URL + descritor de auth + digest das operações (§4), a credencial é
+injetada pelo adapter `resthttp` (§5) sob a guarda de egresso (§6), e o
+harness que esta secção de Fases pedia existe (`lab/servers/restmock` +
+`make lab-probe-rest`, com o teste de credencial refletida em
+`Location`/`Set-Cookie`/corpo; o de DNS-rebind vive em
+`internal/gateway/resthttp/egress_test.go`). O estado detalhado, decisão a
+decisão, está no bloco de estado do `0048`. **Abertas: Fase C** (rota de
+proxy reverso, §7) **e Fase D** (egresso em `entryNetwork`/mapa do `0033`,
+verificador de implantação, referência completa de CLI e docs).
+
+**Adendo (07 out 2026):** as sub-decisões das Fases A e B — entregues juntas —
+estão no `design/adr/0048-rest-de-openapi-classe-de-seguranca-e-guarda-de-
+egresso.md`, que **altera o faseamento da §4**: o digest do conjunto de
+operações é assinado já na Fase A, dentro da `v3-http` (não num `v4-http` na
+Fase B), porque as operações passam a rotear chamadas desde a primeira entrega
+e o `método+path` não está coberto nem pela quarentena nem pela `v1`. O `0048`
+também fixa a classe de segurança por método com gate na borda de dispatch, a
+guarda de egresso que desconfia da spec, e a redação de credencial em erros —
+correções de uma revisão adversarial contra o código.
+
 **Revisão de 05 out 2026 (duas passagens de revisão adversarial contra o
 código).** A direção segue de pé; o texto foi corrigido duas vezes antes de
 abrir as fases, porque a primeira correção introduziu uma incoerência de tipo.
@@ -63,8 +86,8 @@ auth** (§5) e o **conjunto de operações congelado** (§3) precisam ser
 *persistidos* na entrada e *cobertos pela assinatura* (§4): hoje
 `registry.UpstreamServer` não tem campo para nenhum dos dois, e
 `signer.Canonical` (`signer.go:124`) assina `Name`, `Transport`, `Command`,
-`URL`, `Image` e os *nomes* das env — não um descritor de auth nem um conjunto
-de operações. Logo, isto é um dialer chegando **e** uma pequena migração de
+`URL`, `Image`, `Args` e os *nomes* das env — não um descritor de auth nem um
+conjunto de operações. Logo, isto é um dialer chegando **e** uma pequena migração de
 modelo de dados — ver §3, §4 e as Fases A/B.
 
 Decisão do dono (05 out 2026): a rota de proxy reverso é **restrita às
@@ -170,8 +193,10 @@ No `upstream register -transport http`, o operador aponta a spec OpenAPI
   isso como falha silenciosa por-tool no connect. Operação sem `operationId`
   usa `método+path`. Como `validToolName` é não-exportado em `internal/gateway`
   e o `register` vive em `cmd/mcp-gateway`, a regra do charset é **exportada de
-  um lugar só** (ou `validToolName` passa a exportado), para que `register` e
-  `routesFor` não divirjam. As outras recusas por-tool do `routesFor` (schema
+  um lugar só** (ou `validToolName` passa a exportado), para que `register`,
+  `routesFor` e a terceira cópia inline do mesmo predicado em `health.go:545`
+  (`validToolName` + `definitionSize` + `validateSchema`) não divirjam. As
+  outras recusas por-tool do `routesFor` (schema
   > 64 KiB `endpoint.go:1722`, `validateSchema` `:1726`, `resolveOutputSchema`
   `:1753`, `quarantine.Observe` `:1758`) ou também sobem para o `register`, ou
   ficam explicitamente como recusa por-tool no connect — a decisão é da Fase B,
@@ -181,23 +206,45 @@ No `upstream register -transport http`, o operador aponta a spec OpenAPI
   **a localização de cada parâmetro preservada por namespacing**
   (`path_id`/`query_id`/`header_x`/`body_id`) — a anotação `x-gatte-param-
   location` sobre um objeto plano **não** basta, porque dois params de mesmo
-  `name` ainda colapsariam numa chave. O **nome do cabeçalho/cookie de auth
-  injetado é reservado**: um parâmetro `header_*`/`cookie_*` declarado que o
-  sombreie é recusado/descartado no registro, para o chamador não sobrescrever
-  a credencial do servidor. O gerador **resolve `$ref` contra os `components`
+  `name` ainda colapsariam numa chave. O **local de auth injetado é reservado**
+  em todas as suas formas: um parâmetro `header_*`, `cookie_*` **ou `query_*`**
+  declarado que sombreie o lugar onde a credencial entra (§4, `kind`
+  bearer/header/query) é recusado/descartado no registro, e a regra é
+  **servidor-vence** — o valor injetado nunca é sobrescrito pelo chamador. O
+  casamento do nome reservado é **case-insensitive** para cabeçalho e cookie
+  (nomes de cabeçalho HTTP colidem sem diferença de caixa), reusando a
+  disciplina `strings.ToLower` + recusa de duplicata que `endpoint.go:3970-3974`
+  já aplica ao `x-mcp-header`. O gerador **resolve `$ref` contra os `components`
   da spec congelada**; `allOf` funde no mapa de propriedades, mas `oneOf`/
-  `anyOf` **preservam a alternância** como irmãos de topo
-  (`{"type":"object","oneOf":[...]}`), que `validateSchema` (`endpoint.go:3905`)
-  aceita — achatá-los num só `properties` aceitaria corpos que nenhuma
-  alternativa aceitava. Um `requestBody` **não-objeto** (array/escalar JSON,
-  `application/octet-stream`) ganha uma representação explícita sob a mesma
-  regra (ex. `body` único tipado), definida na Fase B. Define-se também uma
-  **forma canônica de bytes** do `InputSchema` (ordenação de chaves, `$ref`
-  resolvido) porque a quarentena hasheia os bytes crus.
+  `anyOf` do `requestBody` **preservam a alternância sob uma propriedade `body`
+  dedicada** (`{"properties":{"body":{"oneOf":[...]}}}`), **não** como `oneOf`
+  irmão do objeto de topo: como JSON Schema faz AND dos irmãos de topo, um
+  `oneOf` cujos ramos declarem `additionalProperties:false` (o idioma dominante
+  de corpo) rejeitaria os irmãos `path_*`/`query_*`/`header_*` e tornaria o
+  `InputSchema` insatisfazível — `validateSchema` (`endpoint.go:3905`) aceitaria
+  assim mesmo porque só checa o `type` de topo, então "aceita" não é "correto".
+  Ramos lifted têm seu `additionalProperties:false` neutralizado. Um
+  `requestBody` **não-objeto** (array/escalar JSON, `application/octet-stream`)
+  vira a propriedade `body` tipada única, **definido agora** (não adiado). A
+  **forma canônica de bytes** do `InputSchema` — ordenação lexicográfica de
+  chaves, `$ref` resolvido, sem espaço insignificante — é **fixada agora, não na
+  Fase B**: a quarentena hasheia os bytes crus e `validateSchema` só olha a forma
+  de topo, então o hash assinado/quarentenado fica indefinido até ser pinado.
 - **Classe de segurança por método** (safe/não-safe), metadado da tool na
-  entrada assinada; método não-safe → default-deny em classe de quarentena
-  própria + papel distinto (Contexto). O acoplamento mora aqui (geração/
-  registro) e no estado de quarentena, nunca no `internal/access`.
+  entrada assinada. A metade *default-deny* vive em `Usable()` (classe de
+  quarentena própria ao lado de `pending`/`approved`/`changed`). A metade
+  *papel distinto* precisa de um seam real, porque `Role.Allows`
+  (`access.go:200-215`) casa só por nome/prefixo e o domínio `access` é
+  class-blind por decisão (não aprende método HTTP) — e `GrantAll` (`*`,
+  `access.go:99,211`) auto-concederia uma tool não-safe recém-aprovada. O seam é
+  a **borda de aprovação/concessão** (operator-console/registro), não o
+  `internal/access`: aprovar uma tool não-safe **exige** listá-la explicitamente
+  nos grants de um papel marcado não-leitura, e `GrantAll` **não cobre** tools
+  da classe não-safe (elas só entram por id explícito). Assim a classificação e
+  seu enforcement moram na borda REST/registro e na quarentena; o `access`
+  continua casando por nome. A Fase B constrói as duas metades juntas — sem a de
+  concessão, "papel distinto" seria só disciplina de operador, que o Contexto
+  (`o controle precisa de mecanismo`) recusa.
 
 Essas definições **entram na entrada assinada** e cada tool gerada passa pela
 **quarentena** existente (SHA-256 sobre `name+description+schema`, `pending`
@@ -217,12 +264,14 @@ assinatura. Nunca uma re-leitura silenciosa.
 
 ### 4. Assinatura cobre a URL, o esquema de auth e o conjunto de operações (canonical v3)
 
-A forma canônica de hoje assina `Name`, `Transport`, `Command`, a **URL
-inteira** (`s.URL`, `signer.go:139`), `Image` e os *nomes* das env, excluindo
+A forma canônica de hoje assina `Name` (`signer.go:133`), `Transport`
+(`:134`), `Command` (`:138`), a **URL inteira** (`s.URL`, `:139`), `Image`, os
+`Args` com prefixo de comprimento (`:144-147`) e os *nomes* das env, excluindo
 valores de segredo (`signer.go:124-160`, tags `...canonical/v1` e
 `...v2-image`). Uma entrada http assina, numa **tag canônica nova
-(`v3-http`)** em `signer.go:64`, **tudo o que a v1 já assina** (Name,
-Transport, EnvVarNames, e a URL) **mais**:
+(`v3-http`)** em `signer.go:64`, **tudo o que a v1 já assina** — Name,
+Transport, Command (vazio numa linha http, mas no layout), Args, EnvVarNames e a
+URL — **mais**:
 
 - a **URL completa** — esquema, host, porta E base path (ver §6 sobre o base
   path; a v1 já assina a `s.URL` inteira, então a v3 não pode cobrir *menos*:
@@ -237,7 +286,15 @@ Transport, EnvVarNames, e a URL) **mais**:
   existe para fechar (modelo de ameaça em `signer.go:255-269`);
 - na **Fase B**, um **digest do conjunto de operações congelado** (§3).
 
-É uma sub-decisão própria (ADR na Fase B para o digest de operações; o
+A **ordem dos campos da `v3-http`** é fixada agora — tag, Name, Transport,
+Command, URL, Args (contados), nomes das env (contados), descritor de auth —, e
+o **descritor de auth tem encoding canônico próprio com prefixo de comprimento**
+(`kind` então `nome`, cada um `appendField`-ado), para não reabrir a ambiguidade
+que `signer.go:116-121` fecha. Acrescentar o digest de operações na Fase B **não
+pode** ser um campo opcional dentro da mesma tag `v3-http`: `signer.go:74-78` é
+explícito que é uma **tag separada**, não um campo opcional, que garante que dois
+layouts nunca coincidam — então o sub-ADR da Fase B decide subir para `v4-http`,
+não anexar à `v3-http`. É uma sub-decisão própria (esse ADR na Fase B; o
 descritor de auth e a URL completa já na Fase A, ver Fases). O **valor** da
 chave continua fora da assinatura: rotação nunca quebra a assinatura, como no
 resto (`AGENTS.md` §2, Definition Signer).
@@ -248,9 +305,36 @@ A injeção de hoje é ambiente de processo filho (`resolveEnv`,
 `endpoint.go:1915`). REST precisa de injeção **na requisição de saída**:
 `Authorization: Bearer <chave>`, `X-API-Key: <chave>` ou um parâmetro de
 query, conforme o **descritor de auth assinado** (§4, derivado das
-`securitySchemes` do OpenAPI ou do `register`). Reusa, sem copiar plaintext
-para lugar nenhum: `vault.Provider.Resolve` (`internal/vault/vault.go:125`) e
-o registro `rememberCredentials` (`endpoint.go:4016`).
+`securitySchemes` do OpenAPI ou do `register`). Reusa `vault.Provider.Resolve`
+(`internal/vault/vault.go:125`) e o registro `rememberCredentials`
+(`endpoint.go:4016`).
+
+**Isto abre, de propósito, um terceiro lugar que toca plaintext — e só por
+isso o `resthttp` pode ser stateless.** O contrato do `Dialer`
+(`gateway.go:204-222`) entrega o plaintext ao adaptador só no `Dial`, manda não
+persistir env, e `bringUp` zera o mapa logo após (`endpoint.go:1874`): a
+resolução (no pacote `gateway`) e o spawn (no adaptador) ficam separados para
+manter todo caminho que toca segredo em dois lugares pequenos. Uma API REST não
+tem spawn que delimite essa vida: o `resthttp` **recebe um handle de vault e
+re-resolve a credencial por chamada**, dentro do `CallTool`. É um caminho de
+requisição que toca plaintext — o `gateway.go:210-213` existe para evitar
+*espalhar* isso, e aqui o alargamos de dois para três lugares, conscientemente,
+porque é a única forma de um transporte stateless injetar sem persistir env.
+Efeito colateral bom: como o `resthttp` re-resolve por chamada, o valor injetado
+é sempre igual ao que o `scrubResult` re-resolve, então a ressalva de rotação em
+`endpoint.go:2371-2374` não se aplica a REST. A Fase A documenta esse terceiro
+lugar como tal (não "sem caminho novo").
+
+*Nota, 07 out 2026 (revisão do adapter):* "sempre igual" vale **a menos da
+janela de uma chamada**: o adapter resolve em T1, a troca HTTP acontece, e o
+`scrubResult` resolve em T2 > T1; uma rotação do sops entre os dois deixa o
+servidor refletindo o valor antigo (corpo 401, `Location`, `Set-Cookie`) e o
+gateway mascarando só o novo. O adapter fecha essa janela sem reter nada: ao
+serializar o envelope ele ainda tem em mão o valor que **injetou** e mascara com
+ele (`gateway.ScrubJSON`, a mesma disciplina do `scrubJSON`), e o `scrubResult`
+do gateway corre depois como segunda linha. A ressalva de rotação passa a não se
+aplicar a REST por construção, não por coincidência de tempos. Pela mesma
+razão o `CredentialDrift` não se aplica a http (ADR-0048 Decisão 9, nota).
 
 **A higienização da resposta é o `scrubResult` que já existe — não um hook
 novo.** Como o `resthttp.CallTool` serializa status, cabeçalhos e corpo dentro
@@ -263,10 +347,16 @@ em `g.vault.Resolve` (`endpoint.go:2379-2404`) — **não** os digests de
 e não voltam a plaintext. Como os cabeçalhos agora fazem parte do
 `Result.Content`, uma credencial refletida num `Location` 3xx, num eco
 `X-API-Key` ou num `Set-Cookie` é mascarada pelo mesmo caminho — **desde que**
-o conjunto de renderizações de `scrubResult` ganhe uma forma **URL-decodificada**
-(`redact.go:123-156` hoje só tem valor cru, `%q`/`QuoteToASCII` e encoding de
-string JSON; um valor percent-encodado num redirect não casaria). Essa extensão
-do `scrubResult` (uma renderização a mais) é parte da Fase A.
+`renderingsOf` (`redact.go:92-112`) ganhe uma forma **URL-encodada** do valor
+(`url.QueryEscape`/`PathEscape`, composta com os `%q`/`jsonBodies` que já
+existem). A direção importa: o plaintext da credencial não tem sequências
+percent, então uma forma URL-*decodificada* seria igual ao valor cru
+(`url.QueryUnescape(value)==value`, já deduplicado em `redact.go:99`) e não
+casaria os bytes percent-*encodados* que estão no `Location`. Em vez de (ou
+além de) encodar o valor, pode-se decodar o texto da resposta antes de casar —
+mas a renderização a mais em `renderingsOf` é o caminho mínimo. Essa extensão
+do `scrubResult` é parte da Fase A, com o teste de credencial refletida em
+`Location`/cabeçalho como critério de aceite.
 
 O caminho da tool MCP (não-proxy) **mantém `scrubResult` inalterado** sobre o
 `Result` (`endpoint.go:2342`) — não há hook `ModifyResponse` nele nem seam para

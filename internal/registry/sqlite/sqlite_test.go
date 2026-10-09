@@ -329,3 +329,100 @@ func TestMigrate_RetrofitsTheImageColumnOntoAPreOCIDatabase(t *testing.T) {
 		t.Fatalf("oci row = %+v, %v; want image %s", got, err, img)
 	}
 }
+
+// TestRepository_HTTPEntry_RoundTrip covers the ADR-0047 columns: the
+// injection descriptor and the frozen operation set survive a Register/Get,
+// and List returns them too.
+func TestRepository_HTTPEntry_RoundTrip(t *testing.T) {
+	_, repo := newTestRepo(t)
+	ctx := context.Background()
+
+	ops := []byte(`[{"name":"check","method":"GET","path":"/check"}]`)
+	in := registry.UpstreamServer{
+		Name:        "abuseipdb",
+		Transport:   registry.TransportHTTP,
+		URL:         "https://api.abuseipdb.com/api/v2",
+		AuthKind:    registry.AuthHeader,
+		AuthName:    "X-API-Key",
+		EnvVarNames: []string{"ABUSEIPDB_KEY"},
+		Operations:  ops,
+	}
+	if err := repo.Register(ctx, in); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	got, err := repo.Get(ctx, "abuseipdb")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.AuthKind != registry.AuthHeader {
+		t.Errorf("AuthKind = %q, want %q", got.AuthKind, registry.AuthHeader)
+	}
+	if got.AuthName != "X-API-Key" {
+		t.Errorf("AuthName = %q, want %q", got.AuthName, "X-API-Key")
+	}
+	if string(got.Operations) != string(ops) {
+		t.Errorf("Operations = %s, want %s", got.Operations, ops)
+	}
+	if got.URL != in.URL {
+		t.Errorf("URL = %q, want %q", got.URL, in.URL)
+	}
+}
+
+// TestRepository_StdioEntry_HasNoHTTPFields confirms a non-http row reads
+// back with the injection descriptor empty and operations nil, so Validate's
+// "must be empty for non-http" rules see the same shape on read-back.
+func TestRepository_StdioEntry_HasNoHTTPFields(t *testing.T) {
+	_, repo := newTestRepo(t)
+	ctx := context.Background()
+
+	if err := repo.Register(ctx, registry.UpstreamServer{
+		Name: "casemgmt", Transport: registry.TransportStdio, Command: "/bin/casemgmt",
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	got, err := repo.Get(ctx, "casemgmt")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.AuthKind != registry.AuthNone || got.AuthName != "" || got.Operations != nil {
+		t.Errorf("stdio row carries http fields: kind=%q name=%q ops=%v", got.AuthKind, got.AuthName, got.Operations)
+	}
+}
+
+// TestMigrate_RetrofitsTheHTTPColumnsOntoAPreADR47Database is the image
+// retrofit's sibling for the ADR-0047 columns: a database created before them
+// gains auth_kind, auth_name and operations, and an http entry stores.
+func TestMigrate_RetrofitsTheHTTPColumnsOntoAPreADR47Database(t *testing.T) {
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	// A pre-ADR-0047 table: has image (post-oci) but none of the http columns.
+	if _, err := db.Exec(`CREATE TABLE upstream_servers (
+	name TEXT PRIMARY KEY, transport TEXT NOT NULL, command TEXT NOT NULL,
+	args TEXT NOT NULL, url TEXT NOT NULL, env_var_names TEXT NOT NULL,
+	created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+	image TEXT NOT NULL DEFAULT '')`); err != nil {
+		t.Fatalf("create pre-adr47 table: %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := regsqlite.Migrate(db); err != nil {
+			t.Fatalf("Migrate run %d: %v", i+1, err)
+		}
+	}
+	repo := regsqlite.New(db)
+	ctx := context.Background()
+	if err := repo.Register(ctx, registry.UpstreamServer{
+		Name: "abuseipdb", Transport: registry.TransportHTTP,
+		URL: "https://api.example.com/v2", AuthKind: registry.AuthBearer,
+		EnvVarNames: []string{"K"}, Operations: []byte(`[{"name":"x","method":"GET","path":"/x"}]`),
+	}); err != nil {
+		t.Fatalf("Register http after retrofit: %v", err)
+	}
+	got, err := repo.Get(ctx, "abuseipdb")
+	if err != nil || got.AuthKind != registry.AuthBearer {
+		t.Fatalf("http row after retrofit = %+v, %v", got, err)
+	}
+}

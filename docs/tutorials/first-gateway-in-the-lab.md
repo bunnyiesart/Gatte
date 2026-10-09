@@ -31,7 +31,8 @@ make build lab-build
 
 `make build` writes `bin/mcp-gateway`. `make lab-build` writes four mock MCP
 servers into `bin/lab/` (`casemgmt`, `logsearch`, `docsearch`,
-`threatintel`) and the `probe`. Each mock answers with synthetic data and
+`threatintel`), the fake REST API `restmock` (not used in this tutorial;
+`lab/README.md`, "The REST probe") and the `probe`. Each mock answers with synthetic data and
 has a `<name>_credcheck` tool that says whether it received the credential
 it expected, without ever returning the credential itself
 ([`lab/README.md`](../../lab/README.md)).

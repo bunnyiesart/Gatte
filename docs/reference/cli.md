@@ -43,6 +43,7 @@ the database directory's owner first.
 | [`tool review`](#tool-review) | service account | One backend's waiting tools and their manifest. |
 | [`tool approve`](#tool-approve) | service account | Approve one tool, or one backend's review set. |
 | [`tool revoke`](#tool-revoke) | service account | Withdraw an approval. |
+| [`tool clear`](#tool-clear) | service account | Clear an approved sensitive tool for serving. |
 | [`sign`](#sign) | root | Sign registry entries; create a signing key. |
 | [`audit`](#audit) | service account | Read or verify the audit trail. |
 | [`quota list`, `quota usage`](#quota) | service account | Declared limits and per-analyst spend. |
@@ -104,25 +105,44 @@ mcp-gateway upstream register [-config FILE] -name NAME -transport stdio
                               -command CMD [-arg ARG ...] [-env VARNAME ...]
 mcp-gateway upstream register [-config FILE] -name NAME -transport oci
                               -image NAME@sha256:HEX [-arg PODMAN-FLAG ...] [-env VARNAME ...]
+mcp-gateway upstream register [-config FILE] -name NAME -transport http
+                              -url BASE-URL -openapi FILE|URL
+                              [-auth-kind bearer|header|query|none [-auth-name NAME]] [-env VARNAME]
 ```
 
 | Flag | Default | Meaning |
 |---|---|---|
 | `-name NAME` | none, required | Entry name, `^[A-Za-z0-9][A-Za-z0-9_-]*$`; `gatte` in any case is reserved. |
-| `-transport T` | `stdio` | `stdio` spawns a process; `oci` runs `podman run --rm -i`. `http` is recognised and refused: no dialer exists in this build. |
+| `-transport T` | `stdio` | `stdio` spawns a process; `oci` runs `podman run --rm -i`; `http` is a REST API the gateway itself calls, one tool per operation of the OpenAPI document `-openapi` names (`design/adr/0047`, `0048`). |
 | `-command CMD` | none | The command to spawn, for `stdio`. |
 | `-image REF` | none | For `oci`: `NAME@sha256:` plus 64 hex characters. A tag is refused. |
 | `-arg ARG` | none | Repeatable, in order. For `stdio`, an argument of the command; for `oci`, a podman flag the signature covers. `--network` takes `none` (the default), `slirp4netns`, `pasta` or a podman network name; `host`, `private`, `container:*`, `ns:*` and `:options` are refused. |
-| `-env VARNAME` | none | Repeatable. The name of a variable the vault resolves at spawn time. A `NAME=value` argument is refused and the value is not echoed. A `stdio` entry with `-env` is refused unless `[upstreams] allow_credentialed_stdio = true`. |
-| `-url URL` | none | For `http`; kept for a future dialer, refused today. |
+| `-env VARNAME` | none | Repeatable. The name of a variable the vault resolves at spawn time. A `NAME=value` argument is refused and the value is not echoed. A `stdio` entry with `-env` is refused unless `[upstreams] allow_credentialed_stdio = true`. For `http`: exactly one, the secret `-auth-kind` injects; none for a keyless entry. |
+| `-url URL` | none | For `http`: the base URL (scheme, host, port, base path) the signature covers and the adapter pins its client to -- the only destination this entry dials; a host the document names is ignored, and its `servers[0]` base path is folded in when `-url` has none. No userinfo, query or fragment; a literal loopback, private or link-local host is refused. |
+| `-openapi FILE\|URL` | none, required for `http` | The OpenAPI 3.0.x/3.1.x document, JSON or YAML. A URL is fetched once, now, with no credential and under the gateway's own egress guard (no private or loopback address, no redirect off its origin, no userinfo or query in the URL, at most 4 MiB); a document that needs a credential to read is downloaded by the operator and passed as a file. Refused on `stdio` and `oci`. |
+| `-auth-kind K` | derived or keyless | For `http`: where the secret `-env` names is injected on every call: `bearer` (`Authorization: Bearer`), `header` or `query` (the location `-auth-name` names), or `none` (keyless: nothing is derived, and the document's parameters are checked as for a keyless entry). Left out: keyless, unless the document declares exactly one `apiKey` or `http bearer` scheme, which is then derived and printed. |
+| `-auth-name NAME` | none | With `-auth-kind header` or `query`: the header or query-parameter name. A document parameter on that name is refused (the server-side value wins). A control header (`Host`, `Connection`, `Cookie`, `Proxy-*`, ...) is refused as a `header` name, given or derived; `Authorization` is allowed. |
 
 | | |
 |---|---|
 | Runs as | the service account |
 | Takes effect | the running gateway dials the entry within one `quarantine.refresh_interval`, once it is signed |
-| Exit codes | `0` registered; `1` a name already registered, a stored signature that is already `INVALID` for the new entry, or the signature state could not be read; `2` invalid flags or a refused entry |
+| Exit codes | `0` registered; `1` a name already registered, a stored signature that is already `INVALID` for the new entry, or the signature state could not be read; `2` invalid flags, a refused entry, or a document that could not be read or ingested |
 | Audit rows | none |
-| Decision records | `design/adr/0003`, `0020`, `0028`, `0033`, `0034` |
+| Decision records | `design/adr/0003`, `0020`, `0028`, `0033`, `0034`, `0047`, `0048` |
+
+For `http`, the output lists the tools generated (name, method, path, class),
+the operations the document declares that were skipped (a body with no JSON
+media type or on `GET`/`HEAD`/`OPTIONS`, `TRACE`/`CONNECT`), and the
+ingestion's warnings (text from the document is printed escaped). A
+response schema the gateway cannot compile is dropped with a warning, and
+`HEAD`/`OPTIONS` tools never declare one. The set is
+frozen with the entry and signed as a digest under `canonical/v3-http`; the
+document is never re-read. `POST`, `PUT`, `PATCH` and `DELETE` tools are
+`sensitive`: after approval each also needs `tool clear` and a role marked
+`non_read` that grants it by name. A document naming a control header
+(`Host`, `Transfer-Encoding`, ...), the credential's own slot, or a path with
+a scheme, authority or `..` is refused, naming the operation and parameter.
 
 ## upstream update
 
@@ -130,7 +150,8 @@ Replaces the image of one `oci` entry in place and keeps its quarantine.
 Each approval holds only while the new image advertises the byte-identical
 definition; a differing one becomes `changed` at the next discovery. The
 stored signature no longer verifies the entry, so the gateway refuses it
-until root runs `sign NAME`.
+until root runs `sign NAME`. It does not re-ingest an `http` entry's
+document: a changed API is deregistered and registered again.
 
 ```
 mcp-gateway upstream update [-config FILE] -image NAME@sha256:HEX NAME
@@ -176,7 +197,11 @@ mcp-gateway tool list [-config FILE] [-server NAME] [-json]
 | Flag | Default | Meaning |
 |---|---|---|
 | `-server NAME` | all | Only this backend's tools. |
-| `-json` | off | JSON objects with `server`, `tool`, `status`, `usable`, `approved_hash`, `observed_hash`, `first_seen_at`, `updated_at`. |
+| `-json` | off | JSON objects with `server`, `tool`, `status`, `usable`, `approved_hash`, `observed_hash`, `first_seen_at`, `updated_at`, and -- for a sensitive tool -- `class` (`"sensitive"`; absent for a safe tool) and `sensitive_cleared_hash` (the approved fingerprint it was cleared at; absent until cleared). `usable` already folds them in. |
+
+After the table, a block `N SENSITIVE tool(s) approved and not yet cleared`
+lists every tool that is approved, sensitive and held, each with the
+`tool clear SERVER TOOL` command that finishes the job (`design/adr/0048`).
 
 | | |
 |---|---|
@@ -246,8 +271,8 @@ mcp-gateway tool approve [-config FILE] -server NAME -manifest SHA256
 | Runs as | the service account |
 | Takes effect | next call; no restart |
 | Exit codes | `0` approved and recorded; `1` not approved (no `-fingerprint`, fingerprint or manifest moved, definition not kept), or approved but not recorded; `2` could not run |
-| Audit rows | `(tool approve)` per tool; `(tool approve set)` once for a set |
-| Decision records | `design/adr/0007`, `0016`, `0032`, `0043` |
+| Audit rows | `(tool approve)` per tool, with ` (sensitive; not served until cleared)` for a sensitive one; `(tool approve set)` once for a set |
+| Decision records | `design/adr/0007`, `0016`, `0032`, `0043`, `0048` (sensitive tools: approved, not served until `tool clear`) |
 
 ## tool revoke
 
@@ -265,8 +290,40 @@ mcp-gateway tool revoke [-config FILE] SERVER TOOL
 | Runs as | the service account |
 | Takes effect | next call; no restart |
 | Exit codes | `0` revoked, or already pending; `1` no such tool, a `changed` tool, a corrupt row, or revoked but not recorded; `2` could not run |
-| Audit rows | `(tool revoke)` |
+| Audit rows | `(tool revoke)`; a revoke also withdraws a clearance (no row of its own) |
 | Decision records | `design/adr/0007`, `0013` |
+
+## tool clear
+
+The second decision a sensitive tool needs, after approval
+(`design/adr/0048`). Approving says the definition is not poisoned;
+clearing says this backend may ACT on the team's behalf through this
+operation. A sensitive tool -- a REST operation with any method but `GET`,
+`HEAD` or `OPTIONS` -- is approved like any other and NOT served until
+cleared; `tool approve` says so, and `tool list` lists what is held.
+Approving a set (`-server -manifest`) never clears anything.
+
+```
+mcp-gateway tool clear [-config FILE] SERVER TOOL
+```
+
+Before writing, it prints the roles the clearance will reach: those with
+`non_read = true` that name the tool in `tools`. It refuses when there is
+none, naming role by role what covers the tool and why that does not reach
+it -- a `"*"` grant, a `[role.grants]` name, or the name on a role without
+the marking -- and the edit that would. The clearance is of the approved
+fingerprint: a later change to the definition, or `tool revoke`, withdraws
+it with the approval, and re-approving does not re-clear. Clearing an
+already-cleared tool changes nothing and writes nothing.
+
+| | |
+|---|---|
+| Runs as | the service account |
+| Flags | none besides `-config` |
+| Takes effect | next call; no restart. The gateway still asks, on every call, whether the caller holds a `non_read` role naming the tool. |
+| Exit codes | `0` cleared and recorded, or already cleared; `1` not cleared -- not a sensitive tool (`not_sensitive`), not approved or the baseline moved while clearing (`not_approved`), no `non_read` role names it (`no_non_read_grant`), no such tool, a corrupt row -- or cleared but not recorded; `2` could not run |
+| Audit rows | `(tool clear)` |
+| Decision records | `design/adr/0047`, `0048` |
 
 ## sign
 

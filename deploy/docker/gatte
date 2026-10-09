@@ -1,0 +1,402 @@
+#!/bin/sh
+# gatte: the operator's commands inside the container (design/adr/0049).
+#
+#     docker compose exec gatte gatte help
+#
+# Each command is a short composition of mcp-gateway's own commands and the
+# management API, run as the account each one needs (the service account
+# for the database, root for the signing key and the IdP's accounts). None
+# of them bypasses a gate: the quarantine still shows every definition
+# before it is approved, and nothing here approves on its own.
+
+. /usr/local/share/gatte/lib.sh
+derive
+
+usage() {
+	cat <<EOF
+gatte -- Gatte operator commands (run with: docker compose exec gatte gatte ...)
+
+APIs (REST backends from an OpenAPI document)
+  gatte api add NAME -url BASE-URL -openapi FILE|URL [options]
+        Register, sign and grant a REST API. FILE is a path under
+        config/ next to compose.yaml on the host (e.g. -openapi abuseipdb.json).
+        options: -auth-kind bearer|header|query  -auth-name NAME
+                 -key VAR      vault entry holding the key (default NAME_API_KEY, upper case)
+                 -keyless      the API takes no key
+                 -grant ROLE   role that gets NAME = ["*"] (default analyst); -no-grant to skip
+  gatte api approve NAME [-yes]
+        Show every tool of NAME waiting for review, then approve that exact set.
+  gatte api list
+  gatte api rm NAME
+  gatte clear SERVER TOOL
+        Let a SENSITIVE (POST/PUT/PATCH/DELETE) tool be served, to a
+        non_read role that names it in config/roles.toml.
+
+Credentials (sops+age vault; values are never printed)
+  gatte secret set NAME      reads the value from your terminal (or stdin)
+  gatte secret list
+  gatte secret rm NAME
+
+People (Authelia accounts, through the root-only accounts socket)
+  gatte user add USERNAME [-name "Full Name"] [-email E] [-group G ...]
+        Default group: soc-analysts. Prints a one-time password, once.
+  gatte user list
+  gatte user reset USERNAME
+  gatte user rm USERNAME
+  gatte connect USERNAME [-os macos|linux|windows]
+        The script that connects that person's Claude Code; hand it over
+        with the password.
+
+Running
+  gatte status               backends, tools waiting for review
+  gatte reload               apply config/roles.toml without a restart
+  gatte ca                   the private CA certificate (GATTE_TLS=internal)
+  gatte mcp ARGS...          any mcp-gateway command, e.g. gatte mcp audit -limit 20
+EOF
+}
+
+upper() { printf '%s' "$1" | tr 'a-z-' 'A-Z_'; }
+
+valid_var() {
+	case "$1" in
+	'' | [0-9]* | *[!A-Za-z0-9_]*) die "$1 is not an environment variable name (letters, digits, _)" ;;
+	esac
+}
+
+# --- vault -------------------------------------------------------------
+
+private_dir() {
+	umask 077
+	if [ -d /dev/shm ] && [ -w /dev/shm ]; then mktemp -d /dev/shm/gatte.XXXXXX; else mktemp -d; fi
+}
+
+vault_decrypt() { # DEST
+	SOPS_AGE_KEY_FILE=$AGE_KEY sops --decrypt --input-type json --output-type json "$VAULT" >"$1"
+}
+
+vault_encrypt() { # PLAINTEXT
+	r=$(age-keygen -y "$AGE_KEY")
+	sops --encrypt --age "$r" --input-type json --output-type json "$1" >"$VAULT.new"
+	chown "root:$SERVICE_USER" "$VAULT.new"
+	chmod 0640 "$VAULT.new"
+	mv "$VAULT.new" "$VAULT"
+}
+
+cmd_secret() {
+	sub=${1:-}
+	[ $# -gt 0 ] && shift
+	case "$sub" in
+	set)
+		[ $# -eq 1 ] || die "usage: gatte secret set NAME"
+		valid_var "$1"
+		w=$(private_dir)
+		trap 'rm -rf "$w"' EXIT INT TERM
+		if [ -t 0 ]; then
+			printf 'Value for %s (not echoed): ' "$1" >&2
+			stty -echo
+			IFS= read -r v || true
+			stty echo
+			printf '\n' >&2
+			printf '%s' "$v" >"$w/value"
+			v=
+		else
+			cat >"$w/value"
+		fi
+		[ -s "$w/value" ] || die "empty value: nothing stored"
+		vault_decrypt "$w/plain.json"
+		jq --arg k "$1" --rawfile v "$w/value" '.[$k] = ($v | rtrimstr("\n") | rtrimstr("\r"))' \
+			"$w/plain.json" >"$w/new.json"
+		vault_encrypt "$w/new.json"
+		say "Stored $1 in the vault. The gateway reads it on the next call; nothing to restart."
+		;;
+	list)
+		w=$(private_dir)
+		trap 'rm -rf "$w"' EXIT INT TERM
+		vault_decrypt "$w/plain.json"
+		jq -r 'keys[]' "$w/plain.json"
+		;;
+	rm)
+		[ $# -eq 1 ] || die "usage: gatte secret rm NAME"
+		valid_var "$1"
+		w=$(private_dir)
+		trap 'rm -rf "$w"' EXIT INT TERM
+		vault_decrypt "$w/plain.json"
+		jq -e --arg k "$1" 'has($k)' "$w/plain.json" >/dev/null || die "$1 is not in the vault"
+		jq --arg k "$1" 'del(.[$k])' "$w/plain.json" >"$w/new.json"
+		vault_encrypt "$w/new.json"
+		say "Removed $1 from the vault."
+		;;
+	*) die "usage: gatte secret set|list|rm" ;;
+	esac
+}
+
+vault_has() {
+	w=$(private_dir)
+	vault_decrypt "$w/plain.json"
+	if jq -e --arg k "$1" 'has($k)' "$w/plain.json" >/dev/null; then rc=0; else rc=1; fi
+	rm -rf "$w"
+	return $rc
+}
+
+# --- roles -------------------------------------------------------------
+
+# add_grant ROLE BACKEND puts `BACKEND = ["*"]` on the line after ROLE's
+# [role.grants] header in config/roles.toml, unless it is there already.
+add_grant() {
+	role=$1 backend=$2 f=$GATTE_SITE/roles.toml
+	if awk -v role="$role" -v b="$backend" '
+		/^\[\[role\]\]/ { inrole = 0; ing = 0 }
+		$0 ~ "^name[[:space:]]*=[[:space:]]*\"" role "\"" { inrole = 1 }
+		inrole && /^\[role\.grants\]/ { ing = 1; next }
+		inrole && ing && $1 == b { found = 1 }
+		END { exit found ? 0 : 1 }' "$f"; then
+		say "roles.toml already grants $backend to $role"
+		return 0
+	fi
+	awk -v role="$role" -v b="$backend" '
+		/^\[\[role\]\]/ { inrole = 0 }
+		$0 ~ "^name[[:space:]]*=[[:space:]]*\"" role "\"" { inrole = 1 }
+		{ print }
+		inrole && /^\[role\.grants\]/ && !done { print b " = [\"*\"]"; done = 1 }
+		END { exit done ? 0 : 1 }' "$f" >"$f.new" ||
+		{
+			rm -f "$f.new"
+			die "role \"$role\" with a [role.grants] table not found in config/roles.toml; add the grant by hand"
+		}
+	cat "$f.new" >"$f"
+	rm -f "$f.new"
+	say "roles.toml: $role may call every safe tool of $backend"
+}
+
+cmd_reload() {
+	assemble_config
+	mcp reload -wait 1m
+}
+
+# --- APIs --------------------------------------------------------------
+
+cmd_api_add() {
+	[ $# -ge 1 ] || die "usage: gatte api add NAME -url BASE-URL -openapi FILE|URL [...]"
+	name=$1
+	shift
+	url='' spec='' kind='' aname='' key='' keyless='' grant=analyst
+	while [ $# -gt 0 ]; do
+		case "$1" in
+		-url) url=$2; shift 2 ;;
+		-openapi) spec=$2; shift 2 ;;
+		-auth-kind) kind=$2; shift 2 ;;
+		-auth-name) aname=$2; shift 2 ;;
+		-key) key=$2; shift 2 ;;
+		-keyless) keyless=1; shift ;;
+		-grant) grant=$2; shift 2 ;;
+		-no-grant) grant=; shift ;;
+		*) die "unknown option $1 (gatte help)" ;;
+		esac
+	done
+	[ -n "$url" ] || die "-url is required: the API's base URL (scheme, host, port, base path)"
+	[ -n "$spec" ] || die "-openapi is required: a file in config/ next to compose.yaml, or an http(s) URL"
+	case "$spec" in
+	http://* | https://*) ;;
+	/*) ;;
+	*)
+		[ -f "$GATTE_SITE/$spec" ] || die "$spec is not in config/ next to compose.yaml (put the OpenAPI document there)"
+		spec=$GATTE_SITE/$spec
+		;;
+	esac
+	# The service account reads the document; a copy it owns avoids
+	# depending on the host's ownership of the bind-mounted file.
+	case "$spec" in
+	/*)
+		w=$(mktemp -d)
+		chown "$SERVICE_USER" "$w"
+		install -m 0644 "$spec" "$w/openapi"
+		spec=$w/openapi
+		;;
+	esac
+	set -- -name "$name" -transport http -url "$url" -openapi "$spec"
+	[ -n "$kind" ] && set -- "$@" -auth-kind "$kind"
+	[ -n "$aname" ] && set -- "$@" -auth-name "$aname"
+	if [ -n "$keyless" ]; then
+		[ -n "$kind" ] || set -- "$@" -auth-kind none
+	else
+		[ -n "$key" ] || key=$(upper "$name")_API_KEY
+		valid_var "$key"
+		set -- "$@" -env "$key"
+	fi
+	mcp upstream register "$@"
+	mcp-gateway sign -config "$CONFIG" "$name"
+	if [ -n "$grant" ]; then
+		add_grant "$grant" "$name"
+		cmd_reload >/dev/null
+	fi
+	say ""
+	if [ -z "$keyless" ] && ! vault_has "$key"; then
+		say "Next: store the key, then review the tools (they are observed within a minute):"
+		say "    docker compose exec gatte gatte secret set $key"
+	else
+		say "Next: review the tools (they are observed within a minute):"
+	fi
+	say "    docker compose exec gatte gatte api approve $name"
+}
+
+cmd_api_approve() {
+	[ $# -ge 1 ] || die "usage: gatte api approve NAME [-yes]"
+	name=$1 yes=''
+	[ "${2:-}" = -yes ] && yes=1
+	w=$(private_dir)
+	trap 'rm -rf "$w"' EXIT INT TERM
+	i=0
+	while :; do
+		mcp tool review -server "$name" >"$w/review" 2>&1 || true
+		m=$(sed -n 's/^manifest  sha256:\([0-9a-f]\{64\}\)$/\1/p' "$w/review" | head -n 1)
+		[ -n "$m" ] && break
+		i=$((i + 1))
+		if [ "$i" -ge 45 ]; then
+			cat "$w/review"
+			die "no tools of $name are waiting for review after 90 seconds (gatte status; docker compose logs gatte)"
+		fi
+		[ "$i" -eq 1 ] && say "waiting for the gateway to observe $name's tools..."
+		sleep 2
+	done
+	cat "$w/review"
+	if [ -z "$yes" ]; then
+		[ -t 0 ] || die "not a terminal: pass -yes to approve the set shown above"
+		printf '\nApprove exactly this set (sha256:%s)? [y/N] ' "$m"
+		read -r a || a=
+		case "$a" in y | Y | yes | sim | s) ;; *) die "nothing approved" ;; esac
+	fi
+	mcp tool approve -server "$name" -manifest "$m"
+}
+
+cmd_api() {
+	sub=${1:-}
+	[ $# -gt 0 ] && shift
+	case "$sub" in
+	add) cmd_api_add "$@" ;;
+	approve) cmd_api_approve "$@" ;;
+	list) mcp upstream list ;;
+	rm)
+		[ $# -eq 1 ] || die "usage: gatte api rm NAME"
+		if [ -t 0 ]; then
+			printf 'Deregister %s? Its tools and approvals go with it. [y/N] ' "$1"
+			read -r a || a=
+			case "$a" in y | Y | yes | sim | s) ;; *) die "nothing removed" ;; esac
+		fi
+		mcp upstream deregister "$1"
+		say "The grant for $1 in config/roles.toml is still there; delete it and run gatte reload."
+		;;
+	*) die "usage: gatte api add|approve|list|rm" ;;
+	esac
+}
+
+# --- people ------------------------------------------------------------
+
+json_str() { jq -Rn --arg s "$1" '$s'; }
+
+api_or_die() { # RESPONSE-FILE
+	if jq -e 'has("error")' "$1" >/dev/null 2>&1; then
+		jq -r '"refused: " + (.error.message // .error.code // "unknown")' "$1" >&2
+		exit 1
+	fi
+}
+
+cmd_user() {
+	sub=${1:-}
+	[ $# -gt 0 ] && shift
+	w=$(private_dir)
+	trap 'rm -rf "$w"' EXIT INT TERM
+	case "$sub" in
+	add)
+		[ $# -ge 1 ] || die "usage: gatte user add USERNAME [-name N] [-email E] [-group G ...]"
+		u=$1
+		shift
+		dn=$u email='' groups=''
+		while [ $# -gt 0 ]; do
+			case "$1" in
+			-name) dn=$2; shift 2 ;;
+			-email) email=$2; shift 2 ;;
+			-group) groups="$groups $2"; shift 2 ;;
+			*) die "unknown option $1" ;;
+			esac
+		done
+		[ -n "$groups" ] || groups=soc-analysts
+		# shellcheck disable=SC2086 # one group per word, on purpose
+		gj=$(printf '%s\n' $groups | jq -R . | jq -s .)
+		body=$(jq -n --arg u "$u" --arg d "$dn" --arg e "$email" --argjson g "$gj" \
+			'{username:$u, display_name:$d, groups:$g} + (if $e == "" then {} else {email:$e} end)')
+		api_call POST "$ACCOUNTS_SOCKET" /v1/accounts "$body" >"$w/r"
+		api_or_die "$w/r"
+		say "Created $u (groups:$groups)."
+		# The first run's disabled placeholder (cmd_init) is no longer
+		# needed once a real account exists.
+		if [ "$u" != "$BOOTSTRAP_USER" ] && grep -q "^  $BOOTSTRAP_USER:" "$USERS_FILE" 2>/dev/null; then
+			api_call DELETE "$ACCOUNTS_SOCKET" "/v1/accounts/$BOOTSTRAP_USER" >/dev/null || true
+		fi
+		say "One-time password, shown only now: $(jq -r .one_time_password "$w/r")"
+		say "Then: docker compose exec gatte gatte connect $u -os macos > connect-$u.sh"
+		;;
+	list)
+		api_call GET "$ACCOUNTS_SOCKET" /v1/accounts >"$w/r"
+		api_or_die "$w/r"
+		jq -r --arg b "$BOOTSTRAP_USER" '(.accounts // .)[] | select(.username != $b) | [.username, (.display_name // ""), ((.groups // []) | join(",")), (if .disabled then "disabled" else "" end)] | @tsv' "$w/r"
+		;;
+	reset)
+		[ $# -eq 1 ] || die "usage: gatte user reset USERNAME"
+		api_call POST "$ACCOUNTS_SOCKET" "/v1/accounts/$1/reset-password" >"$w/r"
+		api_or_die "$w/r"
+		say "New one-time password for $1, shown only now: $(jq -r .one_time_password "$w/r")"
+		;;
+	rm)
+		[ $# -eq 1 ] || die "usage: gatte user rm USERNAME"
+		api_call DELETE "$ACCOUNTS_SOCKET" "/v1/accounts/$1" >"$w/r"
+		api_or_die "$w/r"
+		say "Deleted $1. To also cut off a token already issued: gatte mcp access block $1"
+		;;
+	*) die "usage: gatte user add|list|reset|rm" ;;
+	esac
+}
+
+cmd_connect() {
+	[ $# -ge 1 ] || die "usage: gatte connect USERNAME [-os macos|linux|windows]"
+	u=$1 os=macos
+	[ "${2:-}" = -os ] && os=${3:-macos}
+	w=$(private_dir)
+	trap 'rm -rf "$w"' EXIT INT TERM
+	api_call GET "$OPERATOR_SOCKET" "/v1/connect/script?os=$os&username=$u" >"$w/r"
+	if jq -e 'has("error")' "$w/r" >/dev/null 2>&1; then api_or_die "$w/r"; fi
+	cat "$w/r"
+}
+
+# --- main --------------------------------------------------------------
+
+case "${1:-help}" in
+help | -h | --help) usage ;;
+api) shift; cmd_api "$@" ;;
+clear)
+	shift
+	[ $# -eq 2 ] || die "usage: gatte clear SERVER TOOL"
+	mcp tool clear "$1" "$2"
+	;;
+secret) shift; cmd_secret "$@" ;;
+user) shift; cmd_user "$@" ;;
+connect) shift; cmd_connect "$@" ;;
+status)
+	mcp upstream list
+	say ""
+	mcp tool list
+	;;
+reload) cmd_reload ;;
+ca)
+	[ -s "$GATTE_EDGE/public/ca.crt" ] || die "no private CA: GATTE_TLS=acme uses a public certificate"
+	cat "$GATTE_EDGE/public/ca.crt"
+	;;
+mcp)
+	shift
+	[ $# -ge 1 ] || die "usage: gatte mcp COMMAND ..."
+	case "$1" in
+	sign | check) w1=$1; shift; mcp-gateway "$w1" -config "$CONFIG" "$@" ;;
+	*) mcp "$@" ;;
+	esac
+	;;
+*) die "unknown command $1 (gatte help)" ;;
+esac

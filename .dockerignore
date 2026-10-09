@@ -1,0 +1,13 @@
+# The image is built from the source tree only: no local binaries, no
+# operator state, no editor or agent files (design/adr/0049).
+.git
+bin
+gatte-test
+.claude
+.claudio
+.mcp.json
+CLAUDE.md
+CLAUDE.local.md
+**/.DS_Store
+deploy/docker/config
+deploy/docker/.env

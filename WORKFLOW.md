@@ -155,6 +155,76 @@ that only exists inside a closed section is an item nobody re-reads:
   state to lose (ADR-0008 forbids a session ever standing in for
   authentication), which is exactly why a restart is cheap here and would
   not be in a stateful service.
+- ✅ **REST upstreams generated from OpenAPI (ADR-0047 Phases A+B, refined
+  and executed by ADR-0048) — closed 07 Oct 2026, in four steps on one
+  day; Phases C (proxy route) and D (hardening, full reference) stay open
+  in ADR-0047.** Step 4, the last: `upstream register -transport http
+  -openapi FILE|URL` works end to end. `resthttp.Ingest` translates an
+  OpenAPI 3.0.x/3.1.x document (JSON or YAML, own minimal fail-closed
+  parser, no new dependency) into the frozen, canonical, already-validated
+  operation set; `-auth-kind`/`-auth-name` decide the injection or are
+  derived from a single `apiKey`/bearer scheme and reported; a URL
+  document is fetched once through the adapter's own guarded client
+  (`FetchDocument`), never a bare `http.Get`; the console prints the
+  generated tools with their class, the skipped operations and the
+  warnings. The lab proves it: `lab/servers/restmock` (a fake REST API that
+  demands and reflects its key) and `make lab-probe-rest`
+  (`TestLabProbeREST`) show the key injected server-side from the vault,
+  absent from every byte the client saw and from the gateway's log, masked
+  in a reflected `Location`/`Set-Cookie`/body, and the `POST` refused until
+  `tool clear` plus a `non_read` role naming it. Open after this step:
+  `upstream update` does not re-ingest (deregister and register again);
+  `upstream list -json` does not yet show an http entry's auth descriptor or
+  operations; the full CLI reference is Phase D. The adversarial review of
+  step 4 (09 Oct 2026) was fixed in the step (ADR-0048 state block): schema
+  expansion charged in bytes while it runs, YAML read by tag, document text
+  escaped on the console, control headers refused as the injection slot,
+  `-auth-kind none` never derives, and routesFor's per-tool refusals raised
+  to the register (output schemas that will not compile are dropped with a
+  warning). Landed earlier the same day: the registry's
+  `AuthKind`/`AuthName`/`Operations` under the signed `canonical/v3-http`
+  tag and schema v2 (ADR-0048 Decisão 2); then Decisão 5 whole — the
+  quarantine's orthogonal `Class` with `SensitiveClearedHash` and the
+  `Cleared` transition behind the one `Usable()` gate, `config.Role.NonRead`
+  with `access.Role.AllowsExplicitly` (Allows untouched, class-blind), the
+  class-aware gate in `gateway.admit` that refuses a sensitive tool to a
+  wildcard or a read role on every call (reading the class from the
+  quarantine row OR the route's signed metadata, after the quarantine and
+  before the clearance, so a read role can neither enumerate unreviewed
+  sensitive names nor tell cleared from uncleared), the batch path that
+  approves and never clears, `tool clear` in the admin API (1.5.0) and the
+  CLI, and schema v3. **The `resthttp` adapter landed the same day** (Decisões
+  6, 7, 9 — egress guard by resolved IP with a structural host pin, error
+  redaction that keeps `errors.Is`, fixed `up` health; Decisão 8's safe-only
+  interim was dispensed with because the class seam came first, see its dated
+  note) and is wired at the composition root (`dialer.go` routes `http`,
+  `dialTimeRefusal` refuses a bad URL, a forbidden literal host or a bad
+  operation set at `register`/`sign`). The same-day review pass closed what
+  it found: keep-alive off so no idle buffer retains a request, the envelope
+  masked with the value the call injected, `CredentialDrift` blind to http,
+  `_`/`-` folded in header names, `..;` segments and `//` base paths refused.
+  Until step 4 above landed, an `http` entry had no operation set and could
+  not be registered.
+- ✅ **Gatte as one OCI image (ADR-0049) — 09 Oct 2026.** `deploy/docker/`:
+  a multi-stage Dockerfile (static gateway, sops from its release checked
+  against its checksums, age, openssl), and a `compose.yaml` whose four
+  long-running containers share one network namespace owned by a `pause`
+  container, so the gateway keeps its loopback-only listener (ADR-0011
+  unchanged) behind Caddy, with Authelia as the IdP. `gatte-entrypoint init`
+  makes every key, the vault, a private CA and Authelia's secrets on the
+  first run (idempotent); `serve` re-renders the config from `base.toml` plus
+  the operator's `config/roles.toml`, starts both management-API sockets,
+  waits for the IdP, runs `check` and drops to uid 10001. The operator's
+  `gatte` command covers each task in one line (`api add/approve`, `clear`,
+  `secret set`, `user add`, `connect`, `reload`, `status`). Verified from
+  scratch on podman 6.1 with the public Petstore API: `smoke.sh` signs in
+  with PKCE, calls a safe tool through the gateway and sees the sensitive one
+  refused; the secret is in no container log. The Petstore also exposed a
+  step-4 defect, fixed: a parameter on the credential's own slot is now
+  dropped with a warning instead of refusing the document (ADR-0048, note of
+  09 Oct 2026). Open: the web console is not exposed from the image (next:
+  its `tool clear`/`reload`/`redial` buttons), no backup timer, no oci/stdio
+  backends in the image.
 
 ## Gate 0 — before any phase below starts
 

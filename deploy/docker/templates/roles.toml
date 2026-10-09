@@ -1,0 +1,27 @@
+# Who may call what (design/adr/0009). This file is yours: it lives in
+# config/ next to compose.yaml on the host, so it can be reviewed and versioned.
+# After editing it:  docker compose exec gatte gatte reload
+#
+# An analyst's IdP group picks the role. `gatte user add NAME` puts a new
+# person in soc-analysts unless told otherwise (-group).
+
+[group_to_role]
+"soc-analysts" = "analyst"
+# "dfir-leads" = "dfir-lead"
+
+# Reads only. `gatte api add NAME ...` adds `NAME = ["*"]` under this
+# role's [role.grants]: every SAFE (GET/HEAD/OPTIONS) tool of that API once
+# it is approved. A "*" never reaches a sensitive tool (design/adr/0048).
+[[role]]
+name  = "analyst"
+tools = []
+[role.grants]
+
+# Acts. A sensitive tool (POST/PUT/PATCH/DELETE) is reachable only by a role
+# marked non_read that names it in `tools`, and only after
+# `gatte clear SERVER TOOL`. Uncomment, name the tool, map a group above:
+#
+# [[role]]
+# name     = "dfir-lead"
+# non_read = true
+# tools    = ["abuseipdb.report"]

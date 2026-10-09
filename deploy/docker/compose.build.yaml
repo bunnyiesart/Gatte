@@ -1,0 +1,14 @@
+# Build the Gatte image from this source tree instead of pulling it
+# (design/adr/0049):
+#
+#     docker compose -f compose.yaml -f compose.build.yaml up -d --build
+#
+# Both Gatte services run the one image built here.
+services:
+  init:
+    image: gatte:local
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+  gatte:
+    image: gatte:local

@@ -130,7 +130,15 @@ covers other kinds of blue team tooling.
 
 ## Quick start
 
-This sets up a gateway on one Linux or FreeBSD host, with one backend.
+**The short way, for REST APIs: Docker.** Two files and one
+`docker compose up` bring up the gateway, its TLS proxy and its identity
+provider, from the published image `ghcr.io/bunnyiesart/gatte`; every task
+after that is one `gatte` command
+([deploy/docker/README.md](deploy/docker/README.md), `design/adr/0049`).
+
+The rest of this section sets up a gateway by hand on one Linux or FreeBSD
+host, with one backend. Use it for MCP servers that run as a process or a
+container (`stdio`, `oci`), which the image does not serve.
 
 ### What you need
 
@@ -295,8 +303,8 @@ prefix plus the audience's path.
 then add your analysts ([Connecting analysts](#connecting-analysts)).
 
 To try the whole flow without real backends, `make lab-build` builds four
-mock MCP servers into `bin/lab/` that report whether the injected
-credential arrived without echoing it (`lab/README.md`).
+mock MCP servers and one fake REST API into `bin/lab/` that report whether
+the injected credential arrived without echoing it (`lab/README.md`).
 
 ## First call
 
@@ -1027,6 +1035,29 @@ scrubbed is refused rather than forwarded. No decision record covers it;
 the behaviour is `scrubResult` in `internal/gateway/endpoint.go`, and its
 tests beside it.
 
+**An `http` backend is a REST API Gatte itself calls** (`design/adr/0047`,
+`design/adr/0048`). Its tools are generated at `upstream register` from
+the API's OpenAPI document, one per operation, frozen in the entry and
+covered by its signature, so a changed document changes nothing served
+until the entry is registered again. For each call Gatte is the HTTP
+client: the API key is resolved from the vault and injected server-side,
+where the signed entry says (a bearer token, a header or a query
+parameter), into a request the analyst's client never held a key for. The
+document is third-party text at every edge -- only the base path of its
+`servers[]` is used, its host never; a path, a parameter or a tool name it
+declares is refused unless it passes the adapter's own checks -- and the
+destination is pinned to the registered URL, with redirects to any other
+origin refused and loopback, private, link-local and the cloud metadata
+range refused by the resolved address, not by the name. A key the API
+reflects -- in a redirect's `Location`, a `Set-Cookie`, a body quoting it
+-- is masked twice, by the adapter with the value it injected and by
+`scrubResult`, and never appears in an error either. Every non-safe
+operation (`POST`, `PUT`, `PATCH`, `DELETE`) is a *sensitive* tool: approval
+alone does not make it callable, the operator must also `tool clear` it,
+and it is reachable only from a role marked `non_read` that names it, never
+through a wildcard grant. `make lab-probe-rest` proves all of this against
+the lab's fake API (`lab/README.md`, "The REST probe").
+
 **It does not guarantee the trail's integrity against whoever controls the
 host.** Records are hash-chained, not individually signed, and the chain
 has no key. Comparing the chain head against the SIEM's copy with
@@ -1141,7 +1172,7 @@ restart (`design/adr/0044`); the rest of the configuration needs one.
 | `api/admin.openapi.yaml` | The management API's contract. |
 | `internal/store/` | The single shared SQLite connection and the schema guard. |
 | `internal/e2e/`, `internal/fitness/` | End-to-end checkpoint and architecture fitness tests. |
-| `lab/` | Mock MCP servers, the credential-leak probe, and a traffic generator. |
+| `lab/` | Mock MCP servers, a fake REST API, the credential-leak probe, and a traffic generator. |
 | `deploy/`, `scripts/` | Provisioning scripts and runbooks for the reference test deployments. |
 | `design/` | Discovery, components, style, and one ADR per significant decision. |
 | `examples/` | Blue team configuration examples, and systemd units (`examples/systemd/`). |

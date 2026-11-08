@@ -119,6 +119,25 @@ func TestSummary_IsBoundedAndStaysValidUTF8(t *testing.T) {
 	}
 }
 
+// A max smaller than the truncation suffix (56 bytes) must still honour the
+// documented byte bound: the result is hard-truncated to max at a rune
+// boundary, not padded out to the full suffix.
+func TestSummary_SmallMaxStaysWithinBound(t *testing.T) {
+	old, next := base(), base()
+	// A role name with multibyte runes so the bound lands mid-rune.
+	next.Roles = []config.Role{{Name: "papel-çãoçãoção-" + strings.Repeat("é", 40)}}
+	c := Diff(old, next, routed)
+	for _, max := range []int{1, 5, 10, 40, 55} {
+		s := Summary(c, max)
+		if len(s) > max {
+			t.Errorf("Summary(_, %d) = %q is %d bytes, over the bound", max, s, len(s))
+		}
+		if strings.ToValidUTF8(s, "!") != s {
+			t.Errorf("Summary(_, %d) cut a rune: %q", max, s)
+		}
+	}
+}
+
 // The operator's lines for analysts (design/adr/0042 item 3) go into
 // instructions the MCP endpoint builds once, at startup, so a reload does
 // not apply them and must say so rather than report success in silence.

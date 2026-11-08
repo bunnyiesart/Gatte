@@ -75,7 +75,14 @@ func toAccount(name string, n *yaml.Node) idp.Account {
 		a.Email = v.Value
 	}
 	if v := mapValue(n, "disabled"); v != nil {
-		a.Disabled = v.Value == "true"
+		// Decode the scalar the way Authelia's struct unmarshal does, so the
+		// console matches enforcement for every well-formed YAML bool
+		// (true/True/TRUE/yes/on), not only the literal "true". A malformed
+		// value that Authelia itself would reject leaves b false here, same
+		// as the old literal compare; that file never loads in Authelia.
+		var b bool
+		_ = v.Decode(&b)
+		a.Disabled = b
 	}
 	if v := mapValue(n, "groups"); v != nil && v.Kind == yaml.SequenceNode {
 		for _, g := range v.Content {

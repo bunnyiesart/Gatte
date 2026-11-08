@@ -222,8 +222,7 @@ func (s *Store) Unblock(ctx context.Context, subject string) (bool, error) {
 func (s *Store) Blocks(ctx context.Context) ([]access.Block, error) {
 	rows, err := s.db.QueryContext(ctx, `
 SELECT subject, reason, blocked_by, blocked_at, blocked_until
-FROM blocked_subjects
-ORDER BY blocked_at, subject`)
+FROM blocked_subjects`)
 	if err != nil {
 		return nil, fmt.Errorf("access/sqlite: list: %w", err)
 	}
@@ -250,6 +249,16 @@ ORDER BY blocked_at, subject`)
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("access/sqlite: list: %w", err)
 	}
+	// Sort oldest first in Go: blocked_at is RFC3339Nano, whose trimmed
+	// fractional seconds make a byte-wise SQL TEXT sort misorder two blocks
+	// within the same second. Comparing parsed instants is correct and also
+	// fixes rows already on disk.
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].At.Equal(out[j].At) {
+			return out[i].Subject < out[j].Subject
+		}
+		return out[i].At.Before(out[j].At)
+	})
 	return out, nil
 }
 

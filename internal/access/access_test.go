@@ -872,6 +872,10 @@ func TestResourceIdentifier(t *testing.T) {
 		{name: "opaque string", raw: "mcp-gateway", wantErr: "absolute URI"},
 		{name: "scheme with no host", raw: "https:///mcp", wantErr: "absolute URI"},
 		{name: "routable http", raw: "http://gw.example.internal/mcp", wantErr: "https"},
+		// A hostname that merely starts with "127." is an attacker-registerable
+		// DNS name, not a loopback address: it must not waive the https rule.
+		{name: "http 127-prefixed hostname", raw: "http://127.0.0.1.evil.com/mcp", wantErr: "https"},
+		{name: "http 127-prefixed short name", raw: "http://127.evil.com/mcp", wantErr: "https"},
 		{name: "query string", raw: "https://gw.example.internal/mcp?v=1", wantErr: "query"},
 		{name: "fragment", raw: "https://gw.example.internal/mcp#f", wantErr: "fragment"},
 		// An empty fragment leaves URL.Fragment empty but still ships a

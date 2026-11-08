@@ -35,17 +35,8 @@ func CheckOwnedChain(paths []string, trusted func(uid uint32) bool) error {
 		if err != nil {
 			return unavailable(p, problemUnreadableStat, err.Error())
 		}
-		var chain []string
-		for d := filepath.Dir(abs); ; d = filepath.Dir(d) {
-			chain = append([]string{d}, chain...)
-			if d == filepath.Dir(d) {
-				break
-			}
-		}
-		for _, d := range chain {
-			if err := checkOne(d, true, trusted); err != nil {
-				return err
-			}
+		if err := checkAncestors(abs, trusted); err != nil {
+			return err
 		}
 		if err := checkOne(abs, false, trusted); err != nil {
 			return err
@@ -73,17 +64,8 @@ func CheckServiceKey(path string, trusted func(uid uint32) bool, serviceUID uint
 	if err != nil {
 		return unavailable(path, problemUnreadableStat, err.Error())
 	}
-	var chain []string
-	for d := filepath.Dir(abs); ; d = filepath.Dir(d) {
-		chain = append([]string{d}, chain...)
-		if d == filepath.Dir(d) {
-			break
-		}
-	}
-	for _, d := range chain {
-		if err := checkOne(d, true, trusted); err != nil {
-			return err
-		}
+	if err := checkAncestors(abs, trusted); err != nil {
+		return err
 	}
 	fi, err := os.Lstat(abs)
 	if err != nil {
@@ -104,6 +86,27 @@ func CheckServiceKey(path string, trusted func(uid uint32) bool, serviceUID uint
 	}
 	if fi.Mode().Perm()&0o077 != 0 {
 		return unavailable(abs, ProblemWritable, "is readable or writable by group or others")
+	}
+	return nil
+}
+
+// checkAncestors holds every directory from filepath.Dir(abs) up to "/" to
+// the root rule (owned by a trusted uid, no symlink, not group- or
+// other-writable), checked from "/" down so the first failure reported is
+// the highest one. Both CheckOwnedChain and CheckServiceKey share it so the
+// trusted-ancestor rule has a single place to change.
+func checkAncestors(abs string, trusted func(uint32) bool) error {
+	var chain []string
+	for d := filepath.Dir(abs); ; d = filepath.Dir(d) {
+		chain = append([]string{d}, chain...)
+		if d == filepath.Dir(d) {
+			break
+		}
+	}
+	for _, d := range chain {
+		if err := checkOne(d, true, trusted); err != nil {
+			return err
+		}
 	}
 	return nil
 }

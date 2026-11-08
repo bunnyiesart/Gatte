@@ -53,6 +53,38 @@ func TestAccounts_ReadsTheFileBackend(t *testing.T) {
 	}
 }
 
+func TestAccounts_ReadsYAMLNativeDisabledForms(t *testing.T) {
+	// Authelia decodes `disabled` into a bool, so True/TRUE/yes/on all mean
+	// disabled. The console must agree with that, not only recognize the
+	// literal "true".
+	for _, tc := range []struct {
+		scalar string
+		want   bool
+	}{
+		{"true", true},
+		{"True", true},
+		{"TRUE", true},
+		{"yes", true},
+		{"on", true},
+		{"false", false},
+		{"no", false},
+		{"off", false},
+	} {
+		text := "users:\n  carol:\n    disabled: " + tc.scalar + "\n    displayname: \"Carol\"\n    PWKEY: \"LAB_HASH\"\n"
+		p := filepath.Join(t.TempDir(), "users_database.yml")
+		if err := os.WriteFile(p, []byte(labFixture(t, text)), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		got, err := New(p).Accounts()
+		if err != nil {
+			t.Fatalf("disabled: %s: %v", tc.scalar, err)
+		}
+		if len(got) != 1 || got[0].Disabled != tc.want {
+			t.Errorf("disabled: %s -> Disabled=%v, want %v", tc.scalar, got[0].Disabled, tc.want)
+		}
+	}
+}
+
 func TestAdd_KeepsEveryOtherAccountAndTheComments(t *testing.T) {
 	p := writeFixture(t)
 	f := New(p)

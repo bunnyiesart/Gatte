@@ -73,6 +73,36 @@ func TestBlocklist_BlockUnblockRoundTrip(t *testing.T) {
 	}
 }
 
+func TestBlocklist_OrdersOldestFirstWithinASecond(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+
+	// Two blocks in the same wall-clock second with differing RFC3339Nano
+	// widths: the earlier one has no fractional part ("...05Z"), the later
+	// one does ("...05.5Z"). A byte-wise SQL TEXT sort puts '.' (0x2E)
+	// before 'Z' (0x5A), so it would return the later block first.
+	earlier := time.Date(2026, 9, 28, 3, 0, 5, 0, time.UTC)
+	later := earlier.Add(500 * time.Millisecond)
+
+	if _, err := s.Block(ctx, access.Block{Subject: "sub-earlier", By: "op", At: earlier}); err != nil {
+		t.Fatalf("Block earlier: %v", err)
+	}
+	if _, err := s.Block(ctx, access.Block{Subject: "sub-later", By: "op", At: later}); err != nil {
+		t.Fatalf("Block later: %v", err)
+	}
+
+	list, err := s.Blocks(ctx)
+	if err != nil {
+		t.Fatalf("Blocks: %v", err)
+	}
+	if len(list) != 2 {
+		t.Fatalf("Blocks len = %d; want 2", len(list))
+	}
+	if list[0].Subject != "sub-earlier" || list[1].Subject != "sub-later" {
+		t.Fatalf("Blocks order = [%q, %q]; want oldest first [sub-earlier, sub-later]", list[0].Subject, list[1].Subject)
+	}
+}
+
 func TestBlocklist_RefusesAMalformedBlock(t *testing.T) {
 	s := newStore(t)
 	for name, b := range map[string]access.Block{

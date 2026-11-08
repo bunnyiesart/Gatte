@@ -137,7 +137,8 @@ func serveControlCommand(name string, args []string, stdout, stderr io.Writer) i
 	})
 }
 
-// parseInterspersedWith is parseInterspersed with this command's usage.
+// parseInterspersedWith is the body of parseInterspersed with the command's
+// usage passed in; see parseInterspersed for the flag/positional interleaving.
 func parseInterspersedWith(fs *flag.FlagSet, args []string, stdout, stderr io.Writer, usage func(io.Writer)) ([]string, int, bool) {
 	var positional []string
 	for {

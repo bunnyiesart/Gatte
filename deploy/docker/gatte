@@ -10,11 +10,26 @@
 # before it is approved, and nothing here approves on its own.
 
 . /usr/local/share/gatte/lib.sh
-derive
+# The domain docker run -e gave, before derive mixes in the saved one:
+# setup cannot change a domain the container's own flags would put back.
+RUN_DOMAIN=${GATTE_DOMAIN:-}
+if ! derive; then
+	case "${1:-help}" in
+	setup | help | -h | --help) ;;
+	*) die "$NOT_CONFIGURED" ;;
+	esac
+fi
 
 usage() {
 	cat <<EOF
 gatte -- Gatte operator commands. Run each as:  docker exec -it gatte gatte ...
+
+Setup
+  gatte setup                domain and TLS, the first person, backends, self-test;
+                             a step already done is skipped, so it can be run again
+  gatte setup import         read an MCP JSON file (.mcp.json) on standard input and
+                             keep its server names and URLs, never a value, for setup:
+                                 docker exec -i gatte gatte setup import < .mcp.json
 
 APIs (REST backends from an OpenAPI document)
   gatte api add NAME -url BASE-URL -openapi URL|-|FILE [options]
@@ -487,10 +502,280 @@ Running "gatte console" again ends this session and prints a new link.
 MSG
 }
 
+# --- setup -------------------------------------------------------------
+
+# What `gatte setup import` kept of an MCP JSON file: server names, kinds,
+# URLs without userinfo, query or fragment, and header NAMES. Never a value:
+# the jq filter that writes it reads no value into its output.
+IMPORT=$RUN_DIR/mcp-import.json
+
+ask() { # PROMPT [DEFAULT] -> $a
+	if [ -n "${2:-}" ]; then printf '%s [%s]: ' "$1" "$2"; else printf '%s: ' "$1"; fi
+	IFS= read -r a || a=
+	[ -n "$a" ] || a=${2:-}
+}
+
+# confirm PROMPT is yes only on an explicit yes; Enter is no.
+confirm() {
+	printf '%s [y/N] ' "$1"
+	IFS= read -r a || a=
+	case "$a" in y | Y | yes | sim | s) return 0 ;; *) return 1 ;; esac
+}
+
+setup_domain() {
+	cur=
+	if [ -r "$SETTINGS" ]; then cur=$(sed -n 's/^GATTE_DOMAIN=//p' "$SETTINGS" | head -n 1); fi
+	if [ -n "$cur" ]; then
+		say "1. Domain: $cur, TLS $GATTE_TLS. Already set."
+		confirm "   Change the domain?" || return 0
+		[ -z "$RUN_DOMAIN" ] || die "this container was started with -e GATTE_DOMAIN; re-create it with the new value instead"
+		say "   A new domain invalidates the CA certificate analysts installed, the token"
+		say "   audience, every client and every token issued: everyone reconnects."
+	fi
+	while :; do
+		ask "1. Domain analysts reach Gatte on (sign-in is auth.DOMAIN)"
+		d=$a
+		if [ -z "$d" ]; then continue; fi
+		[ "$d" != "$cur" ] || die "that is the current domain; nothing changed"
+		ask "   TLS: internal (a private CA made here) or acme (Let's Encrypt; 443 and 80 open to the internet)" "${GATTE_TLS:-internal}"
+		t=$a e=
+		if [ "$t" = acme ]; then
+			ask "   Email for Let's Encrypt"
+			e=$a
+		fi
+		# derive's own checks, on the answers; it says what is wrong.
+		if (GATTE_DOMAIN=$d GATTE_TLS=$t GATTE_ACME_EMAIL=$e && derive); then break; fi
+		say "   Try again."
+	done
+	for h in "$d" "auth.$d"; do
+		getent hosts "$h" >/dev/null 2>&1 || say "   warning: $h does not resolve here; analysts need DNS for it."
+	done
+	if [ -n "$cur" ]; then
+		ask "   Type the new domain again to confirm"
+		[ "$a" = "$d" ] || die "not the same; nothing changed"
+		# The CA is constrained to the old name: the next start makes another.
+		rm -rf "$GATTE_CA"
+	fi
+	mkdir -p "$GATTE_ETC"
+	GATTE_DOMAIN=$d GATTE_TLS=$t GATTE_ACME_EMAIL=$e
+	save_settings
+	if [ -n "$cur" ]; then
+		say "   Saved. Apply it: docker restart gatte, then gatte setup again."
+		exit 0
+	fi
+	derive
+}
+
+setup_wait_up() {
+	i=0
+	until curl -fsS -o /dev/null --max-time 3 http://127.0.0.1:8080/.well-known/oauth-protected-resource 2>/dev/null &&
+		[ -S "$OPERATOR_SOCKET" ] && [ -S "$ACCOUNTS_SOCKET" ]; do
+		if [ "$i" -eq 0 ]; then say "2. Waiting for Gatte to start (docker logs gatte says why if it does not)..."; fi
+		i=$((i + 1))
+		[ "$i" -lt 90 ] || die "Gatte did not come up in 3 minutes: docker logs gatte"
+		sleep 2
+	done
+	say "2. Gatte is up at $GW_URL."
+}
+
+setup_person() {
+	n=$(gatte user list | wc -l | tr -d ' ')
+	if [ "$n" -gt 0 ]; then
+		say "3. People: $n already. Skipped (gatte user add for more)."
+		return 0
+	fi
+	while :; do
+		ask "3. First person's username"
+		u=$a
+		ask "   Display name" "$u"
+		dn=$a
+		ask "   Email (optional)"
+		e=$a
+		ask "   Group: soc-analysts or dfir-leads" soc-analysts
+		g=$a
+		case "$g" in
+		soc-analysts | dfir-leads) ;;
+		*) say "   soc-analysts or dfir-leads."; continue ;;
+		esac
+		set -- "$u" -name "$dn" -group "$g"
+		if [ -n "$e" ]; then set -- "$@" -email "$e"; fi
+		gatte user add "$@" && break
+		say "   Not created (above). Try again."
+	done
+	if [ "$g" = dfir-leads ] && ! grep -q '^"dfir-leads"' "$GATTE_SITE/roles.toml"; then
+		say "   dfir-leads maps to no role yet, so $u can call nothing until gatte roles edit maps it."
+	fi
+}
+
+# setup_add NAME BASE-URL OPENAPI [AUTH-KIND [AUTH-NAME]] registers a REST
+# API through `gatte api add`, whose register checks the name, the URL and
+# the variable, then asks for the key with `gatte secret set` (no echo) and
+# offers the review. AUTH-KIND "none" is a keyless API.
+setup_add() {
+	n=$1 k=${4:-} h=${5:-}
+	set -- "$1" -url "$2" -openapi "$3"
+	case "$k" in
+	'') ;;
+	none) set -- "$@" -keyless ;;
+	*) set -- "$@" -auth-kind "$k" ;;
+	esac
+	if [ -n "$h" ]; then set -- "$@" -auth-name "$h"; fi
+	o=$(private_dir)
+	if ! gatte api add "$@" >"$o/out" 2>&1; then
+		cat "$o/out"
+		rm -rf "$o"
+		say "   $n was not added (above)."
+		return 0
+	fi
+	grep -v '^Next:\|^    docker exec' "$o/out" || true
+	key=$(sed -n 's/^    docker exec -it gatte gatte secret set \([A-Za-z0-9_]*\)$/\1/p' "$o/out")
+	rm -rf "$o"
+	if [ -n "$key" ]; then
+		say "   $n's key goes in the vault as $key."
+		gatte secret set "$key" || say "   Not stored. Later: gatte secret set $key"
+	fi
+	if confirm "   Review $n's tools and approve them now?"; then
+		gatte api approve "$n" || true
+	else
+		say "   Later: gatte api approve $n"
+	fi
+}
+
+field() { # SERVER JQ-PATH: one field of one imported server
+	jq -r --arg n "$1" ".[] | select(.name == \$n) | $2" "$IMPORT"
+}
+
+setup_import_pick() {
+	say "   In the MCP JSON file:"
+	jq -r '.[] | "     " + (.name | @json) + "  " + .kind + (if .url then "  " + .url else "" end)' "$IMPORT"
+	have=$(mcp upstream list -json | jq -r '.[].name')
+	for n in $(jq -r '.[] | select(.ok) | .name' "$IMPORT"); do
+		if printf '%s\n' "$have" | grep -qx "$n"; then
+			say "   $n: already registered."
+			continue
+		fi
+		kind=$(field "$n" .kind)
+		if [ "$kind" != remote ]; then
+			say "   $n: skipped. It is a local $kind server, and this image runs no backend processes or containers."
+			continue
+		fi
+		confirm "   Add $n?" || continue
+		nh=$(field "$n" '.headers | length')
+		if [ "$nh" -gt 1 ]; then
+			say "   $n sends $nh headers; Gatte injects one credential per API. Add it by hand."
+			continue
+		fi
+		k='' h=''
+		hn=$(field "$n" '.headers[0] // ""')
+		case "$hn" in
+		'') ;;
+		[Aa]uthorization) k=bearer ;;
+		*) k=header h=$hn ;;
+		esac
+		say "   $n is a remote MCP server. Gatte serves REST APIs from their OpenAPI"
+		say "   document: give the REST API behind it. No value from the file was kept."
+		ask "   OpenAPI document URL (Enter skips $n)"
+		[ -n "$a" ] || continue
+		spec=$a
+		ask "   REST API base URL" "$(field "$n" '.url // ""')"
+		setup_add "$n" "$a" "$spec" "$k" "$h"
+	done
+}
+
+setup_backends() {
+	say "4. Backends. None are bundled: Gatte serves REST APIs from their OpenAPI document."
+	if [ ! -s "$IMPORT" ]; then
+		say "   To pick them from an MCP JSON file, run this on the host in another terminal:"
+		say "       docker exec -i gatte gatte setup import < .mcp.json"
+		ask "   Then press Enter (or Enter now to skip)"
+	fi
+	if [ -s "$IMPORT" ]; then setup_import_pick; fi
+	while confirm "   Add a REST API by hand (name, base URL, OpenAPI document URL)?"; do
+		ask "   Name (letters, digits, - and _)"
+		n=$a
+		ask "   Base URL"
+		u=$a
+		ask "   OpenAPI document URL"
+		s=$a
+		k=none
+		if confirm "   Does it take an API key?"; then k=; fi
+		setup_add "$n" "$u" "$s" "$k"
+	done
+}
+
+setup_summary() {
+	say ""
+	say "Gatte is set up."
+	say "  Gateway          $GW_URL"
+	say "  Sign-in          $IDP_URL"
+	if [ "$GATTE_TLS" = internal ]; then
+		say "  CA fingerprint   $(openssl x509 -in "$GATTE_EDGE/public/ca.crt" -noout -fingerprint -sha256 | sed 's/^[^=]*=//')"
+	fi
+	say "  Back up          docker exec gatte gatte mcp backup -out $BACKUP_DIR -keep 7"
+	say "                   docker cp gatte:$BACKUP_DIR ./gatte-backup"
+	say "  Upgrade          back up, gh attestation verify the new digest, docker pull it,"
+	say "                   docker rm -f gatte, docker run the new digest (README, Upgrade)"
+}
+
+# setup_import reads an MCP JSON file ({"mcpServers": {NAME: {...}}}) from
+# standard input. Per server it keeps the name, whether register would take
+# it, the kind (remote: a url entry; container: a docker or podman command;
+# stdio: any other command), a url entry's URL without userinfo, query or
+# fragment, and the header NAMES. No value, arg or env entry is copied out,
+# so nothing secret in the file reaches the disk or the screen.
+setup_import() {
+	[ ! -t 0 ] || die "setup import reads the file from standard input: docker exec -i gatte gatte setup import < .mcp.json"
+	mkdir -p "$RUN_DIR"
+	if ! (umask 077 && jq '
+		.mcpServers | to_entries | map(select(.value | type == "object")) | map(
+			.key as $n | .value as $v | {
+				name: $n,
+				ok: ($n | test("^[A-Za-z0-9][A-Za-z0-9_-]*$")),
+				kind: (if ($v.url | type) == "string" then "remote"
+					elif (($v.command // "") | tostring | test("(^|/)(docker|podman)$")) then "container"
+					else "stdio" end),
+				url: (if ($v.url | type) == "string" then
+					($v.url | sub("[?#].*$"; "") | sub("^(?<s>[A-Za-z][A-Za-z0-9+.-]*://)[^/@]*@"; "\(.s)")
+					| if test("^[A-Za-z0-9._~:/%+-]+$") then . else null end)
+					else null end),
+				headers: (if ($v.headers | type) == "object" then ($v.headers | keys
+					| map(if test("^[A-Za-z0-9!#$%&'"'"'*+.^_`|~-]+$") then . else "(invalid header name)" end))
+					else [] end)
+			})' >"$IMPORT.new" 2>/dev/null); then
+		rm -f "$IMPORT.new"
+		die "not an MCP JSON file: expected {\"mcpServers\": {NAME: {...}}}"
+	fi
+	if ! jq -e 'length > 0' "$IMPORT.new" >/dev/null; then
+		rm -f "$IMPORT.new"
+		die "the file lists no servers under mcpServers"
+	fi
+	mv "$IMPORT.new" "$IMPORT"
+	jq -r '.[] | (.name | @json) + "  " + .kind + (if .ok then "" else "  (not a valid backend name; skipped)" end)' "$IMPORT"
+	say "Kept the names and URLs; no value from the file. Now continue in gatte setup."
+}
+
+cmd_setup() {
+	if [ "${1:-}" = import ]; then
+		setup_import
+		return 0
+	fi
+	[ $# -eq 0 ] || die "usage: gatte setup [import]"
+	[ -t 0 ] || die "setup asks questions: docker exec -it gatte gatte setup"
+	setup_domain
+	setup_wait_up
+	setup_person
+	setup_backends
+	if confirm "5. Run the self-test (signs in as a throwaway analyst, then deletes it)?"; then
+		gatte selftest || true
+	fi
+	setup_summary
+}
+
 # --- main --------------------------------------------------------------
 
 case "${1:-help}" in
 help | -h | --help) usage ;;
+setup) shift; cmd_setup "$@" ;;
 api) shift; cmd_api "$@" ;;
 clear)
 	shift

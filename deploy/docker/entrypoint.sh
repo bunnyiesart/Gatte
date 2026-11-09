@@ -8,6 +8,11 @@
 #          exits, so the restart policy brings the whole set back.
 #   init   only the idempotent setup, then exit.
 #
+# With no domain (no -e GATTE_DOMAIN and no finished `gatte setup`), run
+# starts nothing and opens no listener: it logs one line, waits for the
+# settings `gatte setup` writes, and the healthcheck stays unhealthy until
+# then. A container that is not configured serves nothing.
+#
 # All three share this container's loopback, which is what lets the gateway
 # keep its loopback-only listener (design/adr/0011): Caddy reaches it on
 # 127.0.0.1:8080 and Authelia on 127.0.0.1:9091. Nothing here prints a
@@ -56,23 +61,29 @@ edge_lines() {
 	fi
 }
 
-# A private CA and a leaf for both names, re-issued when the names changed
-# or the leaf has less than 30 days left. Analysts install ca.crt once; the
-# connect script does it for them ([connect] ca_file).
+# A private CA and a leaf for both names, re-issued when the names changed,
+# the leaf has less than 30 days left, or the CA was replaced. Analysts
+# install ca.crt once; the connect script does it for them ([connect]
+# ca_file). The CA can only sign for GATTE_DOMAIN and the names under it
+# (auth. included), and never for an IP address: a copy of ca.key cannot
+# impersonate any other site to an analyst who trusts it. A CA made before
+# this constraint keeps working; README "Certificates" says how to replace it.
 internal_tls() {
 	if [ ! -s "$GATTE_CA/ca.key" ]; then
 		openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
 			-keyout "$GATTE_CA/ca.key" -out "$GATTE_CA/ca.crt" -days 3650 \
 			-subj "/CN=Gatte private CA for $GATTE_DOMAIN" \
 			-addext 'basicConstraints=critical,CA:TRUE' \
-			-addext 'keyUsage=critical,keyCertSign,cRLSign' 2>/dev/null
+			-addext 'keyUsage=critical,keyCertSign,cRLSign' \
+			-addext "nameConstraints=critical,permitted;DNS:$GATTE_DOMAIN,excluded;IP:0.0.0.0/0.0.0.0,excluded;IP:0:0:0:0:0:0:0:0/0:0:0:0:0:0:0:0" 2>/dev/null
 		chmod 0600 "$GATTE_CA/ca.key"
 		say "gatte: made a private certificate authority for $GATTE_DOMAIN"
 	fi
 	cert=$GATTE_EDGE/tls/cert.pem key=$GATTE_EDGE/tls/key.pem
 	want="DNS:$GATTE_DOMAIN, DNS:$IDP_HOST"
 	have=$(openssl x509 -in "$cert" -noout -ext subjectAltName 2>/dev/null | tail -n 1 | sed 's/^ *//') || have=
-	if [ "$have" != "$want" ] || ! openssl x509 -in "$cert" -noout -checkend 2592000 >/dev/null 2>&1; then
+	if [ "$have" != "$want" ] || ! openssl x509 -in "$cert" -noout -checkend 2592000 >/dev/null 2>&1 ||
+		! openssl verify -CAfile "$GATTE_CA/ca.crt" "$cert" >/dev/null 2>&1; then
 		w=$(mktemp -d)
 		printf 'subjectAltName=DNS:%s,DNS:%s\nbasicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=serverAuth\n' \
 			"$GATTE_DOMAIN" "$IDP_HOST" >"$w/ext"
@@ -89,12 +100,13 @@ internal_tls() {
 }
 
 cmd_init() {
-	derive
+	derive || die "$NOT_CONFIGURED"
 	edge_lines
 	umask 022
 	mkdirs 0755 root:root "$ROOT" "$GATTE_ETC" "$GATTE_SITE" "$GATTE_EDGE" "$GATTE_EDGE/public" "$AUTHELIA_ETC"
 	mkdirs 0700 root:root "$GATTE_KEYS" "$GATTE_CA"
 	mkdirs 0750 "$SERVICE_USER:$SERVICE_USER" "$GATTE_DATA"
+	mkdirs 0700 "$SERVICE_USER:$SERVICE_USER" "$BACKUP_DIR"
 	mkdirs 0700 caddy:caddy "$GATTE_EDGE/tls" "$CADDY_HOME"
 	mkdirs 0700 authelia:authelia "$AUTHELIA_ETC/secrets" "$AUTHELIA_DATA"
 	save_settings
@@ -212,7 +224,19 @@ stop_all() {
 	exit "${1:-0}"
 }
 
+# await_setup blocks until `gatte setup` has saved a domain.
+await_setup() {
+	say "$NOT_CONFIGURED"
+	trap 'exit 0' TERM INT
+	until [ -r "$SETTINGS" ] && grep -q '^GATTE_DOMAIN=.' "$SETTINGS"; do
+		sleep 2 &
+		wait $! 2>/dev/null || true
+	done
+	trap - TERM INT
+}
+
 cmd_run() {
+	derive || await_setup
 	cmd_init
 	pin_hosts
 

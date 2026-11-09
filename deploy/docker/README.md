@@ -1,9 +1,9 @@
 # Gatte in Docker
 
 One `docker run` brings up the gateway, its TLS proxy (Caddy) and its
-identity provider (Authelia), configured, in one container. No file to
-download, nothing to clone. Every operator task after that is one command.
-Why it is built this way: `design/adr/0049`.
+identity provider (Authelia) in one container, and `gatte setup` configures
+it. No file to download, nothing to clone. Every operator task after that is
+one command. Why it is built this way: `design/adr/0049`.
 
 This image serves **REST APIs** (`-transport http`): Gatte reads an API's
 OpenAPI document and turns each operation into a tool your analysts' Claude
@@ -14,29 +14,106 @@ use the host install in the top-level `README.md` for those.
 ## Install
 
 You need Docker (or Podman), and DNS for two names pointing at the host:
-`gatte.example.org` and `auth.gatte.example.org`. Then:
+`gatte.example.org` and `auth.gatte.example.org`. Analysts reach both on
+443. Three steps:
+
+**1. Verify the image.** Take the digest of the release from its GitHub
+release page, and check it was built by this repository's workflow:
+
+```sh
+IMAGE=ghcr.io/bunnyiesart/gatte@sha256:DIGEST
+gh attestation verify oci://$IMAGE --repo bunnyiesart/Gatte
+```
+
+**2. Run it, by digest.** A tag can be moved to another image; a digest
+cannot.
 
 ```sh
 docker run -d --name gatte --restart unless-stopped \
-  -p 443:443 -p 127.0.0.1:8090:8090 -e GATTE_DOMAIN=gatte.example.org \
-  -v gatte:/gatte ghcr.io/bunnyiesart/gatte:0.3.0
+  -p 443:443 -p 127.0.0.1:8090:8090 -v gatte:/gatte "$IMAGE"
 ```
 
-The first start makes every key, the encrypted vault, a private certificate
-authority and the identity provider's secrets, and keeps them in the `gatte`
-volume. `docker logs gatte` ends with `gatte: up at https://...` when it is
-ready.
+Add `-p 80:80` only if you will pick Let's Encrypt (`acme`) in the next
+step. Until setup is done the container starts nothing and opens no port:
+`docker logs gatte` says `not configured: docker exec -it gatte gatte setup`,
+and the healthcheck stays unhealthy.
+
+**3. Set it up.**
+
+```sh
+docker exec -it gatte gatte setup
+```
+
+It asks, in order, and skips any step already done, so it is safe to run
+again:
+
+1. The domain, and TLS: `internal` (a private CA made here, the default) or
+   `acme` (Let's Encrypt, with an email). It warns when a name does not
+   resolve.
+2. It waits for `gatte: up`.
+3. The first person: username, display name, email, group (`soc-analysts`
+   or `dfir-leads`). It prints their one-time password, once, and the line
+   that writes their connect script.
+4. Backends (below). None are bundled.
+5. An optional self-test, then a summary: URLs, the CA fingerprint, the
+   backup and upgrade commands.
+
+Every prompt that approves something defaults to no. Setup has no option to
+serve plain HTTP, skip TLS, turn off signatures or the quarantine, allow
+private addresses, approve on its own, or grant a sensitive tool.
+
+Running it again with a different domain warns that this invalidates the
+CA certificate, the token audience, every client and every token, asks you
+to type the new domain again, and then asks for `docker restart gatte`.
+
+Without questions: `-e GATTE_DOMAIN=gatte.example.org` (and the options
+below) on `docker run` configures the container at its first start, and
+`gatte setup` then only does the steps that remain. The first start makes
+every key, the encrypted vault, a private certificate authority and the
+identity provider's secrets, and keeps them in the `gatte` volume.
 
 Options, all `-e`:
 
 | Setting | Default | What |
 |---|---|---|
-| `GATTE_DOMAIN` | (required) | The name analysts reach Gatte on; the IdP is `auth.` + it |
+| `GATTE_DOMAIN` | (from `gatte setup`) | The name analysts reach Gatte on; the IdP is `auth.` + it |
 | `GATTE_TLS` | `internal` | `internal`: a private CA made here. `acme`: a public certificate from Let's Encrypt (add `-p 80:80` and `GATTE_ACME_EMAIL`) |
 | `GATTE_PORT` | `443` | The HTTPS port, when 443 is taken. Publish the same number: `-p 8443:8443 -e GATTE_PORT=8443` |
 | `TZ` | `UTC` | Time zone of the logs |
 
 The settings are kept in the volume: an upgrade can drop the `-e` flags.
+
+## Backends from an MCP JSON file
+
+Gatte serves REST APIs from their OpenAPI document. If your analysts
+already list their servers in a Claude Code `.mcp.json`, hand the file to
+setup on standard input, from the host, while `gatte setup` is at its
+backends step (or before it):
+
+```sh
+docker exec -i gatte gatte setup import < .mcp.json
+```
+
+`setup import` keeps only each server's name, its kind, a URL without
+userinfo, query or fragment, and the NAMES of its headers. No header value,
+`env` value or `args` entry is copied anywhere: not to the volume, not to the
+log, not to the screen. Setup then lists the servers and, for each one you
+pick, registers it with `gatte api add` and asks for its key with
+`gatte secret set`, which does not echo. Retype a key the file held there;
+it was not kept.
+
+What the image can and cannot serve from that file:
+
+- **`"type": "http"` / `"url"` entries** are remote MCP servers. Gatte does
+  not proxy remote MCP; it calls REST APIs. Setup asks for the OpenAPI
+  document of the REST API behind the server and its base URL, and derives
+  where the key goes from the entry's one header (`Authorization` is a
+  bearer token; any other name is that header). An entry with more than one
+  header is left for you to add by hand.
+- **`"command"` entries** (`docker run ...`, `npx ...`, any local process)
+  are skipped with a one-line reason. This image runs no backend processes
+  and no containers: it has no runtime for them, and it is never given the
+  Docker socket, which would hand root on the host to anything in it.
 
 Every command below is `docker exec -it gatte gatte ...`. To shorten it:
 
@@ -126,7 +203,7 @@ A file the gateway refuses is not applied: the previous one is put back.
 | Task | Command |
 |---|---|
 | What is registered, what waits for review | `gatte status` |
-| Check everything end to end | `gatte selftest SERVER SAFE_TOOL [SENSITIVE_TOOL [ARGS_JSON]]` |
+| Check everything end to end | `gatte selftest [SERVER SAFE_TOOL [SENSITIVE_TOOL [ARGS_JSON]]]` |
 | Rotate an API key | `gatte secret set NAME` (takes effect on the next call) |
 | List people / reset a password / remove one | `gatte user list` / `gatte user reset U` / `gatte user rm U` |
 | Cut a person off immediately | `gatte mcp access block U` |
@@ -135,8 +212,9 @@ A file the gateway refuses is not applied: the previous one is put back.
 | Logs | `docker logs -f gatte` |
 
 `gatte selftest` signs in as a throwaway analyst with the same PKCE flow
-Claude Code uses, calls a tool through the gateway, checks that a sensitive
-tool is refused, and deletes the analyst:
+Claude Code uses, checks the token carries the `groups` claim, refreshes it,
+checks the analyst resolves to a role, calls a tool through the gateway,
+checks that a sensitive tool is refused, and deletes the analyst:
 
 ```sh
 docker exec gatte gatte selftest petstore findPetsByStatus addPet '{"query_status":"available"}'
@@ -144,14 +222,45 @@ docker exec gatte gatte selftest petstore findPetsByStatus addPet '{"query_statu
 
 ## Upgrade
 
+Keys, vault, database and accounts live in the volume; the container is
+disposable. An upgrade is a checked backup, then a new container on the new
+digest (design/adr/0045 is the same recipe on a host):
+
 ```sh
-docker pull ghcr.io/bunnyiesart/gatte:NEW
+# 1. A consistent copy of the database, checked (integrity, audit chain,
+#    signatures), while Gatte runs. Note the audit head it prints.
+docker exec gatte gatte mcp backup -out /gatte/backup -keep 7
+# 2. Off the volume: a backup on the same disk is not a backup.
+docker cp gatte:/gatte/backup ./gatte-backup-$(date +%F)
+# 3. Verify the new image, then pull it by digest.
+NEW=ghcr.io/bunnyiesart/gatte@sha256:NEW-DIGEST
+gh attestation verify oci://$NEW --repo bunnyiesart/Gatte
+docker pull "$NEW"
+# 4. Replace the container; the settings come back from the volume.
 docker rm -f gatte
-docker run -d --name gatte --restart unless-stopped -p 443:443 \
-  -v gatte:/gatte ghcr.io/bunnyiesart/gatte:NEW
+docker run -d --name gatte --restart unless-stopped \
+  -p 443:443 -p 127.0.0.1:8090:8090 -v gatte:/gatte "$NEW"
+docker logs -f gatte                       # until "gatte: up at ..."
+docker exec gatte gatte selftest
 ```
 
-Keys, vault, database and accounts live in the volume.
+**Rollback.** Keep the old digest. If the new release migrated the database,
+the old one may refuse it; put the backup from step 1 back with the old
+image, then run the old image:
+
+```sh
+OLD=ghcr.io/bunnyiesart/gatte@sha256:OLD-DIGEST
+docker rm -f gatte
+docker run --rm -v gatte:/gatte "$OLD" gatte mcp restore \
+  -in /gatte/backup/mcp-gateway-YYYYMMDDTHHMMSSZ.db -expect-head HEAD
+docker run -d --name gatte --restart unless-stopped \
+  -p 443:443 -p 127.0.0.1:8090:8090 -v gatte:/gatte "$OLD"
+```
+
+`restore` refuses a copy that fails the integrity check, the audit chain or
+a signature, and keeps the database it replaces beside it. What the trail
+recorded after the backup is gone from the database (it is still in your
+SIEM copy).
 
 ## Inside the container
 
@@ -183,8 +292,25 @@ against the key beside them.
   names. `gatte ca` prints the CA certificate, and
   `https://GATTE_DOMAIN/ca.crt` serves it. The connect script installs it on
   the analyst's machine.
+
+  A CA made by 0.4.0 or later is name-constrained: it can only sign for
+  `GATTE_DOMAIN` and the names under it, and never for an IP address, so a
+  stolen `ca.key` cannot impersonate any other site to an analyst who trusts
+  it. A CA made by an earlier release has no such limit and keeps working.
+  To replace it with a constrained one (every analyst then runs a new connect
+  script, which installs the new CA):
+
+  ```sh
+  docker exec gatte sh -c 'rm -rf /gatte/etc/ca'
+  docker restart gatte              # makes a new CA and re-issues the certificate
+  docker exec gatte gatte connect USER -os macos > connect-USER.sh   # per person
+  ```
+
+  Remove the old CA from the analysts' machines afterwards; it is no longer
+  used.
 - `GATTE_TLS=acme`: Caddy gets a public certificate from Let's Encrypt. Both
-  names must be reachable from the internet on 443 and 80.
+  names must be reachable from the internet on 443 and 80, so publish
+  `-p 80:80` too. Port 80 is not needed otherwise.
 
 ## Try it on one machine
 
@@ -192,7 +318,8 @@ against the key beside them.
 
 ```sh
 docker run -d --name gatte -p 8443:8443 -e GATTE_DOMAIN=gatte.localtest.me \
-  -e GATTE_PORT=8443 -v gatte:/gatte ghcr.io/bunnyiesart/gatte:0.3.0
+  -e GATTE_PORT=8443 -v gatte:/gatte "$IMAGE"
+docker exec -it gatte gatte setup
 ```
 
 ## Build it yourself
@@ -202,7 +329,8 @@ docker build -f deploy/docker/Dockerfile -t gatte:local .
 ```
 
 `deploy/docker/compose.yaml` runs the same single container, for those who
-keep their services in a compose file.
+keep their services in a compose file. It has no default image: set
+`GATTE_IMAGE` to a digest.
 
 ## Limits
 
@@ -213,6 +341,9 @@ keep their services in a compose file.
   the host's SSH log.
 - `upstream update` does not re-read an OpenAPI document. To pick up a new
   version: `gatte api rm NAME`, then `gatte api add` again.
-- No backup timer. With the container stopped,
-  `docker run --rm -v gatte:/gatte -v "$PWD":/out debian tar czf /out/gatte.tgz /gatte`
-  is a full backup.
+- No backup timer. `gatte mcp backup` copies the database only. The keys,
+  the vault, the CA and the accounts are the rest of the volume; with the
+  container stopped,
+  `docker run --rm -v gatte:/gatte:ro -v "$PWD":/out "$IMAGE" tar czf /out/gatte.tgz /gatte`
+  is a full backup. It holds every secret Gatte has: keep it offline.
+- No second factor yet: sign-in is a password (Authelia `one_factor`).

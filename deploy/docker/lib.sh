@@ -13,6 +13,7 @@ GATTE_SITE=$ROOT/site               # roles.toml, extra.toml, OpenAPI documents
 GATTE_KEYS=$GATTE_ETC/keys
 GATTE_CA=$GATTE_ETC/ca
 GATTE_DATA=$ROOT/data               # the database: the service account's
+BACKUP_DIR=$ROOT/backup             # `gatte mcp backup -out` copies of it
 GATTE_EDGE=$ROOT/edge               # what Caddy reads
 CADDY_HOME=$ROOT/caddy              # Caddy's own state (ACME account, certs)
 AUTHELIA_ETC=$ROOT/authelia
@@ -75,13 +76,17 @@ save_settings() {
 	mv "$SETTINGS.new" "$SETTINGS"
 }
 
+NOT_CONFIGURED="not configured: docker exec -it gatte gatte setup"
+
 # derive validates the settings and computes every URL. The port is part of
 # every URL when it is not 443, because the issuer and the audience are
-# compared as strings.
+# compared as strings. With no domain yet (neither -e GATTE_DOMAIN nor a
+# finished `gatte setup`) it returns 3: the container is awaiting setup,
+# which is a state, not an error.
 derive() {
 	load_settings
 	: "${GATTE_DOMAIN:=}"
-	[ -n "$GATTE_DOMAIN" ] || die "GATTE_DOMAIN is not set: docker run ... -e GATTE_DOMAIN=gatte.example.org ..."
+	[ -n "$GATTE_DOMAIN" ] || return 3
 	case "$GATTE_DOMAIN" in
 	*.*) ;;
 	*) die "GATTE_DOMAIN=$GATTE_DOMAIN needs at least one dot: Authelia sets its session cookie on it" ;;

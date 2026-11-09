@@ -130,14 +130,17 @@ covers other kinds of blue team tooling.
 
 ## Quick start
 
-**The short way, for REST APIs: one `docker run`.** The published image
-holds the gateway, its TLS proxy and its identity provider, and configures
-all three on its first start; every task after that is one `gatte` command
-([deploy/docker/README.md](deploy/docker/README.md), `design/adr/0049`):
+**The short way, for REST APIs: verify, `docker run`, `gatte setup`.** The
+published image holds the gateway, its TLS proxy and its identity provider;
+`gatte setup` configures them, and every task after that is one `gatte`
+command ([deploy/docker/README.md](deploy/docker/README.md), `design/adr/0049`):
 
 ```sh
+IMAGE=ghcr.io/bunnyiesart/gatte@sha256:DIGEST   # the release's digest
+gh attestation verify oci://$IMAGE --repo bunnyiesart/Gatte
 docker run -d --name gatte --restart unless-stopped -p 443:443 -p 127.0.0.1:8090:8090 \
-  -e GATTE_DOMAIN=gatte.example.org -v gatte:/gatte ghcr.io/bunnyiesart/gatte:0.3.0
+  -v gatte:/gatte "$IMAGE"
+docker exec -it gatte gatte setup
 ```
 
 The rest of this section sets up a gateway by hand on one Linux or FreeBSD

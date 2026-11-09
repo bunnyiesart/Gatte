@@ -2,11 +2,11 @@
 #
 # Gatte as one OCI image (design/adr/0049): the gateway, its TLS proxy
 # (Caddy) and its identity provider (Authelia) in ONE container, so an
-# installation is a single `docker run`:
+# installation is a single `docker run`, by digest, then `gatte setup`:
 #
 #     docker run -d --name gatte --restart unless-stopped -p 443:443 \
-#       -p 127.0.0.1:8090:8090 -e GATTE_DOMAIN=gatte.example.org -v gatte:/gatte \
-#       ghcr.io/bunnyiesart/gatte
+#       -p 127.0.0.1:8090:8090 -v gatte:/gatte ghcr.io/bunnyiesart/gatte@sha256:...
+#     docker exec -it gatte gatte setup
 #
 # Build from the repository root:
 #

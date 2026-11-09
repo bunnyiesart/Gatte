@@ -9,11 +9,14 @@
 # PKCE flow (curl stands in for the browser), opens an MCP session at the
 # gateway with the access token, lists the tools, calls SAFE_TOOL (it must
 # answer) and SENSITIVE_TOOL (it must be neither listed nor served), and
-# deletes the person. The password and the tokens stay in shell variables
+# deletes the person. On the way it checks the access token carries a
+# non-empty groups claim, that a refresh token yields a new access token, and
+# that gatte.status gives the person at least one role: without the groups
+# scope a token authenticates and authorises nothing. The password and the tokens stay in shell variables
 # and a private temporary directory; nothing prints them.
 
 . /usr/local/share/gatte/lib.sh
-derive
+derive || die "$NOT_CONFIGURED"
 
 SERVER=${1:-}
 SAFE=${2:-}
@@ -100,8 +103,34 @@ c=$($CURL -o "$W/token" -w '%{http_code}' -X POST "$TOKEN_EP" \
 	--data-urlencode "resource=$AUDIENCE" --data-urlencode "code_verifier=$VERIFIER")
 [ "$c" = 200 ] || fail "token exchange: http $c"
 AT=$(jq -r .access_token "$W/token")
+RT=$(jq -r '.refresh_token // empty' "$W/token")
 rm -f "$W/token"
 ok "access token from the public client with PKCE (no secret)"
+
+# The claims, from the JWT's payload (base64url, unpadded); nothing printed.
+payload() {
+	p=$(printf '%s' "$1" | cut -d. -f2 | tr '_-' '/+')
+	case $((${#p} % 4)) in 2) p=$p== ;; 3) p=$p= ;; esac
+	printf '%s' "$p" | openssl base64 -d -A
+}
+payload "$AT" | jq -e '(.groups // []) | length > 0' >/dev/null ||
+	fail "the access token has no groups claim: the groups scope or the claims policy is missing"
+ok "the access token carries the groups claim"
+
+# A refresh, as Claude Code does when the 10-minute access token expires;
+# the rest of the test uses the refreshed token.
+[ -n "$RT" ] || fail "no refresh token: the offline_access scope was not granted"
+printf '%s' "$RT" >"$W/rt"
+RT=
+c=$($CURL -o "$W/token" -w '%{http_code}' -X POST "$TOKEN_EP" \
+	--data-urlencode "grant_type=refresh_token" --data-urlencode "refresh_token@$W/rt" \
+	--data-urlencode "client_id=$CLIENT_ID")
+rm -f "$W/rt"
+[ "$c" = 200 ] || fail "token refresh: http $c"
+AT=$(jq -r .access_token "$W/token")
+rm -f "$W/token"
+payload "$AT" | jq -e '(.groups // []) | length > 0' >/dev/null || fail "the refreshed access token has no groups claim"
+ok "token refresh returned a new access token with the groups claim"
 
 # 4. MCP over streamable HTTP with that token.
 SID=
@@ -125,6 +154,12 @@ $CURL -o /dev/null -X POST "$GATEWAY" -H "Authorization: Bearer $AT" -H 'Content
 c=$(rpc 2 tools/list '{}' list)
 [ "$c" = 200 ] || fail "tools/list: http $c"
 ok "gateway session open; $U sees: $(jq -r '[.result.tools[].name] | join(" ")' "$W/list")"
+
+c=$(rpc 5 tools/call '{"name":"gatte.status","arguments":{}}' status)
+[ "$c" = 200 ] || fail "tools/call gatte.status: http $c"
+jq -e '(.result.structuredContent.you.roles // []) | length > 0' "$W/status" >/dev/null ||
+	fail "$U resolves to no role: check [group_to_role] for soc-analysts (gatte roles show)"
+ok "$U resolves to role(s): $(jq -r '.result.structuredContent.you.roles | join(" ")' "$W/status")"
 
 if [ -n "$SERVER" ] && [ -n "$SAFE" ]; then
 	t=$SERVER.$SAFE

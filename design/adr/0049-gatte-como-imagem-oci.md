@@ -49,6 +49,42 @@ modelos de configuração e um `compose.yaml` opcional de um serviço), o
 publica `ghcr.io/bunnyiesart/gatte`. Na 0.1.0 eram também `compose.build.yaml`,
 `.env.example` e `smoke.sh`, removidos na 0.2.0.
 
+**Emenda de 09 nov 2026 (0.4.0): instalar é verificar, rodar e `gatte setup`.**
+
+- **Estado "aguardando setup".** Sem `GATTE_DOMAIN` e sem configuração salva,
+  o entrypoint não sai nem sobe nada: não abre porta, registra uma linha
+  (`not configured: docker exec -it gatte gatte setup`), espera o arquivo de
+  configurações e o healthcheck fica unhealthy. `derive` trata a falta do
+  domínio como esse estado, não como erro. `-e GATTE_DOMAIN` continua
+  configurando sem perguntas; o setup então só faz o que falta.
+- **`gatte setup`**, em sh, só encadeia comandos que já existem: domínio e
+  TLS (`internal` ou `acme`), espera o `gatte: up`, a primeira pessoa, os
+  backends, o selftest opcional e um resumo. Cada passo pula se já foi feito.
+  Toda confirmação de aprovação tem padrão "não", e o setup não oferece
+  http, TLS desligado, `require_signed` ou quarentena desligados, egresso
+  privado, aprovação automática nem tool sensível. Trocar o domínio exige
+  redigitá-lo.
+- **Importação de MCP JSON.** Nenhum backend vem na imagem.
+  `gatte setup import` lê um `.mcp.json` pela entrada padrão e guarda só
+  nome, tipo, só esquema, host e porta da URL (um caminho ou uma query
+  podem levar a chave), e os NOMES dos cabeçalhos; nenhum valor de cabeçalho, `env` ou `args` sai do jq. Entradas
+  `url` viram APIs REST se o operador der o OpenAPI do serviço; entradas
+  `command` (stdio, `docker run`) são puladas com o motivo, porque a imagem
+  não tem runtime para elas e não recebe o socket do Docker. O segredo entra
+  só por `gatte secret set`.
+- **Proveniência assinada.** O workflow publica, além da proveniência do
+  buildx, uma atestação Sigstore (`actions/attest-build-provenance`) no
+  registry, e o README manda conferir com `gh attestation verify` e rodar
+  pelo digest. O `compose.yaml` não tem mais imagem padrão.
+- **CA com `nameConstraints`.** Uma CA nova só assina para `GATTE_DOMAIN` e
+  os nomes abaixo dele, e nunca para IP. Uma CA anterior continua valendo; o
+  README diz como trocá-la. Uma CA feita para outro domínio (o domínio mudou,
+  pelo setup ou por `-e`) ou a 30 dias de vencer é refeita no arranque, e o
+  certificado folha é reemitido também quando não confere mais com a CA.
+- **Atualização e volta** seguem o `0045`: `gatte mcp backup` para
+  `/gatte/backup`, cópia para fora do volume, verificação, `pull` por digest,
+  contêiner novo; a volta é o `restore` com a imagem antiga.
+
 ## Contexto
 
 O guia de instalação do `README.md` tem sete passos e cerca de trinta
@@ -253,3 +289,4 @@ documento inteiro. A correção está no `0048`, nota de 09 out 2026.
 - **Backup:** os volumes `gatte-etc` e `gatte-data` são o estado inteiro;
   `mcp-gateway backup` existe, mas não está ligado a um timer aqui.
 - **Uma CA com restrição de nomes.** A CA privada não usa `nameConstraints`.
+  (Fechado para CAs novas na 0.4.0; ver a emenda no topo.)

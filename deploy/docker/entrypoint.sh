@@ -68,11 +68,21 @@ edge_lines() {
 # (auth. included), and never for an IP address: a copy of ca.key cannot
 # impersonate any other site to an analyst who trusts it. A CA made before
 # this constraint keeps working; README "Certificates" says how to replace it.
+# A CA made for another domain (the domain changed) or with less than 30
+# days left is replaced: it could not sign a leaf clients would accept.
 internal_tls() {
+	cn="Gatte private CA for $GATTE_DOMAIN"
+	if [ -s "$GATTE_CA/ca.key" ] &&
+		{ [ "$(openssl x509 -in "$GATTE_CA/ca.crt" -noout -subject -nameopt multiline 2>/dev/null |
+			sed -n 's/^ *commonName *= //p')" != "$cn" ] ||
+			! openssl x509 -in "$GATTE_CA/ca.crt" -noout -checkend 2592000 >/dev/null 2>&1; }; then
+		rm -f "$GATTE_CA/ca.key" "$GATTE_CA/ca.crt"
+		say "gatte: the private CA is not for $GATTE_DOMAIN or is expiring; making a new one (analysts need a new connect script)"
+	fi
 	if [ ! -s "$GATTE_CA/ca.key" ]; then
 		openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
 			-keyout "$GATTE_CA/ca.key" -out "$GATTE_CA/ca.crt" -days 3650 \
-			-subj "/CN=Gatte private CA for $GATTE_DOMAIN" \
+			-subj "/CN=$cn" \
 			-addext 'basicConstraints=critical,CA:TRUE' \
 			-addext 'keyUsage=critical,keyCertSign,cRLSign' \
 			-addext "nameConstraints=critical,permitted;DNS:$GATTE_DOMAIN,excluded;IP:0.0.0.0/0.0.0.0,excluded;IP:0:0:0:0:0:0:0:0/0:0:0:0:0:0:0:0" 2>/dev/null

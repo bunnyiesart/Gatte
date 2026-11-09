@@ -12,7 +12,7 @@
 . /usr/local/share/gatte/lib.sh
 # The domain docker run -e gave, before derive mixes in the saved one:
 # setup cannot change a domain the container's own flags would put back.
-RUN_DOMAIN=${GATTE_DOMAIN:-}
+RUN_DOMAIN=${GATTE_DOMAIN:-} RUN_TLS=${GATTE_TLS:-}
 if ! derive; then
 	case "${1:-help}" in
 	setup | help | -h | --help) ;;
@@ -505,20 +505,20 @@ MSG
 # --- setup -------------------------------------------------------------
 
 # What `gatte setup import` kept of an MCP JSON file: server names, kinds,
-# URLs without userinfo, query or fragment, and header NAMES. Never a value:
+# the scheme, host and port of URLs, and header NAMES. Never a value:
 # the jq filter that writes it reads no value into its output.
 IMPORT=$RUN_DIR/mcp-import.json
 
 ask() { # PROMPT [DEFAULT] -> $a
 	if [ -n "${2:-}" ]; then printf '%s [%s]: ' "$1" "$2"; else printf '%s: ' "$1"; fi
-	IFS= read -r a || a=
+	IFS= read -r a || die "input closed"
 	[ -n "$a" ] || a=${2:-}
 }
 
 # confirm PROMPT is yes only on an explicit yes; Enter is no.
 confirm() {
 	printf '%s [y/N] ' "$1"
-	IFS= read -r a || a=
+	IFS= read -r a || die "input closed"
 	case "$a" in y | Y | yes | sim | s) return 0 ;; *) return 1 ;; esac
 }
 
@@ -539,6 +539,10 @@ setup_domain() {
 		[ "$d" != "$cur" ] || die "that is the current domain; nothing changed"
 		ask "   TLS: internal (a private CA made here) or acme (Let's Encrypt; 443 and 80 open to the internet)" "${GATTE_TLS:-internal}"
 		t=$a e=
+		if [ -n "$RUN_TLS" ] && [ "$t" != "$RUN_TLS" ]; then
+			say "   This container was started with -e GATTE_TLS=$RUN_TLS, which wins; re-create it to change TLS."
+			continue
+		fi
 		if [ "$t" = acme ]; then
 			ask "   Email for Let's Encrypt"
 			e=$a
@@ -553,8 +557,6 @@ setup_domain() {
 	if [ -n "$cur" ]; then
 		ask "   Type the new domain again to confirm"
 		[ "$a" = "$d" ] || die "not the same; nothing changed"
-		# The CA is constrained to the old name: the next start makes another.
-		rm -rf "$GATTE_CA"
 	fi
 	mkdir -p "$GATTE_ETC"
 	GATTE_DOMAIN=$d GATTE_TLS=$t GATTE_ACME_EMAIL=$e
@@ -647,7 +649,7 @@ field() { # SERVER JQ-PATH: one field of one imported server
 
 setup_import_pick() {
 	say "   In the MCP JSON file:"
-	jq -r '.[] | "     " + (.name | @json) + "  " + .kind + (if .url then "  " + .url else "" end)' "$IMPORT"
+	jq -r '.[] | "     " + (.name | gsub("[\u007f-\u009f]"; "?") | @json) + "  " + .kind + (if .url then "  " + .url else "" end)' "$IMPORT"
 	have=$(mcp upstream list -json | jq -r '.[].name')
 	for n in $(jq -r '.[] | select(.ok) | .name' "$IMPORT"); do
 		if printf '%s\n' "$have" | grep -qx "$n"; then
@@ -677,7 +679,7 @@ setup_import_pick() {
 		ask "   OpenAPI document URL (Enter skips $n)"
 		[ -n "$a" ] || continue
 		spec=$a
-		ask "   REST API base URL" "$(field "$n" '.url // ""')"
+		ask "   REST API base URL (scheme, host and base path)" "$(field "$n" '.url // ""')"
 		setup_add "$n" "$a" "$spec" "$k" "$h"
 	done
 }
@@ -720,9 +722,10 @@ setup_summary() {
 # setup_import reads an MCP JSON file ({"mcpServers": {NAME: {...}}}) from
 # standard input. Per server it keeps the name, whether register would take
 # it, the kind (remote: a url entry; container: a docker or podman command;
-# stdio: any other command), a url entry's URL without userinfo, query or
-# fragment, and the header NAMES. No value, arg or env entry is copied out,
-# so nothing secret in the file reaches the disk or the screen.
+# stdio: any other command), only the scheme, host and port of a url entry
+# (a path or query can carry a key), and the header NAMES. No value, arg or
+# env entry is copied out, so nothing secret in the file reaches the disk or
+# the screen.
 setup_import() {
 	[ ! -t 0 ] || die "setup import reads the file from standard input: docker exec -i gatte gatte setup import < .mcp.json"
 	mkdir -p "$RUN_DIR"
@@ -730,16 +733,15 @@ setup_import() {
 		.mcpServers | to_entries | map(select(.value | type == "object")) | map(
 			.key as $n | .value as $v | {
 				name: $n,
-				ok: ($n | test("^[A-Za-z0-9][A-Za-z0-9_-]*$")),
+				ok: ($n | test("^[A-Za-z0-9][A-Za-z0-9_-]*\\z")),
 				kind: (if ($v.url | type) == "string" then "remote"
 					elif (($v.command // "") | tostring | test("(^|/)(docker|podman)$")) then "container"
 					else "stdio" end),
 				url: (if ($v.url | type) == "string" then
-					($v.url | sub("[?#].*$"; "") | sub("^(?<s>[A-Za-z][A-Za-z0-9+.-]*://)[^/@]*@"; "\(.s)")
-					| if test("^[A-Za-z0-9._~:/%+-]+$") then . else null end)
-					else null end),
+					([$v.url | capture("^(?<o>https?://)(?:[^/?#@]*@)?(?<h>[A-Za-z0-9.-]+(?::[0-9]+)?)(?:[/?#]|\\z)")]
+					| first | if . then .o + .h else null end) else null end),
 				headers: (if ($v.headers | type) == "object" then ($v.headers | keys
-					| map(if test("^[A-Za-z0-9!#$%&'"'"'*+.^_`|~-]+$") then . else "(invalid header name)" end))
+					| map(if test("^[A-Za-z0-9!#$%&'"'"'*+.^_`|~-]+\\z") then . else "(invalid header name)" end))
 					else [] end)
 			})' >"$IMPORT.new" 2>/dev/null); then
 		rm -f "$IMPORT.new"
@@ -750,7 +752,7 @@ setup_import() {
 		die "the file lists no servers under mcpServers"
 	fi
 	mv "$IMPORT.new" "$IMPORT"
-	jq -r '.[] | (.name | @json) + "  " + .kind + (if .ok then "" else "  (not a valid backend name; skipped)" end)' "$IMPORT"
+	jq -r '.[] | (.name | gsub("[\u007f-\u009f]"; "?") | @json) + "  " + .kind + (if .ok then "" else "  (not a valid backend name; skipped)" end)' "$IMPORT"
 	say "Kept the names and URLs; no value from the file. Now continue in gatte setup."
 }
 

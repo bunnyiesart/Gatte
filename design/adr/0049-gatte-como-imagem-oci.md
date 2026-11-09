@@ -63,11 +63,11 @@ publica `ghcr.io/bunnyiesart/gatte`. Na 0.1.0 eram também `compose.build.yaml`,
   Toda confirmação de aprovação tem padrão "não", e o setup não oferece
   http, TLS desligado, `require_signed` ou quarentena desligados, egresso
   privado, aprovação automática nem tool sensível. Trocar o domínio exige
-  redigitá-lo e apaga a CA, que é restrita ao nome antigo.
+  redigitá-lo.
 - **Importação de MCP JSON.** Nenhum backend vem na imagem.
   `gatte setup import` lê um `.mcp.json` pela entrada padrão e guarda só
-  nome, tipo, URL sem userinfo, query ou fragmento, e os NOMES dos
-  cabeçalhos; nenhum valor de cabeçalho, `env` ou `args` sai do jq. Entradas
+  nome, tipo, só esquema, host e porta da URL (um caminho ou uma query
+  podem levar a chave), e os NOMES dos cabeçalhos; nenhum valor de cabeçalho, `env` ou `args` sai do jq. Entradas
   `url` viram APIs REST se o operador der o OpenAPI do serviço; entradas
   `command` (stdio, `docker run`) são puladas com o motivo, porque a imagem
   não tem runtime para elas e não recebe o socket do Docker. O segredo entra
@@ -78,8 +78,9 @@ publica `ghcr.io/bunnyiesart/gatte`. Na 0.1.0 eram também `compose.build.yaml`,
   pelo digest. O `compose.yaml` não tem mais imagem padrão.
 - **CA com `nameConstraints`.** Uma CA nova só assina para `GATTE_DOMAIN` e
   os nomes abaixo dele, e nunca para IP. Uma CA anterior continua valendo; o
-  README diz como trocá-la. O certificado folha é reemitido também quando não
-  confere mais com a CA.
+  README diz como trocá-la. Uma CA feita para outro domínio (o domínio mudou,
+  pelo setup ou por `-e`) ou a 30 dias de vencer é refeita no arranque, e o
+  certificado folha é reemitido também quando não confere mais com a CA.
 - **Atualização e volta** seguem o `0045`: `gatte mcp backup` para
   `/gatte/backup`, cópia para fora do volume, verificação, `pull` por digest,
   contêiner novo; a volta é o `restore` com a imagem antiga.

@@ -94,8 +94,9 @@ backends step (or before it):
 docker exec -i gatte gatte setup import < .mcp.json
 ```
 
-`setup import` keeps only each server's name, its kind, a URL without
-userinfo, query or fragment, and the NAMES of its headers. No header value,
+`setup import` keeps only each server's name, its kind, the scheme, host and
+port of its URL (a path or query can carry a key), and the NAMES of its
+headers. No header value,
 `env` value or `args` entry is copied anywhere: not to the volume, not to the
 log, not to the screen. Setup then lists the servers and, for each one you
 pick, registers it with `gatte api add` and asks for its key with
@@ -236,8 +237,12 @@ docker cp gatte:/gatte/backup ./gatte-backup-$(date +%F)
 NEW=ghcr.io/bunnyiesart/gatte@sha256:NEW-DIGEST
 gh attestation verify oci://$NEW --repo bunnyiesart/Gatte
 docker pull "$NEW"
-# 4. Replace the container; the settings come back from the volume.
-docker rm -f gatte
+# 4. Stop it, keep a full copy of the volume (keys, vault, accounts and the
+#    identity provider's data, which a newer Authelia may migrate), then
+#    replace the container; the settings come back from the volume.
+docker stop gatte
+docker run --rm -v gatte:/gatte:ro -v "$PWD":/out "$NEW" tar czf /out/gatte-$(date +%F).tgz /gatte
+docker rm gatte
 docker run -d --name gatte --restart unless-stopped \
   -p 443:443 -p 127.0.0.1:8090:8090 -v gatte:/gatte "$NEW"
 docker logs -f gatte                       # until "gatte: up at ..."
@@ -258,7 +263,9 @@ docker run -d --name gatte --restart unless-stopped \
 ```
 
 `restore` refuses a copy that fails the integrity check, the audit chain or
-a signature, and keeps the database it replaces beside it. What the trail
+a signature, and keeps the database it replaces beside it. It puts back the
+gateway's database only: if the old image's identity provider will not read
+its data, restore the whole volume from the copy of step 4 instead. What the trail
 recorded after the backup is gone from the database (it is still in your
 SIEM copy).
 

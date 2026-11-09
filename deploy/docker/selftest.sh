@@ -120,10 +120,12 @@ ok "the access token carries the groups claim"
 # A refresh, as Claude Code does when the 10-minute access token expires;
 # the rest of the test uses the refreshed token.
 [ -n "$RT" ] || fail "no refresh token: the offline_access scope was not granted"
-c=$($CURL -o "$W/token" -w '%{http_code}' -X POST "$TOKEN_EP" \
-	--data-urlencode "grant_type=refresh_token" --data-urlencode "refresh_token=$RT" \
-	--data-urlencode "client_id=$CLIENT_ID")
+printf '%s' "$RT" >"$W/rt"
 RT=
+c=$($CURL -o "$W/token" -w '%{http_code}' -X POST "$TOKEN_EP" \
+	--data-urlencode "grant_type=refresh_token" --data-urlencode "refresh_token@$W/rt" \
+	--data-urlencode "client_id=$CLIENT_ID")
+rm -f "$W/rt"
 [ "$c" = 200 ] || fail "token refresh: http $c"
 AT=$(jq -r .access_token "$W/token")
 rm -f "$W/token"

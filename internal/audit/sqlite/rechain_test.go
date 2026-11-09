@@ -282,6 +282,14 @@ func TestVerifyChain_AnUnreadableTimestampIsABreakNotAnError(t *testing.T) {
 	r := New(db)
 	recordN(t, r, 4)
 
+	// The clean head is the real tail, and corrupting a mid-chain
+	// timestamp does not touch any stored hash -- so the walk must still
+	// report the full trail length and this same tail.
+	clean, err := r.VerifyChain(context.Background())
+	if err != nil {
+		t.Fatalf("VerifyChain on the clean trail: %v", err)
+	}
+
 	if _, err := db.Exec(`UPDATE audit_records SET timestamp = 'not-a-timestamp' WHERE id = 2`); err != nil {
 		t.Fatalf("tamper: %v", err)
 	}
@@ -298,5 +306,14 @@ func TestVerifyChain_AnUnreadableTimestampIsABreakNotAnError(t *testing.T) {
 	}
 	if !strings.Contains(check.FirstBreak.Want, "unreadable") {
 		t.Errorf("the break does not say the row is unreadable: %q", check.FirstBreak.Want)
+	}
+	// The walk must not stop at the damaged row: Count is the full trail
+	// and Head is the real tail, not the mid-chain hash of row 2.
+	if check.Count != 4 {
+		t.Errorf("Count %d, want 4 (the walk stopped at the damaged row)", check.Count)
+	}
+	if check.Head != clean.Head {
+		t.Errorf("Head %q, want %q (the reported head is a mid-chain hash, not the tail)",
+			check.Head, clean.Head)
 	}
 }

@@ -142,8 +142,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 // Get implements registry.Repository.
 func (r *Repository) Get(ctx context.Context, name string) (registry.UpstreamServer, error) {
-	const stmt = `
-SELECT name, transport, command, args, url, image, env_var_names, created_at, updated_at, auth_kind, auth_name, operations
+	const stmt = `SELECT ` + upstreamColumns + `
 FROM upstream_servers
 WHERE name = ?`
 	row := r.db.QueryRowContext(ctx, stmt, name)
@@ -160,8 +159,7 @@ WHERE name = ?`
 
 // List implements registry.Repository.
 func (r *Repository) List(ctx context.Context) ([]registry.UpstreamServer, error) {
-	const stmt = `
-SELECT name, transport, command, args, url, image, env_var_names, created_at, updated_at, auth_kind, auth_name, operations
+	const stmt = `SELECT ` + upstreamColumns + `
 FROM upstream_servers
 ORDER BY name`
 	rows, err := r.db.QueryContext(ctx, stmt)
@@ -199,8 +197,7 @@ func (r *Repository) UpdateImage(ctx context.Context, name, image string) (regis
 	}
 	defer tx.Rollback() //nolint:errcheck // no-op once Commit succeeded
 
-	const read = `
-SELECT name, transport, command, args, url, image, env_var_names, created_at, updated_at, auth_kind, auth_name, operations
+	const read = `SELECT ` + upstreamColumns + `
 FROM upstream_servers
 WHERE name = ?`
 	s, err := scanUpstreamServer(tx.QueryRowContext(ctx, read, name))
@@ -245,6 +242,11 @@ func (r *Repository) Deregister(ctx context.Context, name string) error {
 	}
 	return nil
 }
+
+// upstreamColumns is the column set, in scanUpstreamServer's Scan order,
+// shared by every SELECT so the three readers cannot drift apart (mirrors
+// control/sqlite's requestColumns).
+const upstreamColumns = `name, transport, command, args, url, image, env_var_names, created_at, updated_at, auth_kind, auth_name, operations`
 
 // rowScanner is satisfied by both *sql.Row and *sql.Rows, letting
 // scanUpstreamServer serve Get and List alike.

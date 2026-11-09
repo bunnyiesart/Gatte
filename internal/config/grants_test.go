@@ -462,6 +462,64 @@ func TestLoadRejectsADuplicatedToolsList(t *testing.T) {
 	}
 }
 
+// TestLoadRejectsADuplicatedQuotaProviderToolsList is the same collapse
+// inside a [[quota.provider]] block. A repeated tools line keeps only the
+// LAST list, so a tool a reader sees charged against a budget is silently
+// uncharged -- either billed to nothing or refused at serve time over a
+// file Load had pronounced valid. It is refused at load instead.
+func TestLoadRejectsADuplicatedQuotaProviderToolsList(t *testing.T) {
+	err := loadErr(t, minimalConfig+quotaBlock(quotaName, quotaUpstream, quotaLimit, quotaWindow,
+		`tools    = ["threatintel.lookup_ip", "threatintel.virustotal"]`,
+		`tools    = ["threatintel.lookup_ip"]`))
+	if !strings.Contains(err.Error(), "quota.provider.tools") {
+		t.Errorf("the error does not name the key that was lost: %v", err)
+	}
+}
+
+// TestLoadRejectsADuplicatedFreeToolsList is the same collapse on the free
+// list. A dropped entry reads as free but is not, which is fail-closed
+// rather than a silent bypass, but the file still lies about what it says.
+func TestLoadRejectsADuplicatedFreeToolsList(t *testing.T) {
+	err := loadErr(t, minimalConfig+
+		"\n[quota]\nfree_tools = [\"threatintel.lookup_ip\"]\nfree_tools = [\"threatintel.enrich\"]\n")
+	if !strings.Contains(err.Error(), "quota.free_tools") {
+		t.Errorf("the error does not name the key that was lost: %v", err)
+	}
+}
+
+// TestLoadRejectsADuplicatedScopesSupportedList is the same collapse on the
+// RFC 9728 discovery metadata: a repeated scopes_supported silently narrows
+// what the gateway advertises to analyst clients.
+func TestLoadRejectsADuplicatedScopesSupportedList(t *testing.T) {
+	src := strings.Replace(completeConfig,
+		`groups_claim          = "soc_groups"`,
+		"groups_claim          = \"soc_groups\"\nscopes_supported      = [\"openid\"]\nscopes_supported      = [\"profile\"]",
+		1)
+	if src == completeConfig {
+		t.Fatal("the fixture's groups_claim line moved; this test is not exercising what it claims")
+	}
+	err := loadErr(t, src)
+	if !strings.Contains(err.Error(), "oidc.scopes_supported") {
+		t.Errorf("the error does not name the key that was lost: %v", err)
+	}
+}
+
+// TestLoadRejectsADuplicatedAuthorizationServersList is the same collapse on
+// the other RFC 9728 discovery list.
+func TestLoadRejectsADuplicatedAuthorizationServersList(t *testing.T) {
+	src := strings.Replace(completeConfig,
+		`authorization_servers = ["https://id.example.internal/realms/soc", "https://id2.example.internal/realms/soc"]`,
+		"authorization_servers = [\"https://id.example.internal/realms/soc\"]\nauthorization_servers = [\"https://id2.example.internal/realms/soc\"]",
+		1)
+	if src == completeConfig {
+		t.Fatal("the fixture's authorization_servers line moved; this test is not exercising what it claims")
+	}
+	err := loadErr(t, src)
+	if !strings.Contains(err.Error(), "oidc.authorization_servers") {
+		t.Errorf("the error does not name the key that was lost: %v", err)
+	}
+}
+
 // TestValidate_RejectsAnUnusablePort closes the other half of the string
 // RequireLoopbackBind was moved into config to check. The host was
 // validated; the port was not, so an address that Validate accepted still

@@ -57,11 +57,12 @@ func TextOf(s string) *adminapi.Text { return &adminapi.Text{Raw: s, Segments: S
 // Segments does.
 func MultilineSegments(s string) []adminapi.Segment {
 	out := []adminapi.Segment{}
-	for i, line := range strings.Split(s, "\n") {
+	lines := strings.Split(s, "\n")
+	for i, line := range lines {
 		if i > 0 {
 			out = append(out, adminapi.Segment{Kind: adminapi.SegmentNewline})
 		}
-		if i < strings.Count(s, "\n") {
+		if i < len(lines)-1 {
 			line = strings.TrimSuffix(line, "\r")
 		}
 		out = append(out, Segments(line)...)

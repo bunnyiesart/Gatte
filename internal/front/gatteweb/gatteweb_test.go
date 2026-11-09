@@ -85,3 +85,29 @@ func TestImageNameAndDigest_SplitTheShortLabel(t *testing.T) {
 		t.Fatal("an image with no digest got one")
 	}
 }
+
+// A pre-existing narrower, tool-specific grant for a same-named backend
+// must not be read as the full ["*"] grant the quick-grant button means:
+// the widening would be silently dropped and the operator wrongly told the
+// grant is already in place.
+func TestInsertGrant_ANarrowerGrantIsNotTakenForTheFullGrant(t *testing.T) {
+	text := "[[role]]\nname = \"analyst\"\n[role.grants]\n\"intel\" = [\"search\"]\n"
+	if _, status := insertGrant(text, "analyst", "intel"); status != grantNarrower {
+		t.Fatalf("status = %v, want grantNarrower", status)
+	}
+	full := "[[role]]\nname = \"analyst\"\n[role.grants]\n\"intel\" = [\"*\"]\n"
+	if _, status := insertGrant(full, "analyst", "intel"); status != grantPresent {
+		t.Fatalf("status = %v, want grantPresent", status)
+	}
+	// A full grant is still full when written with inner spaces, a tab, or a
+	// trailing comment; none of these may be mistaken for a narrower grant.
+	for _, line := range []string{"\"intel\" = [ \"*\" ]", "\"intel\"\t=\t[\"*\"]", "\"intel\" = [\"*\"] # all tools"} {
+		g := "[[role]]\nname = \"analyst\"\n[role.grants]\n" + line + "\n"
+		if _, status := insertGrant(g, "analyst", "intel"); status != grantPresent {
+			t.Fatalf("line %q: status = %v, want grantPresent", line, status)
+		}
+	}
+	if out, status := insertGrant("[[role]]\nname = \"analyst\"\n[role.grants]\n", "analyst", "intel"); status != grantAdded || !strings.Contains(out, "\"intel\" = [\"*\"]") {
+		t.Fatalf("status = %v, out = %q", status, out)
+	}
+}

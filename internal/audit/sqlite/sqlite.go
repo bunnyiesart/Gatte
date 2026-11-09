@@ -311,9 +311,11 @@ var _ audit.ChainVerifier = (*Recorder)(nil)
 // caller (ADR-0015 item 2). List orders by timestamp because that is what
 // an operator reads; this deliberately does not.
 //
-// After a mismatch the walk continues from the hash stored on disk rather
-// than the recomputed one, so a single edited row is reported once instead
-// of making every row after it look broken too.
+// After a break -- a hash mismatch, a mid-chain deletion, or a row whose
+// timestamp no longer parses -- the walk continues from the hash stored on
+// disk rather than the recomputed one, so a single damaged row is reported
+// once instead of making every row after it look broken too, and Count and
+// Head still reach the true trail length and real tail.
 func (r *Recorder) VerifyChain(ctx context.Context) (audit.ChainCheck, error) {
 	var boundary int64
 	err := r.db.QueryRowContext(ctx, `SELECT retroactive_boundary_id FROM audit_chain_meta WHERE id = 1`).Scan(&boundary)
@@ -349,20 +351,27 @@ FROM audit_records ORDER BY id ASC`)
 			// a single timestamp and `audit -verify` answers with an error
 			// instead of with the trail.
 			//
-			// It is recorded as the first break and the walk stops, because
-			// nothing after it can be chained to something unreadable.
+			// Only this row's own hash recompute needs the timestamp;
+			// chain linkage after it uses the stored columns alone. So the
+			// row is recorded as the first break and then skipped, but the
+			// walk continues from the hash stored on disk -- exactly as the
+			// hash-mismatch path does -- so Count reaches the true trail
+			// length and Head reaches the real tail.
+			rec.Timestamp = time.Time{}
+			check.Count++
+			if id <= boundary {
+				check.RetroactivelyChained++
+			}
 			if check.FirstBreak == nil {
-				rec.Timestamp = time.Time{}
 				check.FirstBreak = &audit.ChainBreak{
-					Position: check.Count + 1,
+					Position: check.Count,
 					Record:   rec,
 					Want:     "unreadable: " + err.Error(),
 					Got:      storedHash,
 				}
 			}
-			check.Count++
-			check.Head = storedHash
-			return check, nil
+			prev = storedHash
+			continue
 		}
 		rec.Outcome = audit.Outcome(outcome)
 

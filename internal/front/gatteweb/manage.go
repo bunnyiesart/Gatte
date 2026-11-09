@@ -247,8 +247,6 @@ func (f *Front) upstreamRegister(w http.ResponseWriter, r *http.Request) {
 	f.render(w, r, "registered", "Registered "+frontkit.VisibleText(res.Name), page{Nav: "upstreams", Data: d})
 }
 
-// signResult is the result of a sign: done, and whether the key that made
-// it is one the gateway trusts.
 // grantBackend puts `"BACKEND" = ["*"]` in role's [role.grants], through
 // the same PUT /v1/roles the Roles page uses, so the backend's validation
 // decides (design/adr/0050 §2), then reloads. The front only edits text.
@@ -261,6 +259,8 @@ func (f *Front) grantBackend(r *http.Request, role, backend string) (string, boo
 	switch status {
 	case grantPresent:
 		return "Role " + role + " already grants " + backend + ".", true
+	case grantNarrower:
+		return "Not granted: role " + role + " already has a narrower, tool-specific grant for " + backend + ". Widen it to all tools on the Roles page.", false
 	case grantNoRole:
 		return "Not granted: no [[role]] named " + role + " in the roles file. Add the grant on the Roles page.", false
 	}
@@ -281,6 +281,7 @@ const (
 	grantAdded grantStatus = iota
 	grantPresent
 	grantNoRole
+	grantNarrower
 )
 
 // insertGrant adds `"backend" = ["*"]` to the [role.grants] of the [[role]]
@@ -323,8 +324,21 @@ func insertGrant(text, role, backend string) (string, grantStatus) {
 	line := fmt.Sprintf("%q = [\"*\"]", backend)
 	if grants >= 0 {
 		for _, l := range lines[grants+1 : end] {
-			if k, _, ok := strings.Cut(strings.TrimSpace(l), "="); ok && strings.Trim(strings.TrimSpace(k), "\"") == backend {
-				return text, grantPresent
+			if k, v, ok := strings.Cut(strings.TrimSpace(l), "="); ok && strings.Trim(strings.TrimSpace(k), "\"") == backend {
+				// Only ["*"] is the full grant this button writes; a
+				// narrower, tool-specific value must not be reported as
+				// already in place (it would silently drop the widening).
+				// Drop a trailing comment and all inner whitespace so a
+				// full grant written as [ "*" ], with a tab, or with a
+				// "# ..." note still counts as present.
+				val := strings.TrimSpace(v)
+				if i := strings.IndexByte(val, '#'); i >= 0 {
+					val = val[:i]
+				}
+				if strings.Join(strings.Fields(val), "") == `["*"]` {
+					return text, grantPresent
+				}
+				return text, grantNarrower
 			}
 		}
 		out := append(append(append([]string{}, lines[:grants+1]...), line), lines[grants+1:]...)
@@ -340,6 +354,8 @@ func insertGrant(text, role, backend string) (string, grantStatus) {
 	return strings.Join(out, "\n"), grantAdded
 }
 
+// signResult is the result of a sign: done, and whether the key that made
+// it is one the gateway trusts.
 func signResult(res adminapi.SignResult, err error) result {
 	out := actionResult(res.ActionResult, err)
 	if err != nil {

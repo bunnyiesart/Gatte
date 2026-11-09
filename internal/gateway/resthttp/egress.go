@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/netip"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -48,11 +49,15 @@ var (
 	// IPv4 address a translator connects to on the client's behalf, so
 	// 64:ff9b::7f00:1 is loopback wearing an IPv6 address.
 	nat64 = netip.MustParsePrefix("64:ff9b::/96")
-	// nat64Local is RFC 8215's local-use counterpart of the well-known
-	// prefix, reserved for a site's own IPv4/IPv6 translator; it embeds the
-	// IPv4 address in the same last four bytes, so a host with a local
-	// NAT64 routes 64:ff9b:1::7f00:1 to loopback exactly as the well-known
-	// one would. Judged by the same rule for the same reason.
+	// nat64Local is RFC 8215's local-use prefix for a site's own NAT64
+	// translator, judged by the same rule as the well-known prefix. In the
+	// common /96-embedded form the IPv4 is in the last four bytes, so
+	// 64:ff9b:1::7f00:1 routes to loopback and embeddedIPv4 reads it. RFC
+	// 6052 also permits shorter embeddings within this /48 (the IPv4 in bits
+	// 48-63 + 72-87); embeddedIPv4 does not decode those, so for a non-/96
+	// address it judges whatever the last four bytes hold, not the true
+	// embedded IPv4. This gateway runs no NAT64, so the /96 form is the only
+	// one seen in practice.
 	nat64Local = netip.MustParsePrefix("64:ff9b:1::/48")
 	// sixToFour is RFC 3056: bytes 2-5 are an IPv4 address the packet is
 	// tunnelled to, with the same consequence as nat64.
@@ -121,9 +126,11 @@ func refuseAddr(a netip.Addr) error {
 	return nil
 }
 
-// embeddedIPv4 extracts the IPv4 address a NAT64 (well-known or local-use,
-// last four bytes) or 6to4 (bytes 2-5) address carries. Pre-condition: a is
-// in one of those three prefixes.
+// embeddedIPv4 extracts the IPv4 address a NAT64 (the /96 embedding, last
+// four bytes -- well-known or local-use) or 6to4 (bytes 2-5) address
+// carries. Pre-condition: a is in one of those three prefixes. For a
+// local-use address using a shorter RFC 6052 embedding the last four bytes
+// are not the true embedded IPv4; this gateway runs no such translator.
 func embeddedIPv4(a netip.Addr) netip.Addr {
 	b := a.As16()
 	if sixToFour.Contains(a) {
@@ -135,11 +142,7 @@ func embeddedIPv4(a netip.Addr) netip.Addr {
 // detailEgress strips the sentinel prefix so a nested refusal is not
 // prefixed twice.
 func detailEgress(err error) string {
-	msg := err.Error()
-	if prefix := ErrEgressRefused.Error() + ": "; len(msg) > len(prefix) && msg[:len(prefix)] == prefix {
-		return msg[len(prefix):]
-	}
-	return msg
+	return strings.TrimPrefix(err.Error(), ErrEgressRefused.Error()+": ")
 }
 
 // Timeouts of the transport itself, below the per-call ceiling the gateway

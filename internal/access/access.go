@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"slices"
 	"strings"
@@ -704,9 +705,14 @@ func ResourceIdentifier(raw string, allowInsecure bool) (*url.URL, error) {
 // isLoopbackHost reports whether host names the local machine, the one case
 // where http:// is not a credential-on-the-wire problem.
 func isLoopbackHost(host string) bool {
-	switch strings.ToLower(host) {
-	case "localhost", "127.0.0.1", "::1":
+	if strings.EqualFold(host, "localhost") {
 		return true
 	}
-	return strings.HasPrefix(host, "127.")
+	// A real IP test, not a text prefix: net.IP.IsLoopback covers all of
+	// 127.0.0.0/8 and ::1, and rejects DNS names like "127.0.0.1.evil.com"
+	// that merely start with "127." but resolve to an attacker's address.
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
 }

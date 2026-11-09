@@ -272,8 +272,8 @@ func rejectCollapsedMapKeys(path string, md toml.MetaData, c *Config) error {
 		switch {
 		case len(key) == 3 && key[0] == "role" && key[1] == "grants":
 			written["role.grants."+key[2]]++
-		// The same decoder behaviour drops a repeated ARRAY key, and two of
-		// them matter more than the grants do.
+		// The same decoder behaviour drops a repeated ARRAY key, so every
+		// array key that a reader would take as a control is counted here.
 		//
 		// signer.trusted_keys is the trust anchor: writing it twice inside
 		// [signer] keeps the last list and silently discards the first, so
@@ -283,10 +283,25 @@ func rejectCollapsedMapKeys(path string, md toml.MetaData, c *Config) error {
 		// decoder rule nobody sees defeats that.
 		//
 		// role.tools is the older half of a grant and drops the same way.
+		//
+		// quota.provider.tools, quota.free_tools and the two oidc
+		// discovery lists collapse identically: a dropped quota tool reads
+		// as charged but is not, a dropped free_tools entry reads as free
+		// but is not, and a dropped oidc list entry silently narrows the
+		// advertised discovery metadata. All are refused rather than
+		// resolved by a rule no operator can see.
 		case len(key) == 2 && key[0] == "role" && key[1] == "tools":
 			written["role.tools"]++
 		case len(key) == 2 && key[0] == "signer" && key[1] == "trusted_keys":
 			written["signer.trusted_keys"]++
+		case len(key) == 3 && key[0] == "quota" && key[1] == "provider" && key[2] == "tools":
+			written["quota.provider.tools"]++
+		case len(key) == 2 && key[0] == "quota" && key[1] == "free_tools":
+			written["quota.free_tools"]++
+		case len(key) == 2 && key[0] == "oidc" && key[1] == "scopes_supported":
+			written["oidc.scopes_supported"]++
+		case len(key) == 2 && key[0] == "oidc" && key[1] == "authorization_servers":
+			written["oidc.authorization_servers"]++
 		}
 	}
 
@@ -304,6 +319,25 @@ func rejectCollapsedMapKeys(path string, md toml.MetaData, c *Config) error {
 	}
 	if c.Signer.TrustedKeys != nil {
 		survived["signer.trusted_keys"]++
+	}
+	// One count per provider whose Tools survived as declared, mirroring
+	// the role.tools-per-role pattern: a flattened `[[quota.provider]]`
+	// writes `quota.provider.tools` once per block, so counting
+	// declared-not-nil keeps an intentional `tools = []` from reading as a
+	// dropped key.
+	for _, p := range c.Quota.Providers {
+		if p.Tools != nil {
+			survived["quota.provider.tools"]++
+		}
+	}
+	if c.Quota.FreeTools != nil {
+		survived["quota.free_tools"]++
+	}
+	if c.OIDC.ScopesSupported != nil {
+		survived["oidc.scopes_supported"]++
+	}
+	if c.OIDC.AuthorizationServers != nil {
+		survived["oidc.authorization_servers"]++
 	}
 
 	var lost []string

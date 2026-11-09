@@ -95,17 +95,7 @@ func upstreamMaintenance(args []string, stdout, stderr io.Writer) int {
 // "on NAME -message TEXT", the order an operator types, works as well as
 // "on -message TEXT NAME". It returns the arguments.
 func parseInterspersed(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) ([]string, int, bool) {
-	var positional []string
-	for {
-		if code, ok := opParse(fs, args, stdout, stderr, maintenanceUsage); !ok {
-			return nil, code, false
-		}
-		if fs.NArg() == 0 {
-			return positional, exitOK, true
-		}
-		positional = append(positional, fs.Arg(0))
-		args = fs.Args()[1:]
-	}
+	return parseInterspersedWith(fs, args, stdout, stderr, maintenanceUsage)
 }
 
 // untilNone is the -until that takes an announced end back.

@@ -385,8 +385,14 @@ func Summary(c Changes, max int) string {
 	if max > 0 && len(out) > max {
 		const cut = " ... (truncated; the full diff is in the request result)"
 		n := max - len(cut)
-		if n < 0 {
-			n = 0
+		if n <= 0 {
+			// max is too small to fit even the suffix; hard-truncate out
+			// itself to honour the byte bound, backed up to a rune boundary.
+			m := max
+			for m > 0 && !utf8.RuneStart(out[m]) {
+				m--
+			}
+			return out[:m]
 		}
 		for n > 0 && !utf8.RuneStart(out[n]) {
 			n--

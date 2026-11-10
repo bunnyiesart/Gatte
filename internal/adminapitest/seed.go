@@ -132,10 +132,25 @@ func (s *Server) seedSecrets() {
 }
 
 func (s *Server) seedRolesAndPeople() {
+	// A coherent roles file: the comments are load-bearing (design/adr/0009),
+	// and the grants match the People view below so the Roles matrix shows a
+	// wildcard, an explicit grant, and a non_read sensitive grant.
 	s.roles = adminapi.RolesText{
 		Path:   "/etc/mcp-gateway/roles.toml",
 		SHA256: "sha256:roles-seed",
-		Text:   "[[role]]\nname = \"tier1-analyst\"\nnon_read = false\n\n[[role]]\nname = \"ir-lead\"\nnon_read = true\ntools = [\"casemgmt.close_case\", \"casemgmt.create_case\"]\n",
+		Text: "# SOC roles. Keep the approver note on each grant: it is read at 3am.\n" +
+			"[[role]]\n" +
+			"name = \"tier1-analyst\"   # triage; read-only. reviewed 2026-10 by alice.ops\n\n" +
+			"  [role.grants]\n" +
+			"  logsearch = [\"*\"]        # all read-only log search\n" +
+			"  casemgmt  = [\"get_case\"]\n\n" +
+			"[[role]]\n" +
+			"name = \"ir-lead\"          # may act; reviewed 2026-10 by alice.ops\n" +
+			"non_read = true\n" +
+			"tools = [\"casemgmt.close_case\", \"casemgmt.create_case\"]\n\n" +
+			"[group_to_role]\n" +
+			"\"soc-tier1\" = \"tier1-analyst\"\n" +
+			"\"soc-ir\"    = \"ir-lead\"\n",
 	}
 	s.people = adminapi.People{
 		Roles: []adminapi.Role{

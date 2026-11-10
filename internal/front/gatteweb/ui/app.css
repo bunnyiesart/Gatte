@@ -470,3 +470,35 @@ details.inline[open] summary { margin-bottom: 6px; }
 
 /* a container image: repository, then the short digest, each on one line */
 .cell-sub.image span { display: block; white-space: nowrap; }
+
+/* ---- roles matrix (design/adr/0054): role x tool grant view ---- */
+/* The display rules are set explicitly, not left to defaults, so the generic
+   mobile rule that turns every table into stacked blocks does not reach a
+   matrix that must stay a grid; the class selector wins by specificity. */
+.matrix-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; background: var(--surface); border-radius: var(--r); }
+@media (prefers-color-scheme: dark) { .matrix-scroll { box-shadow: none; } }
+.matrix { display: table; width: auto; min-width: 100%; border-collapse: collapse; font-size: 13px; }
+.matrix thead { display: table-header-group; position: static; width: auto; height: auto; clip-path: none; }
+.matrix tbody { display: table-row-group; }
+.matrix tr { display: table-row; }
+.matrix th, .matrix td { display: table-cell; padding: 7px 10px; border: 1px solid var(--sep); vertical-align: middle; }
+.matrix th::before { content: none; }
+.matrix .corner { text-align: left; background: var(--surface-2); }
+.matrix .srv { text-align: center; background: var(--surface-2); font-weight: 600; }
+.matrix .tool { text-align: center; font-weight: 500; min-width: 84px; }
+.matrix .tool .tn { display: block; overflow-wrap: anywhere; }
+.matrix .tool .tag { display: block; margin-top: 3px; font: 500 10px/1 var(--sans); letter-spacing: 0.02em; text-transform: uppercase; color: var(--text-2); }
+.matrix .tool.sens, .matrix .cell.sens { background: var(--fill); }
+.matrix .rolename { text-align: left; background: var(--surface-2); min-width: 160px; }
+.matrix .rolename .rn { font-weight: 600; }
+.matrix .rolename .grp { display: block; margin-top: 2px; font-size: 12px; color: var(--text-2); overflow-wrap: anywhere; }
+.matrix .cell { text-align: center; }
+.matrix .cell.on { color: var(--accent-text); font-weight: 600; }
+.matrix .cell.on.sens { color: var(--text); }
+.matrix .cell .off { color: var(--text-3); opacity: 0.4; }
+.caption.legend { margin-top: 10px; max-width: 72ch; }
+.caption.legend .k { font-weight: 600; color: var(--accent-text); }
+.caption.legend .k.sens { color: var(--text); }
+.sub-head { margin-top: 26px; }
+.sub-head h3 { margin: 0; font-size: 16px; }
+.btn-pair { display: flex; gap: 10px; }

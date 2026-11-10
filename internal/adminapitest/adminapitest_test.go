@@ -124,6 +124,28 @@ func TestAccountLifecycleIsLive(t *testing.T) {
 	}
 }
 
+// TestRegisterRemoteIsLive: a remote register lists the entry with its URL
+// and remote kind (streamable by default), and the fake refuses a keyed
+// descriptor with no key, as the backend does.
+func TestRegisterRemoteIsLive(t *testing.T) {
+	c := adminapitest.Start(t)
+	ctx := context.Background()
+	res, err := c.Operator.RegisterUpstream(ctx, adminapi.RegisterUpstreamRequest{Name: "vendor", Transport: adminapi.UpstreamTransportRemote,
+		URL: "https://mcp.vendor.example/mcp", AuthKind: "bearer", KeyName: "VENDOR_TOKEN"})
+	if err != nil || res.Transport != "remote" || res.RemoteKind != adminapi.RemoteKindStreamable || res.Auth.Secret != "VENDOR_TOKEN" {
+		t.Fatalf("register = %+v, %v", res, err)
+	}
+	d, err := c.Operator.GetUpstream(ctx, "vendor")
+	if err != nil || d.Transport != "remote" || d.URL != "https://mcp.vendor.example/mcp" || d.Auth == nil || d.Auth.Kind != "bearer" {
+		t.Fatalf("detail = %+v, %v", d, err)
+	}
+	_, err = c.Operator.RegisterUpstream(ctx, adminapi.RegisterUpstreamRequest{Name: "nokey", Transport: adminapi.UpstreamTransportRemote,
+		URL: "https://mcp.vendor.example/mcp", AuthKind: "header", AuthName: "X-Api-Key"})
+	if !adminapi.IsCode(err, adminapi.CodeInvalidArgument) {
+		t.Fatalf("a keyed descriptor with no key: %v", err)
+	}
+}
+
 func first[T any](v T, err error) error { return err }
 
 func containsTool(ts []adminapi.Tool, tool string) bool {

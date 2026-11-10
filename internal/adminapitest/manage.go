@@ -48,8 +48,12 @@ func (s *Server) registerUpstream(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, adminapi.NewError(adminapi.CodeUpstreamExists, "a backend named %q is already registered", req.Name))
 		return
 	}
-	if req.Transport == adminapi.UpstreamTransportOCI {
+	switch req.Transport {
+	case adminapi.UpstreamTransportOCI:
 		s.registerOCI(w, req)
+		return
+	case adminapi.UpstreamTransportRemote:
+		s.registerRemote(w, req)
 		return
 	}
 	auth := adminapi.UpstreamAuth{Kind: req.AuthKind, Name: req.AuthName, Secret: req.KeyName}
@@ -106,6 +110,44 @@ func (s *Server) registerOCI(w http.ResponseWriter, req adminapi.RegisterUpstrea
 	})
 	res := adminapi.RegisterUpstreamResult{Name: req.Name, Transport: "oci", Image: req.Image, Network: network, EnvVarNames: env,
 		Auth: adminapi.UpstreamAuth{Kind: "none"}, Tools: []adminapi.UpstreamOperation{}, Skipped: []string{}, IngestWarnings: []string{}, Signature: "no"}
+	res.Changed, res.Recorded, res.Messages = true, true, []string{"registered " + req.Name}
+	res.Audit = s.row(rowUpstreamUpdate, "register "+req.Name)
+	writeJSON(w, http.StatusOK, res)
+}
+
+// registerRemote is the fake's remote register: an http(s) URL and a key
+// for a keyed descriptor, nothing more; the real rules are the backend's.
+// Called with s.mu held.
+func (s *Server) registerRemote(w http.ResponseWriter, req adminapi.RegisterUpstreamRequest) {
+	if !strings.HasPrefix(req.URL, "https://") && !strings.HasPrefix(req.URL, "http://") {
+		writeErr(w, adminapi.NewError(adminapi.CodeInvalidArgument, "url %q must use scheme http or https", req.URL).With("field", "url"))
+		return
+	}
+	auth := adminapi.UpstreamAuth{Kind: req.AuthKind, Name: req.AuthName, Secret: req.KeyName}
+	if auth.Kind == "" {
+		auth.Kind = "none"
+	}
+	env := []string{}
+	switch {
+	case auth.Kind != "none" && req.KeyName == "":
+		writeErr(w, adminapi.NewError(adminapi.CodeInvalidArgument, "auth kind %q needs key_name", auth.Kind).With("field", "key_name"))
+		return
+	case req.KeyName != "":
+		env = append(env, req.KeyName)
+	}
+	kind := req.RemoteKind
+	if kind == "" {
+		kind = adminapi.RemoteKindStreamable
+	}
+	now := base.Add(72 * time.Hour)
+	s.upstreams = append(s.upstreams, &adminapi.UpstreamDetail{
+		Upstream: adminapi.Upstream{Name: req.Name, Transport: "remote", URL: req.URL, RemoteKind: kind, Network: "host",
+			EnvVarNames: env, Signature: "no", CreatedAt: now, UpdatedAt: now,
+			Health: &adminapi.BackendHealth{Name: req.Name, State: adminapi.BackendUnknown}},
+		Auth: &auth,
+	})
+	res := adminapi.RegisterUpstreamResult{Name: req.Name, Transport: "remote", URL: req.URL, RemoteKind: kind, EnvVarNames: env,
+		Auth: auth, Tools: []adminapi.UpstreamOperation{}, Skipped: []string{}, IngestWarnings: []string{}, Signature: "no"}
 	res.Changed, res.Recorded, res.Messages = true, true, []string{"registered " + req.Name}
 	res.Audit = s.row(rowUpstreamUpdate, "register "+req.Name)
 	writeJSON(w, http.StatusOK, res)

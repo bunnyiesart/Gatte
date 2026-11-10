@@ -723,3 +723,85 @@ func TestUIManage_TheContainerFormRegistersAndDoesNotSign(t *testing.T) {
 		t.Fatalf("a NAME=value variable name:\n%s", pasted.body)
 	}
 }
+
+// The add page is a three-way choice (design/adr/0059 §1): REST API and
+// Remote MCP server always, Container only with podman; stdio never.
+func TestUIManage_TheAddPageOffersThreeWays(t *testing.T) {
+	m := newManageUI(t, true, true, podmanAs(nil))
+	page := m.get("/servers/new")
+	for _, want := range []string{`href="` + m.s.session + `/servers/new"`, `href="` + m.s.session + `/servers/new?kind=remote"`,
+		`href="` + m.s.session + `/servers/new?kind=oci"`, "A stdio backend is not added here"} {
+		if !page.has(want) {
+			t.Errorf("the add page lacks %q", want)
+		}
+	}
+	for _, gone := range []string{"waits unsigned", "Sign button", `value="stdio"`} {
+		if page.has(gone) {
+			t.Errorf("the add page still says %q", gone)
+		}
+	}
+	without := newManageUI(t, true, true, podmanAs(errors.New("podman is not on PATH")))
+	if p := without.get("/servers/new"); !p.has("?kind=remote") || p.has("?kind=oci") {
+		t.Fatalf("without podman, the choice is not REST and Remote only:\n%s", p.body)
+	}
+}
+
+// The Remote MCP server form registers the CLI's entry and does not sign
+// it: the result page shows what the signature will cover.
+func TestUIManage_TheRemoteFormRegistersAndDoesNotSign(t *testing.T) {
+	m := newManageUI(t, true, true)
+	form := m.get("/servers/new?kind=remote")
+	for _, want := range []string{"Add a remote MCP server", `name="transport" value="remote"`, `name="url"`, `name="auth_kind"`,
+		`name="auth_name"`, `name="key_name"`, `name="remote_kind"`, `value="streamable"`} {
+		if !form.has(want) {
+			t.Errorf("the remote form lacks %q", want)
+		}
+	}
+	for _, gone := range []string{`name="openapi_url"`, `name="image"`, `value="query"`} {
+		if form.has(gone) {
+			t.Errorf("the remote form carries %q", gone)
+		}
+	}
+
+	got := m.post("/servers", url.Values{"transport": {"remote"}, "name": {"vendor"}, "url": {"https://mcp.vendor.example/mcp"},
+		"remote_kind": {"streamable"}, "auth_kind": {"header"}, "auth_name": {"X-Api-Key"}, "key_name": {"VENDOR_TOKEN"}})
+	if got.code != http.StatusOK {
+		t.Fatalf("register: %d\n%s", got.code, got.body)
+	}
+	for _, want := range []string{"Registered as a remote MCP server", "https://mcp.vendor.example/mcp", "streamable", "X-Api-Key", "VENDOR_TOKEN",
+		"not attested yet", "Attest vendor", "Attest this configuration", "the URL, the auth and its secret name, and the transport"} {
+		if !got.has(want) {
+			t.Errorf("the register result lacks %q", want)
+		}
+	}
+	if len(m.signed) != 0 {
+		t.Fatalf("registering signed %v", m.signed)
+	}
+	entry, err := m.e.upstreams().Get(context.Background(), "vendor")
+	if err != nil || entry.Transport != registry.TransportRemote || entry.URL != "https://mcp.vendor.example/mcp" || entry.RemoteKind != registry.RemoteStreamable ||
+		entry.AuthKind != registry.AuthHeader || entry.AuthName != "X-Api-Key" || !slices.Equal(entry.EnvVarNames, []string{"VENDOR_TOKEN"}) {
+		t.Fatalf("registry entry = %+v, %v", entry, err)
+	}
+
+	// A keyed server with no key name gets NAME_API_KEY, as a REST API does.
+	m.post("/servers", url.Values{"transport": {"remote"}, "name": {"bear"}, "url": {"https://mcp.bear.example/mcp"}, "auth_kind": {"bearer"}})
+	if e, err := m.e.upstreams().Get(context.Background(), "bear"); err != nil || e.AuthKind != registry.AuthBearer || !slices.Equal(e.EnvVarNames, []string{"BEAR_API_KEY"}) {
+		t.Fatalf("default key name entry = %+v, %v", e, err)
+	}
+
+	// A credential in the URL is the backend's refusal, with the form kept.
+	cred := m.post("/servers", url.Values{"transport": {"remote"}, "name": {"leaky"}, "url": {"https://u:" + uiSecretMarker + "@mcp.leaky.example/mcp"}, "auth_kind": {"none"}})
+	if !cred.has("Not registered") || !cred.has("userinfo") || !cred.has(`name="transport" value="remote"`) ||
+		!cred.has(`value="https://mcp.leaky.example/mcp"`) || cred.has(uiSecretMarker) {
+		t.Fatalf("a credential in the URL:\n%s", cred.body)
+	}
+	if _, err := m.e.upstreams().Get(context.Background(), "leaky"); !errors.Is(err, registry.ErrNotFound) {
+		t.Fatal("a refused remote register left an entry")
+	}
+	// NAME=value pasted as the key's name: refused, and not written back.
+	pasted := m.post("/servers", url.Values{"transport": {"remote"}, "name": {"pasted"}, "url": {"https://mcp.p.example/mcp"},
+		"auth_kind": {"bearer"}, "key_name": {"KEY=" + uiSecretMarker}})
+	if !pasted.has("Not registered") || pasted.has(uiSecretMarker) {
+		t.Fatalf("a NAME=value key name:\n%s", pasted.body)
+	}
+}

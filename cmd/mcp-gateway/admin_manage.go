@@ -168,22 +168,36 @@ func registerHTTP(ctx context.Context, e *opEnv, req adminapi.RegisterUpstreamRe
 }
 
 // registerEntry is POST /v1/upstreams for a transport with no ingestion
-// (oci): the entry as the request gives it, then the same steps as
-// registerHTTP and `upstream register` -- validateEntry,
-// credentialedStdioRefusal, Register -- so the digest pin and the wrapper
-// rules are the CLI's.
+// (oci, remote): the entry as the request gives it -- for remote, through
+// the CLI's own remoteFlags -- then the same steps as registerHTTP and
+// `upstream register` -- validateEntry, credentialedStdioRefusal, Register
+// -- so the digest pin, the wrapper and the URL and auth rules are the
+// CLI's.
 func registerEntry(ctx context.Context, e *opEnv, req adminapi.RegisterUpstreamRequest) (adminapi.RegisterUpstreamResult, error) {
 	entry := registry.UpstreamServer{Name: req.Name, Transport: registry.Transport(req.Transport), Image: req.Image,
 		Args: req.Args, URL: req.URL, EnvVarNames: req.EnvVarNames}
+	if entry.Transport == registry.TransportRemote {
+		if req.KeyName != "" {
+			entry.EnvVarNames = []string{req.KeyName}
+		}
+		if msg := remoteFlags(&entry, "", req.AuthKind, req.AuthName, req.RemoteKind); msg != "" {
+			return adminapi.RegisterUpstreamResult{}, adminapi.NewError(adminapi.CodeInvalidArgument, "%s", msg)
+		}
+	}
 	if err := registerChecked(ctx, e, entry, nil); err != nil {
 		return adminapi.RegisterUpstreamResult{}, err
 	}
 	res := adminapi.RegisterUpstreamResult{Name: entry.Name, Transport: string(entry.Transport), URL: entry.URL, Image: entry.Image,
 		EnvVarNames: entry.EnvVarNames, Auth: adminapi.UpstreamAuth{Kind: authKindNone}}
-	// validateEntry already resolved it once (dialTimeRefusal), so this
-	// cannot fail here; an error would leave Network empty, never wrong.
-	if network, err := entryNetwork(entry); err == nil {
-		res.Network = network
+	switch entry.Transport {
+	case registry.TransportRemote:
+		res.Auth, res.RemoteKind = authOf(entry), string(entry.RemoteKind)
+	case registry.TransportOCI:
+		// validateEntry already resolved it once (dialTimeRefusal), so this
+		// cannot fail here; an error would leave Network empty, never wrong.
+		if network, err := entryNetwork(entry); err == nil {
+			res.Network = network
+		}
 	}
 	addSignatureState(e, entry, &res)
 	return res, nil

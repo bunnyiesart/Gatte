@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Gatte management API
-  version: 1.8.0
+  version: 1.9.0
   summary: The backend every Gatte front talks to (design/adr/0040).
   description: |
     Served by `mcp-gateway admin` over UNIX sockets only. There is no TCP
@@ -164,6 +164,11 @@ info:
       `POST /v1/upstreams` still refuses it as `invalid_argument`).
       `Upstream.remote_kind` for remote entries, and `UpstreamDetail.auth`
       for remote entries as well as http.
+    - 1.9.0 (design/adr/0059): `POST /v1/upstreams` takes `transport`
+      `remote`: `url`, `auth_kind` (`none`, `bearer` or `header`),
+      `auth_name`, `key_name` and `remote_kind` (left out: `streamable`).
+      The result carries `remote_kind`. Under `console_manages`; no new
+      feature, since a remote entry needs nothing on the host.
   license:
     name: Apache-2.0
 servers:
@@ -1505,7 +1510,7 @@ components:
       required: [name]
       description: |
         `transport` names what is registered (1.7.0); left out it is
-        `http`. A field of the other transport is `invalid_argument` with
+        `http`. A field of another transport is `invalid_argument` with
         `details.field` naming it. `stdio` is refused: it is registered in
         the terminal only (design/adr/0059 §5).
 
@@ -1527,15 +1532,24 @@ components:
         container always runs inside the hardened wrapper of design/adr/0028
         and 0034. Without podman on the backend's host the request is
         `feature_disabled` with `details.requires` `podman`.
+
+        remote (1.9.0): a native MCP server reached by URL. `url` is the
+        endpoint, signed whole (http or https; no userinfo, query or
+        fragment). `auth_kind` is `none` (or left out: keyless), `bearer` or
+        `header`; `auth_name` is the header for `header`; `key_name` is the
+        vault NAME of the one secret a keyed entry sends. `remote_kind` left
+        out is `streamable`. The entry is the one `upstream register
+        -transport remote` writes, under the same rules (design/adr/0058).
       properties:
         name: {type: string}
-        transport: {type: string, enum: [http, oci], description: 'Left out: `http` (1.7.0).'}
-        url: {type: string, description: 'http: base URL: scheme, host, port, base path; no userinfo, query or fragment.'}
+        transport: {type: string, enum: [http, oci, remote], description: 'Left out: `http` (1.7.0). `remote` since 1.9.0.'}
+        url: {type: string, description: 'http: base URL: scheme, host, port, base path; no userinfo, query or fragment. remote (1.9.0): the MCP endpoint.'}
         openapi_url: {type: string}
         openapi_document: {type: string}
-        auth_kind: {type: string, enum: [bearer, header, query, none]}
+        auth_kind: {type: string, enum: [bearer, header, query, none], description: 'http and (1.9.0) remote; `query` is http only.'}
         auth_name: {type: string}
-        key_name: {type: string, pattern: '^[A-Za-z_][A-Za-z0-9_]*$'}
+        key_name: {type: string, pattern: '^[A-Za-z_][A-Za-z0-9_]*$', description: 'http and (1.9.0) remote: the vault NAME of the one secret a keyed entry injects.'}
+        remote_kind: {type: string, enum: [streamable], description: 'remote: the MCP client transport; left out, `streamable` (1.9.0).'}
         image: {type: string, description: 'oci: NAME@sha256:<64 hex> (1.7.0).'}
         args:
           type: array
@@ -1550,12 +1564,13 @@ components:
         - $ref: '#/components/schemas/ActionResult'
         - type: object
           required: [name, transport, url, source, auth, auth_derived, tools, skipped, ingest_warnings, signature]
-          description: For oci the http fields are empty, `auth` is `none` and `tools` is empty -- the container lists its tools once the gateway dials it.
+          description: For oci the http fields are empty, `auth` is `none` and `tools` is empty -- the container lists its tools once the gateway dials it. For remote (1.9.0) `url`, `auth` and `remote_kind` are what the signature covers, and `tools` is empty -- the server lists its tools once the gateway connects.
           properties:
             name: {type: string}
-            transport: {type: string, x-gatte-open-enum: true, enum: [http, oci], description: The entry's (1.7.0).}
+            transport: {type: string, x-gatte-open-enum: true, enum: [http, oci, remote], description: The entry's (1.7.0).}
             url: {type: string, description: As registered, with a base path of the document folded in.}
             image: {type: string, description: 'oci: the pinned image (1.7.0).'}
+            remote_kind: {type: string, x-gatte-open-enum: true, enum: [streamable], description: 'remote: the MCP client transport the signature covers (1.9.0).'}
             network: {type: string, description: 'oci: the network the container joins, resolved from `args` as the dial resolves it (1.7.0).'}
             env_var_names:
               type: array
@@ -2020,7 +2035,7 @@ paths:
       x-gatte-idempotent: false
       tags: [upstreams, manage]
       x-gatte-socket: [operator]
-      summary: Register a REST API from its OpenAPI document -- the same ingestion, refusals and report as `upstream register -transport http` (1.6.0, `console_manages`) -- or, with `transport` `oci`, a container from its pinned image, as `upstream register -transport oci` (1.7.0, `oci_register`). Writes `(upstream register)`. stdio stays in the terminal.
+      summary: Register a REST API from its OpenAPI document -- the same ingestion, refusals and report as `upstream register -transport http` (1.6.0, `console_manages`) -- or, with `transport` `oci`, a container from its pinned image, as `upstream register -transport oci` (1.7.0, `oci_register`), or, with `transport` `remote`, a native MCP server by URL, as `upstream register -transport remote` (1.9.0). Writes `(upstream register)`. stdio stays in the terminal.
       description: |
         Not idempotent: a second call answers `upstream_exists`. After an
         `internal` or a dropped connection, `GET /v1/upstreams/{name}` first.

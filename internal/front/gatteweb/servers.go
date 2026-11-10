@@ -3,9 +3,10 @@ package gatteweb
 // Tab 1 of the revised console (design/adr/0051, 0052): "MCP Servers / APIs".
 // The noun for a backend is "MCP server / API". This file is the tab's shell:
 // the list with per-backend health and a needs-review marker, the zero-JS
-// /servers/new add page (REST API / OpenAPI -> generates MCP tools, and a
-// container (oci) where the backend has podman, design/adr/0059; stdio stays
-// CLI-only, design/adr/0034), the register result page where
+// /servers/new add page (a three-way choice, design/adr/0059: REST API /
+// OpenAPI -> generates MCP tools, a remote MCP server by URL, and a container
+// (oci) where the backend has podman; stdio stays CLI-only, design/adr/0034),
+// the register result page where
 // signing is a separate attesting click (never sign-on-register, design/adr/0050
 // §5), and the server-detail page.
 //
@@ -242,24 +243,48 @@ type ociForm struct {
 	Name, Image, Network, EnvNames string
 }
 
+// remoteForm is what the Remote MCP server form carries back after a
+// refusal.
+type remoteForm struct {
+	Name, URL, AuthKind, AuthName, KeyName, RemoteKind string
+}
+
+// remoteAuthKinds are where a remote entry can send its one secret
+// (design/adr/0058 §5): no query parameter, unlike a REST API.
+var remoteAuthKinds = []struct{ Value, Label string }{
+	{"none", "None (keyless)"},
+	{"bearer", "Bearer token (Authorization header)"},
+	{"header", "Header"},
+}
+
+// remoteKinds are the MCP client transports this build dials; the form
+// shows the one there is so the operator sees what will be signed.
+var remoteKinds = []struct{ Value, Label string }{
+	{adminapi.RemoteKindStreamable, "Streamable HTTP"},
+}
+
 // Add-page kinds, the ?kind= of /servers/new.
 const (
-	kindREST = "rest"
-	kindOCI  = "oci"
+	kindREST   = "rest"
+	kindRemote = "remote"
+	kindOCI    = "oci"
 )
 
 type serverNewData struct {
-	// Kind is the form drawn: kindREST or kindOCI.
-	Kind    string
-	Form    registerForm
-	OCIForm ociForm
+	// Kind is the form drawn: kindREST, kindRemote or kindOCI.
+	Kind       string
+	Form       registerForm
+	RemoteForm remoteForm
+	OCIForm    ociForm
 	// OCI: the backend lists FeatureOCIRegister, so the Container form is
 	// offered. Without it (no podman, as on the Docker image) the choice is
 	// not drawn at all (design/adr/0059 §3).
-	OCI       bool
-	Root      bool
-	AuthKinds []struct{ Value, Label string }
-	MaxDocMiB int
+	OCI             bool
+	Root            bool
+	AuthKinds       []struct{ Value, Label string }
+	RemoteAuthKinds []struct{ Value, Label string }
+	RemoteKinds     []struct{ Value, Label string }
+	MaxDocMiB       int
 }
 
 // ociUnavailable is what the add page says when the Container form is asked
@@ -271,7 +296,10 @@ func (f *Front) serverNewPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	d := f.newServerData(r, kindREST)
-	if r.URL.Query().Get("kind") == kindOCI {
+	switch r.URL.Query().Get("kind") {
+	case kindRemote:
+		d.Kind = kindRemote
+	case kindOCI:
 		if !d.OCI {
 			f.renderServerNew(w, r, d, ociUnavailable)
 			return
@@ -284,7 +312,7 @@ func (f *Front) serverNewPage(w http.ResponseWriter, r *http.Request) {
 // newServerData is the add page's fixed part, for the form kind.
 func (f *Front) newServerData(r *http.Request, kind string) serverNewData {
 	return serverNewData{Kind: kind, OCI: f.feature(r.Context(), adminapi.FeatureOCIRegister), Root: f.acc != nil,
-		AuthKinds: authKinds, MaxDocMiB: adminapi.MaxUpstreamDocumentBytes >> 20}
+		AuthKinds: authKinds, RemoteAuthKinds: remoteAuthKinds, RemoteKinds: remoteKinds, MaxDocMiB: adminapi.MaxUpstreamDocumentBytes >> 20}
 }
 
 // renderServerNew draws the add page; errMsg, when set, is why a register
@@ -292,24 +320,32 @@ func (f *Front) newServerData(r *http.Request, kind string) serverNewData {
 // what was asked.
 func (f *Front) renderServerNew(w http.ResponseWriter, r *http.Request, d serverNewData, errMsg string) {
 	title := "Add a REST API"
-	if d.Kind == kindOCI {
+	switch d.Kind {
+	case kindRemote:
+		title = "Add a remote MCP server"
+	case kindOCI:
 		title = "Add a container (oci)"
 	}
 	f.render(w, r, "server_new", title, page{Nav: "servers", Data: d, Error: errMsg})
 }
 
-// serverRegister registers an http backend from its OpenAPI document, or an
-// oci one (transport=oci), then shows the result page. It does NOT sign: the
-// signature attests that someone read what the result page shows, and
-// signing is a separate button there (design/adr/0050 §5, 0052 §3, 0059 §6).
-// stdio is not offered here; it stays in the CLI.
+// serverRegister registers an http backend from its OpenAPI document, a
+// remote one (transport=remote) or an oci one (transport=oci), then shows
+// the result page. It does NOT sign: the signature attests that someone read
+// what the result page shows, and signing is a separate button there
+// (design/adr/0050 §5, 0052 §3, 0059 §6). stdio is not offered here; it
+// stays in the CLI.
 func (f *Front) serverRegister(w http.ResponseWriter, r *http.Request) {
 	if !f.managed(w, r, false) {
 		return
 	}
 	pf := r.PostForm
-	if pf.Get("transport") == adminapi.UpstreamTransportOCI {
+	switch pf.Get("transport") {
+	case adminapi.UpstreamTransportOCI:
 		f.serverRegisterOCI(w, r)
+		return
+	case adminapi.UpstreamTransportRemote:
+		f.serverRegisterRemote(w, r)
 		return
 	}
 	form := registerForm{Name: strings.TrimSpace(pf.Get("name")), URL: strings.TrimSpace(pf.Get("url")),
@@ -394,6 +430,42 @@ func (f *Front) serverRegister(w http.ResponseWriter, r *http.Request) {
 	}
 	d.Output = strings.Join(out, "\n")
 	d.ReviewAt = serverBack(res.Name)
+	f.render(w, r, "server_registered", "Registered "+frontkit.VisibleText(res.Name), page{Nav: "servers", Data: d})
+}
+
+// serverRegisterRemote registers a native MCP server by its URL. The front
+// only turns the form into the request: the URL, auth and remote-kind rules
+// are the backend's (design/adr/0058 §4, 0059 §2).
+func (f *Front) serverRegisterRemote(w http.ResponseWriter, r *http.Request) {
+	pf := r.PostForm
+	form := remoteForm{Name: strings.TrimSpace(pf.Get("name")), URL: strings.TrimSpace(pf.Get("url")),
+		AuthKind: pf.Get("auth_kind"), AuthName: strings.TrimSpace(pf.Get("auth_name")),
+		KeyName: strings.TrimSpace(pf.Get("key_name")), RemoteKind: pf.Get("remote_kind")}
+	req := adminapi.RegisterUpstreamRequest{Name: form.Name, Transport: adminapi.UpstreamTransportRemote, URL: form.URL,
+		AuthKind: form.AuthKind, AuthName: form.AuthName, KeyName: form.KeyName, RemoteKind: form.RemoteKind}
+	if req.KeyName == "" && (req.AuthKind == "bearer" || req.AuthKind == "header") {
+		req.KeyName = defaultKeyName(form.Name)
+	}
+	res, err := f.op.RegisterUpstream(r.Context(), req)
+	if err != nil {
+		// Neither a NAME=value pasted as the key's name nor a credential in
+		// the URL is written back into the page.
+		if strings.Contains(form.KeyName, "=") {
+			form.KeyName = ""
+		}
+		if u, perr := url.Parse(form.URL); perr == nil && u.User != nil {
+			u.User = nil
+			form.URL = u.String()
+		}
+		d := f.newServerData(r, kindRemote)
+		d.RemoteForm = form
+		f.renderServerNew(w, r, d, "Not registered: "+errText(err))
+		return
+	}
+	d := registered{Res: res, Root: f.acc != nil, Output: strings.Join(res.Messages, "\n"), ReviewAt: serverBack(res.Name)}
+	for _, wn := range res.Warnings {
+		d.Warnings = append(d.Warnings, wn.Message)
+	}
 	f.render(w, r, "server_registered", "Registered "+frontkit.VisibleText(res.Name), page{Nav: "servers", Data: d})
 }
 

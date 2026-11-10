@@ -291,8 +291,7 @@ On the **operator socket**:
   and `operations`, each with `method`, `path` and `class`. For remote
   (contract 1.8.0, design/adr/0058), `auth` and `remote_kind`, which the
   signature covers with the URL. Then the signature state; and `tools`,
-  every quarantine entry under the name. A remote entry is registered in
-  the terminal only: `POST /v1/upstreams` refuses `"transport": "remote"`.
+  every quarantine entry under the name.
 - `POST /v1/upstreams`: register a REST API. `{"name", "url",
   "openapi_url" | "openapi_document", "auth_kind", "auth_name",
   "key_name"}`: exactly one of the URL (http or https only, fetched once
@@ -315,6 +314,18 @@ On the **operator socket**:
   `oci_register` is listed only where podman is on the backend's PATH (the
   Docker image has none); without it an oci register is `feature_disabled`
   with `details.requires` `podman`, and a front offers no Container form.
+- `POST /v1/upstreams` with `"transport": "remote"` (contract 1.9.0,
+  design/adr/0058, 0059): register a native MCP server by URL. `{"name",
+  "transport": "remote", "url", "auth_kind", "auth_name", "key_name",
+  "remote_kind"}`: `url` the MCP endpoint (http or https; no userinfo,
+  query or fragment), `auth_kind` `none`, `bearer` or `header` (`auth_name`
+  the header), `key_name` the vault NAME of the one secret a keyed entry
+  sends, `remote_kind` `streamable` when left out. It is `upstream register
+  -transport remote`, the same entry and the same refusals. The result
+  carries `transport`, `url`, `auth` and `remote_kind`, what the signature
+  covers, and no tools: they are listed once the gateway connects. No
+  feature beyond `console_manages`: a remote entry needs nothing on the
+  host.
 - `DELETE /v1/upstreams/{name}` with `{"confirm": NAME}`: deregister, with
   the signature, the approvals and the health keyed by the name. Ask the
   operator to type the name; a mismatch is `invalid_argument`

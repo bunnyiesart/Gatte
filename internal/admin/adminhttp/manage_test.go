@@ -3,6 +3,7 @@ package adminhttp_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -78,6 +79,52 @@ func TestWhoAmI_ListsConsoleManagesOnlyWhileTheKeyIsOn(t *testing.T) {
 		}
 		if got := slices.Contains(me.Features, adminapi.FeatureConsoleManages); got != on {
 			t.Errorf("console_manages %v: features %v", on, me.Features)
+		}
+	}
+}
+
+// oci_register is listed only where an oci register can run: console_manages
+// on and podman on the host (design/adr/0059 §3). The Docker image has no
+// podman, and there the console does not offer the form.
+func TestWhoAmI_ListsOCIRegisterOnlyWithPodman(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		manages, want bool
+		podman        error
+	}{
+		{"podman", true, true, nil},
+		{"no podman", true, false, errors.New("podman is not on PATH")},
+		{"key off", false, false, nil},
+	} {
+		cfg := &config.Config{Admin: config.Admin{ConsoleManages: tc.manages}}
+		svc, err := admin.New(admin.Deps{
+			Config: func() (*config.Config, error) { return cfg, nil },
+			Record: func(context.Context, *config.Config, audit.Record) error { return nil },
+			ManageDeps: admin.ManageDeps{
+				RegisterEntry: func(context.Context, *config.Config, adminapi.RegisterUpstreamRequest) (adminapi.RegisterUpstreamResult, error) {
+					return adminapi.RegisterUpstreamResult{}, nil
+				},
+				OCIRuntime: func() error { return tc.podman },
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		sock, _ := serve(t, adminhttp.Options{Socket: adminapi.SocketOperator, Service: svc})
+		_, _, body := call(t, sock, "GET", "/v1/whoami", "", nil)
+		var me adminapi.WhoAmI
+		if err := json.Unmarshal(body, &me); err != nil {
+			t.Fatal(err)
+		}
+		if got := slices.Contains(me.Features, adminapi.FeatureOCIRegister); got != tc.want {
+			t.Errorf("%s: oci_register %v, features %v", tc.name, got, me.Features)
+		}
+		// Forced anyway, the register says why rather than failing later.
+		if tc.manages && !tc.want {
+			status, code, body := call(t, sock, "POST", "/v1/upstreams", `{"name":"x","transport":"oci","image":"x@sha256:`+strings.Repeat("0", 64)+`"}`, nil)
+			if status != 403 || code != adminapi.CodeFeatureDisabled || !strings.Contains(string(body), "podman is not on PATH") {
+				t.Errorf("%s: forced oci register: %d %s %s", tc.name, status, code, body)
+			}
 		}
 	}
 }

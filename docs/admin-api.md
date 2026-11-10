@@ -299,7 +299,19 @@ On the **operator socket**:
   the CLI's message; `201` carries the report: `tools` with their class,
   `skipped`, `ingest_warnings`, the effective `auth` and `auth_derived`.
   Not idempotent: `upstream_exists` on a second call. Registering does not
-  sign. stdio and oci stay in the terminal.
+  sign. stdio stays in the terminal.
+- `POST /v1/upstreams` with `"transport": "oci"` (contract 1.7.0,
+  design/adr/0059, feature `oci_register`): register a container. `{"name",
+  "transport": "oci", "image", "args", "env_var_names"}`: the image pinned
+  by digest (a tag is refused), `args` only `--network=VALUE` (none by
+  default), `env_var_names` vault NAMES only. It is `upstream register
+  -transport oci`, the same entry and the same refusals; the container runs
+  inside the same hardened wrapper whoever registered it. The result
+  carries `transport`, `image`, the resolved `network` and
+  `env_var_names`, and no tools: they are listed once the gateway dials it.
+  `oci_register` is listed only where podman is on the backend's PATH (the
+  Docker image has none); without it an oci register is `feature_disabled`
+  with `details.requires` `podman`, and a front offers no Container form.
 - `DELETE /v1/upstreams/{name}` with `{"confirm": NAME}`: deregister, with
   the signature, the approvals and the health keyed by the name. Ask the
   operator to type the name; a mismatch is `invalid_argument`

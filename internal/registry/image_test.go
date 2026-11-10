@@ -52,3 +52,42 @@ func TestOCIImageRefusesHiddenCharacters(t *testing.T) {
 		}
 	}
 }
+
+// TestOCIImageIsTheASCIIReferenceGrammar: some code points draw as blank
+// or as another letter without being hidden, so the image is held to the
+// OCI reference grammar, which is ASCII only.
+func TestOCIImageIsTheASCIIReferenceGrammar(t *testing.T) {
+	for label, repo := range map[string]string{
+		"braille blank":      "localhost/case⠀mgmt",
+		"cyrillic homoglyph": "lоcalhost/casemgmt",
+		"combining mark":     "localhost/casémgmt",
+		"typed backslash":    `localhost/case\u{200B}mgmt`,
+		"uppercase path":     "localhost/CaseMgmt",
+		"empty path segment": "localhost//casemgmt",
+	} {
+		image := repo + pinnedDigest
+		err := UpstreamServer{Name: "casemgmt", Transport: TransportOCI, Image: image}.Validate()
+		if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "not a valid OCI image reference") {
+			t.Errorf("%s (%+q): Validate = %v, want a reference-grammar refusal", label, image, err)
+			continue
+		}
+		for _, r := range err.Error() {
+			if r > 0x7e {
+				t.Errorf("%s: the message carries the non-ASCII code point %U itself: %v", label, r, err)
+				break
+			}
+		}
+	}
+
+	for _, image := range []string{
+		"mcp-casemgmt" + pinnedDigest,
+		"host:5000/a/b:tag" + pinnedDigest,
+		"Registry.Example.COM/team/mcp" + pinnedDigest,
+		"localhost/casemgmt__mcp:v1.2-rc_3" + pinnedDigest,
+		"127.0.0.1:5000/casemgmt" + pinnedDigest,
+	} {
+		if err := (UpstreamServer{Name: "casemgmt", Transport: TransportOCI, Image: image}).Validate(); err != nil {
+			t.Errorf("Validate(%q) = %v, want nil", image, err)
+		}
+	}
+}

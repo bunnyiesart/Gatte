@@ -4,6 +4,9 @@
 #   tag vX.Y.Z  ->  :X.Y.Z, :X.Y and :latest
 #   main        ->  :edge
 #
+# A pull request runs only the test job: it never builds, logs in to the
+# registry, or gets the image job's write permissions.
+#
 # The image is built here, not on a laptop, so what is published is exactly
 # what this repository says: no local file, no local credential, nothing a
 # .dockerignore would have to remember. Every third-party action is pinned
@@ -15,6 +18,7 @@ on:
   push:
     branches: [main]
     tags: ["v*"]
+  pull_request:
   workflow_dispatch:
 
 permissions:
@@ -61,6 +65,7 @@ jobs:
 
   image:
     needs: test
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       contents: read

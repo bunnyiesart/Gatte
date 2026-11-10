@@ -62,7 +62,7 @@ func TestUI_PeopleShowsRolesTheirGroupsAndWhoWasSeen(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	body := uiDo(s, "GET", "/people", nil, cookie, nil).Body.String()
+	body := uiDo(s, "GET", "/users", nil, cookie, nil).Body.String()
 	for _, want := range []string{"ir-lead", "blue-ir", "tier1-analyst", "logsearch.search_relative", "casemgmt.create_case", "95f757fe-0c7b-4272", "sudo mcp-gateway ui -manage-users"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("People page lacks %q", want)
@@ -202,7 +202,7 @@ func TestUI_PeopleAndAuditShowTheNameNextToTheSubject(t *testing.T) {
 	if err := e.auditTrail().Record(context.Background(), rec); err != nil {
 		t.Fatal(err)
 	}
-	for _, page := range []string{"/people", "/audit"} {
+	for _, page := range []string{"/users", "/audit"} {
 		body := uiDo(s, "GET", page, nil, cookie, nil).Body.String()
 		if !strings.Contains(body, "Ana Souza") || !strings.Contains(body, "95f757fe-0c7b-4272") {
 			t.Errorf("GET %s does not show the name next to the subject", page)

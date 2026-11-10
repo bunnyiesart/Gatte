@@ -1,5 +1,5 @@
 {{template "top" .}}
-<a class="back" href="{{$.Base}}/people"><svg viewBox="0 0 8 14" width="8" height="14" aria-hidden="true"><path d="M7 1L1 7l6 6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>People</a>
+<a class="back" href="{{$.Base}}/users"><svg viewBox="0 0 8 14" width="8" height="14" aria-hidden="true"><path d="M7 1L1 7l6 6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>Users</a>
 <div class="head">
   <h1>Connect a computer</h1>
   <p class="sub">{{with .Data}}{{if .C.Username}}For <b>{{vis .C.Username}}</b>. {{end}}{{end}}Sets up Claude Code on their machine to use this gateway.</p>

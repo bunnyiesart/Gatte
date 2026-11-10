@@ -13,7 +13,8 @@ import (
 // (Secrets, Roles) appear only with both capabilities.
 func TestNavForOrderAndGating(t *testing.T) {
 	// Tools is no longer a top-nav tab (design/adr/0051): it lives on each
-	// server's detail page, registered as a DetailPanel, not a NavItem.
+	// server's detail page, registered as a DetailPanel, not a NavItem. People
+	// and Access likewise moved into the Users tab as sections, not NavItems.
 	full := navFor("servers", Capabilities{Manages: true, Root: true})
 	var labels []string
 	current := ""
@@ -23,7 +24,7 @@ func TestNavForOrderAndGating(t *testing.T) {
 			current = n.Label
 		}
 	}
-	want := []string{"Overview", "MCP Servers / APIs", "People", "Users", "Access", "Audit", "Backends", "Secrets", "Roles", "Quota"}
+	want := []string{"Overview", "MCP Servers / APIs", "Users", "Audit", "Backends", "Secrets", "Roles", "Quota"}
 	if len(labels) != len(want) {
 		t.Fatalf("nav labels = %v, want %v", labels, want)
 	}
@@ -45,6 +46,27 @@ func TestNavForOrderAndGating(t *testing.T) {
 	}
 	if len(plain) != len(want)-2 {
 		t.Fatalf("plain nav has %d entries, want %d", len(plain), len(want)-2)
+	}
+}
+
+// The Users tab shows exactly one Roles section for every console: the editable
+// matrix with the managing console and the accounts socket (design/adr/0054),
+// the read-only view otherwise, so an operator without them still sees roles.
+func TestRolesSlot_EditableOrReadOnlyNeverBoth(t *testing.T) {
+	for _, caps := range []Capabilities{{}, {Manages: true}, {Root: true}, {Manages: true, Root: true}} {
+		var shown []string
+		for _, s := range orderedUsersSections() {
+			if (s.ID == "roles" || s.ID == "roles-view") && (s.Show == nil || s.Show(caps)) {
+				shown = append(shown, s.ID)
+			}
+		}
+		want := "roles-view"
+		if caps.Manages && caps.Root {
+			want = "roles"
+		}
+		if len(shown) != 1 || shown[0] != want {
+			t.Errorf("caps %+v: Roles sections shown = %v, want [%s]", caps, shown, want)
+		}
 	}
 }
 

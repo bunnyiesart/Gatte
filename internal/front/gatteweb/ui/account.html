@@ -1,6 +1,6 @@
 {{template "top" .}}
 {{$csrf := .CSRF}}{{$base := .Base}}
-<a class="back" href="{{$base}}/people"><svg viewBox="0 0 8 14" width="8" height="14" aria-hidden="true"><path d="M7 1L1 7l6 6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>People</a>
+<a class="back" href="{{$base}}/users"><svg viewBox="0 0 8 14" width="8" height="14" aria-hidden="true"><path d="M7 1L1 7l6 6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>Users</a>
 {{with .Data}}{{with $d := .}}{{with .Account}}
 <div class="head">
   <h1>{{vis .DisplayName}}</h1>
@@ -36,7 +36,7 @@
       <span class="row-text"><span class="row-title">Disabled</span><span class="row-detail">They can't sign in.</span></span>
       <form method="post" action="{{$base}}/people/enable"><input type="hidden" name="csrf" value="{{$csrf}}"><input type="hidden" name="username" value="{{.Username}}"><button class="btn small">Enable</button></form>
       {{else}}
-      <span class="row-text"><span class="row-title">Disable</span><span class="row-detail">Stops new sign-ins. To cut off a session already open, also block them in Access.</span></span>
+      <span class="row-text"><span class="row-title">Disable</span><span class="row-detail">Stops new sign-ins. To cut off a session already open, also block them in the Blocklist.</span></span>
       <form method="post" action="{{$base}}/people/disable"><input type="hidden" name="csrf" value="{{$csrf}}"><input type="hidden" name="username" value="{{.Username}}"><button class="btn small destructive">Disable</button></form>
       {{end}}
     </li>

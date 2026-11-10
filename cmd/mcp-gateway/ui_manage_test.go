@@ -804,4 +804,26 @@ func TestUIManage_TheRemoteFormRegistersAndDoesNotSign(t *testing.T) {
 	if !pasted.has("Not registered") || pasted.has(uiSecretMarker) {
 		t.Fatalf("a NAME=value key name:\n%s", pasted.body)
 	}
+
+	// A credential anywhere a vendor's key is pasted is refused, and neither
+	// the refusal nor the redrawn form repeats it: userinfo beside another
+	// fault the URL check could fire first on, a URL that does not parse, a
+	// query, a fragment, and a header line as the header's name.
+	for _, c := range []struct{ what, url, authKind, authName string }{
+		{"userinfo and a bad scheme", "ftp://u:" + uiSecretMarker + "@mcp.leaky.example/", "none", ""},
+		{"userinfo and no host", "http://u:" + uiSecretMarker + "@/mcp", "none", ""},
+		{"userinfo and a bad port", "https://u:" + uiSecretMarker + "@mcp.leaky.example:bad/", "none", ""},
+		{"a query", "https://mcp.leaky.example/mcp?api_key=" + uiSecretMarker, "none", ""},
+		{"a fragment", "https://mcp.leaky.example/mcp#" + uiSecretMarker, "none", ""},
+		{"a header line", "https://mcp.leaky.example/mcp", "header", "Authorization: Bearer " + uiSecretMarker},
+	} {
+		got := m.post("/servers", url.Values{"transport": {"remote"}, "name": {"leaky"}, "url": {c.url}, "remote_kind": {"streamable"},
+			"auth_kind": {c.authKind}, "auth_name": {c.authName}})
+		if !got.has("Not registered") || got.has(uiSecretMarker) || !got.has(`name="transport" value="remote"`) {
+			t.Errorf("%s:\n%s", c.what, got.body)
+		}
+		if _, err := m.e.upstreams().Get(context.Background(), "leaky"); !errors.Is(err, registry.ErrNotFound) {
+			t.Errorf("%s: a refused remote register left an entry", c.what)
+		}
+	}
 }

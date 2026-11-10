@@ -206,6 +206,30 @@ func TestManage_RegisterRemoteThroughTheAPIIsTheCLIsEntry(t *testing.T) {
 			t.Fatalf("%s: a refused register left an entry: %v", name, err)
 		}
 	}
+
+	// The API error never repeats a credential pasted into the URL or the
+	// header's name, whichever check fires first.
+	for name, edit := range map[string]func(*adminapi.RegisterUpstreamRequest){
+		"userinfo, bad scheme": func(r *adminapi.RegisterUpstreamRequest) {
+			r.URL = "ftp://u:" + uiSecretMarker + "@mcp.vendor.example/"
+		},
+		"userinfo, no host": func(r *adminapi.RegisterUpstreamRequest) { r.URL = "http://u:" + uiSecretMarker + "@/mcp" },
+		"userinfo, bad port": func(r *adminapi.RegisterUpstreamRequest) {
+			r.URL = "https://u:" + uiSecretMarker + "@mcp.vendor.example:bad/"
+		},
+		"a query key": func(r *adminapi.RegisterUpstreamRequest) {
+			r.URL = "https://mcp.vendor.example/mcp?api_key=" + uiSecretMarker
+		},
+		"a header line": func(r *adminapi.RegisterUpstreamRequest) { r.AuthName = "Authorization: Bearer " + uiSecretMarker },
+	} {
+		bad := req
+		bad.Name = "vendor3"
+		edit(&bad)
+		_, err := svc.RegisterUpstream(ctx, carol, bad)
+		if !adminapi.IsCode(err, adminapi.CodeInvalidArgument) || strings.Contains(err.Error(), uiSecretMarker) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
 }
 
 // An oci entry registered through the API is the entry `upstream register

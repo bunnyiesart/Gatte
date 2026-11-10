@@ -59,6 +59,27 @@ func TestValidateRemote(t *testing.T) {
 	}
 }
 
+// TestValidateRemote_RefusalNeverQuotesACredential: a URL with userinfo
+// that also fails another check, or does not parse at all, is refused
+// without the credential in the message.
+func TestValidateRemote_RefusalNeverQuotesACredential(t *testing.T) {
+	const secret = "registry-secret-marker"
+	for _, raw := range []string{
+		"ftp://u:" + secret + "@mcp.vendor.example/",
+		"http://u:" + secret + "@/mcp",
+		"https://u:" + secret + "@mcp.vendor.example:bad/",
+		"htps://u:" + secret + "@mcp.vendor.example/mcp",
+		"https://mcp.vendor.example/mcp?api_key=" + secret,
+	} {
+		s := remoteEntry()
+		s.URL = raw
+		err := s.Validate()
+		if !errors.Is(err, ErrInvalid) || strings.Contains(err.Error(), secret) {
+			t.Errorf("%s: %v", raw, err)
+		}
+	}
+}
+
 // TestValidateRemote_SSEIsDeferredNotInvalid: "sse" is a recognised value
 // this build does not dial yet, so it is ErrTransportUnsupported with a
 // message that says so, not a typo.

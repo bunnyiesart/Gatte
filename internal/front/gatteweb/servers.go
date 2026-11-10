@@ -27,6 +27,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"unicode"
 
 	"github.com/bunnyiesart/Gatte/pkg/adminapi"
 	"github.com/bunnyiesart/Gatte/pkg/frontkit"
@@ -448,13 +449,20 @@ func (f *Front) serverRegisterRemote(w http.ResponseWriter, r *http.Request) {
 	}
 	res, err := f.op.RegisterUpstream(r.Context(), req)
 	if err != nil {
-		// Neither a NAME=value pasted as the key's name nor a credential in
-		// the URL is written back into the page.
+		// Nothing a vendor credential is pasted as is written back into the
+		// page: a NAME=value as the key's name, a header line as the header's
+		// name, or the URL's userinfo, query and fragment. A URL that does not
+		// parse cannot be cleaned, so it is dropped.
 		if strings.Contains(form.KeyName, "=") {
 			form.KeyName = ""
 		}
-		if u, perr := url.Parse(form.URL); perr == nil && u.User != nil {
-			u.User = nil
+		if strings.ContainsFunc(form.AuthName, func(c rune) bool { return c == ':' || unicode.IsSpace(c) }) {
+			form.AuthName = ""
+		}
+		if u, perr := url.Parse(form.URL); perr != nil {
+			form.URL = ""
+		} else {
+			u.User, u.RawQuery, u.ForceQuery, u.Fragment, u.RawFragment = nil, "", false, "", ""
 			form.URL = u.String()
 		}
 		d := f.newServerData(r, kindRemote)

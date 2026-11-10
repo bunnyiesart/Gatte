@@ -20,6 +20,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"unicode"
 
 	"github.com/bunnyiesart/Gatte/internal/config"
 	"github.com/bunnyiesart/Gatte/internal/registry"
@@ -270,6 +271,11 @@ func (s *Service) registerRemote(ctx context.Context, a Actor, cfg *config.Confi
 		if err := envNames("key_name", []string{req.KeyName}); err != nil {
 			return res, err
 		}
+	}
+	if strings.ContainsFunc(req.AuthName, func(r rune) bool { return r == ':' || unicode.IsSpace(r) }) {
+		// Before the port, as for key_name: the registry's refusal would quote
+		// the name, and "Authorization: Bearer ..." pasted here is a secret.
+		return res, adminapi.NewError(adminapi.CodeInvalidArgument, "auth_name looks like a header line (the value is not repeated here): it takes the header's name only, such as X-Api-Key; the value goes in the vault").With("field", "auth_name")
 	}
 	if err := need(s.d.RegisterEntry != nil, "upstream registry"); err != nil {
 		return res, err

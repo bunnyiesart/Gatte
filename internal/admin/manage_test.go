@@ -362,6 +362,8 @@ func TestManage_RegisterRemoteGoesToRegisterEntryAndRefusesWhatIsNotRemote(t *te
 		{"env var names", "env_var_names", func(r *adminapi.RegisterUpstreamRequest) { r.EnvVarNames = []string{"A"} }},
 		{"NAME=value", "key_name", func(r *adminapi.RegisterUpstreamRequest) { r.KeyName = "VENDOR_TOKEN=hunter2" }},
 		{"bad key name", "key_name", func(r *adminapi.RegisterUpstreamRequest) { r.KeyName = "1BAD" }},
+		{"a header line", "auth_name", func(r *adminapi.RegisterUpstreamRequest) { r.AuthName = "Authorization: Bearer hunter2" }},
+		{"a name with a space", "auth_name", func(r *adminapi.RegisterUpstreamRequest) { r.AuthName = "X-Api-Key hunter2" }},
 	} {
 		req := base
 		tc.edit(&req)

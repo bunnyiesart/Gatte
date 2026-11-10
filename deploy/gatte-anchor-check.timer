@@ -1,0 +1,14 @@
+# Runs gatte-anchor-check.service hourly. See the .service file for install
+# steps.
+[Unit]
+Description=Run the Gatte audit chain-head check hourly
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=1h
+# Catch up one missed run after the box was off, rather than waiting a full
+# interval.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,24 @@
+# systemd alternative to the crontab, for an operator box running systemd.
+# Pairs with gatte-anchor-check.timer. Install both scripts and the env file as
+# the crontab header describes, then:
+#
+#   cp deploy/gatte-anchor-check.service /etc/systemd/system/
+#   cp deploy/gatte-anchor-check.timer   /etc/systemd/system/
+#   systemctl daemon-reload
+#   systemctl enable --now gatte-anchor-check.timer
+#
+# A failed run marks this unit failed; wire the alert with a drop-in
+# OnFailure=, or an `systemctl --failed` check, or by reading the journal. The
+# script writes the comparison output to the journal and to
+# /var/db/gatte-anchor/last-run.log either way.
+[Unit]
+Description=Gatte audit chain-head integrity check
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# The operator identity that holds the ssh key to the gateway. Not root.
+User=soc
+EnvironmentFile=/usr/local/etc/gatte/anchor.env
+ExecStart=/usr/local/libexec/gatte/gatte-anchor-check.sh

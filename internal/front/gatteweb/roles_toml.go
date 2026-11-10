@@ -135,25 +135,6 @@ func findRole(blocks []roleBlock, role string) (roleBlock, bool) {
 	return roleBlock{}, false
 }
 
-// allows mirrors access.Role.Allows: the flat tools match exactly, and a
-// grant matches when the tool begins with "backend." and the id is listed or
-// the list holds "*". It answers "may this role call this tool at all",
-// ignoring the security class.
-func (b roleBlock) allows(server, tool string) bool {
-	ns := server + "." + tool
-	for _, t := range b.Tools {
-		if t == ns {
-			return true
-		}
-	}
-	for _, id := range b.Grants[server] {
-		if id == grantAll || id == tool {
-			return true
-		}
-	}
-	return false
-}
-
 // coverage of one tool by this role, in the shape the matrix draws
 // (design/adr/0048 Decisão 5, mirroring access.Policy):
 //

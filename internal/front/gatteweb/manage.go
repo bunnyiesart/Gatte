@@ -101,7 +101,7 @@ func documentFile(r *http.Request) (string, bool, error) {
 	if err != nil {
 		return "", true, err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	b, err := io.ReadAll(io.LimitReader(file, adminapi.MaxUpstreamDocumentBytes+1))
 	if err != nil {
 		return "", true, err

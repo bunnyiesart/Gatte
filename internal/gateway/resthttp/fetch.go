@@ -90,7 +90,7 @@ func (d *Dialer) FetchDocument(ctx context.Context, rawURL string, maxBytes int6
 		}
 		return nil, fmt.Errorf("%w: GET %s: %w", ErrFetchFailed, where, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		// Past maxRedirects, checkRedirect hands the last 3xx back as the

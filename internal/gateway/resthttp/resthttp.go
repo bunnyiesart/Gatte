@@ -554,7 +554,7 @@ func (u *upstream) CallTool(ctx context.Context, tool string, args json.RawMessa
 	if err != nil {
 		return gateway.Result{}, fmt.Errorf("resthttp: upstream %q: call tool %q: %w", u.name, tool, scrubCallError(err, rt.op, env))
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := readBody(resp.Body, u.maxBody)
 	if err != nil {

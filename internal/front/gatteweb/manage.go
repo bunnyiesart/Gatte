@@ -245,12 +245,12 @@ func insertGrant(text, role, backend string) (string, grantStatus) {
 	return strings.Join(out, "\n"), grantAdded
 }
 
-// signResult is the result of a sign: done, and whether the key that made
-// it is one the gateway trusts.
+// signResult is the result of attesting a configuration: done, and whether
+// the key that signed it is one the gateway trusts.
 func signResult(res adminapi.SignResult, err error) result {
 	out := actionResult(res.ActionResult, err)
 	if err != nil {
-		out.Summary = "Not signed: " + out.Summary
+		out.Summary = "Not attested: " + out.Summary
 		return out
 	}
 	if res.KeyFingerprint != "" {
@@ -259,9 +259,9 @@ func signResult(res adminapi.SignResult, err error) result {
 	switch {
 	case !out.OK:
 	case res.Trusted:
-		out.Summary = "Signed with a trusted key."
+		out.Summary = "Configuration attested with a trusted key."
 	default:
-		out.OK, out.Summary = false, "Signed, with a key that is not in signer.trusted_keys: the gateway will not serve it until that key is trusted."
+		out.OK, out.Summary = false, "Attested, with a key that is not in signer.trusted_keys: the gateway will not serve it until that key is trusted."
 	}
 	return out
 }

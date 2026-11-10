@@ -295,9 +295,8 @@ registerDetailPanel(DetailPanel{ID: "tools", Order: 20, Rows: toolsPanel})
 registerUsersSection(UsersSection{ID: "roles", Order: 20, Rows: rolesSection})
 ```
 
-The roles splice rules are in `pkg/frontkit` (`roles.go`) for any front. The
-console still carries the same rules in `gatteweb/roles_toml.go` until it
-switches to them.
+The roles splice rules are in `pkg/frontkit` (`roles.go`), and both the
+console and the TUI use them.
 
 ## Frozen shared files — consume, never edit
 

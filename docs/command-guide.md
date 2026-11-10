@@ -250,8 +250,8 @@ sudo -u mcpgw mcp-gateway audit -config "$CFG" -tool edr.isolate_host \
 sudo -u mcpgw mcp-gateway audit -config "$CFG" -server edr -limit 500 -json       # for jq or a ticket
 ```
 
-`-until` is exclusive. The web console's **Audit** page has the same
-filters and exports the filtered rows as CSV or JSON Lines.
+`-until` is exclusive. The web console has no audit page; the trail is
+searched in the SIEM it ships to (`design/adr/0056`).
 
 **I want to prove the trail was not edited.** svc.
 

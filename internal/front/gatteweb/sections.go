@@ -95,13 +95,10 @@ func navFor(current string, c Capabilities) []navView {
 	return out
 }
 
-// manages and root are the common Show predicates: an entry only the managing
-// console shows (Secrets, Roles).
+// managesAndRoot is the Show predicate for a contribution that needs both the
+// managing console and the accounts socket (the Secrets panel, the editable
+// Roles section).
 func managesAndRoot(c Capabilities) bool { return c.Manages && c.Root }
-
-// manages is the Show predicate for a contribution only the managing console
-// shows (design/adr/0050), regardless of the accounts socket.
-func manages(c Capabilities) bool { return c.Manages }
 
 // The revised two-tab IA (design/adr/0051) makes two pages shared: the
 // server-detail page (/servers/{name}) and the Users page (/users). So the
@@ -112,9 +109,9 @@ func manages(c Capabilities) bool { return c.Manages }
 // range over these in order, so a slice adds its panel or section without
 // editing a shared file, the shell, or another slice's work.
 //
-// Order uses gaps of ten so a slice can slot between two without renumbering.
-// Planned: DetailPanel Tools 20, Secrets 30, Maintenance 40; UsersSection
-// People 10, Roles 20, Blocklist 30.
+// Order uses gaps of ten so a slice can slot between two without renumbering:
+// DetailPanel Tools 20, Secrets 30, Maintenance 40; UsersSection People 10,
+// Roles 20, Blocklist 30.
 
 // A DetailPanel is one Tab-1 slice's contribution to the server-detail page.
 // Render draws the panel's HTML for one backend; the container embeds it. A nil

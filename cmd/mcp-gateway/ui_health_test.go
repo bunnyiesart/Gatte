@@ -20,11 +20,12 @@ import (
 	healthsqlite "github.com/bunnyiesart/Gatte/internal/health/sqlite"
 )
 
-// The console's side of design/adr/0041: backend health on the Backends
-// page and the Overview, and planned maintenance as a form, through the
-// management API like every other action.
+// The console's side of design/adr/0041 and 0055: backend health on the MCP
+// Servers / APIs list, and planned maintenance of one backend as a panel on its
+// own page, through the management API like every other action. The
+// gateway-wide maintenance is not a console action (design/adr/0055 §2).
 
-func TestUI_BackendsShowHealthAndMaintenanceIsAnAuditedOperatorAction(t *testing.T) {
+func TestUI_ServersShowHealthAndMaintenanceIsAnAuditedOperatorAction(t *testing.T) {
 	e, s, cookie := newUITest(t)
 	mustRegister(t, e, stdioEntry("casemgmt"))
 	hs := healthsqlite.New(e.db)
@@ -37,22 +38,31 @@ func TestUI_BackendsShowHealthAndMaintenanceIsAnAuditedOperatorAction(t *testing
 		t.Fatal(err)
 	}
 
-	page := uiDo(s, "GET", "/upstreams", nil, cookie, nil).Body.String()
-	for _, want := range []string{"Reconnecting", "not_brought_up", `action="` + s.session + `/upstreams/maintenance/on"`, `name="csrf"`} {
-		if !strings.Contains(page, want) {
-			t.Errorf("Backends page lacks %q", want)
+	list := uiDo(s, "GET", "/servers", nil, cookie, nil).Body.String()
+	for _, want := range []string{"Reconnecting", "not_brought_up"} {
+		if !strings.Contains(list, want) {
+			t.Errorf("the servers list lacks %q", want)
 		}
 	}
+	page := uiDo(s, "GET", "/servers/casemgmt", nil, cookie, nil).Body.String()
+	for _, want := range []string{"Planned maintenance", `action="` + s.session + `/servers/casemgmt/maintenance/on"`, `name="csrf"`} {
+		if !strings.Contains(page, want) {
+			t.Errorf("the server page lacks %q", want)
+		}
+	}
+	if strings.Contains(page, `name="scope"`) {
+		t.Error("the server page offers a gateway-wide maintenance")
+	}
 
-	on := url.Values{"scope": {"upstream"}, "upstream": {"casemgmt"}, "message": {`<b>Troca</b> de versão`}, "until": {"2h"}}
-	if w := uiDo(s, "POST", "/upstreams/maintenance/on", on, cookie, samePost); w.Code != http.StatusForbidden {
+	on := url.Values{"message": {`<b>Troca</b> de versão`}, "until": {"2h"}}
+	if w := uiDo(s, "POST", "/servers/casemgmt/maintenance/on", on, cookie, samePost); w.Code != http.StatusForbidden {
 		t.Fatalf("maintenance on without the form token: %d, want 403", w.Code)
 	}
 	if m, _ := hs.Maintenance(context.Background()); len(m) != 0 {
 		t.Fatalf("a POST without the form token opened a maintenance: %+v", m)
 	}
 	on.Set("csrf", s.csrf)
-	if w := uiDo(s, "POST", "/upstreams/maintenance/on", on, cookie, samePost); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "planned maintenance") {
+	if w := uiDo(s, "POST", "/servers/casemgmt/maintenance/on", on, cookie, samePost); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "planned maintenance") {
 		t.Fatalf("maintenance on: %d\n%s", w.Code, w.Body)
 	}
 	m, err := hs.Maintenance(context.Background())
@@ -60,22 +70,19 @@ func TestUI_BackendsShowHealthAndMaintenanceIsAnAuditedOperatorAction(t *testing
 		t.Fatalf("maintenance after the form: %+v, %v", m, err)
 	}
 
-	page = uiDo(s, "GET", "/upstreams", nil, cookie, nil).Body.String()
+	page = uiDo(s, "GET", "/servers/casemgmt", nil, cookie, nil).Body.String()
 	if !strings.Contains(page, "&lt;b&gt;Troca&lt;/b&gt; de versão") || strings.Contains(page, "<b>Troca") {
-		t.Error("the Backends page does not escape the operator's message")
+		t.Error("the server page does not escape the operator's message")
 	}
 	if !strings.Contains(page, "End maintenance") || !strings.Contains(page, "In maintenance") {
-		t.Error("the Backends page does not offer to end the maintenance")
+		t.Error("the server page does not offer to end the maintenance")
 	}
-	overview := uiDo(s, "GET", "/", nil, cookie, nil).Body.String()
-	for _, want := range []string{"casemgmt", "In maintenance", "&lt;b&gt;Troca&lt;/b&gt; de versão"} {
-		if !strings.Contains(overview, want) {
-			t.Errorf("Overview lacks %q", want)
-		}
+	if list := uiDo(s, "GET", "/servers", nil, cookie, nil).Body.String(); !strings.Contains(list, "In maintenance") {
+		t.Error("the servers list does not show the backend in maintenance")
 	}
 
-	off := url.Values{"scope": {"upstream"}, "upstream": {"casemgmt"}, "csrf": {s.csrf}}
-	if w := uiDo(s, "POST", "/upstreams/maintenance/off", off, cookie, samePost); w.Code != http.StatusOK {
+	off := url.Values{"csrf": {s.csrf}}
+	if w := uiDo(s, "POST", "/servers/casemgmt/maintenance/off", off, cookie, samePost); w.Code != http.StatusOK {
 		t.Fatalf("maintenance off: %d\n%s", w.Code, w.Body)
 	}
 	if m, _ := hs.Maintenance(context.Background()); len(m) != 0 {
@@ -96,7 +103,10 @@ func TestUI_BackendsShowHealthAndMaintenanceIsAnAuditedOperatorAction(t *testing
 	}
 }
 
-func TestUI_OverviewShowsTheGatewayMaintenanceBannerAndAServeNotReporting(t *testing.T) {
+// What needs the operator and names no backend -- a gateway maintenance opened
+// in the terminal, a gateway process that stopped reporting -- is shown above
+// the servers list, with where to end the maintenance.
+func TestUI_ServersShowTheGatewayMaintenanceAndAServeNotReporting(t *testing.T) {
 	e, s, cookie := newUITest(t)
 	mustRegister(t, e, stdioEntry("casemgmt"))
 	hs := healthsqlite.New(e.db)
@@ -107,19 +117,15 @@ func TestUI_OverviewShowsTheGatewayMaintenanceBannerAndAServeNotReporting(t *tes
 	}); err != nil {
 		t.Fatal(err)
 	}
-	gw := url.Values{"scope": {"gateway"}, "message": {"Atualização do binário"}, "csrf": {s.csrf}}
-	if w := uiDo(s, "POST", "/upstreams/maintenance/on", gw, cookie, samePost); w.Code != http.StatusOK {
-		t.Fatalf("gateway maintenance on: %d\n%s", w.Code, w.Body)
+	if _, err := hs.Start(context.Background(), health.Maintenance{Target: health.GatewayTarget, Message: "Atualização do binário",
+		StartedAt: now, SetBy: "ana.ops", SetAt: now}); err != nil {
+		t.Fatal(err)
 	}
-	overview := uiDo(s, "GET", "/", nil, cookie, nil).Body.String()
-	for _, want := range []string{"Gatte is in planned maintenance", "Atualização do binário", "not reporting"} {
-		if !strings.Contains(overview, want) {
-			t.Errorf("Overview lacks %q", want)
+	list := uiDo(s, "GET", "/servers", nil, cookie, nil).Body.String()
+	for _, want := range []string{"The gateway is in planned maintenance", "mcp-gateway maintenance off", "not reporting"} {
+		if !strings.Contains(list, want) {
+			t.Errorf("the servers list lacks %q", want)
 		}
-	}
-	page := uiDo(s, "GET", "/upstreams", nil, cookie, nil).Body.String()
-	if !strings.Contains(page, "End gateway maintenance") {
-		t.Error("the Backends page does not offer to end the gateway maintenance")
 	}
 }
 
@@ -130,42 +136,32 @@ func TestUI_AMaintenanceInForceCanBeUpdated(t *testing.T) {
 	e, s, cookie := newUITest(t)
 	mustRegister(t, e, stdioEntry("casemgmt"))
 	hs := healthsqlite.New(e.db)
-	for _, form := range []url.Values{
-		{"scope": {"upstream"}, "upstream": {"casemgmt"}, "message": {`<b>Troca</b> de versão`}, "until": {"2h"}, "csrf": {s.csrf}},
-		{"scope": {"gateway"}, "message": {"Atualização do binário"}, "until": {"3h"}, "csrf": {s.csrf}},
-	} {
-		if w := uiDo(s, "POST", "/upstreams/maintenance/on", form, cookie, samePost); w.Code != http.StatusOK {
-			t.Fatalf("maintenance on: %d\n%s", w.Code, w.Body)
-		}
+	form := url.Values{"message": {`<b>Troca</b> de versão`}, "until": {"2h"}, "csrf": {s.csrf}}
+	if w := uiDo(s, "POST", "/servers/casemgmt/maintenance/on", form, cookie, samePost); w.Code != http.StatusOK {
+		t.Fatalf("maintenance on: %d\n%s", w.Code, w.Body)
 	}
 	rows, err := hs.Maintenance(context.Background())
-	if err != nil || len(rows) != 2 {
+	if err != nil || len(rows) != 1 {
 		t.Fatalf("maintenance: %+v, %v", rows, err)
 	}
-	page := uiDo(s, "GET", "/upstreams", nil, cookie, nil).Body.String()
-	for _, m := range rows {
-		for _, want := range []string{`value="` + template.HTMLEscapeString(m.Message) + `"`, `value="` + m.Until.UTC().Format(time.RFC3339) + `"`} {
-			if !strings.Contains(page, want) {
-				t.Errorf("the Backends page has no update form filled with %s", want)
-			}
+	page := uiDo(s, "GET", "/servers/casemgmt", nil, cookie, nil).Body.String()
+	for _, want := range []string{`value="` + template.HTMLEscapeString(rows[0].Message) + `"`, `value="` + rows[0].Until.UTC().Format(time.RFC3339) + `"`} {
+		if !strings.Contains(page, want) {
+			t.Errorf("the server page has no update form filled with %s", want)
 		}
 	}
-	if strings.Count(page, "Update maintenance") < 1 || !strings.Contains(page, "Update gateway maintenance") {
-		t.Error("the Backends page offers no update of a maintenance in force")
+	if !strings.Contains(page, "Update maintenance") {
+		t.Error("the server page offers no update of a maintenance in force")
 	}
 
 	// The update keeps when it started.
-	up := url.Values{"scope": {"upstream"}, "upstream": {"casemgmt"}, "message": {"Troca de versão do casemgmt"}, "csrf": {s.csrf}}
-	if w := uiDo(s, "POST", "/upstreams/maintenance/on", up, cookie, samePost); w.Code != http.StatusOK {
+	up := url.Values{"message": {"Troca de versão do casemgmt"}, "csrf": {s.csrf}}
+	if w := uiDo(s, "POST", "/servers/casemgmt/maintenance/on", up, cookie, samePost); w.Code != http.StatusOK {
 		t.Fatalf("maintenance update: %d\n%s", w.Code, w.Body)
 	}
 	after, _ := hs.Maintenance(context.Background())
-	for _, m := range after {
-		for _, b := range rows {
-			if m.Target == "casemgmt" && b.Target == "casemgmt" && (m.Message != "Troca de versão do casemgmt" || !m.StartedAt.Equal(b.StartedAt)) {
-				t.Errorf("after the update: %+v, want the new message and the same start", m)
-			}
-		}
+	if len(after) != 1 || after[0].Message != "Troca de versão do casemgmt" || !after[0].StartedAt.Equal(rows[0].StartedAt) {
+		t.Errorf("after the update: %+v, want the new message and the same start", after)
 	}
 }
 
@@ -198,8 +194,8 @@ func TestUI_MaintenancePostsAreRefusedWithoutTheFeature(t *testing.T) {
 	s := newUIFrontOn(t, sock)
 	cookie := uiLogin(t, s)
 
-	for _, path := range []string{"/upstreams/maintenance/on", "/upstreams/maintenance/off"} {
-		form := url.Values{"scope": {"gateway"}, "message": {"x"}, "csrf": {s.csrf}}
+	for _, path := range []string{"/servers/casemgmt/maintenance/on", "/servers/casemgmt/maintenance/off"} {
+		form := url.Values{"message": {"x"}, "csrf": {s.csrf}}
 		if w := uiDo(s, "POST", path, form, cookie, samePost); w.Code != http.StatusNotFound {
 			t.Errorf("POST %s without the feature: %d, want 404", path, w.Code)
 		}

@@ -7,7 +7,7 @@ import "net/http"
 // UsersSection registry (sections.go), not nav items.
 func init() {
 	register(Section{
-		Nav: NavItem{ID: "users", Path: "/users", Label: "Users", Order: 35},
+		Nav: NavItem{ID: "users", Path: "/users", Label: "Users", Order: 20},
 		Mount: func(mux *http.ServeMux, f *Front) {
 			mux.HandleFunc("GET /users", f.usersPage)
 		},

@@ -75,8 +75,22 @@ func (f *Front) accessChange(w http.ResponseWriter, r *http.Request, block bool)
 	f.showResult(w, r, "users", verb+" "+frontkit.VisibleText(req.Subject), "/users", actionResult(res.ActionResult, err))
 }
 
-// blockEnd reads the block form's end: a duration from now ("8h") or a time as
-// the audit filters take it. The backend refuses one that is not in the future.
+// formTime reads a time field: RFC 3339, or a date or a date and minute
+// taken as UTC, which the page says. Empty is no bound.
+func formTime(label, v string) (time.Time, error) {
+	if v == "" {
+		return time.Time{}, nil
+	}
+	for _, layout := range []string{time.RFC3339, "2006-01-02T15:04", "2006-01-02 15:04", "2006-01-02"} {
+		if t, err := time.ParseInLocation(layout, v, time.UTC); err == nil {
+			return t, nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("%s %q: use 2026-09-30, 2026-09-30 14:00 (UTC) or 2026-09-30T14:00:00Z", label, frontkit.VisibleText(v))
+}
+
+// blockEnd reads the block form's end: a duration from now ("8h") or a time
+// (formTime). The backend refuses one that is not in the future.
 func blockEnd(v string, now time.Time) (time.Time, error) {
 	if d, err := time.ParseDuration(v); err == nil && d > 0 {
 		return now.Add(d).UTC(), nil

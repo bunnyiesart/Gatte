@@ -116,7 +116,7 @@ single calls.
 - What is in maintenance: `maintenance list -config "$CFG"`.
 - What is registered and signed: `upstream list -config "$CFG"`.
 - Each backend's state (up, reconnecting, down, in maintenance), since
-  when and why: the console's **Backends** page. **Overview** also shows
+  when and why: the console's **MCP Servers / APIs** tab, which also shows
   `serve` as not reporting when it stopped.
 - Why `serve` refuses or restarts: `journalctl -u mcp-gateway`.
 

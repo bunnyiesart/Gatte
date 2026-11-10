@@ -26,6 +26,7 @@ import (
 	"fmt"
 	"html/template"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -39,14 +40,6 @@ var assets embed.FS
 // FrontName is the [ui] tag the backend writes in this front's operator
 // rows.
 const FrontName = "ui"
-
-// auditLimit is how many of the newest audit records the audit page shows
-// when the operator asks for no other number, and maxAuditLimit the most
-// it asks the backend for (which holds the same bound).
-const (
-	auditLimit    = 200
-	maxAuditLimit = 5000
-)
 
 // Options is what a front is built from.
 type Options struct {
@@ -79,9 +72,6 @@ func New(o Options) (*Front, error) {
 		"segs":    frontkit.DrawSegments,
 		"time":    showTime,
 		"short":   shortHash,
-		"image":   shortImage,
-		"imgname": imageName,
-		"imgdig":  imageDigest,
 		"dash":    dash,
 		"initial": initial,
 		"dict":    dict,
@@ -131,10 +121,12 @@ type page struct {
 	CSRF  string
 	// Manages is the backend listing FeatureConsoleManages
 	// (design/adr/0050), and Root the console holding the accounts socket
-	// (-manage-users): together they decide the navigation's Secrets and
-	// Roles entries.
+	// (-manage-users).
 	Manages bool
 	Root    bool
+	// Operator is who the management API says is operating, shown in the
+	// header (design/adr/0051); empty when the backend did not answer.
+	Operator string
 	// NavItems are the top-navigation links for this request, built from the
 	// section registry (sections.go). The layout ranges over them; no page
 	// sets this itself.
@@ -153,7 +145,14 @@ func (f *Front) render(w http.ResponseWriter, r *http.Request, tmpl, title strin
 		p.Nav = tmpl
 	}
 	p.Title, p.CSRF, p.Base = title, f.kit.CSRFToken(), f.kit.Base()
-	p.Manages, p.Root = f.feature(r.Context(), adminapi.FeatureConsoleManages), f.acc != nil
+	p.Root = f.acc != nil
+	if me, err := f.op.WhoAmI(r.Context()); err == nil {
+		p.Manages = slices.Contains(me.Features, adminapi.FeatureConsoleManages)
+		p.Operator = me.Operator.Name
+		if p.Operator == "" {
+			p.Operator = me.Operator.Identity
+		}
+	}
 	p.NavItems = navFor(p.Nav, Capabilities{Manages: p.Manages, Root: p.Root})
 	var b bytes.Buffer
 	if err := f.pages.ExecuteTemplate(&b, tmpl+".html", p); err != nil {
@@ -280,32 +279,6 @@ func shortHash(h string) string {
 		return dash(h)
 	}
 	return h[:shown] + "..."
-}
-
-// shortImage is an image reference as a table shows it: the repository and
-// the first 12 hex digits of a sha256 digest. The page puts the full
-// reference in the cell's title.
-func shortImage(ref string) string {
-	name, digest, ok := strings.Cut(ref, "@sha256:")
-	if !ok || len(digest) <= 12 {
-		return ref
-	}
-	return name + "@sha256:" + digest[:12] + "…"
-}
-
-// imageName and imageDigest split what shortImage joins, so a narrow cell
-// can put the repository and the digest on their own lines.
-func imageName(ref string) string {
-	name, _, _ := strings.Cut(shortImage(ref), "@")
-	return name
-}
-
-func imageDigest(ref string) string {
-	_, digest, ok := strings.Cut(shortImage(ref), "@")
-	if !ok {
-		return ""
-	}
-	return digest
 }
 
 // initial is the letter an account's avatar shows.

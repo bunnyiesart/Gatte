@@ -11,8 +11,8 @@ package gatteweb
 // The server-detail page is a container: it draws the entry, its health and the
 // operator actions (redial, sign, deregister), then ranges over the DetailPanel
 // registry (sections.go) and embeds each registered panel in order. The Tools,
-// Secrets and Maintenance panels are later slices (M1.2/M1.3/M2.1) that
-// self-register; this shell owns only the mount points.
+// Secrets and Maintenance panels self-register from their own files; this
+// shell owns only the mount points.
 //
 // Reads (list, detail) are the operator socket's. Registering, signing,
 // removing and redialling are the management actions of design/adr/0050 and gate
@@ -39,11 +39,14 @@ type serversData struct {
 	Servers []serverRow
 	// Health is FeatureBackendHealth: the list shows a per-backend state.
 	Health bool
-	// Manages is FeatureConsoleManages: the Add button and the detail links.
+	// Manages is FeatureConsoleManages: the Add button.
 	Manages bool
 	// Reload offers the serve-control reload (FeatureConsoleManages and
 	// FeatureServeControl).
 	Reload bool
+	// Gateway is the attention that names no backend (the gateway process not
+	// reporting, a gateway-wide maintenance): shown above the list.
+	Gateway []adminapi.Attention
 }
 
 // serverRow is one backend as the list shows it: the entry, and the reasons it
@@ -82,6 +85,7 @@ func (f *Front) serversPage(w http.ResponseWriter, r *http.Request) {
 			name = a.Server
 		}
 		if name == "" {
+			d.Gateway = append(d.Gateway, a)
 			continue
 		}
 		if !slices.Contains(attn[name], a.Title) {
@@ -110,20 +114,22 @@ type serverDetailData struct {
 	Manages, Root, Redial bool
 	Sensitive             int
 	// Panels are the registered DetailPanel contributions, rendered in order
-	// (sections.go). Empty in this slice: the panels are later slices.
+	// (sections.go).
 	Panels []fragment
 }
 
 func (f *Front) serverDetail(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	d, err := f.op.GetUpstream(r.Context(), name)
-	if adminapi.IsCode(err, adminapi.CodeNotFound) {
-		http.NotFound(w, r)
-		return
-	}
 	me, _ := f.op.WhoAmI(r.Context())
 	has := func(n string) bool { return slices.Contains(me.Features, n) }
 	caps := Capabilities{Manages: has(adminapi.FeatureConsoleManages), Root: f.acc != nil}
+	d, err := f.upstreamDetail(r, name, caps.Manages)
+	// Only a missing entry is a 404; a failed tools read on the operator path
+	// still shows the entry, with the reason.
+	if d.Name == "" && adminapi.IsCode(err, adminapi.CodeNotFound) {
+		http.NotFound(w, r)
+		return
+	}
 	data := serverDetailData{D: d, Manages: caps.Manages, Root: caps.Root, Redial: has(adminapi.FeatureServeControl)}
 	for _, op := range d.Operations {
 		if op.Class == adminapi.ClassSensitive {
@@ -143,6 +149,29 @@ func (f *Front) serverDetail(w http.ResponseWriter, r *http.Request) {
 		title = frontkit.VisibleText(d.Name)
 	}
 	f.render(w, r, "server", title, page{Nav: "servers", Data: data, Error: strings.Join(errs, "\n")})
+}
+
+// upstreamDetail reads one backend for its page. GET /v1/upstreams/{name} is a
+// management read (design/adr/0050), so a console without FeatureConsoleManages
+// builds the same page from the operator reads instead -- the registry entry
+// and its quarantine -- and the tool review and maintenance panels stay
+// reachable; only the operations list and the management actions are absent.
+func (f *Front) upstreamDetail(r *http.Request, name string, manages bool) (adminapi.UpstreamDetail, error) {
+	if manages {
+		return f.op.GetUpstream(r.Context(), name)
+	}
+	list, err := f.op.ListUpstreams(r.Context())
+	if err != nil {
+		return adminapi.UpstreamDetail{}, err
+	}
+	i := slices.IndexFunc(list.Upstreams, func(u adminapi.Upstream) bool { return u.Name == name })
+	if i < 0 {
+		return adminapi.UpstreamDetail{}, &adminapi.Error{Status: http.StatusNotFound, Code: adminapi.CodeNotFound, Message: "no such backend"}
+	}
+	d := adminapi.UpstreamDetail{Upstream: list.Upstreams[i]}
+	tools, err := f.op.ListTools(r.Context(), name, "")
+	d.Tools = tools.Tools
+	return d, err
 }
 
 // detailPanels renders every registered server-detail panel whose Show allows

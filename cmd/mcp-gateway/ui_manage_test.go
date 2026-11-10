@@ -23,15 +23,16 @@ import (
 	"github.com/bunnyiesart/Gatte/internal/config"
 	"github.com/bunnyiesart/Gatte/internal/control"
 	controlsqlite "github.com/bunnyiesart/Gatte/internal/control/sqlite"
+	"github.com/bunnyiesart/Gatte/internal/quarantine"
 	"github.com/bunnyiesart/Gatte/internal/registry"
 )
 
 // The console manages everything (design/adr/0050), through the real
-// management backend: registering an http API from its OpenAPI document,
-// a backend's page, sign, redial and remove, clearing a sensitive tool,
-// the vault's secrets, the roles file and a reload. Every screen is absent
-// with [admin] console_manages off, and root's are absent without
-// -manage-users.
+// management backend, at the places the two-tab console puts them
+// (design/adr/0051): registering an http API from its OpenAPI document, a
+// server's page with sign, redial and remove, clearing a sensitive tool, the
+// vault's secrets, the roles file and a reload. Every screen is absent with
+// [admin] console_manages off, and root's are absent without -manage-users.
 
 // uiSecretMarker is a vault value no page may ever carry.
 const uiSecretMarker = "ui-secret-marker-5f1c-not-real"
@@ -203,37 +204,45 @@ type httpResult struct {
 
 func (h *httpResult) has(s string) bool { return strings.Contains(h.body, s) }
 
-// manageRoutes are every screen and action of design/adr/0050, with a form
-// that would act if it were forwarded.
+// manageRoutes are every screen and action of design/adr/0050, at the place
+// the two-tab console puts them (design/adr/0051), with a form that would act
+// if it were forwarded.
 var manageRoutes = []struct {
 	method, target string
 	form           url.Values
 }{
-	{"GET", "/upstreams/show?name=ioc", nil},
-	{"POST", "/upstreams/register", url.Values{"name": {"ioc"}, "url": {"https://ioc.example.net"}, "openapi_text": {restSpecJSON}, "auth_kind": {"none"}}},
-	{"POST", "/upstreams/sign", url.Values{"name": {"ioc"}}},
-	{"POST", "/upstreams/redial", url.Values{"name": {"ioc"}}},
-	{"POST", "/upstreams/remove", url.Values{"name": {"ioc"}, "confirm": {"ioc"}}},
+	{"GET", "/servers/new", nil},
+	{"POST", "/servers", url.Values{"name": {"ioc"}, "url": {"https://ioc.example.net"}, "openapi_text": {restSpecJSON}, "auth_kind": {"none"}}},
+	{"POST", "/servers/ioc/sign", nil},
+	{"POST", "/servers/ioc/redial", nil},
+	{"POST", "/servers/ioc/remove", url.Values{"confirm": {"ioc"}}},
 	{"POST", "/servers/reporting/tools/submit_report/clear", nil},
-	{"POST", "/reload", url.Values{}},
+	{"POST", "/servers/reload", url.Values{}},
 	{"GET", "/serve-requests?id=1", nil},
-	{"GET", "/secrets", nil},
-	{"POST", "/secrets/set", url.Values{"name": {"X_KEY"}, "value": {uiSecretMarker}}},
-	{"POST", "/secrets/delete", url.Values{"name": {"X_KEY"}, "confirm": {"yes"}}},
-	{"GET", "/roles", nil},
-	{"POST", "/roles", url.Values{"text": {uiRolesText}}},
+	{"POST", "/servers/ioc/secrets/set", url.Values{"name": {"X_KEY"}, "value": {uiSecretMarker}}},
+	{"POST", "/servers/ioc/secrets/delete", url.Values{"name": {"X_KEY"}, "confirm": {"yes"}}},
+	{"GET", "/vault", nil},
+	{"POST", "/vault/set", url.Values{"name": {"X_KEY"}, "value": {uiSecretMarker}}},
+	{"POST", "/vault/delete", url.Values{"name": {"X_KEY"}, "confirm": {"yes"}}},
+	{"POST", "/users/roles/edit", url.Values{"role": {"ir"}, "tool": {"casemgmt.list_cases"}, "op": {"grant"}}},
+	{"POST", "/users/roles/non-read", url.Values{"role": {"ir"}, "on": {"true"}}},
+}
+
+// rootRoutes are the manageRoutes that also need root's accounts socket.
+var rootRoutes = []string{"/servers/ioc/sign", "/servers/ioc/secrets/set", "/servers/ioc/secrets/delete",
+	"/vault", "/vault/set", "/vault/delete", "/users/roles/edit", "/users/roles/non-read"}
+
+func (m *manageUI) do(method, target string, form url.Values) *httpResult {
+	if method == "GET" {
+		return m.get(target)
+	}
+	return m.post(target, form)
 }
 
 func TestUIManage_NothingNewExistsWithTheKeyOff(t *testing.T) {
 	m := newManageUI(t, false, true)
 	for _, rt := range manageRoutes {
-		var got *httpResult
-		if rt.method == "GET" {
-			got = m.get(rt.target)
-		} else {
-			got = m.post(rt.target, rt.form)
-		}
-		if got.code != http.StatusNotFound {
+		if got := m.do(rt.method, rt.target, rt.form); got.code != http.StatusNotFound {
 			t.Errorf("%s %s with console_manages off: %d, want 404", rt.method, rt.target, got.code)
 		}
 	}
@@ -243,20 +252,13 @@ func TestUIManage_NothingNewExistsWithTheKeyOff(t *testing.T) {
 	if m.vault.get("X_KEY") != "" || len(m.signed) != 0 {
 		t.Fatal("the vault or the signer was reached with console_manages off")
 	}
-	for page, absent := range map[string][]string{
-		"/":          {"/reload", "Reload configuration"},
-		"/upstreams": {"Add an API", "/upstreams/register", "/upstreams/show"},
-	} {
-		body := m.get(page).body
-		for _, a := range absent {
-			if strings.Contains(body, a) {
-				t.Errorf("GET %s with console_manages off shows %q", page, a)
-			}
-		}
-		for _, nav := range []string{`href="` + m.s.session + `/secrets"`, `href="` + m.s.session + `/roles"`} {
-			if strings.Contains(body, nav) {
-				t.Errorf("GET %s with console_manages off has the navigation entry %s", page, nav)
-			}
+	if b, _ := os.ReadFile(m.rolesPath); string(b) != uiRolesText {
+		t.Fatal("the roles file was written with console_manages off")
+	}
+	body := m.get("/servers").body
+	for _, a := range []string{"/servers/reload", "Reload configuration", "Add a REST API", "/servers/new"} {
+		if strings.Contains(body, a) {
+			t.Errorf("GET /servers with console_manages off shows %q", a)
 		}
 	}
 }
@@ -264,30 +266,22 @@ func TestUIManage_NothingNewExistsWithTheKeyOff(t *testing.T) {
 func TestUIManage_RootScreensDoNotExistWithoutManageUsers(t *testing.T) {
 	m := newManageUI(t, true, false)
 	for _, rt := range manageRoutes {
-		switch rt.target {
-		case "/upstreams/sign", "/secrets", "/secrets/set", "/secrets/delete", "/roles":
-		default:
+		if !slices.Contains(rootRoutes, strings.Split(rt.target, "?")[0]) {
 			continue
 		}
-		var got *httpResult
-		if rt.method == "GET" {
-			got = m.get(rt.target)
-		} else {
-			got = m.post(rt.target, rt.form)
-		}
-		if got.code != http.StatusNotFound {
+		if got := m.do(rt.method, rt.target, rt.form); got.code != http.StatusNotFound {
 			t.Errorf("%s %s without -manage-users: %d, want 404", rt.method, rt.target, got.code)
 		}
 	}
-	page := m.get("/upstreams")
-	if !page.has("Add an API") || !page.has("sudo mcp-gateway ui -manage-users") {
-		t.Errorf("the Backends page lacks the form or the -manage-users explanation:\n%s", page.body)
+	page := m.get("/servers/new")
+	if !page.has("Add a REST API") || !page.has("sudo mcp-gateway ui -manage-users") {
+		t.Errorf("the add page lacks the form or the -manage-users explanation:\n%s", page.body)
 	}
-	if page.has(`name="key_value"`) || page.has(`/secrets"`) || page.has(`/roles"`) {
-		t.Error("without -manage-users the page offers the vault or the roles")
+	if page.has(`name="key_value"`) || page.has(`name="grant_role"`) {
+		t.Error("without -manage-users the add page offers the vault or the roles")
 	}
 	// A key's value sent anyway is refused before anything is registered.
-	got := m.post("/upstreams/register", url.Values{"name": {"ioc"}, "url": {"https://ioc.example.net"}, "openapi_text": {restSpecJSON}, "key_value": {uiSecretMarker}})
+	got := m.post("/servers", url.Values{"name": {"ioc"}, "url": {"https://ioc.example.net"}, "openapi_text": {restSpecJSON}, "key_value": {uiSecretMarker}})
 	if got.has(uiSecretMarker) || !got.has("accounts socket") {
 		t.Fatalf("a key value without -manage-users:\n%s", got.body)
 	}
@@ -295,31 +289,34 @@ func TestUIManage_RootScreensDoNotExistWithoutManageUsers(t *testing.T) {
 		t.Fatal("registered although the key's value could not be written")
 	}
 	// Registering without root works, and says how to sign.
-	got = m.post("/upstreams/register", url.Values{"name": {"ioc"}, "url": {"https://ioc.example.net"}, "openapi_text": {restSpecJSON}, "key_name": {"IOC_KEY"}})
-	if got.code != http.StatusOK || !got.has("Not signed") || !got.has("sudo mcp-gateway sign ioc") {
+	got = m.post("/servers", url.Values{"name": {"ioc"}, "url": {"https://ioc.example.net"}, "openapi_text": {restSpecJSON}, "key_name": {"IOC_KEY"}})
+	if got.code != http.StatusOK || !got.has("not signed yet") || !got.has("sudo mcp-gateway sign ioc") {
 		t.Fatalf("register without -manage-users:\n%s", got.body)
 	}
-	detail := m.get("/upstreams/show?name=ioc")
-	if detail.has("/upstreams/sign") || !detail.has("sudo mcp-gateway ui -manage-users") {
-		t.Errorf("the backend page offers Sign without -manage-users:\n%s", detail.body)
+	detail := m.get("/servers/ioc")
+	if detail.has("/servers/ioc/sign") || !detail.has("sudo mcp-gateway ui -manage-users") {
+		t.Errorf("the server page offers Sign without -manage-users:\n%s", detail.body)
 	}
 }
 
-func TestUIManage_RegisterWritesTheKeySignsAndShowsTheReport(t *testing.T) {
+func TestUIManage_RegisterWritesTheKeyAndShowsTheReport(t *testing.T) {
 	m := newManageUI(t, true, true)
-	page := m.get("/upstreams")
-	for _, want := range []string{"Add an API", `enctype="multipart/form-data"`, `type="password" name="key_value"`, `href="` + m.s.session + `/secrets"`, `href="` + m.s.session + `/roles"`} {
+	if list := m.get("/servers"); !list.has(`href="` + m.s.session + `/servers/new"`) {
+		t.Error("the servers list does not link the add page")
+	}
+	page := m.get("/servers/new")
+	for _, want := range []string{"Add a REST API", `enctype="multipart/form-data"`, `type="password" name="key_value"`} {
 		if !page.has(want) {
-			t.Errorf("the Backends page lacks %q", want)
+			t.Errorf("the add page lacks %q", want)
 		}
 	}
-	got := m.post("/upstreams/register", url.Values{"name": {"ioc"}, "url": {"https://ioc.example.net"},
+	got := m.post("/servers", url.Values{"name": {"ioc"}, "url": {"https://ioc.example.net"},
 		"openapi_text": {restSpecJSON}, "key_name": {"IOC_KEY"}, "key_value": {uiSecretMarker}})
 	if got.code != http.StatusOK {
 		t.Fatalf("register: %d\n%s", got.code, got.body)
 	}
-	for _, want := range []string{"Registered ioc", "1 safe, 1 sensitive", "report", "Sensitive", "Safe", "Derived from the document",
-		"X-API-Key", "IOC_KEY", "Not signed yet", "Sign ioc", "Review the tools", m.s.session + "/servers/ioc", "Clear the sensitive ones", "upload"} {
+	for _, want := range []string{"Registered as a REST API", "1 safe · 1 sensitive", "report", "Sensitive", "Safe", "derived from the document",
+		"X-API-Key", "IOC_KEY", "not signed yet", "Sign ioc", m.s.session + "/servers/ioc"} {
 		if !got.has(want) {
 			t.Errorf("the register report lacks %q", want)
 		}
@@ -331,11 +328,11 @@ func TestUIManage_RegisterWritesTheKeySignsAndShowsTheReport(t *testing.T) {
 		t.Fatal("the key's value was not written to the vault")
 	}
 	// Registering does not sign: the signature is the operator's act on
-	// the page that shows what it covers (found in review).
+	// the page that shows what it covers.
 	if len(m.signed) != 0 {
 		t.Fatalf("registering signed %v", m.signed)
 	}
-	if sg := m.post("/upstreams/sign", url.Values{"name": {"ioc"}}); !sg.has("Signed with a trusted key") || !slices.Equal(m.signed, []string{"ioc"}) {
+	if sg := m.post("/servers/ioc/sign", nil); !sg.has("Signed with a trusted key") || !slices.Equal(m.signed, []string{"ioc"}) {
 		t.Fatalf("signing from the report: %v\n%s", m.signed, sg.body)
 	}
 	entry, err := m.e.upstreams().Get(context.Background(), "ioc")
@@ -344,17 +341,17 @@ func TestUIManage_RegisterWritesTheKeySignsAndShowsTheReport(t *testing.T) {
 	}
 
 	// A second register is the backend's refusal, with what was typed kept.
-	again := m.post("/upstreams/register", url.Values{"name": {"ioc"}, "url": {"https://ioc.example.net"}, "openapi_text": {restSpecJSON}, "key_value": {uiSecretMarker}})
+	again := m.post("/servers", url.Values{"name": {"ioc"}, "url": {"https://ioc.example.net"}, "openapi_text": {restSpecJSON}, "key_value": {uiSecretMarker}})
 	if !again.has("already registered") || !again.has(`value="https://ioc.example.net"`) || again.has(uiSecretMarker) {
 		t.Fatalf("a second register:\n%s", again.body)
 	}
 	// NAME=value pasted as the key's name: refused, and not written back.
-	pasted := m.post("/upstreams/register", url.Values{"name": {"ioc3"}, "url": {"https://ioc.example.net"}, "openapi_text": {restSpecJSON}, "key_name": {"IOC_KEY=" + uiSecretMarker}})
+	pasted := m.post("/servers", url.Values{"name": {"ioc3"}, "url": {"https://ioc.example.net"}, "openapi_text": {restSpecJSON}, "key_name": {"IOC_KEY=" + uiSecretMarker}})
 	if !pasted.has("Not registered") || pasted.has(uiSecretMarker) {
 		t.Fatalf("a NAME=value key name:\n%s", pasted.body)
 	}
 	// A key-name default for a keyed API.
-	m.post("/upstreams/register", url.Values{"name": {"vt-intel"}, "url": {"https://vt.example.net"}, "openapi_text": {restSpecJSON}, "auth_kind": {"bearer"}})
+	m.post("/servers", url.Values{"name": {"vt-intel"}, "url": {"https://vt.example.net"}, "openapi_text": {restSpecJSON}, "auth_kind": {"bearer"}})
 	if e, err := m.e.upstreams().Get(context.Background(), "vt-intel"); err != nil || !slices.Equal(e.EnvVarNames, []string{"VT_INTEL_API_KEY"}) {
 		t.Fatalf("default key name: %+v, %v", e, err)
 	}
@@ -363,19 +360,19 @@ func TestUIManage_RegisterWritesTheKeySignsAndShowsTheReport(t *testing.T) {
 func TestUIManage_UploadingTheDocumentWorksAndStillNeedsTheFormToken(t *testing.T) {
 	m := newManageUI(t, true, false)
 	fields := map[string]string{"name": "ioc", "url": "https://ioc.example.net", "auth_kind": "none"}
-	if got := m.postMultipart(t, "/upstreams/register", fields, "openapi.json", restSpecJSON); got.code != http.StatusForbidden {
+	if got := m.postMultipart(t, "/servers", fields, "openapi.json", restSpecJSON); got.code != http.StatusForbidden {
 		t.Fatalf("a multipart register without the form token: %d", got.code)
 	}
 	fields["csrf"] = "0" + m.s.csrf[1:]
-	if got := m.postMultipart(t, "/upstreams/register", fields, "openapi.json", restSpecJSON); got.code != http.StatusForbidden {
+	if got := m.postMultipart(t, "/servers", fields, "openapi.json", restSpecJSON); got.code != http.StatusForbidden {
 		t.Fatalf("a multipart register with a wrong form token: %d", got.code)
 	}
 	if _, err := m.e.upstreams().Get(context.Background(), "ioc"); !errors.Is(err, registry.ErrNotFound) {
 		t.Fatal("a multipart POST without the form token registered")
 	}
 	fields["csrf"] = m.s.csrf
-	got := m.postMultipart(t, "/upstreams/register", fields, "openapi.json", restSpecJSON)
-	if got.code != http.StatusOK || !got.has("Registered ioc") || !got.has("report") {
+	got := m.postMultipart(t, "/servers", fields, "openapi.json", restSpecJSON)
+	if got.code != http.StatusOK || !got.has("Registered as a REST API") || !got.has("report") {
 		t.Fatalf("a multipart register with the file: %d\n%s", got.code, got.body)
 	}
 	if _, err := m.e.upstreams().Get(context.Background(), "ioc"); err != nil {
@@ -383,38 +380,39 @@ func TestUIManage_UploadingTheDocumentWorksAndStillNeedsTheFormToken(t *testing.
 	}
 	// Two ways at once is refused before the backend is asked.
 	fields["name"], fields["openapi_text"] = "ioc2", restSpecJSON
-	if got := m.postMultipart(t, "/upstreams/register", fields, "openapi.json", restSpecJSON); !got.has("one way") {
+	if got := m.postMultipart(t, "/servers", fields, "openapi.json", restSpecJSON); !got.has("one way") {
 		t.Fatalf("a file and pasted text together:\n%s", got.body)
 	}
 }
 
-func TestUIManage_TheBackendPageSignsRedialsAndRemovesOnlyWithTheNameTyped(t *testing.T) {
+func TestUIManage_TheServerPageSignsRedialsAndRemovesOnlyWithTheNameTyped(t *testing.T) {
 	m := newManageUI(t, true, true)
-	if got := m.post("/upstreams/register", url.Values{"name": {"ioc"}, "url": {"https://ioc.example.net"}, "openapi_text": {restSpecJSON}, "auth_kind": {"none"}}); got.code != http.StatusOK {
+	if got := m.post("/servers", url.Values{"name": {"ioc"}, "url": {"https://ioc.example.net"}, "openapi_text": {restSpecJSON}, "auth_kind": {"none"}}); got.code != http.StatusOK {
 		t.Fatalf("register: %d\n%s", got.code, got.body)
 	}
-	if got := m.get("/upstreams/show?name=nope"); got.code != http.StatusNotFound {
+	if got := m.get("/servers/nope"); got.code != http.StatusNotFound {
 		t.Fatalf("the page of an unknown backend: %d", got.code)
 	}
-	page := m.get("/upstreams/show?name=ioc")
-	for _, want := range []string{"ioc", "REST API", "https://ioc.example.net/api/v2", "POST", "/report", "Sensitive", "Safe", "Remove backend", `name="confirm"`, "/upstreams/redial"} {
+	page := m.get("/servers/ioc")
+	for _, want := range []string{"ioc", "REST API", "https://ioc.example.net/api/v2", "POST", "/report", "Sensitive", "Safe", "Remove this backend", `name="confirm"`, "/servers/ioc/sign"} {
 		if !page.has(want) {
-			t.Errorf("the backend page lacks %q", want)
+			t.Errorf("the server page lacks %q", want)
 		}
 	}
-	// The register signed it; the page offers Sign only when it is not
-	// signed, and this test's signer records no signature.
-	if sign := m.post("/upstreams/sign", url.Values{"name": {"ioc"}}); !sign.has("Signed with a trusted key") || !sign.has("ed25519:test-key") {
+	if sign := m.post("/servers/ioc/sign", nil); !sign.has("Signed with a trusted key") || !sign.has("ed25519:test-key") {
 		t.Fatalf("sign:\n%s", sign.body)
 	}
 
 	// Redial with no gateway process: the backend's refusal.
-	if got := m.post("/upstreams/redial", url.Values{"name": {"ioc"}}); !got.has("result-icon danger") {
+	if !page.has("/servers/ioc/redial") {
+		t.Error("the server page offers no redial")
+	}
+	if got := m.post("/servers/ioc/redial", nil); !got.has("result-icon danger") {
 		t.Fatalf("a redial with nothing to ring:\n%s", got.body)
 	}
 
 	for _, confirm := range []string{"", "IOC", "io"} {
-		got := m.post("/upstreams/remove", url.Values{"name": {"ioc"}, "confirm": {confirm}})
+		got := m.post("/servers/ioc/remove", url.Values{"confirm": {confirm}})
 		if !got.has("confirm must repeat") {
 			t.Errorf("remove with confirm %q:\n%s", confirm, got.body)
 		}
@@ -422,7 +420,7 @@ func TestUIManage_TheBackendPageSignsRedialsAndRemovesOnlyWithTheNameTyped(t *te
 			t.Fatalf("removed with confirm %q", confirm)
 		}
 	}
-	if got := m.post("/upstreams/remove", url.Values{"name": {"ioc"}, "confirm": {"ioc"}}); !got.has("Deregistered") {
+	if got := m.post("/servers/ioc/remove", url.Values{"confirm": {"ioc"}}); !got.has("Deregistered") {
 		t.Fatalf("remove:\n%s", got.body)
 	}
 	if _, err := m.e.upstreams().Get(context.Background(), "ioc"); !errors.Is(err, registry.ErrNotFound) {
@@ -439,24 +437,25 @@ func TestUIManage_ReloadAndRedialShowAPendingRequestWithARefresh(t *testing.T) {
 	if err := controlsqlite.Migrate(m.e.db); err != nil {
 		t.Fatal(err)
 	}
-	if !m.get("/").has("Reload configuration") {
-		t.Fatal("the overview lacks the reload button")
+	if !m.get("/servers").has("Reload configuration") {
+		t.Fatal("the servers list lacks the reload button")
 	}
 	// No gateway process recorded: refused, said so.
-	if got := m.post("/reload", url.Values{}); !got.has("no gateway process") {
+	if got := m.post("/servers/reload", url.Values{}); !got.has("no gateway process") {
 		t.Fatalf("reload with no serve:\n%s", got.body)
 	}
 	if err := controlsqlite.New(m.e.db).RecordProcess(context.Background(), control.Process{PID: 1 << 22, Boot: time.Now(), StartToken: "x"}); err != nil {
 		t.Fatal(err)
 	}
-	got := m.post("/reload", url.Values{})
+	got := m.post("/servers/reload", url.Values{})
 	if !got.has("is pending") || !got.has(m.s.session+"/serve-requests?id=") {
 		t.Fatalf("a pending reload:\n%s", got.body)
 	}
 	i := strings.Index(got.body, "/serve-requests?id=")
 	id := got.body[i+len("/serve-requests?id="):]
 	id = id[:strings.IndexByte(id, '"')]
-	if again := m.get("/serve-requests?id=" + id); again.code != http.StatusOK || !again.has("is pending") {
+	again := m.get("/serve-requests?id=" + id)
+	if again.code != http.StatusOK || !again.has("is pending") || !again.has(`href="`+m.s.session+`/servers"`) {
 		t.Fatalf("refreshing request %s: %d\n%s", id, again.code, again.body)
 	}
 	if m.get("/serve-requests?id=x").code != http.StatusNotFound {
@@ -490,37 +489,48 @@ func TestUIManage_ASensitiveToolIsClearedFromItsPage(t *testing.T) {
 	}
 }
 
+// The vault is written from the server's own Secrets panel and from the global
+// vault view (design/adr/0053), and no response ever carries a value.
 func TestUIManage_SecretsAreSetAndDeletedAndTheValueNeverShows(t *testing.T) {
 	m := newManageUI(t, true, true)
-	if got := m.post("/upstreams/register", url.Values{"name": {"ioc"}, "url": {"https://ioc.example.net"}, "openapi_text": {restSpecJSON}, "key_name": {"IOC_KEY"}}); got.code != http.StatusOK {
+	if got := m.post("/servers", url.Values{"name": {"ioc"}, "url": {"https://ioc.example.net"}, "openapi_text": {restSpecJSON}, "key_name": {"IOC_KEY"}}); got.code != http.StatusOK {
 		t.Fatalf("register: %d", got.code)
 	}
 	var bodies []string
 	keep := func(h *httpResult) *httpResult { bodies = append(bodies, h.body); return h }
 
-	page := keep(m.get("/secrets"))
-	if !page.has("IOC_KEY") || !page.has("Missing") || !page.has("needed by ioc") || !page.has(`type="password"`) {
-		t.Fatalf("the secrets page before the key is set:\n%s", page.body)
+	page := keep(m.get("/servers/ioc"))
+	if !page.has("IOC_KEY") || !page.has("Missing from the vault") || !page.has(`type="password"`) || !page.has(m.s.session+"/servers/ioc/secrets/set") {
+		t.Fatalf("the server's Secrets panel before the key is set:\n%s", page.body)
 	}
-	if got := keep(m.post("/secrets/set", url.Values{"name": {"IOC_KEY"}, "value": {uiSecretMarker}})); !got.has("result-icon ok") || !got.has("IOC_KEY") {
+	if got := keep(m.post("/servers/ioc/secrets/set", url.Values{"name": {"IOC_KEY"}, "value": {uiSecretMarker}})); !got.has("result-icon ok") || !got.has("IOC_KEY") {
 		t.Fatalf("set:\n%s", got.body)
 	}
 	if m.vault.get("IOC_KEY") != uiSecretMarker {
 		t.Fatal("the value was not written")
 	}
-	keep(m.post("/secrets/set", url.Values{"name": {"IOC_KEY"}, "value": {uiSecretMarker + "-2"}}))
-	keep(m.post("/secrets/set", url.Values{"name": {"bad name"}, "value": {uiSecretMarker}}))
-	keep(m.post("/secrets/set", url.Values{"name": {"X=" + uiSecretMarker}, "value": {uiSecretMarker}}))
-	if page := keep(m.get("/secrets")); !page.has("Replace") || page.has("Missing") {
-		t.Fatalf("the secrets page after set:\n%s", page.body)
+	keep(m.post("/servers/ioc/secrets/set", url.Values{"name": {"IOC_KEY"}, "value": {uiSecretMarker + "-2"}}))
+	keep(m.post("/vault/set", url.Values{"name": {"bad name"}, "value": {uiSecretMarker}}))
+	keep(m.post("/vault/set", url.Values{"name": {"X=" + uiSecretMarker}, "value": {uiSecretMarker}}))
+	if page := keep(m.get("/servers/ioc")); !page.has("Replace") || page.has("Missing from the vault") {
+		t.Fatalf("the Secrets panel after set:\n%s", page.body)
 	}
-	if got := keep(m.post("/secrets/delete", url.Values{"name": {"IOC_KEY"}})); !got.has("tick the confirmation") || m.vault.get("IOC_KEY") == "" {
+	if got := keep(m.post("/vault/set", url.Values{"name": {"SHARED_KEY"}, "value": {uiSecretMarker}})); !got.has("result-icon ok") || m.vault.get("SHARED_KEY") == "" {
+		t.Fatalf("set from the vault view:\n%s", got.body)
+	}
+	if v := keep(m.get("/vault")); !v.has("SHARED_KEY") || !v.has("Orphan") {
+		t.Fatalf("the vault view:\n%s", v.body)
+	}
+	if got := keep(m.post("/servers/ioc/secrets/delete", url.Values{"name": {"IOC_KEY"}})); !got.has("tick the confirmation") || m.vault.get("IOC_KEY") == "" {
 		t.Fatalf("delete without the confirmation:\n%s", got.body)
 	}
-	if got := keep(m.post("/secrets/delete", url.Values{"name": {"IOC_KEY"}, "confirm": {"yes"}})); !got.has("result-icon ok") || m.vault.get("IOC_KEY") != "" {
+	if got := keep(m.post("/servers/ioc/secrets/delete", url.Values{"name": {"IOC_KEY"}, "confirm": {"yes"}})); !got.has("result-icon ok") || m.vault.get("IOC_KEY") != "" {
 		t.Fatalf("delete:\n%s", got.body)
 	}
-	for _, p := range []string{"/", "/upstreams", "/upstreams/show?name=ioc", "/audit", "/roles"} {
+	if got := keep(m.post("/vault/delete", url.Values{"name": {"SHARED_KEY"}, "confirm": {"yes"}})); !got.has("result-icon ok") || m.vault.get("SHARED_KEY") != "" {
+		t.Fatalf("delete from the vault view:\n%s", got.body)
+	}
+	for _, p := range []string{"/servers", "/servers/ioc", "/vault", "/users"} {
 		keep(m.get(p))
 	}
 	for i, b := range bodies {
@@ -536,32 +546,42 @@ func TestUIManage_SecretsAreSetAndDeletedAndTheValueNeverShows(t *testing.T) {
 	}
 }
 
-func TestUIManage_RolesAreAppliedAndARefusalKeepsWhatWasTyped(t *testing.T) {
+// The Users tab's Roles section edits the roles file in place (design/adr/0054):
+// a grant is one surgical change validated before it is written, the file's
+// comments survive, and a role that does not exist changes nothing.
+func TestUIManage_TheRolesSectionGrantsOneToolAndKeepsTheFile(t *testing.T) {
 	m := newManageUI(t, true, true)
-	page := m.get("/roles")
-	if page.code != http.StatusOK || !page.has("blue-ir") || !page.has(m.rolesPath) {
-		t.Fatalf("the roles page: %d\n%s", page.code, page.body)
+	mustObserve(t, m.e, "casemgmt", quarantine.ToolIdentity{Name: "list_cases", Description: "d", InputSchema: []byte(`{}`)})
+	// The matrix's rows are the roles the running configuration holds; the
+	// edits are to the file.
+	m.e.cfg.Roles = []config.Role{{Name: "ir"}}
+	text := "# reviewed by the SOC lead\n" + uiRolesText
+	if err := os.WriteFile(m.rolesPath, []byte(text), 0o640); err != nil {
+		t.Fatal(err)
 	}
-	bad := uiRolesText + "\"blue-x\" = \"nobody-role\"\n"
-	got := m.post("/roles", url.Values{"text": {bad}})
-	if !got.has("Not written") || !got.has("nobody-role") || !got.has("&#34;blue-x&#34; = &#34;nobody-role&#34;") {
-		t.Fatalf("a refused roles text:\n%s", got.body)
+	if page := m.get("/users"); !page.has(m.s.session+"/users/roles/edit") || !page.has("ir") {
+		t.Fatalf("the Users tab has no editable Roles section:\n%s", page.body)
 	}
-	if b, _ := os.ReadFile(m.rolesPath); string(b) != uiRolesText {
-		t.Fatal("a refused text was written")
+	got := m.post("/users/roles/edit", url.Values{"role": {"ir"}, "tool": {"casemgmt.list_cases"}, "op": {"grant"}})
+	if !got.has("result-icon ok") || !got.has("NOT applied yet") {
+		t.Fatalf("grant:\n%s", got.body)
 	}
-	next := uiRolesText + "\"blue-hunt\" = \"ir\"\n"
-	got = m.post("/roles", url.Values{"text": {next}})
-	if b, _ := os.ReadFile(m.rolesPath); string(b) != next {
-		t.Fatalf("not written:\n%s", got.body)
+	b, _ := os.ReadFile(m.rolesPath)
+	if !strings.HasPrefix(string(b), "# reviewed by the SOC lead\n") || !strings.Contains(string(b), "list_cases") {
+		t.Fatalf("the roles file after the grant:\n%s", b)
 	}
-	// Written; the reload has no gateway process to ring here, and the
-	// page says the file is written and not applied.
-	if !got.has("written, and not applied") {
-		t.Fatalf("the roles result:\n%s", got.body)
+	if err := config.ValidateRolesText(m.cfgPath, b); err != nil {
+		t.Fatalf("the granted roles text does not load: %v", err)
 	}
-	if same := m.post("/roles", url.Values{"text": {next}}); !same.has("already holds exactly this text") {
-		t.Fatalf("the same text again:\n%s", same.body)
+	if again := m.post("/users/roles/edit", url.Values{"role": {"ir"}, "tool": {"casemgmt.list_cases"}, "op": {"grant"}}); !again.has("No change") {
+		t.Fatalf("the same grant again:\n%s", again.body)
+	}
+	before, _ := os.ReadFile(m.rolesPath)
+	if got := m.post("/users/roles/edit", url.Values{"role": {"nobody"}, "tool": {"casemgmt.list_cases"}, "op": {"grant"}}); !got.has("no [[role]] named nobody") {
+		t.Fatalf("an unknown role:\n%s", got.body)
+	}
+	if after, _ := os.ReadFile(m.rolesPath); string(after) != string(before) {
+		t.Fatal("an unknown role changed the roles file")
 	}
 }
 
@@ -571,10 +591,10 @@ func TestUIManage_RolesAreAppliedAndARefusalKeepsWhatWasTyped(t *testing.T) {
 // so, and a grant already present is not written twice.
 func TestUIManage_RegisterGrantsTheAPIToTheRoleNamed(t *testing.T) {
 	m := newManageUI(t, true, true)
-	if page := m.get("/upstreams"); !page.has(`name="grant_role"`) || !page.has(`value="analyst"`) {
+	if page := m.get("/servers/new"); !page.has(`name="grant_role"`) || !page.has(`value="analyst"`) {
 		t.Fatal("the Add API form has no grant field defaulting to analyst")
 	}
-	got := m.post("/upstreams/register", url.Values{"name": {"ioc"}, "url": {"https://ioc.example.net"},
+	got := m.post("/servers", url.Values{"name": {"ioc"}, "url": {"https://ioc.example.net"},
 		"openapi_text": {restSpecJSON}, "key_name": {"IOC_KEY"}, "grant_role": {"ir"}})
 	// No serve process in this harness: the grant is written and the page
 	// says the reload did not apply it (applied end to end in the image).
@@ -590,18 +610,18 @@ func TestUIManage_RegisterGrantsTheAPIToTheRoleNamed(t *testing.T) {
 	}
 
 	// A second API into the same, now existing, [role.grants].
-	m.post("/upstreams/register", url.Values{"name": {"vt"}, "url": {"https://vt.example.net"},
+	m.post("/servers", url.Values{"name": {"vt"}, "url": {"https://vt.example.net"},
 		"openapi_text": {restSpecJSON}, "key_name": {"VT_KEY"}, "grant_role": {"ir"}})
 	b, _ = os.ReadFile(m.rolesPath)
 	if strings.Count(string(b), "[role.grants]") != 1 || !strings.Contains(string(b), "\"vt\" = [\"*\"]") {
 		t.Fatalf("the second grant:\n%s", b)
 	}
 
-	// No such role: nothing written, and the page says what to do.
+	// No such role: nothing written, and the page says so.
 	before, _ := os.ReadFile(m.rolesPath)
-	got = m.post("/upstreams/register", url.Values{"name": {"gn"}, "url": {"https://gn.example.net"},
+	got = m.post("/servers", url.Values{"name": {"gn"}, "url": {"https://gn.example.net"},
 		"openapi_text": {restSpecJSON}, "key_name": {"GN_KEY"}, "grant_role": {"nobody"}})
-	if !got.has("no [[role]] named nobody") || !got.has("Grant it to a role") {
+	if !got.has("no [[role]] named nobody") {
 		t.Fatalf("an unknown role:\n%s", got.body)
 	}
 	if after, _ := os.ReadFile(m.rolesPath); string(after) != string(before) {

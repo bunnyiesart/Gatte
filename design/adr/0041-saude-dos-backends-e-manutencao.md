@@ -1107,9 +1107,11 @@ escreve na trilha (ADR-0017).
     `TestMaintenance_TheWholeGatewayOnListOff`,
     `TestUpstreamMaintenance_RefusesWhatTheServiceRefuses`,
     `TestRunUpstreamDeregister_ForgetsHealthAndMaintenance`,
-    `TestUI_BackendsShowHealthAndMaintenanceIsAnAuditedOperatorAction`
+    `TestUI_ServersShowHealthAndMaintenanceIsAnAuditedOperatorAction`
     (estado, formulário com CSRF, mensagem escapada, linhas `[ui]`) e
-    `TestUI_OverviewShowsTheGatewayMaintenanceBannerAndAServeNotReporting`.
+    `TestUI_ServersShowTheGatewayMaintenanceAndAServeNotReporting` — desde
+    `0051`/`0055` na lista de servidores e no painel de manutenção da página do
+    backend, sem o formulário do gateway inteiro.
 - Os da revisão da terceira etapa, todos vistos falhando no código
   anterior:
   - `internal/gateway`:

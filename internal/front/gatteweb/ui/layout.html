@@ -10,11 +10,12 @@
 <body>
 <header class="bar">
   <div class="bar-inner">
-    <a class="wordmark" href="{{$.Base}}/">Gatte</a>
+    <a class="wordmark" href="{{$.Base}}/servers">Gatte</a>
     <nav aria-label="Console">
       {{range .NavItems}}<a href="{{$.Base}}{{.Path}}" {{if .Current}}aria-current="page"{{end}}>{{.Label}}</a>
       {{end}}
     </nav>
+    {{if .Operator}}<span class="whoami">Operating as <b>{{vis .Operator}}</b></span>{{end}}
   </div>
 </header>
 <main>

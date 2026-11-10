@@ -74,12 +74,6 @@
 
 {{range $d.Panels}}
 {{.HTML}}
-{{else}}
-{{if $d.Manages}}
-<section>
-  <div class="group empty-state"><p><b>Tools, secrets and maintenance appear here.</b> Each is a separate panel added by its own slice (M1.2 tools, M1.3 secrets, M2.1 maintenance). This is the detail shell; the panels mount into it.</p></div>
-</section>
-{{end}}
 {{end}}
 
 {{else}}

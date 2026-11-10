@@ -1,27 +1,17 @@
 package gatteweb
 
-// The console manages everything (design/adr/0050): http backends
-// registered, signed, redialled and removed, a sensitive tool cleared, the
-// vault's values and the roles file written, and the configuration
-// reloaded -- each a call of the management API, behind [admin]
-// console_manages.
-//
-// Every screen here exists only while the backend lists
-// FeatureConsoleManages: without it nothing new is drawn and every route
-// below answers 404, as the account pages do without -manage-users. What
-// needs root's key or the vault -- signing, the secrets and the roles --
-// is the accounts socket's, and exists only with -manage-users.
-//
-// A secret's value enters through a password field and goes to the
-// accounts socket once. It is never put back into a page, a redirect or an
-// error: a result names the secret, never what it holds.
+// The shared pieces of the management actions (design/adr/0050) that the
+// Tab-1 pages use: the managed gate, the Add a REST API form, the
+// quick grant, the sign and serve-request results, and the page that reads
+// a pending serve request again. Each is a call of the management API,
+// behind [admin] console_manages; what needs root's key or the vault is the
+// accounts socket's, and exists only with -manage-users.
 
 import (
 	"context"
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -148,106 +138,8 @@ type registered struct {
 	ReviewAt string
 }
 
-func (f *Front) upstreamRegister(w http.ResponseWriter, r *http.Request) {
-	if !f.managed(w, r, false) {
-		return
-	}
-	pf := r.PostForm
-	form := registerForm{Name: strings.TrimSpace(pf.Get("name")), URL: strings.TrimSpace(pf.Get("url")),
-		OpenAPIURL: strings.TrimSpace(pf.Get("openapi_url")), OpenAPIText: pf.Get("openapi_text"),
-		AuthKind: pf.Get("auth_kind"), AuthName: strings.TrimSpace(pf.Get("auth_name")), KeyName: strings.TrimSpace(pf.Get("key_name")),
-		GrantRole: strings.TrimSpace(pf.Get("grant_role"))}
-	value := pf.Get("key_value")
-	refuse := func(text string) {
-		if strings.Contains(form.KeyName, "=") {
-			// NAME=value pasted as the name: the value is not written back
-			// into the page (the backend's refusal does not repeat it
-			// either).
-			form.KeyName = ""
-		}
-		f.renderUpstreams(w, r, form, text)
-	}
-
-	doc, uploaded, err := documentFile(r)
-	if err != nil {
-		refuse("The uploaded OpenAPI file could not be read: " + err.Error())
-		return
-	}
-	given := 0
-	for _, g := range []bool{form.OpenAPIURL != "", strings.TrimSpace(form.OpenAPIText) != "", uploaded} {
-		if g {
-			given++
-		}
-	}
-	if given > 1 {
-		refuse("Give the OpenAPI document one way: a URL, pasted text or a file, not more than one.")
-		return
-	}
-	if strings.TrimSpace(form.OpenAPIText) != "" {
-		doc = form.OpenAPIText
-	}
-	if value != "" && f.acc == nil {
-		refuse("Nothing was registered: the key's value is written to the vault through the accounts socket, and this console was started without it. Start it with sudo mcp-gateway ui -manage-users, or leave the value empty.")
-		return
-	}
-	keyed := form.AuthKind == "bearer" || form.AuthKind == "header" || form.AuthKind == "query"
-	if form.KeyName == "" && (keyed || (form.AuthKind == "" && value != "")) {
-		form.KeyName = defaultKeyName(form.Name)
-	}
-	if value != "" && form.KeyName == "" {
-		refuse("Nothing was registered: a key's value was given for an API registered without a key. Choose an auth kind, or leave the value empty.")
-		return
-	}
-	req := adminapi.RegisterUpstreamRequest{Name: form.Name, URL: form.URL, OpenAPIURL: form.OpenAPIURL, OpenAPIDocument: doc,
-		AuthKind: form.AuthKind, AuthName: form.AuthName, KeyName: form.KeyName}
-	res, err := f.op.RegisterUpstream(r.Context(), req)
-	if err != nil {
-		refuse(errText(err))
-		return
-	}
-	d := registered{Res: res, Root: f.acc != nil}
-	for _, t := range res.Tools {
-		if t.Class == adminapi.ClassSensitive {
-			d.Sensitive++
-		} else {
-			d.Safe++
-		}
-	}
-	d.Warnings = append(d.Warnings, res.IngestWarnings...)
-	for _, wn := range res.Warnings {
-		d.Warnings = append(d.Warnings, wn.Message)
-	}
-	out := append([]string{}, res.Messages...)
-	if f.acc != nil {
-		if value != "" {
-			sr, err := f.acc.SetSecret(r.Context(), req.KeyName, value)
-			step := actionResult(sr.ActionResult, err)
-			d.SecretOK = step.OK
-			d.Secret = "Writing " + req.KeyName + " to the vault: " + firstLine(step.Output)
-			if step.OK {
-				d.Secret = "Wrote the key's value to the vault under " + req.KeyName + "."
-			}
-			out = append(out, d.Secret)
-		}
-		// Not signed here: the signature attests that someone looked at
-		// the URL, where the key is injected and every operation, and this
-		// page is where they are shown. Signing is the button on it
-		// (design/adr/0050; found in review: signing in the same click as
-		// registering attested nothing).
-		if form.GrantRole != "" {
-			d.Grant, d.GrantOK = f.grantBackend(r, form.GrantRole, res.Name)
-			out = append(out, d.Grant)
-		}
-	}
-	d.Output = strings.Join(out, "\n")
-	// Tools are reviewed on the backend's detail page now (design/adr/0051): its
-	// Tools panel lists them and links to the one-page review set.
-	d.ReviewAt = serverBack(res.Name)
-	f.render(w, r, "registered", "Registered "+frontkit.VisibleText(res.Name), page{Nav: "upstreams", Data: d})
-}
-
 // grantBackend puts `"BACKEND" = ["*"]` in role's [role.grants], through
-// the same PUT /v1/roles the Roles page uses, so the backend's validation
+// the same PUT /v1/roles the Users tab's Roles section uses, so the backend's validation
 // decides (design/adr/0050 §2), then reloads. The front only edits text.
 func (f *Front) grantBackend(r *http.Request, role, backend string) (string, bool) {
 	cur, err := f.acc.GetRoles(r.Context())
@@ -259,9 +151,9 @@ func (f *Front) grantBackend(r *http.Request, role, backend string) (string, boo
 	case grantPresent:
 		return "Role " + role + " already grants " + backend + ".", true
 	case grantNarrower:
-		return "Not granted: role " + role + " already has a narrower, tool-specific grant for " + backend + ". Widen it to all tools on the Roles page.", false
+		return "Not granted: role " + role + " already has a narrower, tool-specific grant for " + backend + ". Widen it to all tools in the roles file, then reload the configuration.", false
 	case grantNoRole:
-		return "Not granted: no [[role]] named " + role + " in the roles file. Add the grant on the Roles page.", false
+		return "Not granted: no [[role]] named " + role + " in the roles file.", false
 	}
 	if _, err := f.acc.PutRoles(r.Context(), text); err != nil {
 		return "Not granted to " + role + ": " + firstLine(errText(err)), false
@@ -374,80 +266,6 @@ func signResult(res adminapi.SignResult, err error) result {
 	return out
 }
 
-// ---- one backend
-
-type backendDetail struct {
-	D adminapi.UpstreamDetail
-	// Root: signing is available (-manage-users).
-	Root bool
-	// Redial: the backend serves serve_control.
-	Redial    bool
-	Sensitive int
-}
-
-func (f *Front) upstreamShowPage(w http.ResponseWriter, r *http.Request) {
-	if !f.managed(w, r, false) {
-		return
-	}
-	name := r.URL.Query().Get("name")
-	d, err := f.op.GetUpstream(r.Context(), name)
-	if adminapi.IsCode(err, adminapi.CodeNotFound) {
-		http.NotFound(w, r)
-		return
-	}
-	data := backendDetail{D: d, Root: f.acc != nil, Redial: f.feature(r.Context(), adminapi.FeatureServeControl)}
-	for _, op := range d.Operations {
-		if op.Class == adminapi.ClassSensitive {
-			data.Sensitive++
-		}
-	}
-	title := frontkit.VisibleText(name)
-	if d.Name != "" {
-		title = frontkit.VisibleText(d.Name)
-	}
-	f.render(w, r, "upstream", title, page{Nav: "upstreams", Data: data, Error: errText(err)})
-}
-
-func showBack(name string) string { return "/upstreams/show?name=" + url.QueryEscape(name) }
-
-func (f *Front) upstreamSign(w http.ResponseWriter, r *http.Request) {
-	if !f.managed(w, r, true) {
-		return
-	}
-	name := r.PostForm.Get("name")
-	res, err := f.acc.SignUpstream(r.Context(), name)
-	f.showResult(w, r, "upstreams", "Sign "+frontkit.VisibleText(name), showBack(name), signResult(res, err))
-}
-
-func (f *Front) upstreamRedial(w http.ResponseWriter, r *http.Request) {
-	if !f.managed(w, r, false, adminapi.FeatureServeControl) {
-		return
-	}
-	name := r.PostForm.Get("name")
-	res, err := f.op.RedialUpstream(r.Context(), adminapi.RedialRequest{Upstream: name})
-	f.showResult(w, r, "upstreams", "Redial "+frontkit.VisibleText(name), showBack(name), f.serveResult(res, err))
-}
-
-// upstreamRemove deregisters. The form makes the operator type the name;
-// the backend refuses a confirmation that does not repeat it, so this
-// front forwards what was typed and holds no rule of its own.
-func (f *Front) upstreamRemove(w http.ResponseWriter, r *http.Request) {
-	if !f.managed(w, r, false) {
-		return
-	}
-	name, confirm := r.PostForm.Get("name"), r.PostForm.Get("confirm")
-	res, err := f.op.DeregisterUpstream(r.Context(), name, confirm)
-	back := "/upstreams"
-	if err != nil {
-		back = showBack(name)
-	}
-	out := actionResult(res.ActionResult, err)
-	if err == nil {
-		out.Output = strings.TrimSpace(out.Output + fmt.Sprintf("\nRegistry entry removed: %t. Signature removed: %t. Quarantine entries removed: %d.", res.Registered, res.SignatureRemoved, res.ToolsForgotten))
-	}
-	f.showResult(w, r, "upstreams", "Remove "+frontkit.VisibleText(name), back, out)
-}
-
 // ---- requests to the gateway process: reload and redial
 
 // serveResult is a reload's or a redial's answer as `mcp-gateway reload`
@@ -533,14 +351,6 @@ func (f *Front) serveResult(q adminapi.ServeRequest, err error) result {
 	return r
 }
 
-func (f *Front) reload(w http.ResponseWriter, r *http.Request) {
-	if !f.managed(w, r, false, adminapi.FeatureServeControl) {
-		return
-	}
-	res, err := f.op.Reload(r.Context())
-	f.showResult(w, r, "overview", "Reload the configuration", "/", f.serveResult(res, err))
-}
-
 // serveRequestPage reads a pending request again: the Refresh link of a
 // reload or a redial that had no answer yet.
 func (f *Front) serveRequestPage(w http.ResponseWriter, r *http.Request) {
@@ -553,127 +363,9 @@ func (f *Front) serveRequestPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	q, err := f.op.ServeRequestByID(r.Context(), id)
-	back, nav := "/", "overview"
+	back := "/servers"
 	if q.Kind == adminapi.ServeKindRedial {
-		back, nav = showBack(q.Upstream), "upstreams"
+		back = serverBack(q.Upstream)
 	}
-	f.showResult(w, r, nav, "Request "+strconv.FormatInt(id, 10), back, f.serveResult(q, err))
-}
-
-// ---- secrets (accounts socket)
-
-type secretsData struct {
-	List adminapi.SecretList
-	// Missing counts the names a backend declares that the vault lacks.
-	Missing int
-}
-
-func (f *Front) secretsPage(w http.ResponseWriter, r *http.Request) {
-	if !f.managed(w, r, true) {
-		return
-	}
-	list, err := f.acc.ListSecrets(r.Context())
-	d := secretsData{List: list}
-	errs := []string{}
-	if err != nil {
-		errs = append(errs, errText(err))
-	}
-	for _, p := range list.Problems {
-		errs = append(errs, p.Message)
-	}
-	for _, s := range list.Secrets {
-		if !s.InVault && len(s.DeclaredBy) > 0 {
-			d.Missing++
-		}
-	}
-	f.render(w, r, "vault", "Secrets", page{Nav: "secrets", Data: d, Error: strings.Join(errs, "\n")})
-}
-
-// secretSet writes one value. The value is read from the form and handed
-// to the accounts socket; the result page names the secret only.
-func (f *Front) secretSet(w http.ResponseWriter, r *http.Request) {
-	if !f.managed(w, r, true) {
-		return
-	}
-	name := strings.TrimSpace(r.PostForm.Get("name"))
-	if before, _, found := strings.Cut(name, "="); found {
-		// NAME=value pasted as the name: refused here, because the title
-		// and the backend's refusal would both repeat the name, value and
-		// all. Only the part left of "=" is said.
-		text := "Nothing was written: the name looks like NAME=value (the value is not repeated here). Put " +
-			frontkit.VisibleText(before) + " in Name and the value in Value."
-		f.showResult(w, r, "secrets", "Set a secret", "/secrets", result{Summary: text, Output: text})
-		return
-	}
-	res, err := f.acc.SetSecret(r.Context(), name, r.PostForm.Get("value"))
-	f.showResult(w, r, "secrets", "Set "+frontkit.VisibleText(name), "/secrets", actionResult(res.ActionResult, err))
-}
-
-func (f *Front) secretDelete(w http.ResponseWriter, r *http.Request) {
-	if !f.managed(w, r, true) {
-		return
-	}
-	name := r.PostForm.Get("name")
-	if r.PostForm.Get("confirm") != "yes" {
-		f.showResult(w, r, "secrets", "Delete "+frontkit.VisibleText(name), "/secrets",
-			result{Summary: "Nothing was deleted: tick the confirmation first."})
-		return
-	}
-	res, err := f.acc.DeleteSecret(r.Context(), name)
-	f.showResult(w, r, "secrets", "Delete "+frontkit.VisibleText(name), "/secrets", actionResult(res.ActionResult, err))
-}
-
-// ---- roles (accounts socket, then a reload on the operator socket)
-
-type rolesData struct {
-	Text, Path, SHA256 string
-	// Loaded: the file was read, so the form can be sent.
-	Loaded bool
-}
-
-func (f *Front) rolesPage(w http.ResponseWriter, r *http.Request) {
-	if !f.managed(w, r, true) {
-		return
-	}
-	t, err := f.acc.GetRoles(r.Context())
-	f.render(w, r, "roles", "Roles", page{Data: rolesData{Text: t.Text, Path: t.Path, SHA256: t.SHA256, Loaded: err == nil}, Error: errText(err)})
-}
-
-// rolesApply writes the roles file and, when it changed, asks the running
-// gateway to apply it. A text the backend refuses is shown again as typed,
-// with the backend's reason above it.
-func (f *Front) rolesApply(w http.ResponseWriter, r *http.Request) {
-	if !f.managed(w, r, true) {
-		return
-	}
-	text := r.PostForm.Get("text")
-	res, err := f.acc.PutRoles(r.Context(), text)
-	if err != nil {
-		cur, _ := f.acc.GetRoles(r.Context())
-		f.render(w, r, "roles", "Roles", page{Data: rolesData{Text: text, Path: cur.Path, SHA256: cur.SHA256, Loaded: true},
-			Error: "Not written: " + errText(err)})
-		return
-	}
-	out := actionResult(res.ActionResult, nil)
-	if !res.ReloadNeeded {
-		f.showResult(w, r, "roles", "Apply the roles", "/roles", out)
-		return
-	}
-	q, rerr := f.op.Reload(r.Context())
-	reload := f.serveResult(q, rerr)
-	combined := result{OK: out.OK && reload.OK, Refresh: reload.Refresh,
-		Output: strings.TrimSpace(out.Output + "\nsha256:" + res.SHA256 + "\n\n" + reload.Output)}
-	switch {
-	case combined.OK:
-		// The write's own words ("written and NOT applied: ... call
-		// POST /v1/reload") are true of the write alone and false of this
-		// page, which made the reload: say what happened to both.
-		combined.Summary = "Written and applied from the next call on."
-		combined.Output = strings.TrimSpace("Roles file written: sha256:" + res.SHA256 + "\n\n" + reload.Output)
-	case !out.OK:
-		combined.Summary = out.Summary
-	default:
-		combined.Summary = "The roles file was written, and not applied yet: " + reload.Summary
-	}
-	f.showResult(w, r, "roles", "Apply the roles", "/roles", combined)
+	f.showResult(w, r, "servers", "Request "+strconv.FormatInt(id, 10), back, f.serveResult(q, err))
 }

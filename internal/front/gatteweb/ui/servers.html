@@ -5,6 +5,9 @@
   <h1>MCP Servers / APIs</h1>
   <p class="sub">Each row is a backend served as MCP tools. {{if .Manages}}Add a REST API, or register a stdio or container backend in the terminal.{{else}}Register and sign backends in the terminal.{{end}} An unsigned backend isn't served.</p>
 </div>
+{{range .Gateway}}
+{{if eq .Kind "gateway_maintenance"}}<div class="notice" role="status">{{else}}<div class="notice danger" role="alert">{{end}}{{template "warn"}}<p><b>{{vis .Title}}</b>{{if .Detail}}: {{vis .Detail}}{{end}}{{if eq .Kind "gateway_maintenance"}} End it in the terminal with <code>mcp-gateway maintenance off</code>.{{end}}</p></div>
+{{end}}
 
 <section>
   <div class="section-head">
@@ -21,7 +24,7 @@
       <tbody>
       {{range .Servers}}
         <tr>
-          <td class="t-title" data-label="MCP server / API">{{if $.Data.Manages}}<a class="cell-link" href="{{$base}}/servers/{{.Name}}"><b>{{vis .Name}}</b></a>{{else}}<b>{{vis .Name}}</b>{{end}}</td>
+          <td class="t-title" data-label="MCP server / API"><a class="cell-link" href="{{$base}}/servers/{{.Name}}"><b>{{vis .Name}}</b></a></td>
           {{if $.Data.Health}}<td data-label="State">{{with .Health}}<span class="badge {{if eq .State "up"}}ok{{else if or (eq .State "reconnecting") (eq .State "down")}}danger{{end}}">{{state .State}}</span>{{if .Since}}<span class="cell-sub">since {{since .Since}}</span>{{end}}{{if .Cause}}<span class="cell-sub mono">{{vis .Cause}}</span>{{end}}{{else}}<span class="muted">-</span>{{end}}</td>{{end}}
           <td class="muted" data-label="Kind">{{if eq .Transport "oci"}}Container{{else if eq .Transport "http"}}REST API{{else}}Process{{end}}{{if .URL}}<span class="mono wrap cell-sub">{{vis .URL}}</span>{{end}}</td>
           <td class="mono" data-label="Credentials">{{range $i, $n := .EnvVarNames}}{{if $i}}, {{end}}{{vis $n}}{{else}}<span class="muted">None</span>{{end}}</td>

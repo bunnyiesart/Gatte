@@ -103,6 +103,11 @@ b { font-weight: 600; }
 }
 .bar nav a:hover { color: var(--text); background: var(--fill); text-decoration: none; }
 .bar nav a[aria-current] { color: var(--text); font-weight: 600; background: var(--fill); }
+.whoami {
+  margin-left: auto; min-width: 0; color: var(--text-2); font-size: 13px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.whoami b { color: var(--text); font-weight: 600; }
 
 /* ---- page ---- */
 
@@ -437,8 +442,9 @@ details.inline[open] summary { margin-bottom: 6px; }
 @media (max-width: 720px) {
   .bar { position: static; }
   .bar-inner { flex-wrap: wrap; height: auto; gap: 4px 16px; padding: 10px 16px 6px; }
-  .bar nav { width: calc(100% + 12px); margin: 0 -6px; gap: 0; justify-content: space-between; overflow: visible; }
+  .bar nav { order: 1; width: calc(100% + 12px); margin: 0 -6px; gap: 4px; overflow: visible; }
   .bar nav a { padding: 5px 6px; font-size: 13px; }
+  .whoami { flex: 1; text-align: right; }
   main { padding: 28px 16px 64px; }
   h1 { font-size: 28px; }
   table, tbody, tr, td { display: block; width: 100%; }

@@ -159,7 +159,8 @@ is not running (step 2) or your login is not yet in `gatte-operators`.
 
 ## 5. Edit accounts, with `-manage-users`
 
-The **People** page adds, changes, disables, offboards and deletes the
+The **People** section of the **Users** tab adds, changes, disables,
+offboards and deletes the
 identity provider's accounts only when the console also has the accounts
 socket.
 
@@ -197,24 +198,34 @@ before any page exists. The person-level steps are in
 
 ## What the console does and does not do
 
+The console has two tabs (`design/adr/0051`). **MCP Servers / APIs** lists
+the backends with their state and what needs review; each backend's page
+holds its tools, its secrets and its planned maintenance. **Users** holds
+People, Roles and the Blocklist. The header names the operator the
+management API sees.
+
 With `[admin] console_manages = false`, the default, the console approves,
-revokes and reviews tools, blocks and unblocks, reads and verifies the
-audit trail, announces maintenance, reads quota, and with `-manage-users`
-edits accounts. Nothing else below appears, and its routes answer 404.
+revokes and reviews tools, blocks and unblocks, puts one backend in planned
+maintenance and ends it, and with `-manage-users` edits accounts. Nothing
+else below appears, and its routes answer 404. The audit trail is read in
+the SIEM and verified with `audit verify` (`design/adr/0056`); quota usage
+is in `gatte.status` and the CLI (`design/adr/0057`); a gateway-wide
+maintenance stays in the terminal (`design/adr/0055`).
 
 With `[admin] console_manages = true` (`design/adr/0050`) it also:
 
-- **Adds a REST API** on **Backends**, from its OpenAPI document by URL,
-  pasted or uploaded as a file (up to 4 MiB), with the auth kind (derived
-  from the document, none, bearer, header or query), the header or
-  parameter name and the key's vault name (`NAME_API_KEY` when left empty
-  for a keyed API). The report lists each tool as safe or sensitive, the
-  operations skipped and the ingestion's warnings, and links to the review.
-  Registering does not call the API.
-- **Shows each backend's page**: its entry, auth, operations with method,
-  path and class, signature and state, and its tools in review.
-- **Redials** a backend and **reloads** the configuration (Overview); a
-  request `serve` has not answered yet shows a Refresh link.
+- **Adds a REST API** from **Add a REST API** on the list, from its OpenAPI
+  document by URL, pasted or uploaded as a file (up to 4 MiB), with the auth
+  kind (derived from the document, none, bearer, header or query), the
+  header or parameter name and the key's vault name (`NAME_API_KEY` when
+  left empty for a keyed API). The report lists each tool as safe or
+  sensitive, the operations skipped and the ingestion's warnings, and links
+  to the backend's page. Registering does not call the API.
+- **Shows each backend's operations** on its page, with method, path and
+  class, and the signature they are covered by.
+- **Redials** a backend from its page and **reloads** the configuration
+  from the list; a request `serve` has not answered yet shows a Refresh
+  link.
 - **Removes** a backend once you type its name; its signature and every
   approval of its tools go with it.
 - **Clears** an approved sensitive tool from its page, when a role marked
@@ -223,19 +234,22 @@ With `[admin] console_manages = true` (`design/adr/0050`) it also:
 With `console_manages = true` **and** `-manage-users` (the accounts socket,
 root's), it also:
 
-- **Writes the key's value** you give in the Add an API form to the vault,
-  and **signs** the new backend in the same step; a backend's page has a
-  **Sign** button while it is not signed.
-- **Secrets**: the vault's names, the names a backend declares that the
-  vault lacks, and forms to set, replace or delete a value. A value is
-  entered in a password field, written once and never shown again, in a
-  page, a log or the audit trail, which records the name only.
-- **Roles**: the `roles_file` as text. **Apply** writes it only if the
-  configuration would load with it (otherwise the text stays on the page
-  with the reason) and then reloads the running gateway. This needs
-  `roles_file` set; with the roles in `config.toml` the page says so.
+- **Writes the key's value** you give in the Add a REST API form to the
+  vault, and **signs** a backend from its page, as a separate step from
+  registering.
+- **Secrets**: on each backend's page, the names it declares, whether the
+  vault holds each, and forms to set, replace or delete a value; a small
+  vault view, linked from there, holds the names shared by several backends
+  or declared by none. A value is entered in a password field, written once
+  and never shown again, in a page, a log or the audit trail, which records
+  the name only.
+- **Roles**: on the Users tab, a role-by-tool matrix that grants or revokes
+  one tool and marks a role `non_read`, each one edit to the `roles_file`
+  that keeps its comments and is validated before it is written
+  (`design/adr/0054`). A write is applied by the next reload. This needs
+  `roles_file` set.
 
-Without `-manage-users`, the Backends page says to start the console with
+Without `-manage-users`, the add page says to start the console with
 `sudo mcp-gateway ui -manage-users` to sign and to write keys, and an API
 added there waits unsigned until `sudo mcp-gateway sign NAME`.
 

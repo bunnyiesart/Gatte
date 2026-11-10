@@ -64,9 +64,11 @@
 // serialises status, headers and body as one canonical text block
 // (envelope); scrubCallError is the Decisão 7 redaction.
 //
-// egress.go is the egress guard (Decisão 6): refuseAddr is the IP policy,
-// applied to every resolved address in dialPinned and again in
-// net.Dialer.Control; the host pin is base.checkRedirect in resthttp.go.
+// The egress guard (Decisão 6) is internal/egress, shared with the remote
+// MCP adapter: egress.RefuseAddr is the IP policy, applied to every
+// resolved address at dial (dialPinned) and again in net.Dialer.Control;
+// the host pin is base.checkRedirect in resthttp.go, over
+// egress.PinRedirects. egress.go wires this Dialer's resolver and policy.
 //
 // Health is a fixed "up" (Decisão 9): nothing here produces
 // gateway.ErrUpstreamGone, and an argument the operation cannot carry is a

@@ -49,6 +49,9 @@ CREATE TABLE IF NOT EXISTS upstream_servers (
 		`ALTER TABLE upstream_servers ADD COLUMN auth_kind TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE upstream_servers ADD COLUMN auth_name TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE upstream_servers ADD COLUMN operations BLOB NOT NULL DEFAULT x''`,
+		// The remote transport's MCP client transport (ADR-0058 §3); ''
+		// for every other transport.
+		`ALTER TABLE upstream_servers ADD COLUMN remote_kind TEXT NOT NULL DEFAULT ''`,
 	} {
 		if _, err := db.Exec(alter); err != nil && !isDuplicateColumn(err) {
 			return fmt.Errorf("sqlite: migrate upstream_servers: %w", err)
@@ -115,8 +118,8 @@ func (r *Repository) Register(ctx context.Context, s registry.UpstreamServer) er
 	s.UpdatedAt = now
 
 	const stmt = `
-INSERT INTO upstream_servers (name, transport, command, args, url, image, env_var_names, created_at, updated_at, auth_kind, auth_name, operations)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+INSERT INTO upstream_servers (name, transport, command, args, url, image, env_var_names, created_at, updated_at, auth_kind, auth_name, operations, remote_kind)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	_, err = r.db.ExecContext(ctx, stmt,
 		s.Name,
 		string(s.Transport),
@@ -130,6 +133,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 		string(s.AuthKind),
 		s.AuthName,
 		s.Operations,
+		string(s.RemoteKind),
 	)
 	if err != nil {
 		if isUniqueConstraintErr(err) {
@@ -246,7 +250,7 @@ func (r *Repository) Deregister(ctx context.Context, name string) error {
 // upstreamColumns is the column set, in scanUpstreamServer's Scan order,
 // shared by every SELECT so the three readers cannot drift apart (mirrors
 // control/sqlite's requestColumns).
-const upstreamColumns = `name, transport, command, args, url, image, env_var_names, created_at, updated_at, auth_kind, auth_name, operations`
+const upstreamColumns = `name, transport, command, args, url, image, env_var_names, created_at, updated_at, auth_kind, auth_name, operations, remote_kind`
 
 // rowScanner is satisfied by both *sql.Row and *sql.Rows, letting
 // scanUpstreamServer serve Get and List alike.
@@ -260,15 +264,16 @@ func scanUpstreamServer(row rowScanner) (registry.UpstreamServer, error) {
 		transport            string
 		args, envVarNames    string
 		createdAt, updatedAt string
-		authKind             string
+		authKind, remoteKind string
 	)
 
-	if err := row.Scan(&s.Name, &transport, &s.Command, &args, &s.URL, &s.Image, &envVarNames, &createdAt, &updatedAt, &authKind, &s.AuthName, &s.Operations); err != nil {
+	if err := row.Scan(&s.Name, &transport, &s.Command, &args, &s.URL, &s.Image, &envVarNames, &createdAt, &updatedAt, &authKind, &s.AuthName, &s.Operations, &remoteKind); err != nil {
 		return registry.UpstreamServer{}, err
 	}
 
 	s.Transport = registry.Transport(transport)
 	s.AuthKind = registry.AuthKind(authKind)
+	s.RemoteKind = registry.RemoteKind(remoteKind)
 	// An empty blob round-trips to a zero-length (possibly nil) slice; keep
 	// it nil for a non-http entry so Validate's "operations must be empty"
 	// check and equality in tests see the same shape Register was given.

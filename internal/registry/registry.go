@@ -41,10 +41,10 @@ var (
 	// honest moment to say so is now rather than at dial time. A caller can
 	// tell the two apart and say something different about each.
 	//
-	// As of ADR-0047 every recognised transport (stdio, oci, http) has a
-	// dialer, so Validate does not currently return this; it is kept for the
-	// next recognised-but-undialable transport, which is how http stood
-	// between GAB-19 and ADR-0047.
+	// Every recognised transport (stdio, oci, http, remote) has a dialer.
+	// Validate returns this for a remote entry whose remote_kind is "sse":
+	// a client transport ADR-0058 §3 reserves and defers until a legacy
+	// backend needs it, which is how http stood between GAB-19 and ADR-0047.
 	ErrTransportUnsupported = errors.New("registry: transport has no dialer in this build")
 )
 
@@ -77,7 +77,8 @@ type AuthKind string
 
 const (
 	// AuthNone is the zero value: no credential injection. It is the only
-	// valid AuthKind for a non-http entry, and is refused for http.
+	// valid AuthKind for a stdio or oci entry, and marks a keyless http or
+	// remote entry.
 	AuthNone AuthKind = ""
 	// AuthBearer injects the secret as "Authorization: Bearer <value>". The
 	// header name is fixed, so AuthName is unused (and must be empty).
@@ -116,6 +117,24 @@ const (
 	// container: a stdio child that is `podman run --rm -i`, built by
 	// internal/gateway/oci. Ported from the internal line on 28 Sep 2026.
 	TransportOCI Transport = "oci"
+	// TransportRemote is a native MCP server reached by URL over a live
+	// connection (ADR-0058), served by internal/gateway/remotemcp. Unlike
+	// http, the backend speaks MCP itself and announces its own tools.
+	TransportRemote Transport = "remote"
+)
+
+// RemoteKind is the MCP client transport a remote entry is reached over
+// (ADR-0058 §3). It is a signed field: it decides which wire protocol
+// reaches the endpoint.
+type RemoteKind string
+
+const (
+	// RemoteStreamable is MCP Streamable HTTP, the protocol's current
+	// transport and the default for a remote entry.
+	RemoteStreamable RemoteKind = "streamable"
+	// RemoteSSE is the legacy HTTP+SSE transport. Reserved and refused
+	// (ErrTransportUnsupported) until a real legacy backend needs it.
+	RemoteSSE RemoteKind = "sse"
 )
 
 // UpstreamServer is a registered backend MCP server the gateway can
@@ -146,6 +165,9 @@ type UpstreamServer struct {
 	// still verifies.
 	AuthKind AuthKind
 	AuthName string
+	// RemoteKind is the MCP client transport of a remote entry (ADR-0058
+	// §3), signed under canonical/v4-remote. Empty for every other transport.
+	RemoteKind RemoteKind
 	// Operations is the frozen set of REST operations an http entry serves,
 	// one per generated tool, as canonical JSON (ADR-0047 §3, ADR-0048). It
 	// is produced by ingesting the OpenAPI spec at registration and is empty
@@ -190,23 +212,24 @@ const ReservedName = "gatte"
 //
 //   - Name must be non-empty, must not contain the namespace separator,
 //     and must match safeUpstreamName.
-//   - Transport must be TransportStdio, TransportOCI or TransportHTTP.
+//   - Transport must be TransportStdio, TransportOCI, TransportHTTP or
+//     TransportRemote.
 //   - If Transport is TransportStdio, Command must be non-empty and Image
 //     empty; if TransportOCI, Image must be digest-pinned and Command and
 //     URL empty; if TransportHTTP, URL must be a well-formed http(s) URL,
 //     Command and Image empty, the AuthKind/AuthName descriptor consistent
 //     with the single secret it names, and Operations a non-empty JSON array
-//     (ADR-0047). The AuthKind/AuthName/Operations fields are refused on any
-//     non-http entry.
+//     (ADR-0047); if TransportRemote, see validateRemote (ADR-0058). The
+//     AuthKind/AuthName fields are refused on stdio and oci entries,
+//     Operations on any non-http entry, RemoteKind on any non-remote one.
 //   - Every entry in EnvVarNames must look like an environment variable
 //     name: non-empty and free of whitespace.
 //
 // Validate returns ErrInvalid, wrapped with a description of which rule
 // failed, on any violation; it returns nil when s is well-formed. Every
-// recognised transport (stdio, oci, http) now has a dialer, so Validate no
-// longer returns ErrTransportUnsupported; that sentinel is kept for the next
-// recognised-but-undialable transport, should one be declared before its
-// dialer lands, exactly as http was between GAB-19 and ADR-0047.
+// recognised transport has a dialer; Validate returns
+// ErrTransportUnsupported only for a remote entry asking for the deferred
+// "sse" client transport.
 func (s UpstreamServer) Validate() error {
 	if strings.TrimSpace(s.Name) == "" {
 		return fmt.Errorf("%w: name must not be empty", ErrInvalid)
@@ -265,6 +288,10 @@ func (s UpstreamServer) Validate() error {
 		if err := rejectUnusedByOCI("url", s.URL); err != nil {
 			return err
 		}
+	case TransportRemote:
+		if err := validateRemote(s); err != nil {
+			return err
+		}
 	case TransportHTTP:
 		// GAB-19 closes here: the http dialer exists (internal/gateway/
 		// resthttp), so an http entry is validated rather than refused. It
@@ -275,20 +302,25 @@ func (s UpstreamServer) Validate() error {
 			return err
 		}
 	default:
-		return fmt.Errorf("%w: transport must be %q, %q or %q", ErrInvalid, TransportStdio, TransportOCI, TransportHTTP)
+		return fmt.Errorf("%w: transport must be %q, %q, %q or %q", ErrInvalid, TransportStdio, TransportOCI, TransportHTTP, TransportRemote)
 	}
 
 	// The injection descriptor and the operation set belong to http entries
 	// only. Rejecting them on a stdio or oci entry is the same discipline as
 	// rejectUnusedByOCI: a field with no effect on what runs must not sit in
 	// the signature, where it would be attested without meaning anything.
-	if s.Transport != TransportHTTP {
+	if s.Transport != TransportHTTP && s.Transport != TransportRemote {
 		if s.AuthKind != AuthNone {
-			return fmt.Errorf("%w: auth kind must be empty for %s transport; only http entries inject a credential on an outbound request", ErrInvalid, s.Transport)
+			return fmt.Errorf("%w: auth kind must be empty for %s transport; only http and remote entries inject a credential on an outbound request", ErrInvalid, s.Transport)
 		}
 		if strings.TrimSpace(s.AuthName) != "" {
 			return fmt.Errorf("%w: auth name must be empty for %s transport", ErrInvalid, s.Transport)
 		}
+	}
+	if s.Transport != TransportRemote && s.RemoteKind != "" {
+		return fmt.Errorf("%w: remote kind must be empty for %s transport; only remote entries choose an MCP client transport", ErrInvalid, s.Transport)
+	}
+	if s.Transport != TransportHTTP {
 		if len(s.Operations) != 0 {
 			return fmt.Errorf("%w: operations must be empty for %s transport; only http entries carry a frozen operation set", ErrInvalid, s.Transport)
 		}
@@ -438,6 +470,100 @@ func validateHTTP(s UpstreamServer) error {
 	}
 
 	return nil
+}
+
+// validateRemote checks the rules specific to a remote entry (ADR-0058
+// §4): a well-formed URL with nothing in it that is not the endpoint, no
+// Command, Image, Args or Operations (a native MCP server announces its own
+// tools, which quarantine observes live), an auth descriptor consistent
+// with the one secret it names, and a remote_kind this build can dial.
+func validateRemote(s UpstreamServer) error {
+	if err := rejectImage(TransportRemote, s.Image); err != nil {
+		return err
+	}
+	if strings.TrimSpace(s.Command) != "" {
+		return fmt.Errorf("%w: command must be empty for remote transport; a remote entry is reached by url, not by spawning a process", ErrInvalid)
+	}
+	if len(s.Args) != 0 {
+		return fmt.Errorf("%w: args must be empty for remote transport; nothing reads them", ErrInvalid)
+	}
+	if len(s.Operations) != 0 {
+		return fmt.Errorf("%w: operations must be empty for remote transport; a native MCP server announces its own tools", ErrInvalid)
+	}
+
+	if strings.TrimSpace(s.URL) == "" {
+		return fmt.Errorf("%w: url must not be empty for remote transport", ErrInvalid)
+	}
+	u, err := url.Parse(s.URL)
+	if err != nil {
+		return fmt.Errorf("%w: url %q is not a valid URL: %v", ErrInvalid, s.URL, err)
+	}
+	switch {
+	case u.Scheme != "http" && u.Scheme != "https":
+		return fmt.Errorf("%w: url %q must use scheme http or https, not %q", ErrInvalid, s.URL, u.Scheme)
+	case u.Opaque != "" || u.Host == "" || u.Hostname() == "":
+		return fmt.Errorf("%w: url %q has no host", ErrInvalid, s.URL)
+	case u.User != nil:
+		// A credential in the URL would be stored, signed and printed; it
+		// comes from the vault instead.
+		return fmt.Errorf("%w: url carries userinfo; a credential is injected from the vault, never written into the url", ErrInvalid)
+	case u.RawQuery != "" || u.ForceQuery:
+		return fmt.Errorf("%w: url carries a query; a query is where a vendor puts a key, and a key belongs in the vault (-auth-kind header)", ErrInvalid)
+	case u.Fragment != "" || u.RawFragment != "":
+		return fmt.Errorf("%w: url carries a fragment", ErrInvalid)
+	}
+
+	switch s.AuthKind {
+	case AuthNone:
+		if len(s.EnvVarNames) != 0 {
+			return fmt.Errorf("%w: auth kind is empty (keyless) but env var names are set; pass -auth-kind bearer or header to say where the secret goes", ErrInvalid)
+		}
+		if strings.TrimSpace(s.AuthName) != "" {
+			return fmt.Errorf("%w: auth kind is empty (keyless) but auth name is set", ErrInvalid)
+		}
+	case AuthBearer, AuthHeader:
+		if len(s.EnvVarNames) != 1 {
+			return fmt.Errorf("%w: remote transport with auth kind %q needs exactly one env var name (the secret to send); got %d", ErrInvalid, s.AuthKind, len(s.EnvVarNames))
+		}
+		if s.AuthKind == AuthBearer {
+			if strings.TrimSpace(s.AuthName) != "" {
+				return fmt.Errorf("%w: auth kind %q sends a fixed Authorization header, so auth name must be empty", ErrInvalid, s.AuthKind)
+			}
+			break
+		}
+		if err := validateAuthName(s.AuthName); err != nil {
+			return err
+		}
+		if isControlHeaderSlot(s.AuthName) || isMCPTransportHeader(s.AuthName) {
+			return fmt.Errorf("%w: auth name %q is a header the HTTP or MCP transport owns; the credential cannot be sent there", ErrInvalid, s.AuthName)
+		}
+	default:
+		return fmt.Errorf("%w: auth kind %q is not one of %q, %q (or empty for a keyless server) for remote transport", ErrInvalid, s.AuthKind, AuthBearer, AuthHeader)
+	}
+
+	switch s.RemoteKind {
+	case RemoteStreamable:
+	case RemoteSSE:
+		return fmt.Errorf("%w: remote kind %q (legacy HTTP+SSE) is reserved and deferred, not a typo: this build dials %q only (design/adr/0058 §3)", ErrTransportUnsupported, RemoteSSE, RemoteStreamable)
+	case "":
+		return fmt.Errorf("%w: remote kind must be set for remote transport (%q)", ErrInvalid, RemoteStreamable)
+	default:
+		return fmt.Errorf("%w: remote kind %q is not %q (or the deferred %q)", ErrInvalid, s.RemoteKind, RemoteStreamable, RemoteSSE)
+	}
+	return nil
+}
+
+// isMCPTransportHeader reports the headers the MCP Streamable HTTP client
+// sets on every request itself (session, protocol version, content
+// negotiation, stream resumption). A credential placed there would either
+// be overwritten or break the protocol.
+func isMCPTransportHeader(name string) bool {
+	folded := strings.ReplaceAll(strings.ToLower(name), "_", "-")
+	switch folded {
+	case "content-type", "accept", "last-event-id":
+		return true
+	}
+	return strings.HasPrefix(folded, "mcp-")
 }
 
 // authNameChars is the grammar of a header or query-parameter name the

@@ -320,6 +320,11 @@ func runSign(e *opEnv, name string) int {
 		fmt.Fprintf(tw, "  auth\t%s\n", opAuthLine(entry))
 		fmt.Fprintf(tw, "  operations\t%s\n", opOperationsLine(entry))
 	}
+	if entry.Transport == registry.TransportRemote {
+		// Covered by canonical/v4-remote with the URL.
+		fmt.Fprintf(tw, "  auth\t%s\n", opRemoteAuthLine(entry))
+		fmt.Fprintf(tw, "  remote kind\t%s\n", entry.RemoteKind)
+	}
 	fmt.Fprintf(tw, "  key file\t%s\n", keyFile)
 	fmt.Fprintf(tw, "  public key\t%s\n", signer.KeyFingerprint(s.PublicKey()))
 	if !opFlushTable(tw, e.stderr) {

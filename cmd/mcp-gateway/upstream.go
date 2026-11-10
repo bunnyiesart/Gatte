@@ -61,6 +61,10 @@ func upstreamUsage(w io.Writer) {
                                 -url BASE-URL -openapi FILE|URL
                                 [-auth-kind bearer|header|query|none [-auth-name NAME]]
                                 [-env VARNAME]
+  mcp-gateway upstream register [-config FILE] -name NAME -transport remote
+                                -url MCP-ENDPOINT-URL
+                                [-auth-kind bearer|header|none [-auth-name NAME]]
+                                [-env VARNAME] [-remote-kind streamable]
   mcp-gateway upstream update [-config FILE] -image NAME@sha256:HEX NAME
   mcp-gateway upstream deregister [-config FILE] NAME
   mcp-gateway upstream maintenance on|off [-config FILE] NAME [-message TEXT] [-until T]
@@ -109,6 +113,17 @@ injected on every call (bearer: Authorization; header/query: the location
 one apiKey or bearer scheme, and "none" refuses that and registers keyless.
 POST, PUT, PATCH and DELETE tools are sensitive: approval alone does not make
 one callable (design/adr/0047, 0048).
+
+-transport remote registers a native MCP server reached by URL over Streamable
+HTTP: the gateway holds a live session and the server announces its own
+tools, which start pending like any other backend's. -url is the endpoint,
+signed whole; it is reached only through the gateway's egress guard, as for
+http (no internal address, no redirect off its origin). -auth-kind bearer or
+header sends the ONE secret -env names as the gateway's own token on every
+request; the analyst's token is never forwarded. -remote-kind defaults to
+streamable; sse is reserved and not yet built. The gateway cannot isolate a
+remote backend, and what it connects to after a call is outside the
+gateway's view (design/adr/0058).
 
 Exit codes: 0 ok, 1 ran and found a problem, 2 could not run.
 `)
@@ -302,13 +317,14 @@ func envVarNamesOrEmpty(s registry.UpstreamServer) []string {
 func upstreamRegister(args []string, stdout, stderr io.Writer) int {
 	fs, configPath := opFlagSet("upstream register", stderr)
 	name := fs.String("name", "", "name of the entry, e.g. \"casemgmt\" (required)")
-	transport := fs.String("transport", string(registry.TransportStdio), "\"stdio\" (spawn a process), \"oci\" (an ephemeral podman container) or \"http\" (a REST API the gateway itself calls, one tool per operation of the OpenAPI document -openapi names)")
+	transport := fs.String("transport", string(registry.TransportStdio), "\"stdio\" (spawn a process), \"oci\" (an ephemeral podman container), \"http\" (a REST API the gateway itself calls, one tool per operation of the OpenAPI document -openapi names) or \"remote\" (a native MCP server reached by URL)")
 	command := fs.String("command", "", "command to spawn, for -transport stdio")
 	image := fs.String("image", "", "digest-pinned image to run, for -transport oci: NAME@sha256:<64 hex>")
-	url := fs.String("url", "", "base URL of the API, for -transport http: scheme, host, port and base path, as signed and as the only destination the gateway dials for this entry; no userinfo, query or fragment. A base path the document declares is folded in when this has none")
+	url := fs.String("url", "", "base URL of the API, for -transport http: scheme, host, port and base path, as signed and as the only destination the gateway dials for this entry; no userinfo, query or fragment. A base path the document declares is folded in when this has none. For -transport remote: the MCP endpoint, signed whole")
 	openapi := fs.String("openapi", "", "for -transport http (required): the OpenAPI 3.0.x/3.1.x document, JSON or YAML, as a FILE path or an http(s) URL. A URL is fetched once, now, with no credential and under the same egress guard as the gateway's calls (no private or loopback address, no redirect off its origin, no userinfo or query); a document that needs a credential to read is downloaded by you and passed as a file")
 	authKind := fs.String("auth-kind", "", "for -transport http: where the one secret -env names is injected on every call: \"bearer\" (Authorization: Bearer), \"header\" (the header -auth-name names), \"query\" (the query parameter -auth-name names) or \"none\" (keyless). Left out: keyless, unless the document declares exactly one apiKey or http bearer scheme, which is then derived and printed")
 	authName := fs.String("auth-name", "", "for -auth-kind header or query: the header or query parameter name the secret is injected as; a parameter of the document on the same name is refused (the server-side value wins)")
+	remoteKind := fs.String("remote-kind", "", "for -transport remote: the MCP client transport, \"streamable\" (the default); \"sse\" is reserved and not yet built")
 	var argv opStringList
 	fs.Var(&argv, "arg", "argument for the spawned command; repeat, in order")
 	var envs opStringList
@@ -347,16 +363,26 @@ func upstreamRegister(args []string, stdout, stderr io.Writer) int {
 	// like every other refusal here (ADR-0047 §3). The three http-only
 	// flags are refused by name on any other transport.
 	var report *httpIngestReport
-	if entry.Transport == registry.TransportHTTP {
+	if msg := remoteFlags(&entry, *openapi, *authKind, *authName, *remoteKind); msg != "" {
+		fmt.Fprintf(stderr, "%s\n\n", msg)
+		upstreamUsage(stderr)
+		return exitCannotRun
+	}
+	switch entry.Transport {
+	case registry.TransportHTTP:
 		r, code := ingestForRegister(&entry, *openapi, *authKind, *authName, stdout, stderr)
 		if code != exitOK {
 			return code
 		}
 		report = r
-	} else if msg := httpFlagsRefusal(entry.Transport, *openapi, *authKind, *authName); msg != "" {
-		fmt.Fprintf(stderr, "%s\n\n", msg)
-		upstreamUsage(stderr)
-		return exitCannotRun
+	case registry.TransportRemote:
+		// Flags applied by remoteFlags above; validateEntry checks them.
+	default:
+		if msg := httpFlagsRefusal(entry.Transport, *openapi, *authKind, *authName); msg != "" {
+			fmt.Fprintf(stderr, "%s\n\n", msg)
+			upstreamUsage(stderr)
+			return exitCannotRun
+		}
 	}
 	// The registry's rules and the dialer's, for every transport
 	// (validateEntry, shared with the management API's register).
@@ -427,6 +453,10 @@ func runUpstreamRegisterReport(e *opEnv, entry registry.UpstreamServer, report *
 		// documentation, so it is in the table, not only in the report.
 		fmt.Fprintf(tw, "  auth\t%s\n", opAuthLine(entry))
 		fmt.Fprintf(tw, "  operations\t%s\n", opOperationsLine(entry))
+	}
+	if entry.Transport == registry.TransportRemote {
+		fmt.Fprintf(tw, "  auth\t%s\n", opRemoteAuthLine(entry))
+		fmt.Fprintf(tw, "  remote kind\t%s\n", entry.RemoteKind)
 	}
 	if !opFlushTable(tw, e.stderr) {
 		return exitProblem

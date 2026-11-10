@@ -288,10 +288,10 @@ func TestUnrecognisedTransportIsMalformed(t *testing.T) {
 		t.Errorf("unrecognised transport error = %v, must NOT wrap ErrTransportUnsupported: "+
 			"\"websocket\" is not a transport this project recognises at all", err)
 	}
-	// The message lists the three transports, and does not say http lacks
-	// a dialer: since ADR-0047 step 4 it registers end to end.
-	if msg := err.Error(); !strings.Contains(msg, `"stdio", "oci" or "http"`) || strings.Contains(msg, "no dialer") {
-		t.Errorf("unrecognised transport message = %q, want the three transports and no \"no dialer\" claim", msg)
+	// The message lists the four transports, and does not say any lacks a
+	// dialer: every one registers end to end.
+	if msg := err.Error(); !strings.Contains(msg, `"stdio", "oci", "http" or "remote"`) || strings.Contains(msg, "no dialer") {
+		t.Errorf("unrecognised transport message = %q, want the four transports and no \"no dialer\" claim", msg)
 	}
 }
 

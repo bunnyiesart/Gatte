@@ -8,6 +8,7 @@ import (
 	"github.com/bunnyiesart/Gatte/internal/config"
 	"github.com/bunnyiesart/Gatte/internal/gateway"
 	gwoci "github.com/bunnyiesart/Gatte/internal/gateway/oci"
+	gwremote "github.com/bunnyiesart/Gatte/internal/gateway/remotemcp"
 	gwrest "github.com/bunnyiesart/Gatte/internal/gateway/resthttp"
 	gwstdio "github.com/bunnyiesart/Gatte/internal/gateway/stdio"
 	"github.com/bunnyiesart/Gatte/internal/registry"
@@ -24,11 +25,14 @@ import (
 // different shape altogether: no process, no connection, one stateless
 // upstream per entry whose every call re-resolves the entry's secret
 // through the vault (design/adr/0047 §2, §5; design/adr/0048 Decisões 6, 7,
-// 9). This struct is the only place the three meet.
+// 9). The remote adapter is a native MCP server reached by URL: a live
+// session like stdio's, through the same egress guard as http
+// (design/adr/0058). This struct is the only place the four meet.
 type transportDialer struct {
 	stdio    gateway.Dialer
 	oci      gateway.Dialer
 	resthttp gateway.Dialer
+	remote   gateway.Dialer
 	// allowCredentialedStdio is [upstreams] allow_credentialed_stdio. See
 	// credentialedStdioRefusal.
 	allowCredentialedStdio bool
@@ -63,6 +67,7 @@ func newTransportDialer(cfg *config.Config, credentials vault.Provider) transpor
 			// still allows, so the error an analyst sees for a slow API is
 			// the gateway's deadline, not the adapter's.
 			gwrest.WithHTTPClientTimeout(cfg.Response.CallTimeoutOrDefault())),
+		remote:                 gwremote.New(gwremote.WithClientInfo("mcp-gateway", buildVersion)),
 		allowCredentialedStdio: cfg.Upstreams.AllowCredentialedStdio,
 	}
 }
@@ -106,10 +111,15 @@ func (d transportDialer) Dial(ctx context.Context, spec gateway.UpstreamSpec, en
 		// the one secret-ref name a keyed entry declares; the adapter keeps
 		// the name and drops the value (ADR-0047 §5).
 		return d.resthttp.Dial(ctx, spec, env)
+	case string(registry.TransportRemote):
+		// Like http, the adapter is what sends the credential (the gateway's
+		// own token, resolved once for the session), so env is handed over.
+		return d.remote.Dial(ctx, spec, env)
 	default:
 		return nil, fmt.Errorf("gateway: upstream %q declares transport %q, which this gateway does not serve; "+
-			"registered transports are %q (a local process), %q (an ephemeral container) and %q (a REST API)",
-			spec.Name, spec.Transport, registry.TransportStdio, registry.TransportOCI, registry.TransportHTTP)
+			"registered transports are %q (a local process), %q (an ephemeral container), %q (a REST API) "+
+			"and %q (a native MCP server by URL)",
+			spec.Name, spec.Transport, registry.TransportStdio, registry.TransportOCI, registry.TransportHTTP, registry.TransportRemote)
 	}
 }
 
@@ -171,6 +181,8 @@ func dialTimeRefusal(entry registry.UpstreamServer) error {
 		}
 		_, err := gwrest.Decode(entry.Operations, string(entry.AuthKind), entry.AuthName)
 		return err
+	case registry.TransportRemote:
+		return gwremote.ValidateURL(entry.URL)
 	}
 	return nil
 }
@@ -200,6 +212,12 @@ func entryNetwork(entry registry.UpstreamServer) (string, error) {
 		// Phase D (ADR-0047 §6, "Não casa com entryNetwork"), not this
 		// step. The adapter's own egress guard (resthttp, ADR-0048 Decisão
 		// 6) is what bounds the destination meanwhile.
+		return stdioNetwork, nil
+	case registry.TransportRemote:
+		// "host" for the same reason as http: the gateway process is the
+		// client of the gateway-to-remote hop, bounded by the shared egress
+		// guard. Where the remote backend itself connects is outside this
+		// gateway's view and outside ADR-0033 (design/adr/0058 §9).
 		return stdioNetwork, nil
 	default:
 		return stdioNetwork, nil

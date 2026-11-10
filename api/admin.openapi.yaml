@@ -905,7 +905,7 @@ components:
       required: [name, transport, network, env_var_names, signature, created_at, updated_at]
       properties:
         name: {type: string}
-        transport: {type: string, x-gatte-open-enum: true, enum: [stdio, http, oci]}
+        transport: {type: string, x-gatte-open-enum: true, enum: [stdio, http, oci, remote]}
         command: {type: string}
         args: {type: array, items: {type: string}}
         url: {type: string}

@@ -3970,6 +3970,7 @@ func specFor(entry registry.UpstreamServer) UpstreamSpec {
 		Image:      entry.Image,
 		AuthKind:   string(entry.AuthKind),
 		AuthName:   entry.AuthName,
+		RemoteKind: string(entry.RemoteKind),
 		Operations: slices.Clone(entry.Operations),
 	}
 }

@@ -7,7 +7,7 @@ planned `mcp-gateway tui` subcommand, front tag `tui`).
 Both are thin clients over `pkg/adminapi`, which talks to the management API on
 the operator and accounts UNIX sockets (`api/admin.openapi.yaml`). All business
 logic and security gates stay in the API: upstream signing, tool quarantine and
-clearing, the secret vault, roles validation, and the audit hash chain. A
+clearing, the secret vault, roles validation, quota, and the audit hash chain. A
 frontend only renders what the API returns and confirms an action before
 sending it.
 
@@ -17,38 +17,101 @@ A frontend calls an operation marked with a feature only when
 nothing.
 
 For local UI work, `make preview-console` serves the real console against the
-in-memory fake (`internal/adminapitest`) with sample rows for every entity
+in-memory fake (`internal/adminapitest`) with sample rows for every surface
 below, including empty and error states. The fake is also the test double both
-tracks build on (`adminapitest.Start`).
+tracks build on (`adminapitest.Start`). **Never build or host the real image on
+a workstation** — the mock preview is the only thing that runs locally; real
+builds and tests run in CI or on the server.
+
+## The 2-tab IA (ADR-0051)
+
+The console is **two tabs and nothing else in the menu**. The operator's
+identity sits in the shared header (not a page); items that "need review" show
+inside the Servers tab.
+
+```
+Header: identity · [ MCP Servers / APIs ] [ Users ]
+
+Tab 1  /servers                 list of "MCP server / API" + per-backend health
+       /servers/new             add a REST API / OpenAPI -> generates MCP tools
+       /servers/{name}          server detail (panels below)
+
+Tab 2  /users                   People/accounts + Roles + Blocklist (sections)
+```
+
+### Tab 1 — MCP Servers / APIs
+
+The noun is **"MCP server / API"** (ADR-0052). The list shows each backend with
+its health (ADR-0041). Add is a dedicated zero-JS sub-page, never a modal
+(ADR-0036). The **server-detail page absorbs** what used to be the Tools,
+Secrets, and Backends/maintenance tabs, as panels.
+
+### Tab 2 — Users
+
+One tab, three sections, each with its own socket gate (ADR-0040 §1):
+People/accounts (accounts socket, root), Roles (accounts socket), Blocklist
+(operator socket). People and Blocklist stay distinct: **disabling an account is
+not blocking a subject** (ADR-0038) — both actions exist, separately.
+
+### Removed from the UI
+
+| Removed page | Where it goes | ADR |
+|---|---|---|
+| Overview (as a page) | identity -> header; attention -> Servers tab | 0051 |
+| Tools (standalone tab) | server-detail panel | 0051 |
+| Secrets (standalone tab) | server-detail panel + small global vault view | 0053 |
+| Roles (standalone tab) | Users tab section | 0051/0054 |
+| Audit | the SIEM; integrity verify stays CLI + scheduled | 0056 |
+| Quota | CLI / `gatte.status`; the control stays active server-side | 0057 |
+| Gateway-wide maintenance + the notice appended to every result | removed; per-backend maintenance stays (/v2) | 0055 |
+
+The `pkg/adminapi` client still wraps the removed operations (it is frozen and
+complete — see Coverage); the console simply does not surface them. `ListAudit`/
+`VerifyAudit` are reached from the CLI and the scheduled chain-head check, not
+the console; `QuotaUsage` from the CLI.
 
 ## How to read this
 
-Each entity below is a self-contained slice one agent can own end to end across
-both fronts. Each section lists:
-
-- **adminapi ops** — the client methods (socket: **op** operator, **acc**
-  accounts).
-- **Console** — the page and route prefix, and the files that slice owns.
-- **TUI** — that slice's screen responsibility (to build in Track A).
-
-Socket and feature apply as noted; a one-time password is shown once and never
-kept; secret values are never returned.
+Each surface below is a slice an agent can own end to end across both fronts.
+Each lists its **adminapi ops** (socket: **op** operator, **acc** accounts) and
+where it lives in the IA. Socket and feature apply as noted; a one-time password
+is shown once and never kept; secret values are never returned.
 
 ---
 
-## Dashboard (overview)
+## Tab 1 · Servers list + Add + detail shell (slice M1.1)
 
-Read-only landing: identity, attention items, counts, recent denials, health.
+The list page, the `/servers/new` add page, and the server-detail **container**
+(the shell the other Tab-1 slices hang panels on).
 
-- **adminapi ops:** `WhoAmI` (op), `Overview` (op), `People` (op), `QuotaUsage`
-  (op). `WhoAmI.Features` drives what every other slice shows.
-- **Console:** route `/` (and `/quota` for the quota view). Owns
-  `reg_overview.go`, `reg_quota.go`, the overview/quota handlers in `pages.go`,
-  `ui/overview.html`, `ui/quota.html`.
-- **TUI:** the home screen — identity and feature set, attention list, counts,
-  recent denials, backend health; the entry point to every other screen.
+| Op | Method / path | Client | Socket |
+|---|---|---|---|
+| listUpstreams | GET /v1/upstreams | `ListUpstreams` | op |
+| getUpstream | GET /v1/upstreams/{name} | `GetUpstream` | op |
+| registerUpstream | POST /v1/upstreams | `RegisterUpstream` | op (`console_manages`) |
+| signUpstream | POST /v1/upstreams/{name}/sign | `SignUpstream` | acc (`console_manages`) |
+| deregisterUpstream | DELETE /v1/upstreams/{name} | `DeregisterUpstream` | op (`console_manages`) |
+| redialUpstream | POST /v1/upstreams/redial | `RedialUpstream` | op (`serve_control`) |
+| reloadConfig | POST /v1/reload | `Reload` | op (`serve_control`) |
+| serveRequest | GET /v1/serve-requests/{id} | `ServeRequestByID` | op (`serve_control`) |
 
-## Tools (quarantine)
+Health comes with each `Upstream` and from `Overview` (ADR-0041). Add (ADR-0052):
+`/servers/new` takes an OpenAPI by URL, pasted text, or upload — the http path of
+ADR-0050 §2; stdio/oci stay CLI-only. **Signing is a separate attesting click on
+the result page, never sign-on-register** (ADR-0050 §5). Deregister asks the
+operator to type the name, because it drops approvals (ADR-0050 §2).
+
+- **Console:** owns `reg_servers.go`, the list/add/detail handlers, the detail
+  **container** template, `ui/servers.html`, `ui/server_new.html`,
+  `ui/server.html`. Registers the two nav tabs and the `DetailPanel`/
+  `UsersSection` registries (see Self-registration).
+- **TUI:** the Servers screen — list with health, the add flow, and the
+  per-server detail that hosts the same panels.
+
+## Tab 1 · Tools panel (slice M1.2)
+
+The quarantine review/approve/revoke/clear for one backend, as a panel in the
+server-detail page.
 
 | Op | Method / path | Client | Socket |
 |---|---|---|---|
@@ -60,63 +123,20 @@ Read-only landing: identity, attention items, counts, recent denials, health.
 | revokeTool | POST /v1/tools/revoke | `RevokeTool` | op |
 | clearTool | POST /v1/tools/clear | `ClearTool` | op (`tool_clear`) |
 
-- **Console:** route `/tools`. Owns `reg_tools.go`, tool handlers in
-  `pages.go`, `ui/tools.html`, `ui/tool.html`, `ui/reviewset.html`.
-- **TUI:** the quarantine list with per-tool review (definition, diff,
-  callable-by), and the approve / revoke / clear / review-set actions, each
-  confirming on the fingerprint shown.
+Generated tools stay **pending until approved** (ADR-0036/0032); approval is on
+the **reviewed fingerprint** (segments drawn, never re-escaped). A **sensitive**
+(non-GET) tool needs `clear` **and** a `non_read` role that names it (ADR-0048
+§5); the console does not bypass this gate.
 
-## Access (blocklist)
+- **Console:** owns `reg_tools.go`, the tools panel handlers,
+  `ui/panel_tools.html`, `ui/tool.html`, `ui/reviewset.html`. Registers a
+  `DetailPanel` (Order 20).
+- **TUI:** the per-server tools section with the same review and actions.
 
-| Op | Method / path | Client | Socket |
-|---|---|---|---|
-| listBlocks | GET /v1/access/blocks | `ListBlocks` | op |
-| blockSubject | POST /v1/access/block | `BlockSubject` | op (expiry: `block_until`) |
-| unblockSubject | POST /v1/access/unblock | `UnblockSubject` | op |
+## Tab 1 · Secrets panel + global vault view (slice M1.3)
 
-- **Console:** route `/access`. Owns `reg_access.go`, access handlers in
-  `pages.go`, `ui/access.html`.
-- **TUI:** the blocklist with block (optional expiry) and unblock.
-
-## Audit
-
-| Op | Method / path | Client | Socket |
-|---|---|---|---|
-| listAudit | GET /v1/audit | `ListAudit` | op (filters: `audit_filters`) |
-| verifyAudit | POST /v1/audit/verify | `VerifyAudit` | op |
-
-- **Console:** route `/audit`. Owns `reg_audit.go`, `audit.go`,
-  `ui/audit.html`.
-- **TUI:** the trail with filters and paging, and the verify action showing the
-  chain head and any break.
-
-## Backends (upstreams, maintenance, serve control)
-
-In both fronts these share one page: maintenance and serve control act on
-backends and are shown with them.
-
-| Op | Method / path | Client | Socket |
-|---|---|---|---|
-| listUpstreams | GET /v1/upstreams | `ListUpstreams` | op |
-| getUpstream | GET /v1/upstreams/{name} | `GetUpstream` | op |
-| registerUpstream | POST /v1/upstreams | `RegisterUpstream` | op (`console_manages`) |
-| deregisterUpstream | DELETE /v1/upstreams/{name} | `DeregisterUpstream` | op (`console_manages`) |
-| signUpstream | POST /v1/upstreams/{name}/sign | `SignUpstream` | acc (`console_manages`) |
-| redialUpstream | POST /v1/upstreams/redial | `RedialUpstream` | op (`serve_control`) |
-| reloadConfig | POST /v1/reload | `Reload` | op (`serve_control`) |
-| serveRequest | GET /v1/serve-requests/{id} | `ServeRequestByID` | op (`serve_control`) |
-| listMaintenance | GET /v1/maintenance | `ListMaintenance` | op (`maintenance`) |
-| startMaintenance | POST /v1/maintenance/on | `StartMaintenance` | op (`maintenance`) |
-| endMaintenance | POST /v1/maintenance/off | `EndMaintenance` | op (`maintenance`) |
-
-- **Console:** route `/upstreams` (plus `/reload`, `/serve-requests`). Owns
-  `reg_backends.go`, `backends.go`, upstream/serve parts of `manage.go`,
-  `ui/upstreams.html`, `ui/upstream.html`, `ui/registered.html`.
-- **TUI:** the backend list with per-backend detail and health, register /
-  deregister / sign / redial, maintenance on/off, and reload — each returning a
-  serve request that may be pending and read back by id.
-
-## Secrets (vault)
+The secret names one backend declares, inline, plus a small global view for
+shared/orphan secrets (ADR-0053).
 
 | Op | Method / path | Client | Socket |
 |---|---|---|---|
@@ -124,29 +144,40 @@ backends and are shown with them.
 | setSecret | PUT /v1/secrets/{name} | `SetSecret` | acc (`console_manages`) |
 | deleteSecret | DELETE /v1/secrets/{name} | `DeleteSecret` | acc (`console_manages`) |
 
-Values are never returned: show only names, whether a value is in the vault, and
-which entries declare each name.
+**Values are never returned**: show only names, whether a value is present, and
+which entries declare each name. Writes are **root, on the accounts socket**; the
+plaintext never touches disk (sops over stdio); the trail line carries the name,
+never the value (ADR-0050 §2).
 
-- **Console:** route `/secrets` (nav link only with `console_manages` and the
-  accounts socket). Owns `reg_secrets.go`, secret parts of `manage.go`,
-  `ui/vault.html`.
-- **TUI:** the vault names with set and delete; never a value.
+- **Console:** owns `reg_secrets.go`, the secrets panel + a small global-vault
+  partial, `ui/panel_secrets.html`, `ui/vault.html`. Registers a `DetailPanel`
+  (Order 30) and the small global view on the Servers list.
+- **TUI:** the per-server secret names with set/delete, and the global names
+  view; never a value.
 
-## Roles
+## Tab 1 · Maintenance toggle (slice M2.1)
 
-| Op | Method / path | Client | Socket |
+Per-backend maintenance only. **Gateway-wide maintenance and the notice appended
+to every result are removed** (ADR-0055).
+
+| Op | Client | Socket | Note |
 |---|---|---|---|
-| getRoles | GET /v1/roles | `GetRoles` | op (`console_manages`) |
-| putRoles | PUT /v1/roles | `PutRoles` | acc (`console_manages`) |
+| per-backend maintenance on/off/list | `StartMaintenance`/`EndMaintenance`/`ListMaintenance` (reshaped) | op (`maintenance`) | **/v2** — see below |
 
-Writing validates and stores; it does not apply. A reload (Backends) applies it.
+Contract (ADR-0055, ADR-0040 §7): removing `GET /v1/maintenance`,
+`POST /v1/maintenance/on`, `POST /v1/maintenance/off` and the `(gateway)` target
+is **not additive**, so the per-backend surface that stays is served as **/v2**,
+alongside `/v1` for at least one version. The feature `maintenance` and the
+per-backend `maintenance` state in `gatte.status` remain; the gateway target and
+its appended notice go. The exact /v2 route shape is M2.1 work — this map fixes
+that it is /v2, not the signature.
 
-- **Console:** route `/roles` (nav link only with `console_manages` and the
-  accounts socket). Owns `reg_roles.go`, roles parts of `manage.go`,
-  `ui/roles.html`.
-- **TUI:** the roles file text with a validated write, then a prompt to reload.
+- **Console:** owns `reg_maintenance.go`, a maintenance toggle on the
+  server-detail page (state, since, on/off with CSRF). Registers a `DetailPanel`
+  (Order 40).
+- **TUI:** the per-server maintenance toggle.
 
-## People (identity-provider accounts)
+## Tab 2 · People / accounts (slice M1.4a)
 
 | Op | Method / path | Client | Socket |
 |---|---|---|---|
@@ -164,70 +195,124 @@ Writing validates and stores; it does not apply. A reload (Backends) applies it.
 | connect | GET /v1/connect | `Connect` | op |
 | connectScript | GET /v1/connect/script | `ConnectScript` | op |
 
-- **Console:** route `/people`. Owns `reg_people.go`, `people.go`,
-  `ui/people.html`, `ui/account.html`, `ui/newperson.html`, `ui/connect.html`.
-- **TUI:** the account list with per-account detail, the add flow (check then
-  create, one-time password shown once), groups, disable / enable / reset /
-  delete / offboard, and the connect instructions.
+**Disable is not block** (ADR-0038): disabling an account is a People action;
+blocking a subject is the Blocklist section — both stay.
+
+- **Console:** owns `reg_people.go`, the People section + account detail + add +
+  connect, `ui/section_people.html`, `ui/account.html`, `ui/newperson.html`,
+  `ui/connect.html`. Registers a `UsersSection` (Order 10).
+- **TUI:** the account list with detail, add (check then create, one-time
+  password shown once), groups, disable/enable/reset/delete/offboard, connect.
+
+## Tab 2 · Roles — structured (slice M1.5)
+
+A **role × tool** view with surgical grant/revoke. **The UI never regenerates the
+roles file** (ADR-0054): a grant/revoke is the smallest textual edit, so the
+load-bearing approver/review comments of ADR-0009 survive byte for byte.
+
+| Op | Method / path | Client | Socket |
+|---|---|---|---|
+| getRoles | GET /v1/roles | `GetRoles` | op (`console_manages`) |
+| putRoles | PUT /v1/roles | `PutRoles` | acc (`console_manages`) |
+
+Writing **validates and stores; it does not apply**. A reload (Servers tab,
+`serve_control`) applies; no auto-reload per edit (ADR-0050/0044).
+
+- **Console:** owns `reg_roles.go`, the role×tool view + grant/revoke,
+  `ui/section_roles.html`. Registers a `UsersSection` (Order 20).
+- **TUI:** the role×tool matrix with grant/revoke, then a prompt to reload.
+
+## Tab 2 · Blocklist (slice M1.4b)
+
+| Op | Method / path | Client | Socket |
+|---|---|---|---|
+| listBlocks | GET /v1/access/blocks | `ListBlocks` | op |
+| blockSubject | POST /v1/access/block | `BlockSubject` | op (expiry: `block_until`) |
+| unblockSubject | POST /v1/access/unblock | `UnblockSubject` | op |
+
+- **Console:** owns `reg_access.go`, the Blocklist section, `ui/section_access.html`.
+  Registers a `UsersSection` (Order 30).
+- **TUI:** the blocklist with block (optional expiry) and unblock.
 
 ---
 
 ## Self-registration (how the two shells stay merge-clean)
 
-The goal: adding or changing an entity touches only that entity's own files, so
-the ~10 Phase-1 branches do not collide on one shared route table or nav menu.
+The goal: adding or changing a surface touches only that surface's own files, so
+the parallel M1/M2 slices do not collide on one shared route table, nav menu, or
+aggregate page. The 2-tab IA makes **two** pages shared (the server-detail page
+and the Users page), so each gets its own panel/section registry on top of the
+existing route registry.
 
-### Console — implemented
+### Console — three registries, all in `sections.go`
 
-The console shell builds its routes and its navigation from a registry
-(`internal/front/gatteweb/sections.go`), not from a hand-maintained list:
+1. **The two nav tabs** are defined once by the shell (M1.1). Slices do not add
+   nav items; there are only two.
+2. **Route registry** (today's `register(Section{...})`): each slice mounts its
+   own action routes from its own `reg_<slice>.go` `init()`. `routes()` ranges
+   over it and calls each `Mount`.
+3. **`DetailPanel` registry** for `/servers/{name}`: each Tab-1 slice appends a
+   panel from its own file's `init()`, with an `Order` and a `Show` gate; the
+   server-detail container ranges over registered panels in order. Tools (20),
+   Secrets (30), Maintenance (40).
+4. **`UsersSection` registry** for `/users`: each Tab-2 slice appends a section
+   the same way. People (10), Roles (20), Blocklist (30).
 
 ```go
+// Route mount (unchanged shape), from reg_tools.go init():
 register(Section{
-    Nav:   NavItem{ID: "tools", Path: "/tools", Label: "Tools", Order: 20},
-    Mount: func(mux *http.ServeMux, f *Front) { mux.HandleFunc("GET /tools", f.toolsPage); /* ... */ },
+    Mount: func(mux *http.ServeMux, f *Front) { mux.HandleFunc("POST /servers/{name}/tools/approve", f.approveTool); /* ... */ },
 })
+
+// Panel contribution to the server-detail page, from reg_tools.go init():
+registerDetailPanel(DetailPanel{ID: "tools", Order: 20, Show: managesOrAlways, Render: (*Front).toolsPanel})
+
+// Section contribution to the Users page, from reg_roles.go init():
+registerUsersSection(UsersSection{ID: "roles", Order: 20, Show: managesAndRoot, Render: (*Front).rolesSection})
 ```
 
-Each entity calls `register` once from its own `reg_<entity>.go` file's `init()`.
-`routes()` ranges over the registry and calls each `Mount`; the layout ranges
-over `navFor(...)` to draw the nav, with `NavItem.Show` gating a link (Secrets
-and Roles use `managesAndRoot`). To add an entity: add a `reg_<entity>.go`, its
-handlers (ideally in their own file), and its templates. Nav order uses gaps of
-ten so a new entity can slot between two without renumbering.
+Order uses gaps of ten so a slice can slot between two without renumbering. A
+slice adds a `reg_<slice>.go`, its handlers (own file), and its templates — and
+nothing else. It never edits another slice's files, the shell, or the two
+container pages.
 
-### TUI — recommended (build this in Track A)
+### TUI — mirror the same shape (Track A / M4)
 
-Mirror the same shape in the `tui` package: a `Screen` registry each entity
-appends to from its own file's `init()`, and the TUI shell builds its menu and
-routes keystrokes to screens from that registry. Do not hand-maintain a menu or
-a switch over screens — register each screen in its own file, so entity branches
-never edit a shared TUI menu.
+The `tui` package mirrors this: a `Screen` registry for the two screens (Servers,
+Users), and within each, a panel/section registry each slice appends to from its
+own file's `init()`. Do not hand-maintain a menu or a switch over screens.
 
 ```go
 // Shape only; define concretely when the shell lands.
-register(Screen{ID: "tools", Title: "Tools", Order: 20, New: func(c *adminapi.Client) tea.Model { /* ... */ }})
+registerScreen(Screen{ID: "servers", Title: "MCP Servers / APIs", Order: 10, New: func(c *adminapi.Client) tea.Model { /* ... */ }})
 ```
 
 ## Frozen shared files — consume, never edit
 
-Entity agents must treat these as read-only. If a slice needs a change here,
-flag it for the shell owner rather than editing it, so branches do not collide:
+Entity agents treat these as read-only. If a slice needs a change here, flag it
+for the shell owner (M1.1 / M1.6) rather than editing it, so branches do not
+collide:
 
-- `pkg/adminapi/*` — the API client and contract types. Already complete (see
-  Coverage); consume it.
-- `internal/adminapitest/*` — the fake. Add seed rows for your entity only if
-  genuinely missing; do not change another entity's rows or the routing.
+- `pkg/adminapi/*` — the API client and contract types. Complete (see Coverage);
+  consume it.
+- `internal/adminapitest/*` — the fake. Add seed rows for your surface only if
+  genuinely missing; do not change another slice's rows or the routing.
 - `internal/front/gatteweb/gatteweb.go` — the console shell (`routes`, `render`,
   `page`, `Front`).
-- `internal/front/gatteweb/sections.go` — the registry types and helpers.
+- `internal/front/gatteweb/sections.go` — the route registry, the `DetailPanel`
+  and `UsersSection` registry types and helpers, and the two nav tabs.
 - `internal/front/gatteweb/ui/layout.html`, `ui/app.css` — the shared shell and
   styles.
-- The TUI shell and its registry file, once Track A creates them.
+- The server-detail container (`ui/server.html` + its handler) and the Users
+  container (`ui/users.html` + its handler) — owned by M1.1; other slices add
+  panels/sections through the registries, never by editing these.
+- The TUI shell and its registries, once Track A creates them.
 
 ## Coverage
 
-`pkg/adminapi` already wraps every operation above; the test
-`TestClient_CoversEveryOperationOfTheContractAgainstTheRealBackend` holds the
-client to exactly the contract's operation set. No client gap blocks either
-track.
+`pkg/adminapi` already wraps every operation the contract defines, including the
+ones no longer surfaced in the console (audit, quota, the current /v1
+maintenance). `TestClient_CoversEveryOperationOfTheContractAgainstTheRealBackend`
+holds the client to exactly the contract's operation set. No client gap blocks
+either track. The /v2 per-backend maintenance surface (ADR-0055) is added to the
+contract and the client as part of M2.1, before its panel is built.

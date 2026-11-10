@@ -1,0 +1,153 @@
+<!--
+  Wazuh rules for the Gatte audit sink (JSONL, schema v5). Installed on the
+  Wazuh MANAGER as /var/ossec/etc/rules/gatte_audit_rules.xml. Install,
+  checks and the schema-version rule are in deploy/gatte-audit-wazuh.md.
+
+  Decoder: Wazuh's stock JSON decoder ("json"). It passes every key of the
+  line through as a field, which is what the anchor needs; a custom decoder
+  would add nothing and could not outrank the stock one.
+
+  Every v5 line, record or heartbeat, ends on a rule of level 3 or more, so
+  every line is indexed. Do not lower any of them to 0 and do not add an
+  <ignore>: the chain walk needs every record line, and the absence monitor
+  needs every heartbeat.
+
+  Wazuh fires one rule per line, so sibling rules below are written to be
+  mutually exclusive rather than relying on evaluation order.
+
+  Requires Wazuh 4.3 or later (type="pcre2" and negate on <field>).
+-->
+<group name="gatte,gatte_audit,">
+
+  <!-- Any line of the sink, any schema version. -->
+  <rule id="110700" level="0">
+    <decoded_as>json</decoded_as>
+    <field name="type" type="pcre2">^(?:record|heartbeat)$</field>
+    <field name="chain" type="pcre2">\S</field>
+    <description>Gatte audit: JSONL line</description>
+  </rule>
+
+  <!--
+    The schema guard. Everything below matches v5 only. A gateway that
+    bumped jsonl.Version lands here instead, loudly, rather than being
+    half-matched by rules written for another shape. The line is still
+    indexed, so nothing is lost while the ruleset catches up.
+  -->
+  <rule id="110701" level="10">
+    <if_sid>110700</if_sid>
+    <field name="v" type="pcre2" negate="yes">^5$</field>
+    <description>Gatte audit: schema version $(v) on chain $(chain), ruleset expects 5; update the Wazuh rules</description>
+    <group>gatte_schema,</group>
+  </rule>
+
+  <!-- ===================================================== record lines -->
+
+  <rule id="110710" level="3">
+    <if_sid>110700</if_sid>
+    <field name="v" type="pcre2">^5$</field>
+    <field name="type" type="pcre2">^record$</field>
+    <description>Gatte audit: $(verdict) $(tool) by $(caller)</description>
+    <group>gatte_record,</group>
+  </rule>
+
+  <!--
+    An analyst's call refused. Callers in parentheses are the gateway's own
+    markers ((gateway), (operator:NAME), (unauthenticated)) and are handled
+    on their own, so they do not inflate analyst refusals.
+  -->
+  <rule id="110720" level="5">
+    <if_sid>110710</if_sid>
+    <field name="verdict" type="pcre2">^denied$</field>
+    <field name="caller" type="pcre2" negate="yes">^\(</field>
+    <description>Gatte audit: $(tool) denied for $(caller): $(rule)</description>
+    <group>gatte_record,gatte_denied,</group>
+  </rule>
+
+  <rule id="110721" level="5">
+    <if_sid>110710</if_sid>
+    <field name="verdict" type="pcre2">^denied$</field>
+    <field name="caller" type="pcre2">^\(unauthenticated\)$</field>
+    <description>Gatte audit: request without a valid token from $(src)</description>
+    <group>gatte_record,gatte_denied,</group>
+  </rule>
+
+  <rule id="110722" level="10" frequency="10" timeframe="300">
+    <if_matched_sid>110720</if_matched_sid>
+    <same_field>caller</same_field>
+    <description>Gatte audit: 10 or more denied calls by $(caller) in 5 minutes</description>
+    <group>gatte_record,gatte_denied,</group>
+  </rule>
+
+  <!--
+    Backend health transitions (ADR-0041). Written on a transition only, so
+    one alert per backend opens on denied and the next allowed row of the
+    same backend closes it. Every boot writes one row per backend.
+  -->
+  <rule id="110730" level="10">
+    <if_sid>110710</if_sid>
+    <field name="caller" type="pcre2">^\(gateway\)$</field>
+    <field name="tool" type="pcre2">^\(backend health\)$</field>
+    <field name="verdict" type="pcre2">^denied$</field>
+    <description>Gatte audit: backend $(backend) not served: $(rule)</description>
+    <group>gatte_record,gatte_backend_health,</group>
+  </rule>
+
+  <rule id="110731" level="3">
+    <if_sid>110710</if_sid>
+    <field name="caller" type="pcre2">^\(gateway\)$</field>
+    <field name="tool" type="pcre2">^\(backend health\)$</field>
+    <field name="verdict" type="pcre2">^allowed$</field>
+    <description>Gatte audit: backend $(backend) served: $(rule)</description>
+    <group>gatte_record,gatte_backend_health,</group>
+  </rule>
+
+  <!-- Quarantine and signature events (ADR-0032). -->
+  <rule id="110732" level="12">
+    <if_sid>110710</if_sid>
+    <field name="caller" type="pcre2">^\(gateway\)$</field>
+    <field name="verdict" type="pcre2">^denied$</field>
+    <field name="rule" type="pcre2">^tool changed: </field>
+    <description>Gatte audit: approved tool $(tool) changed on its backend and is no longer served</description>
+    <group>gatte_record,gatte_quarantine,</group>
+  </rule>
+
+  <rule id="110733" level="12">
+    <if_sid>110710</if_sid>
+    <field name="caller" type="pcre2">^\(gateway\)$</field>
+    <field name="tool" type="pcre2">^\(registry entry\)$</field>
+    <field name="rule" type="pcre2">^signature refused: </field>
+    <description>Gatte audit: registry entry $(backend) refused: $(rule)</description>
+    <group>gatte_record,gatte_quarantine,</group>
+  </rule>
+
+  <!-- ================================================== heartbeat lines -->
+
+  <!--
+    Indexed on purpose: the absence monitor (deploy/gatte-audit-wazuh-monitor.json)
+    counts these, and its silence only means something because heartbeats
+    cross the same tail as the records.
+  -->
+  <rule id="110740" level="3">
+    <if_sid>110700</if_sid>
+    <field name="v" type="pcre2">^5$</field>
+    <field name="type" type="pcre2">^heartbeat$</field>
+    <description>Gatte audit: heartbeat from chain $(chain)</description>
+    <group>gatte_heartbeat,</group>
+  </rule>
+
+  <rule id="110741" level="12">
+    <if_sid>110740</if_sid>
+    <field name="suspended" type="pcre2">^true$</field>
+    <description>Gatte audit: chain $(chain) is suspended and serves nothing (registry unreadable)</description>
+    <group>gatte_heartbeat,</group>
+  </rule>
+
+  <rule id="110742" level="10">
+    <if_sid>110740</if_sid>
+    <field name="suspended" type="pcre2">^false$</field>
+    <field name="changed" type="pcre2">^[1-9]</field>
+    <description>Gatte audit: $(changed) approved tool(s) changed on chain $(chain), awaiting review</description>
+    <group>gatte_heartbeat,gatte_quarantine,</group>
+  </rule>
+
+</group>

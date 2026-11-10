@@ -82,7 +82,7 @@ func fillTool(e env, server, tool string) content {
 		kv("Status", toolStatusText(t)),
 		kv("Class", classText(t.Class)),
 		kv("Fingerprint", vis(t.ObservedHash)),
-		kv("Approved at", vis(dash(t.ApprovedHash))))
+		kv("Approved", vis(dash(t.ApprovedHash))))
 	if sensitive {
 		state := stWarn.Render("no: approval alone does not serve a sensitive tool")
 		if cleared {

@@ -249,7 +249,7 @@ func TestWithoutTheAccountsSocketRootActionsAreAbsent(t *testing.T) {
 	}
 	mustShow(t, a, "D redial", "X deregister", "Maintenance")
 	settle(a, a.switchTab(1))
-	mustShow(t, a, "Roles  read-only", "sudo mcp-gateway tui -manage-users", "+ Block a subject")
+	mustShow(t, a, "Read-only: editing needs console_manages", "sudo mcp-gateway tui -manage-users", "+ Block a subject")
 }
 
 func TestUntrustedTextCannotDriveTheTerminal(t *testing.T) {
@@ -384,3 +384,40 @@ func TestProgramRunsAndQuits(t *testing.T) {
 }
 
 var _ io.Reader = (*slowReader)(nil)
+
+func TestAnOlderReadDoesNotOverwriteANewerOne(t *testing.T) {
+	a, _ := start(t, false)
+	p := a.top()
+	a.Update(loadedMsg{id: p.id, seq: p.seq - 1, c: content{rows: []row{textRow("stale rows")}}})
+	if v := a.View(); strings.Contains(v, "stale rows") {
+		t.Fatalf("an older read was drawn over the newer one:\n%s", v)
+	}
+}
+
+func TestBackLeavesThePageTheActionStartedFrom(t *testing.T) {
+	a, _ := start(t, true)
+	open(a, serverPage("casemgmt"))
+	a.origin = a.top().id
+	settle(a, a.switchTab(1))
+	open(a, accountPage("ana.lima"))
+	settle(a, func() tea.Msg { return resultMsg{result{ok: true, summary: "done", back: true}} })
+	if got := a.top().title; got != "ana.lima" {
+		t.Errorf("the Users tab lost its page: top is %q", got)
+	}
+	if got := a.stacks[0][len(a.stacks[0])-1].title; got != "MCP Servers / APIs" {
+		t.Errorf("the Servers tab still shows %q, want the list", got)
+	}
+}
+
+func TestOneTimePasswordIsWipedEvenUnderAPrompt(t *testing.T) {
+	a, _ := start(t, true)
+	next := confirm("Next?", func() tea.Cmd { return nil })
+	settle(a, func() tea.Msg {
+		return resultMsg{result{ok: true, summary: "done", secret: "otp-123", label: "pw", next: next}}
+	})
+	mustShow(t, a, "otp-123", "Next?")
+	press(a, "x")
+	if v := a.View(); strings.Contains(v, "otp-123") {
+		t.Fatalf("the password stayed on screen under a prompt:\n%s", v)
+	}
+}

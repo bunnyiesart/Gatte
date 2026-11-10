@@ -45,6 +45,9 @@ type page struct {
 	fill func(e env) content
 	content
 	loaded bool
+	// seq numbers the reads, so a slow read that answers after a newer one
+	// is dropped rather than drawn over it.
+	seq    int
 	cursor int
 	offset int
 }
@@ -101,8 +104,8 @@ type (
 		err error
 	}
 	loadedMsg struct {
-		id int
-		c  content
+		id, seq int
+		c       content
 	}
 	pushMsg   struct{ p *page }
 	promptMsg struct{ p *prompt }
@@ -127,6 +130,9 @@ type app struct {
 	height int
 	prompt *prompt
 	result *result
+	// origin is the page the last action started from: the page a result
+	// with back leaves, whichever tab is shown when it answers.
+	origin int
 }
 
 func newApp(e env) *app {
@@ -163,8 +169,9 @@ func (a *app) load(p *page) tea.Cmd {
 	if p == nil {
 		return nil
 	}
-	e, id, fill := a.env, p.id, p.fill
-	return func() tea.Msg { return loadedMsg{id, fill(e)} }
+	p.seq++
+	e, id, seq, fill := a.env, p.id, p.seq, p.fill
+	return func() tea.Msg { return loadedMsg{id, seq, fill(e)} }
 }
 
 // Init reads who the operator is first: what a page offers depends on the
@@ -185,7 +192,7 @@ func (a *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case loadedMsg:
 		for _, s := range a.stacks {
 			for _, p := range s {
-				if p.id == m.id {
+				if p.id == m.id && p.seq == m.seq {
 					p.content, p.loaded = m.c, true
 					p.fixCursor()
 				}
@@ -202,15 +209,30 @@ func (a *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case resultMsg:
 		r := m.r
 		a.result = &r
+		cmds := []tea.Cmd{r.next}
 		if r.back {
-			a.pop()
+			cmds = append(cmds, a.leave(a.origin))
 		}
 		// What is shown after an action is what the backend now says.
-		return a, tea.Batch(a.load(a.top()), r.next)
+		return a, tea.Batch(append(cmds, a.load(a.top()))...)
 	case tea.KeyMsg:
 		return a, a.key(m)
 	}
 	return a, nil
+}
+
+// leave pops page id off its own tab when it is that tab's top; a tab not
+// shown has the page under it read again.
+func (a *app) leave(id int) tea.Cmd {
+	for i, s := range a.stacks {
+		if n := len(s); n > 1 && s[n-1].id == id {
+			a.stacks[i] = s[:n-1]
+			if i != a.active {
+				return a.load(a.stacks[i][n-2])
+			}
+		}
+	}
+	return nil
 }
 
 func (a *app) pop() {
@@ -224,19 +246,17 @@ func (a *app) key(m tea.KeyMsg) tea.Cmd {
 	if k == "ctrl+c" {
 		return tea.Quit
 	}
+	if a.result != nil && a.result.secret != "" {
+		// A one-time password is wiped by the first key, prompt or not; that
+		// key does nothing else, so it cannot be lost to a page change unseen.
+		a.result.secret = ""
+		a.result = nil
+		return nil
+	}
 	if a.prompt != nil {
 		return a.promptKey(m)
 	}
-	if a.result != nil {
-		held := a.result.secret != ""
-		a.result.secret = ""
-		a.result = nil
-		if held {
-			// A one-time password is wiped by the first key; that key does
-			// nothing else, so it cannot be lost to a page change unseen.
-			return nil
-		}
-	}
+	a.result = nil
 	p := a.top()
 	switch k {
 	case "q":
@@ -266,6 +286,7 @@ func (a *app) key(m tea.KeyMsg) tea.Cmd {
 	}
 	for _, act := range p.keys() {
 		if act.key == k {
+			a.origin = p.id
 			return act.run()
 		}
 	}

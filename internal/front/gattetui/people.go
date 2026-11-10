@@ -210,9 +210,13 @@ func addPerson(e env) tea.Cmd {
 			return ask("Email (optional)", "", func(email string) tea.Cmd {
 				draft := adminapi.AccountDraft{DisplayName: strings.TrimSpace(display), Username: strings.TrimSpace(username), Email: strings.TrimSpace(email)}
 				return checkThen(e, draft, func(chk adminapi.AccountCheck) tea.Cmd {
+					// A check echoes only the groups it was asked about, so the
+					// choice comes from the assignable list.
 					var names []string
-					for _, g := range chk.Groups {
-						names = append(names, g.Name+" ("+g.Role+")")
+					if groups, err := e.acc.AssignableGroups(ctx()); err == nil {
+						for _, g := range groups.Groups {
+							names = append(names, g.Name+" ("+g.Role+")")
+						}
 					}
 					draft.Username = chk.Username
 					return ask("Groups for "+vis(chk.Username)+"; assignable: "+vis(strings.Join(names, ", ")), "", func(groups string) tea.Cmd {

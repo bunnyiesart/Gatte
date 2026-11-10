@@ -29,25 +29,24 @@ var roleCols = []int{18, 10, 22}
 
 func rolesSection(e env) ([]row, error) {
 	editable := managesAndRoot(e.caps())
-	title := "Roles"
-	if !editable {
-		title += "  read-only; editing needs console_manages and -manage-users"
-	}
-	rows := []row{heading(title)}
-	p, err := e.op.People(ctx())
-	if err != nil {
-		return append(rows, textRow(stBad.Render("The roles could not be read: "+vis(errText(err))))), nil
-	}
+	var notes []row
 	var blocks []frontkit.RoleBlock
 	if editable {
 		rt, rerr := e.acc.GetRoles(ctx())
 		if rerr != nil {
-			rows = append(rows, textRow(stBad.Render("The roles file could not be read: "+vis(errText(rerr)))))
+			notes = append(notes, textRow(stBad.Render("The roles file could not be read, so nothing here can be edited: "+vis(errText(rerr)))))
 			editable = false
 		} else {
 			blocks = frontkit.ParseRoles(rt.Text)
-			rows = append(rows, textRow(stDim.Render(vis(rt.Path)+"  "+vis(rt.SHA256))))
+			notes = append(notes, textRow(stDim.Render(vis(rt.Path)+"  "+vis(rt.SHA256))))
 		}
+	} else {
+		notes = append(notes, textRow(stDim.Render("Read-only: editing needs console_manages and -manage-users.")))
+	}
+	rows := append([]row{heading("Roles")}, notes...)
+	p, err := e.op.People(ctx())
+	if err != nil {
+		return append(rows, textRow(stBad.Render("The roles could not be read: "+vis(errText(err))))), nil
 	}
 	for _, r := range p.Roles {
 		name := r.Name

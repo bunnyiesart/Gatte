@@ -1,0 +1,83 @@
+{{define "roles_panel"}}
+{{$base := .Base}}{{$csrf := .CSRF}}
+<section>
+  <div class="section-head"><h2>Roles</h2></div>
+  {{if .Problem}}
+  <div class="notice error" role="note">{{template "warn"}}<pre>{{vistext .Problem}}</pre></div>
+  {{else if not .Loaded}}
+  <div class="group empty-state"><p><b>The roles file could not be read.</b></p></div>
+  {{else}}
+  <p class="caption">Who may call which tool, read from the roles file{{if .Path}} <span class="mono">{{vis .Path}}</span>{{end}}. A grant or a revoke edits one entry and keeps the file's comments; it is written but <b>not applied</b> until you reload on the Servers tab.{{if .SHA}} Read as sha256:{{short .SHA}}.{{end}}</p>
+  {{if .Rows}}
+  {{if .Servers}}
+  <div class="matrix-scroll">
+    <table class="matrix">
+      <thead>
+        <tr>
+          <th class="corner" rowspan="2" scope="col">Role</th>
+          {{range .Servers}}<th class="srv" colspan="{{len .Tools}}" scope="colgroup">{{vis .Name}}</th>{{end}}
+        </tr>
+        <tr>
+          {{range .Servers}}{{range .Tools}}<th class="tool{{if .Sensitive}} sens{{end}}" scope="col"><span class="tn">{{vis .Tool}}</span>{{if .Sensitive}}<span class="tag">sensitive</span>{{end}}</th>{{end}}{{end}}
+        </tr>
+      </thead>
+      <tbody>
+        {{range .Rows}}
+        <tr>
+          <th class="rolename" scope="row">
+            <span class="rn">{{vis .Name}}</span>{{if .NonRead}} <span class="badge">non_read</span>{{end}}
+            <span class="grp">{{if .Groups}}{{range $i, $g := .Groups}}{{if $i}}, {{end}}{{vis $g}}{{end}}{{else}}no groups{{end}}</span>
+          </th>
+          {{range .Cells}}<td class="cell{{if .Covered}} on{{end}}{{if .Sensitive}} sens{{end}}"{{if .Title}} title="{{.Title}}"{{end}}>{{if .Covered}}{{.Mark}}{{else}}<span class="off">·</span>{{end}}</td>{{end}}
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+  <p class="caption legend"><span class="k">&#9679;</span> granted &nbsp; <span class="k">&#10043;</span> via a <span class="mono">*</span> grant over the whole backend &nbsp; <span class="k sens">&#9679;</span> a sensitive tool, reachable only by a <span class="mono">non_read</span> role that names it. Hover a mark to see how it is granted.</p>
+  {{else}}
+  <div class="group empty-state"><p><b>No tools yet.</b> Register an MCP server / API on the Servers tab, then grants have something to point at.</p></div>
+  {{end}}
+  {{else}}
+  <div class="group empty-state"><p><b>No roles.</b> Roles are defined as <code>[[role]]</code> blocks in the roles file.</p></div>
+  {{end}}
+
+  {{if .Rows}}
+  <div class="section-head sub-head"><h3>Grant or revoke a tool</h3></div>
+  <form class="group form" method="post" action="{{$base}}/users/roles/edit">
+    <input type="hidden" name="csrf" value="{{$csrf}}">
+    <label class="field"><span>Role</span>
+      <select name="role">{{range .RoleNames}}<option value="{{.}}">{{vis .}}</option>{{end}}</select>
+    </label>
+    <label class="field wide"><span>Tool</span>
+      <select name="tool">
+        {{range .Servers}}<optgroup label="{{vis .Name}}">{{range .Tools}}<option value="{{.NS}}">{{vis .Tool}}{{if .Sensitive}} (sensitive){{end}}</option>{{end}}</optgroup>{{end}}
+      </select>
+    </label>
+    <div class="form-end btn-pair">
+      <button class="btn primary" name="op" value="grant">Grant</button>
+      <button class="btn" name="op" value="revoke">Revoke</button>
+    </div>
+  </form>
+  <p class="caption">A <b>safe</b> tool is granted under the role's <span class="mono">[role.grants]</span>. A <b>sensitive</b> tool is reachable only by a role marked <span class="mono">non_read</span> that names it explicitly, so grant it a <span class="mono">non_read</span> role (mark one below first) — and a sensitive tool still needs a separate clear on the tool's page before it is served. Revoking a tool reached by a <span class="mono">*</span> grant is not a one-tool edit; change the whole-backend grant on the raw Roles page.</p>
+
+  <div class="section-head sub-head"><h3>Who may act (<span class="mono">non_read</span>)</h3></div>
+  <ul class="group">
+    {{range .Rows}}
+    <li class="row">
+      <span class="row-text"><span class="row-title">{{vis .Name}}</span><span class="row-detail">{{if .NonRead}}May hold sensitive tools it names explicitly.{{else}}Read-only: cannot be granted a sensitive tool.{{end}}</span></span>
+      {{if .HasBlock}}
+      <form method="post" action="{{$base}}/users/roles/non-read">
+        <input type="hidden" name="csrf" value="{{$csrf}}">
+        <input type="hidden" name="role" value="{{.Name}}">
+        {{if .NonRead}}<input type="hidden" name="on" value="false"><button class="btn small">Clear non_read</button>{{else}}<input type="hidden" name="on" value="true"><button class="btn small">Mark non_read</button>{{end}}
+      </form>
+      {{end}}
+    </li>
+    {{end}}
+  </ul>
+  <p class="caption"><span class="mono">non_read</span> marks a role whose holders may act, not only read. It is set on its own, never silently by a grant: making a role able to act is a decision you take here.</p>
+  {{end}}
+  {{end}}
+</section>
+{{end}}

@@ -229,6 +229,52 @@ func TestReconcile_RedialsWhenTheEntrySpecChanges(t *testing.T) {
 	}
 }
 
+// TestReconcile_RedialsARemoteWhoseSignedAuthDescriptorChanges: a remote
+// session holds the auth descriptor it was dialed with, so re-registering
+// the same URL and secret with a different descriptor, and signing it,
+// must redial -- otherwise the credential keeps going where the old,
+// no longer attested, descriptor sent it.
+func TestReconcile_RedialsARemoteWhoseSignedAuthDescriptorChanges(t *testing.T) {
+	sgn := newTestSigner(t)
+	entry := registry.UpstreamServer{
+		Name: "vendor", Transport: registry.TransportRemote, URL: "https://mcp.vendor.example/mcp",
+		AuthKind: registry.AuthHeader, AuthName: "X-Api-Key", EnvVarNames: []string{"VENDOR_TOKEN"},
+		RemoteKind: registry.RemoteStreamable,
+	}
+	if err := entry.Validate(); err != nil {
+		t.Fatalf("test entry is not valid: %v", err)
+	}
+	h := newHarness(t, "vendor.echo")
+	h.reg.mu.Lock()
+	h.reg.entries = append(h.reg.entries, entry)
+	h.reg.mu.Unlock()
+	h.vault.values["VENDOR_TOKEN"] = "sk-vendor"
+	h.serve("vendor", def("echo", "echo"))
+	sigs := &signatureStore{sigs: map[string]signer.Signature{"vendor": sgn.Sign(entry)}}
+	h.gw.signatures = sigs
+	h.gw.verifier = trusting(t, sgn)
+	h.mustConnect()
+
+	h.reregister("vendor", func(e *registry.UpstreamServer) {
+		e.AuthKind, e.AuthName = registry.AuthBearer, ""
+	})
+	h.reg.mu.Lock()
+	resigned := h.reg.entries[0]
+	h.reg.mu.Unlock()
+	sigs.sigs["vendor"] = sgn.Sign(resigned)
+	h.mustReconcile()
+
+	if n := h.dialCount("vendor"); n != 2 {
+		t.Errorf("vendor dialed %d times, want 2: a re-signed auth descriptor must be re-dialed", n)
+	}
+	h.dialer.mu.Lock()
+	spec := h.dialer.specs["vendor"]
+	h.dialer.mu.Unlock()
+	if spec.AuthKind != string(registry.AuthBearer) || spec.AuthName != "" {
+		t.Errorf("spec = %+v, want the redial to carry the new descriptor", spec)
+	}
+}
+
 // TestReconcile_ChangedEntryIsClosedEvenIfTheRedialFails is the other half
 // of the sentence above -- "whether or not the new one comes up". A live
 // process running a specification the operator has replaced is not a

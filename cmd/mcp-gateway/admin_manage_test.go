@@ -113,6 +113,36 @@ func TestManage_RegisterThroughTheAPIIsTheConsolesRegister(t *testing.T) {
 	}
 }
 
+// A remote entry (registered in the terminal) reaches the console with
+// what canonical/v4-remote signs: its auth descriptor and remote kind, so
+// "attest this configuration" attests what is shown (contract 1.8.0).
+func TestManage_RemoteEntryDetailShowsWhatItsSignatureCovers(t *testing.T) {
+	e, svc := manageEnv(t)
+	ctx := context.Background()
+	if err := e.upstreams().Register(ctx, registry.UpstreamServer{
+		Name: "vendor", Transport: registry.TransportRemote, URL: "https://mcp.vendor.example/mcp",
+		AuthKind: registry.AuthHeader, AuthName: "X-Api-Key", EnvVarNames: []string{"VENDOR_TOKEN"},
+		RemoteKind: registry.RemoteStreamable,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	d, err := svc.GetUpstream(ctx, "vendor")
+	if err != nil {
+		t.Fatalf("GetUpstream: %v", err)
+	}
+	if d.Transport != "remote" || d.RemoteKind != "streamable" || d.Auth == nil ||
+		*d.Auth != (adminapi.UpstreamAuth{Kind: "header", Name: "X-Api-Key", Secret: "VENDOR_TOKEN"}) {
+		t.Fatalf("detail = %+v (auth %+v)", d, d.Auth)
+	}
+	wire, err := json.Marshal(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(wire), `"remote_kind":"streamable"`) {
+		t.Errorf("the wire form has no remote_kind: %s", wire)
+	}
+}
+
 // An oci entry registered through the API is the entry `upstream register
 // -transport oci` writes: the same signed bytes, the same refusals (a tag,
 // a wrapper flag), and not signed (design/adr/0059 §4, §6).

@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/rand"
@@ -1508,7 +1509,10 @@ func (g *Gateway) Reconcile(ctx context.Context) error {
 //
 // It compares what reaching the backend depends on -- what specFor hands a
 // Dialer, plus the names of the credentials resolved into its environment
-// -- and nothing else. CreatedAt and UpdatedAt are deliberately excluded:
+// -- and nothing else. The auth descriptor, remote kind and http operations
+// are part of it: a remote session holds the descriptor it was dialed with
+// for its whole life, so a re-signed descriptor must redial to reach the
+// wire. CreatedAt and UpdatedAt are deliberately excluded:
 // a re-registration that changes no field is not a reconnect command, and
 // reading UpdatedAt here would quietly make it one (ADR-0020 item 6).
 func specChanged(was, now registry.UpstreamServer) bool {
@@ -1517,7 +1521,11 @@ func specChanged(was, now registry.UpstreamServer) bool {
 		was.URL != now.URL ||
 		was.Image != now.Image ||
 		!slices.Equal(was.Args, now.Args) ||
-		!slices.Equal(was.EnvVarNames, now.EnvVarNames)
+		!slices.Equal(was.EnvVarNames, now.EnvVarNames) ||
+		was.AuthKind != now.AuthKind ||
+		was.AuthName != now.AuthName ||
+		was.RemoteKind != now.RemoteKind ||
+		!bytes.Equal(was.Operations, now.Operations)
 }
 
 // Refresh re-asks every *already-connected* upstream what tools it

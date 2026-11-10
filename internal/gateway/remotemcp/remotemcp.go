@@ -19,7 +19,11 @@
 //     is nothing to forward. The value is never logged and never quoted in
 //     an error -- errors this package returns are masked with it.
 //
-//  3. Close ends the session.
+//  3. Every response body is capped (WithMaxBodyBytes), as the REST
+//     adapter caps its own: a remote that answers with an endless body is
+//     refused, not buffered.
+//
+//  4. Close ends the session.
 //
 // # What this adapter does not isolate, and does not claim to
 //
@@ -43,6 +47,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"strings"
@@ -72,6 +78,14 @@ const (
 	AuthHeader = "header"
 )
 
+// defaultMaxBodyBytes is the gateway's own result ceiling: a response the
+// gateway would refuse as a Result is not worth holding in memory first.
+const defaultMaxBodyBytes = gateway.DefaultMaxResultBytes
+
+// sessionIDHeader is the Streamable HTTP session header (MCP spec,
+// transports §2.5).
+const sessionIDHeader = "Mcp-Session-Id"
+
 // maxRedirects bounds a same-origin redirect chain by the number of
 // requests one exchange may send, as in the REST adapter.
 const maxRedirects = 3
@@ -92,6 +106,9 @@ var (
 	ErrNoCredential = errors.New("remotemcp: credential resolved to an empty value")
 	// ErrClosed means a method was called on an upstream already closed.
 	ErrClosed = errors.New("remotemcp: upstream connection is closed")
+	// ErrBodyTooLarge means a response body exceeded WithMaxBodyBytes. The
+	// body is refused, never truncated.
+	ErrBodyTooLarge = errors.New("remotemcp: response body too large")
 )
 
 // Dialer opens remote MCP sessions. It implements [gateway.Dialer]. It
@@ -100,6 +117,7 @@ var (
 type Dialer struct {
 	clientName    string
 	clientVersion string
+	maxBody       int64
 	// guard is the zero egress.Guard (system resolver, egress.RefuseAddr)
 	// outside _test.go, which is the only place that replaces it.
 	guard egress.Guard
@@ -121,9 +139,20 @@ func WithClientInfo(name, version string) Option {
 	}
 }
 
+// WithMaxBodyBytes sets how many bytes of one response body the adapter
+// reads before refusing it with ErrBodyTooLarge. Values <= 0 select the
+// default (gateway.DefaultMaxResultBytes).
+func WithMaxBodyBytes(n int64) Option {
+	return func(d *Dialer) {
+		if n > 0 {
+			d.maxBody = n
+		}
+	}
+}
+
 // New returns a Dialer adjusted by opts.
 func New(opts ...Option) *Dialer {
-	d := &Dialer{clientName: "mcp-gateway"}
+	d := &Dialer{clientName: "mcp-gateway", maxBody: defaultMaxBodyBytes}
 	for _, opt := range opts {
 		opt(d)
 	}
@@ -202,7 +231,8 @@ func credential(spec gateway.UpstreamSpec, env map[string]string) (string, error
 //
 // env holds the one resolved secret of a keyed entry, or nothing. Its value
 // is kept by the returned upstream's request signer and nowhere else; no
-// error this function returns quotes it.
+// error this function or the upstream returns quotes it. env itself is not
+// kept, so the caller may clear it once Dial returns.
 func (d *Dialer) Dial(ctx context.Context, spec gateway.UpstreamSpec, env map[string]string) (gateway.Upstream, error) {
 	if spec.Transport != TransportRemote {
 		return nil, fmt.Errorf("%w: upstream %q declares transport %q, this dialer serves %q only",
@@ -225,7 +255,7 @@ func (d *Dialer) Dial(ctx context.Context, spec gateway.UpstreamSpec, env map[st
 		return nil, fmt.Errorf("upstream %q: %w", spec.Name, err)
 	}
 
-	signer := &signedTransport{base: d.guard.Transport()}
+	signer := &signedTransport{base: d.guard.Transport(), maxBody: d.maxBody}
 	switch spec.AuthKind {
 	case AuthBearer:
 		signer.header, signer.value = "Authorization", "Bearer "+secret
@@ -243,39 +273,112 @@ func (d *Dialer) Dial(ctx context.Context, spec gateway.UpstreamSpec, env map[st
 		// re-observes tools, ADR-0058 §8), so the stream would be a
 		// long-lived connection with nothing to carry.
 		DisableStandaloneSSE: true,
+		// One event can never be larger than the body that carries it; the
+		// body cap is the bound that holds across events.
+		MaxEventSize: int(min(d.maxBody, math.MaxInt)),
 	}
+	red := redactor{origin: origin, secret: secret}
 	client := mcp.NewClient(&mcp.Implementation{Name: d.clientName, Version: d.clientVersion}, nil)
 	session, err := client.Connect(ctx, transport, nil)
 	if err != nil {
-		return nil, fmt.Errorf("remotemcp: upstream %q: connect: %w", spec.Name, scrub(err, env))
+		return nil, fmt.Errorf("remotemcp: upstream %q: connect: %w", spec.Name, red.scrub(err))
 	}
-	return &upstream{name: spec.Name, session: session, env: env}, nil
+	return &upstream{name: spec.Name, session: session, redact: red, signer: signer}, nil
 }
 
 // signedTransport adds the gateway's own credential to every request of
-// one connection. It is the one place the value lives after Dial.
+// one connection, caps every response body, and notices a lost session.
+// It is the one place the credential's header value lives after Dial.
 type signedTransport struct {
 	base          http.RoundTripper
 	header, value string
+	maxBody       int64
+	// sessionLost is set when a request that carried a session id was
+	// answered 404: the spec's signal that the server no longer holds the
+	// session (transports §2.5.3). It is read here, at the HTTP layer,
+	// because the SDK reports such a 404 as an ordinary JSON-RPC error
+	// whenever the body decodes as one.
+	sessionLost atomic.Bool
 }
 
 // RoundTrip implements [http.RoundTripper]. The request is cloned, as the
 // RoundTripper contract requires, before the header is set.
 func (t *signedTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	if t.header == "" {
-		return t.base.RoundTrip(req)
+	out := req
+	if t.header != "" {
+		out = req.Clone(req.Context())
+		out.Header.Set(t.header, t.value)
 	}
-	out := req.Clone(req.Context())
-	out.Header.Set(t.header, t.value)
-	return t.base.RoundTrip(out)
+	resp, err := t.base.RoundTrip(out)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode == http.StatusNotFound && req.Header.Get(sessionIDHeader) != "" {
+		t.sessionLost.Store(true)
+	}
+	resp.Body = &cappedBody{rc: resp.Body, left: t.maxBody, limit: t.maxBody}
+	return resp, nil
 }
 
-// scrub returns err with every value of env masked, keeping only errors.Is
-// of the original -- the stdio adapter's discipline. A JSON-RPC error the
-// server wrote is server-authored text and may echo the token it was sent.
-func scrub(err error, env map[string]string) error {
-	msg, masked := gateway.MaskCredentials(err.Error(), env)
-	if !masked {
+// cappedBody reads at most limit bytes of a response body and fails the
+// read once one more byte arrives: a body of exactly limit bytes passes,
+// a larger one is refused rather than truncated.
+type cappedBody struct {
+	rc          io.ReadCloser
+	left, limit int64
+}
+
+func (b *cappedBody) Read(p []byte) (int, error) {
+	if b.left <= 0 {
+		var one [1]byte
+		n, err := b.rc.Read(one[:])
+		if n > 0 {
+			return 0, fmt.Errorf("%w: more than %d bytes", ErrBodyTooLarge, b.limit)
+		}
+		return 0, err
+	}
+	if int64(len(p)) > b.left {
+		p = p[:b.left]
+	}
+	n, err := b.rc.Read(p)
+	b.left -= int64(n)
+	return n, err
+}
+
+func (b *cappedBody) Close() error { return b.rc.Close() }
+
+// redactor scrubs what this adapter returns as an error. It holds the
+// credential the signer already holds -- no second source of it -- because
+// the gateway clears the map Dial was given as soon as Dial returns.
+type redactor struct {
+	origin string
+	secret string
+}
+
+// scrub returns err with the credential masked and any URL net/http put in
+// a *url.Error replaced by the signed origin, keeping only errors.Is of the
+// original -- the stdio and REST adapters' discipline. A JSON-RPC error the
+// server wrote is server-authored text and may echo the token it was sent;
+// a refused redirect's url.Error carries the Location the server chose.
+func (r redactor) scrub(err error) error {
+	msg := err.Error()
+	changed := false
+	var uerr *url.Error
+	if errors.As(err, &uerr) {
+		safe := fmt.Sprintf("%s %s: %v", uerr.Op, r.origin, uerr.Err)
+		if whole := uerr.Error(); strings.Contains(msg, whole) {
+			msg = strings.ReplaceAll(msg, whole, safe)
+		} else {
+			msg = safe
+		}
+		changed = true
+	}
+	if r.secret != "" {
+		var masked bool
+		msg, masked = gateway.MaskCredentials(msg, map[string]string{"credential": r.secret})
+		changed = changed || masked
+	}
+	if !changed {
 		return err
 	}
 	return scrubbedError{msg: msg, is: err}
@@ -290,12 +393,11 @@ func (e scrubbedError) Error() string        { return e.msg }
 func (e scrubbedError) Is(target error) bool { return errors.Is(e.is, target) }
 
 // upstream is one live remote session, implementing [gateway.Upstream].
-// env is kept only to mask errors; the value that is sent lives in the
-// session's signedTransport.
 type upstream struct {
 	name    string
 	session *mcp.ClientSession
-	env     map[string]string
+	redact  redactor
+	signer  *signedTransport
 
 	closed    atomic.Bool
 	closeOnce sync.Once
@@ -382,16 +484,18 @@ func isGone(err error) bool {
 
 // classify maps a lost session to gateway.ErrUpstreamGone -- unless this
 // side closed it, which is ErrClosed (ADR-0024 item 2, as in stdio) -- and
-// masks the credential in whatever it returns.
+// masks the credential in whatever it returns. A 404 to a request that
+// carried the session id counts as lost even when the SDK surfaced it as a
+// JSON-RPC error (signedTransport.sessionLost).
 func (u *upstream) classify(err error) error {
-	if isGone(err) {
+	if isGone(err) || u.signer.sessionLost.Load() {
 		if u.closed.Load() {
 			err = fmt.Errorf("%w: %w", ErrClosed, err)
 		} else {
 			err = fmt.Errorf("%w: %w", gateway.ErrUpstreamGone, err)
 		}
 	}
-	return scrub(err, u.env)
+	return u.redact.scrub(err)
 }
 
 // Close implements [gateway.Upstream]. Safe to call more than once; the
@@ -401,7 +505,7 @@ func (u *upstream) Close() error {
 	u.closeOnce.Do(func() {
 		u.closed.Store(true)
 		if err := u.session.Close(); err != nil {
-			u.closeErr = fmt.Errorf("remotemcp: upstream %q: close: %w", u.name, scrub(err, u.env))
+			u.closeErr = fmt.Errorf("remotemcp: upstream %q: close: %w", u.name, u.redact.scrub(err))
 		}
 	})
 	return u.closeErr

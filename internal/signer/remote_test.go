@@ -2,6 +2,8 @@ package signer
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"testing"
 
@@ -70,5 +72,26 @@ func TestCanonicalRemoteCoversURLAuthAndKind(t *testing.T) {
 				t.Errorf("signature still verifies after changing the %s: %v", name, err)
 			}
 		})
+	}
+}
+
+// TestCanonical_RemoteAndHTTPBytesArePinned pins the v4-remote and v3-http
+// encodings with a golden hash, as TestCanonical_StdioEntryKeepsV1Bytes
+// pins v1. Changing either constant invalidates every deployed signature
+// of that transport: the backends drop out of service at the next
+// reconcile until each entry is signed again.
+func TestCanonical_RemoteAndHTTPBytesArePinned(t *testing.T) {
+	for _, tc := range []struct {
+		tag    string
+		entry  registry.UpstreamServer
+		golden string
+	}{
+		{"v4-remote", remoteEntry(), "d214f351e73b6829295779db67599ff05083a0bd4544d94e5f3cacc2916c445c"},
+		{"v3-http", httpEntry(), "9403006a75df45ae3294c7db57e1bf127adafdf6c6bc626faa819c6382ef9628"},
+	} {
+		sum := sha256.Sum256(Canonical(tc.entry))
+		if got := hex.EncodeToString(sum[:]); got != tc.golden {
+			t.Errorf("%s canonical bytes moved: sha256 %s, want %s", tc.tag, got, tc.golden)
+		}
 	}
 }

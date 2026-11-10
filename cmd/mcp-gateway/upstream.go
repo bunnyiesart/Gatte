@@ -154,6 +154,8 @@ type upstreamJSON struct {
 	Args      []string `json:"args,omitempty"`
 	URL       string   `json:"url,omitempty"`
 	Image     string   `json:"image,omitempty"`
+	// RemoteKind is set for a remote entry only.
+	RemoteKind string `json:"remote_kind,omitempty"`
 	// Network is the namespace the backend runs in (design/adr/0033):
 	// "host" for stdio, the resolved --network for oci ("none" when the
 	// entry declares none), or "" with NetworkError set when the oci
@@ -273,6 +275,7 @@ func upstreamRow(entry registry.UpstreamServer, state signatureState) upstreamJS
 		Args:        entry.Args,
 		URL:         entry.URL,
 		Image:       entry.Image,
+		RemoteKind:  string(entry.RemoteKind),
 		EnvVarNames: envVarNamesOrEmpty(entry),
 		Signature:   string(state),
 		CreatedAt:   entry.CreatedAt,

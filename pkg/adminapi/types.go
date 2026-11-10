@@ -12,7 +12,7 @@ import "time"
 
 // ContractVersion is the api/admin.openapi.yaml info.version these types
 // implement.
-const ContractVersion = "1.7.0"
+const ContractVersion = "1.8.0"
 
 // Default socket paths (design/adr/0040 §1).
 const (
@@ -481,12 +481,15 @@ type VerifyResult struct {
 
 // Upstream is one registered backend. It never carries a secret value.
 type Upstream struct {
-	Name         string    `json:"name"`
-	Transport    string    `json:"transport"`
-	Command      string    `json:"command,omitempty"`
-	Args         []string  `json:"args,omitempty"`
-	URL          string    `json:"url,omitempty"`
-	Image        string    `json:"image,omitempty"`
+	Name      string   `json:"name"`
+	Transport string   `json:"transport"`
+	Command   string   `json:"command,omitempty"`
+	Args      []string `json:"args,omitempty"`
+	URL       string   `json:"url,omitempty"`
+	Image     string   `json:"image,omitempty"`
+	// RemoteKind is the MCP client transport of a remote entry (1.8.0);
+	// empty for every other transport.
+	RemoteKind   string    `json:"remote_kind,omitempty"`
 	Network      string    `json:"network"`
 	NetworkError string    `json:"network_error,omitempty"`
 	EnvVarNames  []string  `json:"env_var_names"`

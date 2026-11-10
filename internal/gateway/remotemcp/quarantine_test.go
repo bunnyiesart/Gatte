@@ -1,10 +1,12 @@
 package remotemcp_test
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"log/slog"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/bunnyiesart/Gatte/internal/access"
@@ -31,15 +33,11 @@ func (v mapVault) Resolve(_ context.Context, name string) (vault.Secret, error) 
 	return vault.NewSecret(value), nil
 }
 
-// TestGateway_RemoteToolsAreQuarantined runs a remote entry through the
-// real Gateway, registry, vault port and quarantine: its tool starts
-// pending and invisible, is served once approved, and goes dark again when
-// the server changes its definition and the refresh re-observes it
-// (ADR-0058 §8, §10). The credential sent is the one the vault resolved.
-func TestGateway_RemoteToolsAreQuarantined(t *testing.T) {
-	m := newMock(t)
+// remoteGateway wires a real Gateway, registry, vault port and quarantine
+// around one keyed remote entry pointing at m, and connects it.
+func remoteGateway(t *testing.T, m *mockRemote, logger *slog.Logger) (*gateway.Gateway, *quarantinesql.Store) {
+	t.Helper()
 	c := ctx(t)
-
 	db, err := store.Open(":memory:")
 	if err != nil {
 		t.Fatal(err)
@@ -77,7 +75,7 @@ func TestGateway_RemoteToolsAreQuarantined(t *testing.T) {
 	gw, err := gateway.New(gateway.Config{
 		Registry: reg, Vault: mapVault{"VENDOR_TOKEN": token}, Quarantine: q, Audit: auditsql.New(db),
 		Policy: policy, Blocklist: accesssql.New(db), Quota: gate, Dialer: loopbackDialer(),
-		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Logger: logger,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -86,6 +84,18 @@ func TestGateway_RemoteToolsAreQuarantined(t *testing.T) {
 	if err := gw.Connect(c); err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
+	return gw, q
+}
+
+// TestGateway_RemoteToolsAreQuarantined runs a remote entry through the
+// real Gateway, registry, vault port and quarantine: its tool starts
+// pending and invisible, is served once approved, and goes dark again when
+// the server changes its definition and the refresh re-observes it
+// (ADR-0058 §8, §10). The credential sent is the one the vault resolved.
+func TestGateway_RemoteToolsAreQuarantined(t *testing.T) {
+	m := newMock(t)
+	c := ctx(t)
+	gw, q := remoteGateway(t, m, slog.New(slog.NewTextHandler(io.Discard, nil)))
 
 	analyst := access.Identity{Subject: "sub-1", Groups: []string{"soc-n1"}}
 	visible := func() bool {
@@ -118,5 +128,29 @@ func TestGateway_RemoteToolsAreQuarantined(t *testing.T) {
 	}
 	if !m.sawHeader("Authorization", "Bearer "+token) {
 		t.Error("the session did not carry the vault-resolved token on every request")
+	}
+}
+
+// TestGateway_RemoteListErrorEchoingTheTokenIsMasked: the gateway clears
+// the env map it dialed with, so masking must not depend on it. A remote
+// whose tools/list error quotes the bearer it was sent reaches neither the
+// error Refresh returns nor the log, which ships to the SIEM.
+func TestGateway_RemoteListErrorEchoingTheTokenIsMasked(t *testing.T) {
+	m := newMock(t)
+	var logs bytes.Buffer
+	gw, _ := remoteGateway(t, m, slog.New(slog.NewTextHandler(&logs, nil)))
+	m.echoList.Store(true)
+	err := gw.Refresh(ctx(t))
+	if err == nil {
+		t.Fatal("Refresh: want the listing failure reported")
+	}
+	if strings.Contains(err.Error(), token) {
+		t.Fatalf("LEAK in Refresh error: %v", err)
+	}
+	if strings.Contains(logs.String(), token) {
+		t.Fatalf("LEAK in the log: %s", logs.String())
+	}
+	if !strings.Contains(logs.String(), "rejected credential") {
+		t.Errorf("the masked server message should be logged: %s", logs.String())
 	}
 }

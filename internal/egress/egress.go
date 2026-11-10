@@ -75,7 +75,22 @@ var (
 	// sixToFour is RFC 3056: bytes 2-5 are an IPv4 address the packet is
 	// tunnelled to, with the same consequence as nat64.
 	sixToFour = netip.MustParsePrefix("2002::/16")
-	broadcast = netip.MustParseAddr("255.255.255.255")
+	// ipv4Compatible is the deprecated RFC 4291 §2.5.5.1 ::a.b.c.d form and
+	// ipv4Translated the RFC 2765 (SIIT) ::ffff:0:a.b.c.d form. Both carry
+	// the IPv4 in the last four bytes, and a host with a translator or a
+	// legacy ::/96 auto-tunnel reaches it, so they are judged by it.
+	ipv4Compatible = netip.MustParsePrefix("::/96")
+	ipv4Translated = netip.MustParsePrefix("::ffff:0:0:0/96")
+	// teredo (RFC 4380) carries an obfuscated IPv4 the tunnel delivers to,
+	// and discard (RFC 6666) is a black hole: neither is a backend address.
+	teredo  = netip.MustParsePrefix("2001::/32")
+	discard = netip.MustParsePrefix("100::/64")
+	// reserved4 is 240.0.0.0/4 (RFC 1112, "future use") and benchmarking
+	// 198.18.0.0/15 (RFC 2544): neither is a public service, and both are
+	// global unicast to net/netip.
+	reserved4    = netip.MustParsePrefix("240.0.0.0/4")
+	benchmarking = netip.MustParsePrefix("198.18.0.0/15")
+	broadcast    = netip.MustParseAddr("255.255.255.255")
 )
 
 // RefuseAddr is the IP policy (ADR-0048 Decisão 6, second bullet): it
@@ -90,9 +105,11 @@ var (
 // link-local (169.254.0.0/16, which holds the cloud metadata endpoint, and
 // fe80::/10); multicast and the limited broadcast; CGNAT 100.64.0.0/10; and
 // an IPv6 address that embeds one of the above (IPv4-mapped ::ffff:a.b.c.d
-// is unmapped before every test; NAT64 -- the well-known and the RFC 8215
-// local-use prefix -- and 6to4 are unwrapped and judged by their IPv4).
-// Anything left that is not global unicast is refused as well: a class is a
+// is unmapped before every test; IPv4-compatible ::a.b.c.d, IPv4-translated
+// ::ffff:0:a.b.c.d, NAT64 -- the well-known and the RFC 8215 local-use
+// prefix -- and 6to4 are unwrapped and judged by their IPv4); Teredo
+// 2001::/32 and the discard prefix 100::/64; and the reserved 240.0.0.0/4
+// and benchmarking 198.18.0.0/15 ranges. Anything left that is not global unicast is refused as well: a class is a
 // permission, and an address this function cannot name is not evidence that
 // it is safe to reach.
 //
@@ -107,7 +124,13 @@ func RefuseAddr(a netip.Addr) error {
 	}
 	a = a.Unmap()
 	if a.Is6() {
-		if nat64.Contains(a) || nat64Local.Contains(a) || sixToFour.Contains(a) {
+		if teredo.Contains(a) || discard.Contains(a) {
+			return fmt.Errorf("%w: %s is a Teredo or discard address, not a backend", ErrRefused, a)
+		}
+		// :: and ::1 sit in ::/96 too; the switch below names them better.
+		compatible := ipv4Compatible.Contains(a) && !a.IsUnspecified() && !a.IsLoopback()
+		if compatible || ipv4Translated.Contains(a) ||
+			nat64.Contains(a) || nat64Local.Contains(a) || sixToFour.Contains(a) {
 			if err := RefuseAddr(embeddedIPv4(a)); err != nil {
 				return fmt.Errorf("%w: %s embeds an IPv4 address that is refused: %v", ErrRefused, a, detail(err))
 			}
@@ -131,15 +154,17 @@ func RefuseAddr(a netip.Addr) error {
 		return fmt.Errorf("%w: %s is the broadcast address", ErrRefused, a)
 	case a.Is4() && cgnat.Contains(a):
 		return fmt.Errorf("%w: %s is carrier-grade NAT space (100.64.0.0/10)", ErrRefused, a)
+	case a.Is4() && (reserved4.Contains(a) || benchmarking.Contains(a)):
+		return fmt.Errorf("%w: %s is reserved or benchmarking space", ErrRefused, a)
 	case !a.IsGlobalUnicast():
 		return fmt.Errorf("%w: %s is not a global unicast address", ErrRefused, a)
 	}
 	return nil
 }
 
-// embeddedIPv4 extracts the IPv4 address a NAT64 (the /96 embedding, last
-// four bytes -- well-known or local-use) or 6to4 (bytes 2-5) address
-// carries. Pre-condition: a is in one of those three prefixes.
+// embeddedIPv4 extracts the IPv4 address an IPv4-compatible,
+// IPv4-translated or NAT64 address (last four bytes) or a 6to4 address
+// (bytes 2-5) carries. Pre-condition: a is in one of those prefixes.
 func embeddedIPv4(a netip.Addr) netip.Addr {
 	b := a.As16()
 	if sixToFour.Contains(a) {
@@ -336,15 +361,18 @@ func JoinHostPort(host, port string) string {
 
 // PinRedirects returns an http.Client.CheckRedirect that is the structural
 // host pin: a redirect whose scheme, host or port differs from origin is
-// refused with ErrRefused -- not followed, and not reported with its full
-// URL, since a Location a server controls can carry anything. A same-origin
+// refused with ErrRefused -- not followed, and not reported at all beyond
+// the fact, since a Location a server controls can carry anything, its host
+// included. net/http still puts the raw Location in the *url.Error it wraps
+// this in; each adapter replaces that URL before the error leaves it. A
+// same-origin
 // redirect is followed while fewer than maxRequests requests have been
 // sent; past that the last 3xx is returned as the response
 // (http.ErrUseLastResponse).
 func PinRedirects(origin string, maxRequests int) func(*http.Request, []*http.Request) error {
 	return func(req *http.Request, via []*http.Request) error {
-		if got := Origin(req.URL); got != origin {
-			return fmt.Errorf("%w: redirect to %s refused; this upstream is pinned to %s", ErrRefused, got, origin)
+		if Origin(req.URL) != origin {
+			return fmt.Errorf("%w: a redirect off %s was refused; this upstream is pinned to it", ErrRefused, origin)
 		}
 		if len(via) >= maxRequests {
 			return http.ErrUseLastResponse

@@ -82,6 +82,7 @@ type UpstreamOperation struct {
 // tool the quarantine holds under its name.
 type UpstreamDetail struct {
 	Upstream
+	// Auth is the credential descriptor of an http or (1.8.0) remote entry.
 	Auth *UpstreamAuth `json:"auth,omitempty"`
 	// Operations is the frozen set, sorted by name; OperationsSHA256 is
 	// the digest the signature covers. http only.

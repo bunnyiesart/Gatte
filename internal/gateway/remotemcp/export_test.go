@@ -28,3 +28,10 @@ func AllowLoopbackForTest(d *Dialer) {
 func SetLookupForTest(d *Dialer, fn func(ctx context.Context, host string) ([]netip.Addr, error)) {
 	d.guard.Lookup = fn
 }
+
+// SetPolicyForTest replaces the whole IP policy with fn, so a test can
+// count how often a dial consults it (at resolve time and again at the
+// socket) or refuse only one of the two.
+func SetPolicyForTest(d *Dialer, fn func(netip.Addr) error) {
+	d.guard.Policy = fn
+}

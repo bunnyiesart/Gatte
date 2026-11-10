@@ -263,6 +263,7 @@ func runSignAll(e *opEnv, dryRun bool, reviewed string) int {
 			fmt.Fprintf(tw, "  image\t%s\n", p.entry.Image)
 		}
 		fmt.Fprintf(tw, "  env var names\t%s\n", opDash(strings.Join(p.entry.EnvVarNames, ", ")))
+		opTransportSignedFields(tw, p.entry)
 		if !opFlushTable(tw, e.stderr) {
 			return exitProblem
 		}

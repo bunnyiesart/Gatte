@@ -36,6 +36,25 @@ func TestCmdUpstream_RemoteRegisterListSign(t *testing.T) {
 	requireContains(t, out.String(), "streamable", "sign")
 }
 
+// TestCmdSignAll_PlanShowsTheRemoteDescriptor: the sign -all plan says each
+// signature covers the fields shown, so a remote entry's plan row must show
+// the auth descriptor and remote kind canonical/v4-remote signs.
+func TestCmdSignAll_PlanShowsTheRemoteDescriptor(t *testing.T) {
+	configPath := writeOperatorConfig(t, signerSection(t, writeSigningKey(t, 0o600)))
+	var out, errb bytes.Buffer
+	requireExit(t, cmdUpstream([]string{
+		"register", "-config", configPath, "-name", "vendor", "-transport", "remote",
+		"-url", "https://mcp.vendor.example/mcp", "-auth-kind", "header", "-auth-name", "X-Api-Key", "-env", "VENDOR_TOKEN",
+	}, &out, &errb), exitOK, "register remote: "+errb.String())
+
+	out.Reset()
+	errb.Reset()
+	requireExit(t, cmdSign([]string{"-config", configPath, "-all", "-dry-run"}, &out, &errb), exitOK, "sign -all -dry-run: "+errb.String())
+	requireContains(t, out.String(), "header X-Api-Key: <secret>", "sign -all plan")
+	requireContains(t, out.String(), "remote kind", "sign -all plan")
+	requireContains(t, out.String(), "streamable", "sign -all plan")
+}
+
 // TestCmdUpstream_RemoteRefusals: what the console refuses for a remote
 // entry before the database is opened.
 func TestCmdUpstream_RemoteRefusals(t *testing.T) {

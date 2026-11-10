@@ -313,18 +313,7 @@ func runSign(e *opEnv, name string) int {
 		fmt.Fprintf(tw, "  image\t%s\n", entry.Image)
 	}
 	fmt.Fprintf(tw, "  env var names\t%s\n", opDash(strings.Join(entry.EnvVarNames, ", ")))
-	if entry.Transport == registry.TransportHTTP {
-		// Both are covered by canonical/v3-http (the descriptor as fields,
-		// the set as its digest), and "the signature covers those fields"
-		// below would be false of an http entry that did not show them.
-		fmt.Fprintf(tw, "  auth\t%s\n", opAuthLine(entry))
-		fmt.Fprintf(tw, "  operations\t%s\n", opOperationsLine(entry))
-	}
-	if entry.Transport == registry.TransportRemote {
-		// Covered by canonical/v4-remote with the URL.
-		fmt.Fprintf(tw, "  auth\t%s\n", opRemoteAuthLine(entry))
-		fmt.Fprintf(tw, "  remote kind\t%s\n", entry.RemoteKind)
-	}
+	opTransportSignedFields(tw, entry)
 	fmt.Fprintf(tw, "  key file\t%s\n", keyFile)
 	fmt.Fprintf(tw, "  public key\t%s\n", signer.KeyFingerprint(s.PublicKey()))
 	if !opFlushTable(tw, e.stderr) {
@@ -437,4 +426,20 @@ func (e *opEnv) signingKeyOrLoad() (ed25519.PrivateKey, string, bool) {
 		return e.signingKey, e.signingKeyFile, true
 	}
 	return loadSigningKey(e.cfg, e.stderr)
+}
+
+// opTransportSignedFields writes the rows a transport's canonical encoding
+// covers beyond transport, command/url, image and env var names, so every
+// place that says "the signature covers the fields shown" shows them: the
+// descriptor and operation digest of an http entry (canonical/v3-http),
+// the descriptor and remote kind of a remote one (canonical/v4-remote).
+func opTransportSignedFields(tw io.Writer, entry registry.UpstreamServer) {
+	switch entry.Transport {
+	case registry.TransportHTTP:
+		fmt.Fprintf(tw, "  auth\t%s\n", opAuthLine(entry))
+		fmt.Fprintf(tw, "  operations\t%s\n", opOperationsLine(entry))
+	case registry.TransportRemote:
+		fmt.Fprintf(tw, "  auth\t%s\n", opRemoteAuthLine(entry))
+		fmt.Fprintf(tw, "  remote kind\t%s\n", entry.RemoteKind)
+	}
 }

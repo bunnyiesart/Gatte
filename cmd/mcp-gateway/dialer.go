@@ -67,7 +67,9 @@ func newTransportDialer(cfg *config.Config, credentials vault.Provider) transpor
 			// still allows, so the error an analyst sees for a slow API is
 			// the gateway's deadline, not the adapter's.
 			gwrest.WithHTTPClientTimeout(cfg.Response.CallTimeoutOrDefault())),
-		remote:                 gwremote.New(gwremote.WithClientInfo("mcp-gateway", buildVersion)),
+		remote: gwremote.New(gwremote.WithClientInfo("mcp-gateway", buildVersion),
+			// The same body ceiling as the http adapter, for the same reason.
+			gwremote.WithMaxBodyBytes(cfg.Response.MaxResultBytes())),
 		allowCredentialedStdio: cfg.Upstreams.AllowCredentialedStdio,
 	}
 }

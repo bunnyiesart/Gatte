@@ -1,0 +1,79 @@
+{{$base := .Base}}
+<section>
+  <h2>Tools</h2>
+  <p class="caption">A tool is served only after you approve it, and only at the exact version you reviewed. A sensitive tool (one that can act) needs clearing on top of approval before it is served.</p>
+
+  {{if and .ReviewSet (gt .Review 1)}}
+  <div class="notice" role="note">{{template "dot"}}<p>{{.Review}} tools wait for review. <a href="{{$base}}{{.ServerPath}}/tools/review-set">Review them on one page</a>, every definition in full, and approve them together.</p></div>
+  {{end}}
+
+  {{if .Tools}}
+  <div class="group">
+    <table class="list">
+      <thead><tr><th>Tool</th><th>Class</th><th>Status</th><th>Updated</th><th><span class="sr">Open</span></th></tr></thead>
+      <tbody>
+      {{range .Tools}}
+        <tr>
+          <td class="t-title" data-label="Tool"><a class="cell-link mono" href="{{$base}}{{.Path}}">{{vis .Name}}</a></td>
+          <td class="t-badge" data-label="Class">{{if .Sensitive}}<span class="badge danger">Sensitive</span>{{else}}<span class="badge ok">Safe</span>{{end}}</td>
+          <td class="t-badge" data-label="Status">{{template "toolstatus" .Status}}{{if .NotServed}} <span class="badge">Not served</span>{{end}}</td>
+          <td class="muted num t-hide" data-label="Updated">{{time .UpdatedAt}}</td>
+          <td class="end">{{template "chev"}}</td>
+        </tr>
+      {{end}}
+      </tbody>
+    </table>
+  </div>
+  {{if .Sensitive}}<p class="caption">A sensitive tool shown as <span class="badge">Not served</span> is approved but not yet cleared: approval alone does not make it callable.</p>{{end}}
+  {{else}}
+  <div class="group empty-state"><p><b>No tools yet.</b> They appear once the gateway connects to this backend and reads its tools; each one is pending until you approve it.</p></div>
+  {{end}}
+</section>
+
+{{define "toolstatus"}}{{if eq . "changed"}}<span class="badge danger">{{template "warn"}}Changed</span>{{else if eq . "pending"}}<span class="badge pending">{{template "dot"}}Needs review</span>{{else}}<span class="badge ok">{{template "check"}}Approved</span>{{end}}{{end}}
+
+{{define "tooldef"}}
+{{if or (eq .Status "changed") .Hidden}}
+<div class="notice danger" role="alert">{{template "warn"}}<p>{{if eq .Status "changed"}}<b>This tool changed after it was approved.</b> It isn't served until you approve the new version.{{end}}
+{{if .Hidden}}<b>{{if eq .Status "changed"}}It also contains{{else}}It contains{{end}} {{.Hidden}} hidden {{if eq .Hidden 1}}character{{else}}characters{{end}}</b>, highlighted below: a model reads {{if eq .Hidden 1}}it{{else}}them{{end}}, a screen wouldn't show {{if eq .Hidden 1}}it{{else}}them{{end}}. That's a reason not to approve; unapproved, the tool stays unserved.{{end}}</p></div>
+{{end}}
+
+{{if .Shown}}
+{{if not .Diff}}
+<section>
+  <h2>Description</h2>
+  <div class="group prose">{{range .Description}}<p>{{.HTML}}</p>{{end}}</div>
+</section>
+{{end}}
+{{if .Diff}}
+<section>
+  <h2>What changed</h2>
+  <div class="group diff">{{range .Diff}}<div class="line {{.Class}}">{{.HTML}}</div>{{end}}</div>
+</section>
+{{end}}
+
+<section class="more">
+  <details class="group">
+    <summary>Input schema{{template "chev"}}</summary>
+    {{if .InputSchema}}<pre>{{.InputSchema}}</pre>{{else}}<p class="muted">None declared.</p>{{end}}
+  </details>
+  <details class="group">
+    <summary>Output schema{{template "chev"}}</summary>
+    {{if .OutputSchema}}<pre>{{.OutputSchema}}</pre>{{else}}<p class="muted">None declared.</p>{{end}}
+  </details>
+  <details class="group">
+    <summary>Technical details{{template "chev"}}</summary>
+    <dl class="facts">
+      <div><dt>This version</dt><dd class="mono">sha256:{{.Fingerprint}}</dd></div>
+      <div><dt>Approved version</dt><dd class="mono">{{if .Approved}}sha256:{{.Approved}}{{else}}None{{end}}</dd></div>
+    </dl>
+    <pre>{{vistext .Output}}</pre>
+  </details>
+</section>
+{{else}}
+<details class="group" open>
+  <summary>Details{{template "chev"}}</summary>
+  <pre>{{vistext .Output}}</pre>
+</details>
+{{end}}
+{{end}}

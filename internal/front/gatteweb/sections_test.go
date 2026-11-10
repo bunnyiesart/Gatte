@@ -12,7 +12,9 @@ import (
 // out in nav order, the current page is marked, and the managing-only entries
 // (Secrets, Roles) appear only with both capabilities.
 func TestNavForOrderAndGating(t *testing.T) {
-	full := navFor("tools", Capabilities{Manages: true, Root: true})
+	// Tools is no longer a top-nav tab (design/adr/0051): it lives on each
+	// server's detail page, registered as a DetailPanel, not a NavItem.
+	full := navFor("servers", Capabilities{Manages: true, Root: true})
 	var labels []string
 	current := ""
 	for _, n := range full {
@@ -21,7 +23,7 @@ func TestNavForOrderAndGating(t *testing.T) {
 			current = n.Label
 		}
 	}
-	want := []string{"Overview", "MCP Servers / APIs", "Tools", "People", "Users", "Access", "Audit", "Backends", "Secrets", "Roles", "Quota"}
+	want := []string{"Overview", "MCP Servers / APIs", "People", "Users", "Access", "Audit", "Backends", "Secrets", "Roles", "Quota"}
 	if len(labels) != len(want) {
 		t.Fatalf("nav labels = %v, want %v", labels, want)
 	}
@@ -30,8 +32,8 @@ func TestNavForOrderAndGating(t *testing.T) {
 			t.Fatalf("nav order = %v, want %v", labels, want)
 		}
 	}
-	if current != "Tools" {
-		t.Fatalf("current = %q, want Tools", current)
+	if current != "MCP Servers / APIs" {
+		t.Fatalf("current = %q, want MCP Servers / APIs", current)
 	}
 
 	// Without the managing capabilities, Secrets and Roles are hidden.

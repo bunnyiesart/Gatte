@@ -1,0 +1,25 @@
+# Scheduled chain-head integrity check for the Gatte audit trail.
+# Install on the OPERATOR box -- the one that reaches Graylog and can ssh to the
+# gateway host -- NOT on the gateway. See deploy/gatte-anchor-check.md.
+#
+# Install both scripts side by side and the env file, then load this:
+#
+#   install -d -m 0755 /usr/local/libexec/gatte
+#   install -m 0755 deploy/gatte-anchor-check.sh  /usr/local/libexec/gatte/
+#   install -m 0755 deploy/gatte-anchor-verify.sh /usr/local/libexec/gatte/
+#   crontab gatte-anchor-check.crontab        # as the operator user
+#
+# A healthy run produces no output, so cron sends no mail. Mail arrives only
+# when the check has failed ANCHOR_FAIL_THRESHOLD runs in a row -- a real
+# finding, with the full comparison output in the body.
+
+# Send alert mail somewhere a human reads.
+MAILTO=soc-oncall@example.invalid
+
+# Credentials and any host overrides live in the env file (mode 0600), never
+# here. The script sources /usr/local/etc/gatte/anchor.env by default; override
+# the path with ANCHOR_ENV in that file's stead if needed.
+
+# Hourly. With the default threshold of 2, a persistent mismatch pages within
+# about two hours, and a shipper lag shorter than an hour never pages.
+0 * * * * /usr/local/libexec/gatte/gatte-anchor-check.sh

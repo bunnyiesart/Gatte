@@ -292,8 +292,12 @@ ever sit at the start of a database. **This fired for real on 12 Sep
 2026**, caused by `gateway-serve-verify.sh`, which wipes the database by
 design on every run and now warns before doing it.
 
-What the script does *not* do is run itself: nothing schedules it, and
-that half is still a human's job.
+Running it on a timer is `deploy/gatte-anchor-check.sh`, with a crontab and
+a systemd-timer example beside it and install steps in
+`deploy/gatte-anchor-check.md`. It wraps this script, stays quiet while the
+heads match, and alerts only after a few consecutive failures, so a single
+shipper lag does not page. It changes nothing about how the trail ships; it
+only closes the half that used to be a human's job.
 
 The other half of this paragraph was closed on 15 Sep 2026 and the text
 outlived it by a day. It used to say there was still no Graylog alert for

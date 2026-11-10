@@ -210,7 +210,7 @@ func (f *Front) serverSign(w http.ResponseWriter, r *http.Request) {
 	}
 	name := r.PathValue("name")
 	res, err := f.acc.SignUpstream(r.Context(), name)
-	f.showResult(w, r, "servers", "Sign "+frontkit.VisibleText(name), serverBack(name), signResult(res, err))
+	f.showResult(w, r, "servers", "Attest "+frontkit.VisibleText(name), serverBack(name), signResult(res, err))
 }
 
 // serverRemove deregisters. The form makes the operator type the name; the

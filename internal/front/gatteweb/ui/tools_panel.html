@@ -1,6 +1,7 @@
 {{$base := .Base}}
 <section>
-  <h2>Tools</h2>
+  <h2>Tool safety</h2>
+  <p class="caption">Attesting the configuration does not approve any tool. Each tool is reviewed and approved here, by its fingerprint; a sensitive tool also needs Clear.</p>
   <p class="caption">A tool is served only after you approve it, and only at the exact version you reviewed. A sensitive tool (one that can act) needs clearing on top of approval before it is served.</p>
 
   {{if and .ReviewSet (gt .Review 1)}}

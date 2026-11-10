@@ -289,14 +289,14 @@ func TestUIManage_RootScreensDoNotExistWithoutManageUsers(t *testing.T) {
 	if _, err := m.e.upstreams().Get(context.Background(), "ioc"); !errors.Is(err, registry.ErrNotFound) {
 		t.Fatal("registered although the key's value could not be written")
 	}
-	// Registering without root works, and says how to sign.
+	// Registering without root works, and says how to attest.
 	got = m.post("/servers", url.Values{"name": {"ioc"}, "url": {"https://ioc.example.net"}, "openapi_text": {restSpecJSON}, "key_name": {"IOC_KEY"}})
-	if got.code != http.StatusOK || !got.has("not signed yet") || !got.has("sudo mcp-gateway sign ioc") {
+	if got.code != http.StatusOK || !got.has("not attested yet") || !got.has("sudo mcp-gateway sign ioc") {
 		t.Fatalf("register without -manage-users:\n%s", got.body)
 	}
 	detail := m.get("/servers/ioc")
 	if detail.has("/servers/ioc/sign") || !detail.has("sudo mcp-gateway ui -manage-users") {
-		t.Errorf("the server page offers Sign without -manage-users:\n%s", detail.body)
+		t.Errorf("the server page offers to attest without -manage-users:\n%s", detail.body)
 	}
 }
 
@@ -317,7 +317,7 @@ func TestUIManage_RegisterWritesTheKeyAndShowsTheReport(t *testing.T) {
 		t.Fatalf("register: %d\n%s", got.code, got.body)
 	}
 	for _, want := range []string{"Registered as a REST API", "1 safe · 1 sensitive", "report", "Sensitive", "Safe", "derived from the document",
-		"X-API-Key", "IOC_KEY", "not signed yet", "Sign ioc", m.s.session + "/servers/ioc"} {
+		"X-API-Key", "IOC_KEY", "not attested yet", "Attest ioc", "Attest this configuration", "nothing about the tools", m.s.session + "/servers/ioc"} {
 		if !got.has(want) {
 			t.Errorf("the register report lacks %q", want)
 		}
@@ -333,7 +333,7 @@ func TestUIManage_RegisterWritesTheKeyAndShowsTheReport(t *testing.T) {
 	if len(m.signed) != 0 {
 		t.Fatalf("registering signed %v", m.signed)
 	}
-	if sg := m.post("/servers/ioc/sign", nil); !sg.has("Signed with a trusted key") || !slices.Equal(m.signed, []string{"ioc"}) {
+	if sg := m.post("/servers/ioc/sign", nil); !sg.has("Configuration attested with a trusted key") || !slices.Equal(m.signed, []string{"ioc"}) {
 		t.Fatalf("signing from the report: %v\n%s", m.signed, sg.body)
 	}
 	entry, err := m.e.upstreams().Get(context.Background(), "ioc")
@@ -401,12 +401,19 @@ func TestUIManage_TheServerPageSignsRedialsAndRemovesOnlyWithTheNameTyped(t *tes
 		t.Fatalf("the page of an unknown backend: %d", got.code)
 	}
 	page := m.get("/servers/ioc")
-	for _, want := range []string{"ioc", "REST API", "https://ioc.example.net/api/v2", "POST", "/report", "Sensitive", "Safe", "Remove this backend", `name="confirm"`, "/servers/ioc/sign"} {
+	// The attestation state names the configuration, and the tools panel
+	// is the separate tool-safety gate (ADR-0060).
+	for _, want := range []string{"ioc", "REST API", "https://ioc.example.net/api/v2", "POST", "/report", "Sensitive", "Safe", "Remove this backend", `name="confirm"`, "/servers/ioc/sign",
+		"Config not attested", "It is not served until a configuration is attested", "Attest this configuration",
+		"Tool safety", "Attesting the configuration does not approve any tool"} {
 		if !page.has(want) {
 			t.Errorf("the server page lacks %q", want)
 		}
 	}
-	if sign := m.post("/servers/ioc/sign", nil); !sign.has("Signed with a trusted key") || !sign.has("ed25519:test-key") {
+	if list := m.get("/servers"); !list.has("Config not attested") || list.has("Not signed") {
+		t.Errorf("the servers list does not show the attestation state:\n%s", list.body)
+	}
+	if sign := m.post("/servers/ioc/sign", nil); !sign.has("Configuration attested with a trusted key") || !sign.has("ed25519:test-key") {
 		t.Fatalf("sign:\n%s", sign.body)
 	}
 
@@ -685,7 +692,7 @@ func TestUIManage_TheContainerFormRegistersAndDoesNotSign(t *testing.T) {
 	if got.code != http.StatusOK {
 		t.Fatalf("register: %d\n%s", got.code, got.body)
 	}
-	for _, want := range []string{"Registered as a container (oci)", ociTestImage, "slirp4netns", "INTEL_KEY", "OTHER_KEY", "not signed yet", "Sign intel", "image digest"} {
+	for _, want := range []string{"Registered as a container (oci)", ociTestImage, "slirp4netns", "INTEL_KEY", "OTHER_KEY", "not attested yet", "Attest intel", "Attest this configuration", "the image digest, the network and the variable names"} {
 		if !got.has(want) {
 			t.Errorf("the register result lacks %q", want)
 		}

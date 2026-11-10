@@ -5,9 +5,9 @@
 <div class="head">
   <h1 class="mono-title">{{vis .Name}}</h1>
   {{if eq .Transport "oci"}}
-  <p class="sub">Registered as a container (oci). Its tools are listed once the gateway runs it, each pending your review, and it is <b>not signed yet</b> — review the entry below and sign it.</p>
+  <p class="sub">Registered as a container (oci). Its tools are listed once the gateway runs it, each pending your review, and its configuration is <b>not attested yet</b> — review the entry below and attest it.</p>
   {{else}}
-  <p class="sub">Registered as a REST API. Its tools are pending your review, and it is <b>not signed yet</b> — review the entry below and sign it.</p>
+  <p class="sub">Registered as a REST API. Its tools are pending your review, and its configuration is <b>not attested yet</b> — review the entry below and attest it.</p>
   {{end}}
 </div>
 
@@ -61,16 +61,16 @@
 {{if $.Data.Output}}<div class="notice" role="status">{{template "check"}}<pre>{{vistext $.Data.Output}}</pre></div>{{end}}
 
 <section>
-  <h2>Sign</h2>
-  <p class="caption">{{if eq .Transport "oci"}}Signing attests that you read the image digest, the network and the variable names above.{{else}}Signing attests that you read the URL, where the key is injected and every operation above.{{end}} It is a separate step from registering, on purpose. The gateway doesn't serve an unsigned backend.</p>
+  <h2>Attest this configuration</h2>
+  <p class="caption">Sign the configuration shown above with the gateway key. Review {{if eq .Transport "oci"}}the image digest, the network and the variable names{{else}}the URL or command, the arguments, and the secret names{{end}} first — this signature attests exactly what is shown, nothing about the tools. It is a separate step from registering, on purpose: the gateway doesn't serve a backend whose configuration is not attested.</p>
   {{if $.Data.Root}}
   <form class="group row" method="post" action="{{$base}}/servers/{{.Name}}/sign">
     <input type="hidden" name="csrf" value="{{$csrf}}">
-    <span class="row-text"><span class="row-title">Sign {{vis .Name}}</span><span class="row-detail">Signs with root's key on the accounts socket.</span></span>
-    <button class="btn primary small">Sign</button>
+    <span class="row-text"><span class="row-title">Attest {{vis .Name}}</span><span class="row-detail">Signs with root's key on the accounts socket.</span></span>
+    <button class="btn primary small">Attest this configuration</button>
   </form>
   {{else}}
-  <div class="notice" role="note">{{template "dot"}}<p>Signing needs root's accounts socket: start the console with <code>sudo mcp-gateway ui -manage-users</code>, or sign in the terminal with <code>sudo mcp-gateway sign {{vis .Name}}</code>.</p></div>
+  <div class="notice" role="note">{{template "dot"}}<p>Attesting needs root's accounts socket: start the console with <code>sudo mcp-gateway ui -manage-users</code>, or attest in the terminal with <code>sudo mcp-gateway sign {{vis .Name}}</code>.</p></div>
   {{end}}
 </section>
 

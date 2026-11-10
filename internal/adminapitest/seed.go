@@ -19,7 +19,7 @@ func (s *Server) seed() {
 		adminapi.FeatureMaintenance, adminapi.FeatureBackendHealth, adminapi.FeatureToolReviewSet,
 		adminapi.FeatureToolClear, adminapi.FeatureServeControl, adminapi.FeatureAuditFilters,
 		adminapi.FeatureBlockUntil, adminapi.FeatureAccountDelete, adminapi.FeatureOffboard,
-		adminapi.FeatureConsoleManages,
+		adminapi.FeatureConsoleManages, adminapi.FeatureOCIRegister,
 	}
 
 	s.definitions = map[string]definition{}

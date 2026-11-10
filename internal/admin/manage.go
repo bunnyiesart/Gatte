@@ -79,6 +79,16 @@ type ManageDeps struct {
 	// `upstream register -transport http` does; its refusals are
 	// *adminapi.Error. The ActionResult part is the service's to fill.
 	RegisterHTTP func(ctx context.Context, cfg *config.Config, req adminapi.RegisterUpstreamRequest) (adminapi.RegisterUpstreamResult, error)
+	// RegisterEntry registers an entry that needs no ingestion (oci,
+	// design/adr/0059 §2) the way `upstream register` does: the entry as
+	// the request gives it, the registry's and the dialer's rules, then
+	// Register. Its refusals are *adminapi.Error; the ActionResult part is
+	// the service's to fill.
+	RegisterEntry func(ctx context.Context, cfg *config.Config, req adminapi.RegisterUpstreamRequest) (adminapi.RegisterUpstreamResult, error)
+	// OCIRuntime reports nil when this host can run an oci entry (podman
+	// is on PATH), or why it cannot, in words an operator can act on. nil
+	// port: it cannot.
+	OCIRuntime func() error
 	// Deregister removes the entry and everything keyed by its name.
 	Deregister func(ctx context.Context, cfg *config.Config, name string) (adminapi.DeregisterResult, error)
 	// Sign signs one entry with the root key.
@@ -111,6 +121,21 @@ type ManageDeps struct {
 func (s *Service) ConsoleManages() bool {
 	cfg, err := s.d.Config()
 	return err == nil && cfg.Admin.ConsoleManages
+}
+
+// OCIRegister reports whether an oci entry can be registered through this
+// backend (design/adr/0059 §3): the console manages, the port is wired and
+// the host has podman. whoami lists FeatureOCIRegister on it, so a host
+// without podman never offers the form.
+func (s *Service) OCIRegister() bool {
+	return s.ConsoleManages() && s.d.RegisterEntry != nil && s.ociRuntime() == nil
+}
+
+func (s *Service) ociRuntime() error {
+	if s.d.OCIRuntime == nil {
+		return errors.New("this backend does not run containers")
+	}
+	return s.d.OCIRuntime()
 }
 
 // managing reads the configuration and refuses when console_manages is
@@ -185,10 +210,12 @@ func (s *Service) GetUpstream(ctx context.Context, name string) (adminapi.Upstre
 	return d, nil
 }
 
-// RegisterUpstream registers an http backend from its OpenAPI document
-// (design/adr/0050 §2): the same ingestion, refusals and report as
-// `upstream register -transport http`. stdio and oci stay in the terminal
-// (design/adr/0034).
+// RegisterUpstream registers a backend, by the transport the request
+// names: http from its OpenAPI document (design/adr/0050 §2), with the
+// same ingestion, refusals and report as `upstream register -transport
+// http`; oci from its pinned image (design/adr/0059 §2), as `upstream
+// register -transport oci`. stdio stays in the terminal (design/adr/0059
+// §5). Registering never signs.
 //
 // Not under the service's lock: a document URL is fetched, which may take
 // the request's whole deadline, and the registry's insert is atomic on
@@ -205,6 +232,107 @@ func (s *Service) RegisterUpstream(ctx context.Context, a Actor, req adminapi.Re
 	if err := upstreamName(req.Name); err != nil {
 		return res, err
 	}
+	switch req.Transport {
+	case "", adminapi.UpstreamTransportHTTP:
+		return s.registerHTTP(ctx, a, cfg, req, res)
+	case adminapi.UpstreamTransportOCI:
+		return s.registerOCI(ctx, a, cfg, req, res)
+	case "stdio":
+		return res, adminapi.NewError(adminapi.CodeInvalidArgument,
+			"a stdio backend is registered in the terminal only, with mcp-gateway upstream register: it runs as the gateway's own user, beside the vault (design/adr/0059 §5)").
+			With("field", "transport")
+	default:
+		return res, adminapi.NewError(adminapi.CodeInvalidArgument, "transport %s is not one this operation registers: use %q or %q",
+			visible.Escape(fmt.Sprintf("%q", req.Transport)), adminapi.UpstreamTransportHTTP, adminapi.UpstreamTransportOCI).With("field", "transport")
+	}
+}
+
+// foreignField refuses the first of fields the request gives, by its
+// contract name: a field of another transport would otherwise be dropped
+// without a word, and the operator would sign an entry that is not the one
+// they described.
+func foreignField(transport string, fields map[string]bool) error {
+	for _, name := range slices.Sorted(maps.Keys(fields)) {
+		if fields[name] {
+			return adminapi.NewError(adminapi.CodeInvalidArgument, "%s is not a field of a %s backend", name, transport).With("field", name)
+		}
+	}
+	return nil
+}
+
+// envNames applies the CLI's -env rules to each name: never NAME=value,
+// and a vault name's grammar. A NAME=value pasted here would be a secret in
+// the request, and repeating it would put it in a log: only the part left
+// of "=" is said.
+func envNames(field string, names []string) error {
+	for _, n := range names {
+		if before, _, found := strings.Cut(n, "="); found {
+			return adminapi.NewError(adminapi.CodeInvalidArgument, "%s %q looks like NAME=value (the value is not repeated here): it takes the vault NAME only; set the value with PUT /v1/secrets/{name}", field, visible.Escape(before)).With("field", field)
+		}
+		if err := secretName(n); err != nil {
+			var ae *adminapi.Error
+			if errors.As(err, &ae) {
+				return ae.With("field", field)
+			}
+			return err
+		}
+	}
+	return nil
+}
+
+// registerOCI is the oci half of RegisterUpstream. Nothing is ingested:
+// the port builds the entry and runs the CLI's rules, so the digest pin
+// and the wrapper are the CLI's, byte for byte (design/adr/0059 §4).
+func (s *Service) registerOCI(ctx context.Context, a Actor, cfg *config.Config, req adminapi.RegisterUpstreamRequest, res adminapi.RegisterUpstreamResult) (adminapi.RegisterUpstreamResult, error) {
+	if err := foreignField(adminapi.UpstreamTransportOCI, map[string]bool{
+		"url": req.URL != "", "openapi_url": req.OpenAPIURL != "", "openapi_document": req.OpenAPIDocument != "",
+		"auth_kind": req.AuthKind != "", "auth_name": req.AuthName != "", "key_name": req.KeyName != "",
+	}); err != nil {
+		return res, err
+	}
+	if strings.TrimSpace(req.Image) == "" {
+		return res, adminapi.NewError(adminapi.CodeInvalidArgument, "an oci backend needs image, pinned by digest: NAME@sha256:<64 hex>").With("field", "image")
+	}
+	if err := envNames("env_var_names", req.EnvVarNames); err != nil {
+		return res, err
+	}
+	if err := s.ociRuntime(); err != nil {
+		// The form is not offered without podman (FeatureOCIRegister); a
+		// direct call still gets the reason rather than an entry no dial
+		// here can ever run.
+		return res, adminapi.NewError(adminapi.CodeFeatureDisabled, "an oci backend cannot be registered here: %v (design/adr/0059 §3)", err).With("requires", "podman")
+	}
+	if err := need(s.d.RegisterEntry != nil, "upstream registry"); err != nil {
+		return res, err
+	}
+	out, err := s.d.RegisterEntry(ctx, cfg, req)
+	if err != nil {
+		return res, s.storeErr("registering "+visible.Escape(req.Name), err)
+	}
+	out.ActionResult = res.ActionResult
+	normaliseRegister(&out)
+	out.Changed = true
+	env := strings.Join(out.EnvVarNames, ", ")
+	if env == "" {
+		env = "none"
+	}
+	// Escaped: the digest pin bounds the image's tail, not its name, and
+	// both lines are read in a terminal.
+	image := visible.Escape(out.Image)
+	out.Messages = append(out.Messages, fmt.Sprintf("Registered %q: container %s, network %s, variables %s. Its tools are listed once the gateway dials it, and each waits in the quarantine until it is approved; the entry is served once it is signed (POST /v1/upstreams/%s/sign on the accounts socket).",
+		out.Name, image, out.Network, env, out.Name))
+	reason := fmt.Sprintf("upstream %q registered: oci %s, network %s, env %s", out.Name, image, out.Network, env)
+	s.record(ctx, cfg, &out.ActionResult, s.operatorRow(a, UpstreamRegister, reason+" "+a.Tag(), s.d.Now().UTC()))
+	return out, nil
+}
+
+// registerHTTP is the http half of RegisterUpstream.
+func (s *Service) registerHTTP(ctx context.Context, a Actor, cfg *config.Config, req adminapi.RegisterUpstreamRequest, res adminapi.RegisterUpstreamResult) (adminapi.RegisterUpstreamResult, error) {
+	if err := foreignField(adminapi.UpstreamTransportHTTP, map[string]bool{
+		"image": req.Image != "", "args": len(req.Args) > 0, "env_var_names": len(req.EnvVarNames) > 0,
+	}); err != nil {
+		return res, err
+	}
 	switch {
 	case req.OpenAPIURL == "" && req.OpenAPIDocument == "":
 		return res, adminapi.NewError(adminapi.CodeInvalidArgument, "the OpenAPI document is required: give openapi_url or openapi_document (design/adr/0047 §3)").With("field", "openapi_url")
@@ -217,14 +345,8 @@ func (s *Service) RegisterUpstream(ctx context.Context, a Actor, req adminapi.Re
 	case len(req.OpenAPIDocument) > adminapi.MaxUpstreamDocumentBytes:
 		return res, adminapi.NewError(adminapi.CodePayloadTooLarge, "the document is over the %d-byte limit the ingestion reads", adminapi.MaxUpstreamDocumentBytes).With("field", "openapi_document")
 	}
-	if before, _, found := strings.Cut(req.KeyName, "="); found {
-		// The CLI's -env rule: a NAME=value pasted here would be a secret
-		// in the request, and repeating it would put it in a log. Only the
-		// part left of "=" is said.
-		return res, adminapi.NewError(adminapi.CodeInvalidArgument, "key_name %q looks like NAME=value (the value is not repeated here): it takes the vault NAME only; set the value with PUT /v1/secrets/{name}", visible.Escape(before)).With("field", "key_name")
-	}
 	if req.KeyName != "" {
-		if err := secretName(req.KeyName); err != nil {
+		if err := envNames("key_name", []string{req.KeyName}); err != nil {
 			return res, err
 		}
 	}

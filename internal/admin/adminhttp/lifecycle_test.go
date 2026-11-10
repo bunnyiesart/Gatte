@@ -78,9 +78,9 @@ func TestAudit_UntilIsParsedLikeSince(t *testing.T) {
 			t.Errorf("whoami does not list feature %s: %v", f, me.Features)
 		}
 	}
-	// 1.6.1 since design/adr/0055 (gateway-wide maintenance deprecated); the
+	// 1.7.0 since design/adr/0059 (oci registered from the console); the
 	// whoami features of 1.4.0 through 1.6.0 are still listed above.
-	if me.ContractVersion != "1.6.1" {
+	if me.ContractVersion != "1.7.0" {
 		t.Errorf("contract version %s", me.ContractVersion)
 	}
 }

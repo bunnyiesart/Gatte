@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -639,5 +640,86 @@ func TestUIManage_RegisterGrantsTheAPIToTheRoleNamed(t *testing.T) {
 	}
 	if after, _ := os.ReadFile(m.rolesPath); string(after) != string(before) {
 		t.Fatal("an unknown role changed the roles file")
+	}
+}
+
+// podmanAs makes the operator socket's backend see podman, or not, whatever
+// this machine has.
+func podmanAs(err error) func(*admin.Deps) {
+	return func(d *admin.Deps) { d.OCIRuntime = func() error { return err } }
+}
+
+// Without podman (the Docker image) the Container form is not offered, and a
+// forced register says why instead of registering (design/adr/0059 §3).
+func TestUIManage_WithoutPodmanTheContainerFormIsNotOffered(t *testing.T) {
+	m := newManageUI(t, true, true, podmanAs(podmanOnPath(func(string) (string, error) { return "", exec.ErrNotFound })))
+	page := m.get("/servers/new")
+	if page.has("Container (oci)</a>") || page.has(`name="image"`) {
+		t.Fatalf("the add page offers a container without podman:\n%s", page.body)
+	}
+	asked := m.get("/servers/new?kind=oci")
+	if asked.code != http.StatusOK || asked.has(`name="image"`) || !asked.has("need podman on the gateway") || !asked.has("Add a REST API") {
+		t.Fatalf("?kind=oci without podman:\n%s", asked.body)
+	}
+	forced := m.post("/servers", url.Values{"transport": {"oci"}, "name": {"intel"}, "image": {ociTestImage}})
+	if !forced.has("Not registered") || !forced.has("podman is not on PATH") {
+		t.Fatalf("a forced oci register without podman:\n%s", forced.body)
+	}
+	if _, err := m.e.upstreams().Get(context.Background(), "intel"); !errors.Is(err, registry.ErrNotFound) {
+		t.Fatal("an oci entry was registered without podman")
+	}
+}
+
+// With podman the Container form registers the CLI's entry and does not
+// sign it: the result page shows what the signature will cover.
+func TestUIManage_TheContainerFormRegistersAndDoesNotSign(t *testing.T) {
+	m := newManageUI(t, true, true, podmanAs(nil))
+	if page := m.get("/servers/new"); !page.has(`href="` + m.s.session + `/servers/new?kind=oci"`) {
+		t.Fatalf("the add page does not offer the container form:\n%s", page.body)
+	}
+	form := m.get("/servers/new?kind=oci")
+	for _, want := range []string{"Add a container (oci)", `name="transport" value="oci"`, `name="image"`, `name="network"`, `value="none"`, `name="env_var_names"`} {
+		if !form.has(want) {
+			t.Errorf("the container form lacks %q", want)
+		}
+	}
+	if form.has(`name="openapi_url"`) {
+		t.Error("the container form carries the REST fields")
+	}
+
+	got := m.post("/servers", url.Values{"transport": {"oci"}, "name": {"intel"}, "image": {ociTestImage},
+		"network": {"slirp4netns"}, "env_var_names": {"INTEL_KEY, OTHER_KEY"}})
+	if got.code != http.StatusOK {
+		t.Fatalf("register: %d\n%s", got.code, got.body)
+	}
+	for _, want := range []string{"Registered as a container (oci)", ociTestImage, "slirp4netns", "INTEL_KEY", "OTHER_KEY", "not attested yet", "Attest intel", "Attest this configuration", "the image digest, the network and the variable names"} {
+		if !got.has(want) {
+			t.Errorf("the register result lacks %q", want)
+		}
+	}
+	if len(m.signed) != 0 {
+		t.Fatalf("registering signed %v", m.signed)
+	}
+	entry, err := m.e.upstreams().Get(context.Background(), "intel")
+	if err != nil || entry.Transport != registry.TransportOCI || entry.Image != ociTestImage ||
+		!slices.Equal(entry.Args, []string{"--network=slirp4netns"}) || !slices.Equal(entry.EnvVarNames, []string{"INTEL_KEY", "OTHER_KEY"}) {
+		t.Fatalf("registry entry = %+v, %v", entry, err)
+	}
+
+	// The default network is none by omission, as the CLI writes it.
+	m.post("/servers", url.Values{"transport": {"oci"}, "name": {"quiet"}, "image": {ociTestImage}, "network": {"none"}})
+	if e, err := m.e.upstreams().Get(context.Background(), "quiet"); err != nil || len(e.Args) != 0 || len(e.EnvVarNames) != 0 {
+		t.Fatalf("default network entry = %+v, %v", e, err)
+	}
+
+	// A tag is the backend's refusal, with the form kept as typed.
+	tag := m.post("/servers", url.Values{"transport": {"oci"}, "name": {"tagged"}, "image": {"localhost/casemgmt-mcp:latest"}})
+	if !tag.has("Not registered") || !tag.has(`value="localhost/casemgmt-mcp:latest"`) || !tag.has(`name="image"`) {
+		t.Fatalf("a tagged image:\n%s", tag.body)
+	}
+	// NAME=value pasted as a variable name: refused, and not written back.
+	pasted := m.post("/servers", url.Values{"transport": {"oci"}, "name": {"pasted"}, "image": {ociTestImage}, "env_var_names": {"KEY=" + uiSecretMarker}})
+	if !pasted.has("Not registered") || pasted.has(uiSecretMarker) {
+		t.Fatalf("a NAME=value variable name:\n%s", pasted.body)
 	}
 }

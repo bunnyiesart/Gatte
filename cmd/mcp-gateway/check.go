@@ -652,6 +652,10 @@ func (c *checker) checkVault(ctx context.Context, sopsOK bool, entries []registr
 	c.add(name, checkPass, fmt.Sprintf("decrypts, and holds all %d credential name(s) the registry declares", names), "")
 }
 
+// podmanInstallFix is the way out of a host without podman, said the same
+// by `check` and by the console's oci register.
+const podmanInstallFix = "install podman (rootless) for the service account (design/adr/0028)"
+
 func (c *checker) checkOCI(entries []registry.UpstreamServer) {
 	const name = "oci backends"
 	var oci []string
@@ -664,9 +668,9 @@ func (c *checker) checkOCI(entries []registry.UpstreamServer) {
 		c.add(name, checkSkip, "no oci backend is registered", "")
 		return
 	}
-	if _, err := c.lookPath("podman"); err != nil {
+	if podmanOnPath(c.lookPath) != nil {
 		c.add(name, checkFail, fmt.Sprintf("%s run as containers and podman is not on PATH", strings.Join(oci, ", ")),
-			"install podman (rootless) for the service account (design/adr/0028)")
+			podmanInstallFix)
 		return
 	}
 	if c.goos != "linux" {

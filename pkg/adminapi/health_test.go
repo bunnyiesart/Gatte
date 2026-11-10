@@ -104,6 +104,14 @@ func TestWhoAmI_ListsBackendHealthAndTheOverviewCarriesIt(t *testing.T) {
 	}
 }
 
+// The register request is the contract's schema, field for field: the oci
+// fields of design/adr/0059 included.
+func TestRegisterUpstreamRequest_CarriesExactlyTheContractsFields(t *testing.T) {
+	if got, want := jsonFields(adminapi.RegisterUpstreamRequest{}), schemaProperties(t, "RegisterUpstreamRequest"); !slices.Equal(got, want) {
+		t.Errorf("RegisterUpstreamRequest fields %v, contract %v", got, want)
+	}
+}
+
 // The review-set types are the contract's schemas, field for field
 // (design/adr/0043).
 func TestReviewSetTypes_CarryExactlyTheContractsFields(t *testing.T) {

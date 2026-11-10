@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/bunnyiesart/Gatte/pkg/adminapi"
@@ -47,6 +48,10 @@ func (s *Server) registerUpstream(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, adminapi.NewError(adminapi.CodeUpstreamExists, "a backend named %q is already registered", req.Name))
 		return
 	}
+	if req.Transport == adminapi.UpstreamTransportOCI {
+		s.registerOCI(w, req)
+		return
+	}
 	auth := adminapi.UpstreamAuth{Kind: req.AuthKind, Name: req.AuthName, Secret: req.KeyName}
 	if auth.Kind == "" {
 		auth.Kind = "none"
@@ -68,8 +73,39 @@ func (s *Server) registerUpstream(w http.ResponseWriter, r *http.Request) {
 		ObservedHash: "sha256:new-" + req.Name, FirstSeenAt: now, UpdatedAt: now})
 	s.definitions[key(req.Name, "get_item")] = definition{observed: textDef("get_item", "Fetch one item.", "sha256:new-"+req.Name)}
 
-	res := adminapi.RegisterUpstreamResult{Name: req.Name, URL: req.URL, Source: "document",
+	res := adminapi.RegisterUpstreamResult{Name: req.Name, Transport: "http", URL: req.URL, Source: "document",
 		Auth: auth, Tools: ops, Skipped: []string{}, IngestWarnings: []string{}, Signature: "no"}
+	res.Changed, res.Recorded, res.Messages = true, true, []string{"registered " + req.Name}
+	res.Audit = s.row(rowUpstreamUpdate, "register "+req.Name)
+	writeJSON(w, http.StatusOK, res)
+}
+
+// registerOCI is the fake's oci register: a digest pin and a network from
+// --network=VALUE, nothing more; the real rules are the backend's. Called
+// with s.mu held.
+func (s *Server) registerOCI(w http.ResponseWriter, req adminapi.RegisterUpstreamRequest) {
+	if !strings.Contains(req.Image, "@sha256:") {
+		writeErr(w, adminapi.NewError(adminapi.CodeInvalidArgument, "image %q is not pinned by digest: use NAME@sha256:<64 hex>", req.Image).With("field", "image"))
+		return
+	}
+	network := "none"
+	for _, a := range req.Args {
+		if v, ok := strings.CutPrefix(a, "--network="); ok {
+			network = v
+		}
+	}
+	env := slices.Clone(req.EnvVarNames)
+	if env == nil {
+		env = []string{}
+	}
+	now := base.Add(72 * time.Hour)
+	s.upstreams = append(s.upstreams, &adminapi.UpstreamDetail{
+		Upstream: adminapi.Upstream{Name: req.Name, Transport: "oci", Image: req.Image, Args: slices.Clone(req.Args), Network: network,
+			EnvVarNames: env, Signature: "no", CreatedAt: now, UpdatedAt: now,
+			Health: &adminapi.BackendHealth{Name: req.Name, State: adminapi.BackendUnknown}},
+	})
+	res := adminapi.RegisterUpstreamResult{Name: req.Name, Transport: "oci", Image: req.Image, Network: network, EnvVarNames: env,
+		Auth: adminapi.UpstreamAuth{Kind: "none"}, Tools: []adminapi.UpstreamOperation{}, Skipped: []string{}, IngestWarnings: []string{}, Signature: "no"}
 	res.Changed, res.Recorded, res.Messages = true, true, []string{"registered " + req.Name}
 	res.Audit = s.row(rowUpstreamUpdate, "register "+req.Name)
 	writeJSON(w, http.StatusOK, res)

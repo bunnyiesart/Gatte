@@ -354,6 +354,10 @@ func whoami(s *Server, r *request) (int, any, error) {
 	if s.o.Service.ConsoleManages() {
 		features = append(features, adminapi.FeatureConsoleManages)
 	}
+	// And only where podman is (design/adr/0059 §3): never a broken button.
+	if s.o.Service.OCIRegister() {
+		features = append(features, adminapi.FeatureOCIRegister)
+	}
 	return 200, adminapi.WhoAmI{
 		APIVersions:     []string{"v1"},
 		ContractVersion: adminapi.ContractVersion,

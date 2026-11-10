@@ -7,10 +7,13 @@ package main
 // the vault and the roles file are written as they are read.
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -21,6 +24,7 @@ import (
 	auditsqlite "github.com/bunnyiesart/Gatte/internal/audit/sqlite"
 	"github.com/bunnyiesart/Gatte/internal/config"
 	"github.com/bunnyiesart/Gatte/internal/registry"
+	"github.com/bunnyiesart/Gatte/internal/signer"
 	"github.com/bunnyiesart/Gatte/internal/vault/sopsage"
 	"github.com/bunnyiesart/Gatte/pkg/adminapi"
 )
@@ -106,6 +110,73 @@ func TestManage_RegisterThroughTheAPIIsTheConsolesRegister(t *testing.T) {
 	}
 	if _, err := svc.GetUpstream(ctx, "ioc"); !adminapi.IsCode(err, adminapi.CodeNotFound) {
 		t.Fatalf("detail after deregister: %v", err)
+	}
+}
+
+// An oci entry registered through the API is the entry `upstream register
+// -transport oci` writes: the same signed bytes, the same refusals (a tag,
+// a wrapper flag), and not signed (design/adr/0059 §4, §6).
+func TestManage_RegisterOCIThroughTheAPIIsTheCLIsEntry(t *testing.T) {
+	e := newOpTestEnv(t)
+	e.cfg.Admin.ConsoleManages = true
+	cfg := e.cfg
+	withPodman := func(d *admin.Deps) { d.OCIRuntime = func() error { return nil } }
+	svc, err := newAdminService(e.db, func() (*config.Config, error) { return cfg, nil }, e.stderr, e.configPath, newLogger(io.Discard), withPodman)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	req := adminapi.RegisterUpstreamRequest{Name: "ioc", Transport: adminapi.UpstreamTransportOCI, Image: ociTestImage,
+		Args: []string{"--network=slirp4netns"}, EnvVarNames: []string{"IOC_KEY"}}
+	res, err := svc.RegisterUpstream(ctx, carol, req)
+	if err != nil {
+		t.Fatalf("RegisterUpstream: %v", err)
+	}
+	if res.Transport != "oci" || res.Image != ociTestImage || res.Network != "slirp4netns" || res.Signature != "no" ||
+		!slices.Equal(res.EnvVarNames, []string{"IOC_KEY"}) || len(res.Tools) != 0 || res.Auth.Kind != "none" {
+		t.Fatalf("result = %+v", res)
+	}
+	stored, err := e.upstreams().Get(ctx, "ioc")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cli := newOpTestEnv(t)
+	requireExit(t, runUpstreamRegister(cli.opEnv, registry.UpstreamServer{Name: "ioc", Transport: registry.TransportOCI, Image: ociTestImage,
+		Args: []string{"--network=slirp4netns"}, EnvVarNames: []string{"IOC_KEY"}}), exitOK, "CLI register")
+	want, err := cli.upstreams().Get(ctx, "ioc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(signer.Canonical(stored), signer.Canonical(want)) {
+		t.Fatalf("the API's entry signs differently from the CLI's:\n%s\n%s", signer.Canonical(stored), signer.Canonical(want))
+	}
+
+	for name, edit := range map[string]func(*adminapi.RegisterUpstreamRequest){
+		"a tag":          func(r *adminapi.RegisterUpstreamRequest) { r.Image = "localhost/casemgmt-mcp:latest" },
+		"a wrapper flag": func(r *adminapi.RegisterUpstreamRequest) { r.Args = []string{"--privileged"} },
+		"host network":   func(r *adminapi.RegisterUpstreamRequest) { r.Args = []string{"--network=host"} },
+	} {
+		bad := req
+		bad.Name = "ioc2"
+		edit(&bad)
+		if _, err := svc.RegisterUpstream(ctx, carol, bad); !adminapi.IsCode(err, adminapi.CodeInvalidArgument) {
+			t.Errorf("%s: %v", name, err)
+		}
+		if _, err := e.upstreams().Get(ctx, "ioc2"); !errors.Is(err, registry.ErrNotFound) {
+			t.Fatalf("%s: a refused register left an entry: %v", name, err)
+		}
+	}
+}
+
+func TestManage_PodmanOnPathSaysWhatCheckSays(t *testing.T) {
+	missing := func(string) (string, error) { return "", exec.ErrNotFound }
+	if err := podmanOnPath(missing); err == nil || !strings.Contains(err.Error(), "podman is not on PATH") || !strings.Contains(err.Error(), podmanInstallFix) {
+		t.Fatalf("no podman: %v", err)
+	}
+	found := func(string) (string, error) { return "/usr/bin/podman", nil }
+	if err := podmanOnPath(found); err != nil {
+		t.Fatalf("podman found: %v", err)
 	}
 }
 

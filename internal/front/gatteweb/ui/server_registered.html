@@ -4,18 +4,30 @@
 {{with .Data}}{{with .Res}}
 <div class="head">
   <h1 class="mono-title">{{vis .Name}}</h1>
+  {{if eq .Transport "oci"}}
+  <p class="sub">Registered as a container (oci). Its tools are listed once the gateway runs it, each pending your review, and its configuration is <b>not attested yet</b> — review the entry below and attest it.</p>
+  {{else}}
   <p class="sub">Registered as a REST API. Its tools are pending your review, and its configuration is <b>not attested yet</b> — review the entry below and attest it.</p>
+  {{end}}
 </div>
 
 <section>
   <h2>What was registered</h2>
   <div class="group">
+    {{if eq .Transport "oci"}}
+    <dl class="facts pad">
+      <div><dt>Image</dt><dd class="mono wrap">{{vis .Image}}</dd></div>
+      <div><dt>Network</dt><dd class="mono">{{vis .Network}}</dd></div>
+      <div><dt>Variable names</dt><dd>{{if .EnvVarNames}}{{range $i, $n := .EnvVarNames}}{{if $i}}, {{end}}<span class="mono">{{vis $n}}</span>{{end}}{{else}}None{{end}}</dd></div>
+    </dl>
+    {{else}}
     <dl class="facts pad">
       <div><dt>Base URL</dt><dd class="mono">{{vis .URL}}</dd></div>
       <div><dt>Document</dt><dd>{{vis .Source}}{{if .FetchedBytes}} · {{.FetchedBytes}} bytes{{end}}{{if .BasePath}} · base path <span class="mono">{{vis .BasePath}}</span>{{end}}</dd></div>
       <div><dt>Auth</dt><dd>{{with .Auth}}{{if eq .Kind "none"}}None (keyless){{else}}{{vis .Kind}}{{if .Name}} <span class="mono">{{vis .Name}}</span>{{end}}{{if .Secret}} · key injected from vault name <span class="mono">{{vis .Secret}}</span>{{end}}{{end}}{{end}}{{if $.Data.Res.AuthDerived}} <span class="badge">derived from the document</span>{{end}}</dd></div>
       <div><dt>Tools generated</dt><dd>{{$.Data.Safe}} safe · {{$.Data.Sensitive}} sensitive</dd></div>
     </dl>
+    {{end}}
   </div>
 </section>
 
@@ -50,7 +62,7 @@
 
 <section>
   <h2>Attest this configuration</h2>
-  <p class="caption">Sign the configuration shown above with the gateway key. Review the URL or command, the arguments, and the secret names first — this signature attests exactly what is shown, nothing about the tools. It is a separate step from registering, on purpose: the gateway doesn't serve a backend whose configuration is not attested.</p>
+  <p class="caption">Sign the configuration shown above with the gateway key. Review {{if eq .Transport "oci"}}the image digest, the network and the variable names{{else}}the URL or command, the arguments, and the secret names{{end}} first — this signature attests exactly what is shown, nothing about the tools. It is a separate step from registering, on purpose: the gateway doesn't serve a backend whose configuration is not attested.</p>
   {{if $.Data.Root}}
   <form class="group row" method="post" action="{{$base}}/servers/{{.Name}}/sign">
     <input type="hidden" name="csrf" value="{{$csrf}}">

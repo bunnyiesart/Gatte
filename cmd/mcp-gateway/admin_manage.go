@@ -53,6 +53,10 @@ func operatorManageDeps(envFor func(*config.Config) *opEnv) admin.ManageDeps {
 		RegisterHTTP: func(ctx context.Context, cfg *config.Config, req adminapi.RegisterUpstreamRequest) (adminapi.RegisterUpstreamResult, error) {
 			return registerHTTP(ctx, envFor(cfg), req)
 		},
+		RegisterEntry: func(ctx context.Context, cfg *config.Config, req adminapi.RegisterUpstreamRequest) (adminapi.RegisterUpstreamResult, error) {
+			return registerEntry(ctx, envFor(cfg), req)
+		},
+		OCIRuntime: func() error { return podmanOnPath(exec.LookPath) },
 		Deregister: func(_ context.Context, cfg *config.Config, name string) (adminapi.DeregisterResult, error) {
 			out := deregisterEntry(envFor(cfg), name)
 			res := adminapi.DeregisterResult{Name: name, Registered: out.registered, SignatureRemoved: out.signatureRemoved, ToolsForgotten: out.forgotten}
@@ -131,9 +135,9 @@ func upstreamDetail(e *opEnv, name string) (adminapi.UpstreamDetail, error) {
 	return d, nil
 }
 
-// registerHTTP is POST /v1/upstreams: the console's register, step for
-// step -- ingestHTTP, validateEntry, credentialedStdioRefusal, Register,
-// then the signature state the gateway will see.
+// registerHTTP is POST /v1/upstreams for http: the console's register,
+// step for step -- ingestHTTP, then registerChecked, then the signature
+// state the gateway will see.
 func registerHTTP(ctx context.Context, e *opEnv, req adminapi.RegisterUpstreamRequest) (adminapi.RegisterUpstreamResult, error) {
 	entry := registry.UpstreamServer{Name: req.Name, Transport: registry.TransportHTTP, URL: req.URL}
 	if req.KeyName != "" {
@@ -143,39 +147,89 @@ func registerHTTP(ctx context.Context, e *opEnv, req adminapi.RegisterUpstreamRe
 	if req.OpenAPIDocument != "" {
 		in.document, in.source = []byte(req.OpenAPIDocument), "the document sent"
 	}
-	refused := func(err error) error {
-		return adminapi.NewError(adminapi.CodeInvalidArgument, "%s", err.Error())
-	}
 	report, err := ingestHTTP(ctx, &entry, in)
 	if err != nil {
-		return adminapi.RegisterUpstreamResult{}, refused(err)
+		return adminapi.RegisterUpstreamResult{}, refusedArgument(err)
 	}
-	if err := validateEntry(entry, report); err != nil {
-		return adminapi.RegisterUpstreamResult{}, refused(err)
-	}
-	if err := credentialedStdioRefusal(entry, e.cfg); err != nil {
-		return adminapi.RegisterUpstreamResult{}, refused(err)
-	}
-	switch err := e.upstreams().Register(ctx, entry); {
-	case errors.Is(err, registry.ErrAlreadyExists):
-		return adminapi.RegisterUpstreamResult{}, adminapi.NewError(adminapi.CodeUpstreamExists, "a backend named %q is already registered: deregister it first, or choose another name", entry.Name).With("upstream", entry.Name)
-	case errors.Is(err, registry.ErrInvalid):
-		return adminapi.RegisterUpstreamResult{}, refused(err)
-	case err != nil:
+	if err := registerChecked(ctx, e, entry, report); err != nil {
 		return adminapi.RegisterUpstreamResult{}, err
 	}
-	res := adminapi.RegisterUpstreamResult{Name: entry.Name, URL: entry.URL, Source: report.source, BasePath: report.basePath,
+	res := adminapi.RegisterUpstreamResult{Name: entry.Name, Transport: string(entry.Transport), URL: entry.URL, Source: report.source, BasePath: report.basePath,
 		Auth: authOf(entry), AuthDerived: report.authDerived, Tools: apiOperations(report.ops), Skipped: report.skipped, IngestWarnings: report.warnings}
 	if report.fetched {
 		res.FetchedBytes = report.bytes
 	}
+	addSignatureState(e, entry, &res)
+	return res, nil
+}
+
+// registerEntry is POST /v1/upstreams for a transport with no ingestion
+// (oci): the entry as the request gives it, then the same steps as
+// registerHTTP and `upstream register` -- validateEntry,
+// credentialedStdioRefusal, Register -- so the digest pin and the wrapper
+// rules are the CLI's.
+func registerEntry(ctx context.Context, e *opEnv, req adminapi.RegisterUpstreamRequest) (adminapi.RegisterUpstreamResult, error) {
+	entry := registry.UpstreamServer{Name: req.Name, Transport: registry.Transport(req.Transport), Image: req.Image,
+		Args: req.Args, URL: req.URL, EnvVarNames: req.EnvVarNames}
+	if err := registerChecked(ctx, e, entry, nil); err != nil {
+		return adminapi.RegisterUpstreamResult{}, err
+	}
+	res := adminapi.RegisterUpstreamResult{Name: entry.Name, Transport: string(entry.Transport), URL: entry.URL, Image: entry.Image,
+		EnvVarNames: entry.EnvVarNames, Auth: adminapi.UpstreamAuth{Kind: authKindNone}}
+	// validateEntry already resolved it once (dialTimeRefusal), so this
+	// cannot fail here; an error would leave Network empty, never wrong.
+	if network, err := entryNetwork(entry); err == nil {
+		res.Network = network
+	}
+	addSignatureState(e, entry, &res)
+	return res, nil
+}
+
+// refusedArgument is a refusal of the entry, in the CLI's own words.
+func refusedArgument(err error) error {
+	return adminapi.NewError(adminapi.CodeInvalidArgument, "%s", err.Error())
+}
+
+// registerChecked runs the steps every register takes, whatever its
+// transport and whoever asks: validateEntry, credentialedStdioRefusal,
+// Register. report is the http ingestion's, or nil.
+func registerChecked(ctx context.Context, e *opEnv, entry registry.UpstreamServer, report *httpIngestReport) error {
+	if err := validateEntry(entry, report); err != nil {
+		return refusedArgument(err)
+	}
+	if err := credentialedStdioRefusal(entry, e.cfg); err != nil {
+		return refusedArgument(err)
+	}
+	switch err := e.upstreams().Register(ctx, entry); {
+	case errors.Is(err, registry.ErrAlreadyExists):
+		return adminapi.NewError(adminapi.CodeUpstreamExists, "a backend named %q is already registered: deregister it first, or choose another name", entry.Name).With("upstream", entry.Name)
+	case errors.Is(err, registry.ErrInvalid):
+		return refusedArgument(err)
+	case err != nil:
+		return err
+	}
+	return nil
+}
+
+// podmanOnPath is nil when the oci adapter's runtime is on PATH, or the
+// refusal `check` prints without it. lookPath is exec.LookPath.
+func podmanOnPath(lookPath func(string) (string, error)) error {
+	if _, err := lookPath("podman"); err != nil {
+		return errors.New("podman is not on PATH; " + podmanInstallFix)
+	}
+	return nil
+}
+
+// addSignatureState fills the entry's signature state right after it was
+// registered, as `upstream register` reports it.
+func addSignatureState(e *opEnv, entry registry.UpstreamServer, res *adminapi.RegisterUpstreamResult) {
 	state, err := entrySignatureState(e, entry)
 	if err != nil {
 		// Registered; only the signature store's reading failed. Not a
 		// guess either way, as the CLI says.
 		res.Signature = "unknown"
 		res.Warnings = append(res.Warnings, adminapi.Warning{Code: "signature_unknown", Message: "Registered, but whether it is signed could not be determined: " + err.Error()})
-		return res, nil
+		return
 	}
 	res.Signature = string(state)
 	if state != sigUnsigned {
@@ -185,7 +239,6 @@ func registerHTTP(ctx context.Context, e *opEnv, req adminapi.RegisterUpstreamRe
 		res.Warnings = append(res.Warnings, adminapi.Warning{Code: "signature_left_under_name",
 			Message: fmt.Sprintf("A signature stored under %q by an earlier entry of the name is already there (%s): nobody reviewed this entry. Sign it now, or deregister it.", entry.Name, state)})
 	}
-	return res, nil
 }
 
 // rolesFile is the RolesStore over the file cfg.RolesFile names.

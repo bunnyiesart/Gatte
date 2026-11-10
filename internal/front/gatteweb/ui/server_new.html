@@ -2,15 +2,46 @@
 {{$csrf := .CSRF}}{{$base := .Base}}
 <a class="back" href="{{$base}}/servers"><svg viewBox="0 0 8 14" width="8" height="14" aria-hidden="true"><path d="M7 1L1 7l6 6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>MCP Servers / APIs</a>
 {{with .Data}}
+{{if eq .Kind "oci"}}
+<div class="head">
+  <h1>Add a container (oci)</h1>
+  <p class="sub">An MCP server packaged as a container image. The gateway runs it with podman, isolated: no capabilities, a read-only root, its own user and only the network you choose here.</p>
+</div>
+{{else}}
 <div class="head">
   <h1>Add a REST API</h1>
   <p class="sub">REST API / OpenAPI &rarr; generates MCP tools. The gateway reads the OpenAPI document and turns each operation into a tool.</p>
 </div>
-
-{{if not .Root}}
-<div class="notice" role="note">{{template "dot"}}<p>Signing a backend and writing its key to the vault need root's accounts socket: start the console with <code>sudo mcp-gateway ui -manage-users</code>. Without it, an API you add here waits unsigned until you run <code>sudo mcp-gateway sign NAME</code>.</p></div>
 {{end}}
 
+{{if .OCI}}
+<nav class="segmented" aria-label="Kind of backend">
+  <a href="{{$base}}/servers/new" {{if ne .Kind "oci"}}aria-current="page"{{end}}>REST API</a>
+  <a href="{{$base}}/servers/new?kind=oci" {{if eq .Kind "oci"}}aria-current="page"{{end}}>Container (oci)</a>
+</nav>
+{{end}}
+
+{{if not .Root}}
+<div class="notice" role="note">{{template "dot"}}<p>Signing a backend and writing its key to the vault need root's accounts socket: start the console with <code>sudo mcp-gateway ui -manage-users</code>. Without it, a backend you add here waits unsigned until you run <code>sudo mcp-gateway sign NAME</code>.</p></div>
+{{end}}
+
+{{if eq .Kind "oci"}}
+<section>
+  {{with .OCIForm}}
+  <form class="group form" method="post" action="{{$base}}/servers">
+    <input type="hidden" name="csrf" value="{{$csrf}}">
+    <input type="hidden" name="transport" value="oci">
+    <label class="field"><span>Name</span><input name="name" required maxlength="128" autocomplete="off" spellcheck="false" class="mono" placeholder="intel" value="{{.Name}}"></label>
+    <label class="field full"><span>Image, pinned by digest</span><input name="image" required autocomplete="off" spellcheck="false" class="mono" placeholder="ghcr.io/example/intel-mcp@sha256:..." value="{{.Image}}"></label>
+    <label class="field"><span>Network</span><input name="network" list="oci-networks" autocomplete="off" spellcheck="false" class="mono" value="{{if .Network}}{{.Network}}{{else}}none{{end}}"></label>
+    <datalist id="oci-networks"><option value="none"><option value="slirp4netns"><option value="pasta"></datalist>
+    <label class="field wide"><span>Variable names (vault names, comma-separated)</span><input name="env_var_names" autocomplete="off" spellcheck="false" class="mono" placeholder="INTEL_API_KEY" value="{{.EnvNames}}"></label>
+    <div class="form-end"><button class="btn primary">Add container</button></div>
+  </form>
+  {{end}}
+  <p class="caption">The image must be pinned by digest (<code>podman inspect --format '{{"{{"}}index .RepoDigests 0{{"}}"}}' NAME:TAG</code> prints it); a tag is refused. Network is <code>none</code> unless you choose <code>slirp4netns</code>, <code>pasta</code> or a podman network by name; <code>host</code> is never allowed. Variable names are the vault names the container receives, never values: set the values on the backend's page or in the vault. Registering does not start the container and does not sign it: the next page shows the image, the network and the names, and a Sign button. Its tools are listed once the gateway runs it, each waiting for your review.</p>
+</section>
+{{else}}
 <section>
   {{with .Form}}
   <form class="group form" method="post" action="{{$base}}/servers" enctype="multipart/form-data">
@@ -32,7 +63,8 @@
   {{end}}
   <p class="caption">One way to give the document: a URL (fetched once, under the gateway's egress rules), pasted text, or a file (use the file for a large document: pasted text counts up to three times its size against the form's limit). Registering does not call the API and does not sign it: the next page shows the URL, where the key is injected and every operation, and a Sign button. Every operation becomes a tool waiting for your review; a POST, PUT, PATCH or DELETE is sensitive and also needs clearing.{{if .Root}} The key's value, if you give one, goes straight to the vault and is never shown again. The role you name gets every safe tool of the API once approved; leave it empty to grant nothing.{{end}} An empty key name is NAME_API_KEY for a keyed API.</p>
 </section>
+{{end}}
 
-<div class="notice" role="note">{{template "dot"}}<p>Only a REST API / OpenAPI backend is added here. Register a stdio or container (oci) backend in the terminal with <code>mcp-gateway upstream register</code>: a stdio backend with credentials needs <code>allow_credentialed_stdio</code>, and oci is the isolated path.</p></div>
+<div class="notice" role="note">{{template "dot"}}<p>{{if .OCI}}A stdio backend is not added here. Register it in the terminal with <code>mcp-gateway upstream register</code>: a stdio backend with credentials needs <code>allow_credentialed_stdio</code>, and a container is the isolated path.{{else}}Only a REST API / OpenAPI backend is added here. Register a stdio or container (oci) backend in the terminal with <code>mcp-gateway upstream register</code>: a stdio backend with credentials needs <code>allow_credentialed_stdio</code>, and oci is the isolated path; containers need podman on the gateway's host.{{end}}</p></div>
 {{end}}
 {{template "bottom" .}}

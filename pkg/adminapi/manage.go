@@ -17,6 +17,21 @@ import (
 // from an older backend, unknown_route).
 const FeatureConsoleManages = "console_manages"
 
+// FeatureOCIRegister: POST /v1/upstreams takes transport "oci"
+// (design/adr/0059), since 1.7.0. Listed only alongside
+// FeatureConsoleManages, and only when podman is on the backend's PATH: the
+// Docker image has none, and there the console does not offer a container
+// backend. A register of "oci" without it answers feature_disabled with
+// details.requires "podman".
+const FeatureOCIRegister = "oci_register"
+
+// The transports RegisterUpstreamRequest.Transport takes (1.7.0). Empty is
+// http. stdio is registered in the terminal only (design/adr/0059 §5).
+const (
+	UpstreamTransportHTTP = "http"
+	UpstreamTransportOCI  = "oci"
+)
+
 // CodeFeatureDisabled: the operation exists and the configuration does not
 // turn it on. details.key names the key: "admin.console_manages" for every
 // operation of FeatureConsoleManages, "roles_file" for the roles text when
@@ -76,25 +91,41 @@ type UpstreamDetail struct {
 	Tools            []Tool              `json:"tools"`
 }
 
-// RegisterUpstreamRequest is the body of POST /v1/upstreams: an http
-// backend from its OpenAPI document, as `upstream register -transport
-// http` takes it. Exactly one of OpenAPIURL (fetched once, under the
-// adapter's egress guard) and OpenAPIDocument (the document itself) is
-// given. AuthKind is "bearer", "header", "query" or "none"; left empty,
-// the document's securitySchemes may derive one. KeyName is the vault NAME
-// of the one secret a keyed entry injects (the CLI's -env).
+// RegisterUpstreamRequest is the body of POST /v1/upstreams, as `upstream
+// register` takes it, for the transport Transport names (empty is http).
+//
+// http: a backend from its OpenAPI document. Exactly one of OpenAPIURL
+// (fetched once, under the adapter's egress guard) and OpenAPIDocument
+// (the document itself) is given. AuthKind is "bearer", "header", "query"
+// or "none"; left empty, the document's securitySchemes may derive one.
+// KeyName is the vault NAME of the one secret a keyed entry injects (the
+// CLI's -env).
+//
+// oci (1.7.0, FeatureOCIRegister): Image pinned by digest
+// (NAME@sha256:<64 hex>), Args the podman flags the entry signs (only
+// --network=VALUE and restatements of the wrapper), EnvVarNames the vault
+// NAMES the container receives. A field of the other transport is refused
+// by name.
 type RegisterUpstreamRequest struct {
-	Name            string `json:"name"`
-	URL             string `json:"url"`
-	OpenAPIURL      string `json:"openapi_url,omitempty"`
-	OpenAPIDocument string `json:"openapi_document,omitempty"`
-	AuthKind        string `json:"auth_kind,omitempty"`
-	AuthName        string `json:"auth_name,omitempty"`
-	KeyName         string `json:"key_name,omitempty"`
+	Name            string   `json:"name"`
+	Transport       string   `json:"transport,omitempty"`
+	URL             string   `json:"url,omitempty"`
+	OpenAPIURL      string   `json:"openapi_url,omitempty"`
+	OpenAPIDocument string   `json:"openapi_document,omitempty"`
+	AuthKind        string   `json:"auth_kind,omitempty"`
+	AuthName        string   `json:"auth_name,omitempty"`
+	KeyName         string   `json:"key_name,omitempty"`
+	Image           string   `json:"image,omitempty"`
+	Args            []string `json:"args,omitempty"`
+	EnvVarNames     []string `json:"env_var_names,omitempty"`
 }
 
-// RegisterUpstreamResult answers POST /v1/upstreams: the ingestion's
-// report. Tools are the operations the document produced, each with its
+// RegisterUpstreamResult answers POST /v1/upstreams. Transport is the
+// entry's (1.7.0). For oci, Image, Network (resolved from the signed Args,
+// as the dial resolves it) and EnvVarNames are the entry as registered;
+// the http fields are empty, Auth is "none", and Tools is empty: the
+// container lists its tools once it is dialled. For http, the ingestion's
+// report: Tools are the operations the document produced, each with its
 // class; Skipped and IngestWarnings quote the document (escaped); Auth is
 // the effective descriptor, and AuthDerived says it came from the
 // document, not from the request. Signature is the entry's signature state
@@ -103,7 +134,11 @@ type RegisterUpstreamRequest struct {
 type RegisterUpstreamResult struct {
 	ActionResult
 	Name           string              `json:"name"`
+	Transport      string              `json:"transport"`
 	URL            string              `json:"url"`
+	Image          string              `json:"image,omitempty"`
+	Network        string              `json:"network,omitempty"`
+	EnvVarNames    []string            `json:"env_var_names,omitempty"`
 	Source         string              `json:"source"`
 	FetchedBytes   int                 `json:"fetched_bytes,omitempty"`
 	BasePath       string              `json:"base_path,omitempty"`
@@ -203,8 +238,9 @@ func (c *Client) GetUpstream(ctx context.Context, name string) (UpstreamDetail, 
 	return v, c.do(ctx, http.MethodGet, "/v1/upstreams/"+url.PathEscape(name), nil, nil, &v)
 }
 
-// RegisterUpstream registers an http backend from its OpenAPI document
-// (1.6.0, FeatureConsoleManages).
+// RegisterUpstream registers a backend: http from its OpenAPI document
+// (1.6.0, FeatureConsoleManages), oci from its pinned image (1.7.0,
+// FeatureOCIRegister).
 func (c *Client) RegisterUpstream(ctx context.Context, r RegisterUpstreamRequest) (RegisterUpstreamResult, error) {
 	var v RegisterUpstreamResult
 	return v, c.do(ctx, http.MethodPost, "/v1/upstreams", nil, r, &v)

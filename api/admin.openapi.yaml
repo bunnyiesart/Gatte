@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Gatte management API
-  version: 1.6.1
+  version: 1.7.0
   summary: The backend every Gatte front talks to (design/adr/0040).
   description: |
     Served by `mcp-gateway admin` over UNIX sockets only. There is no TCP
@@ -151,6 +151,14 @@ info:
       working for now and will be removed in `/v2`, which serves per-backend
       maintenance only (bound to the backend's name). The `maintenance`
       feature and the per-backend surface are unchanged.
+    - 1.7.0 (design/adr/0059): feature `oci_register`, listed only with
+      `console_manages` and only when podman is on the backend's PATH (the
+      Docker image has none). `POST /v1/upstreams` takes `transport`
+      (`http`, the default, or `oci`) and, for oci, `image`, `args` and
+      `env_var_names`; `url` is required for http only. The result carries
+      `transport` and, for oci, `image`, `network` and `env_var_names`. An
+      oci register on a host without podman is `feature_disabled` with
+      `details.requires` `podman`; `stdio` is refused.
   license:
     name: Apache-2.0
 servers:
@@ -276,7 +284,7 @@ components:
         | internal | 500 | anything else; see `x-gatte-idempotent` before retrying |
         | config_unavailable | 503 | the configuration does not load, or fails the ownership check; `details.path` |
         | store_busy | 503 | the database stayed locked through every retry; nothing was written |
-        | feature_disabled | 403 | the operation exists and the configuration does not turn it on; `details.key` names the key: `admin.console_manages`, or `roles_file` for the roles text when the roles live in the main file (1.6.0) |
+        | feature_disabled | 403 | the operation exists and the configuration does not turn it on; `details.key` names the key: `admin.console_manages`, or `roles_file` for the roles text when the roles live in the main file (1.6.0); or `details.requires` names what the host lacks: `podman` for an oci register (1.7.0) |
         | upstream_exists | 409 | register of a name already registered (1.6.0) |
         | serve_not_running | 503 | no gateway process (`serve`) recorded itself in this database, or the one recorded could not be signalled; nothing was filed (1.3.0) |
       examples: [fingerprint_mismatch]
@@ -371,7 +379,9 @@ components:
             `serve_control` (1.3.0), `audit_filters`, `block_until`,
             `account_delete` and `offboard` (1.4.0), `tool_clear` (1.5.0),
             `console_manages` (1.6.0; listed only while `[admin]
-            console_manages` is true in the configuration).
+            console_manages` is true in the configuration), `oci_register`
+            (1.7.0; listed only with `console_manages` and podman on the
+            backend's PATH).
           items:
             type: string
         gateway_version:
@@ -1484,33 +1494,65 @@ components:
     RegisterUpstreamRequest:
       type: object
       additionalProperties: false
-      required: [name, url]
+      required: [name]
       description: |
-        Exactly one of `openapi_url` (http or https, fetched once with the
-        adapter's egress guard: no private or loopback address, no redirect
-        off its origin, no userinfo or query) and `openapi_document` (the
-        document itself, JSON or YAML, at most 4 MiB). A path is never
-        read. `auth_kind` `none` registers keyless whatever the document
-        declares; left out, one apiKey or bearer scheme of the document is
-        derived (`auth_derived`). `key_name` is the vault NAME of the one
-        secret a keyed entry injects; never a value (`NAME=value` is
-        refused without repeating it).
+        `transport` names what is registered (1.7.0); left out it is
+        `http`. A field of the other transport is `invalid_argument` with
+        `details.field` naming it. `stdio` is refused: it is registered in
+        the terminal only (design/adr/0059 §5).
+
+        http: `url` is required. Exactly one of `openapi_url` (http or
+        https, fetched once with the adapter's egress guard: no private or
+        loopback address, no redirect off its origin, no userinfo or query)
+        and `openapi_document` (the document itself, JSON or YAML, at most 4
+        MiB). A path is never read. `auth_kind` `none` registers keyless
+        whatever the document declares; left out, one apiKey or bearer
+        scheme of the document is derived (`auth_derived`). `key_name` is
+        the vault NAME of the one secret a keyed entry injects; never a
+        value (`NAME=value` is refused without repeating it).
+
+        oci (1.7.0, feature `oci_register`): `image` is required and pinned
+        by digest. The entry is the one `upstream register -transport oci`
+        writes, under the same rules: a tag is refused, `args` may carry
+        only `--network=VALUE` (none by default; slirp4netns, pasta or a
+        podman network name) and restatements of the wrapper, and the
+        container always runs inside the hardened wrapper of design/adr/0028
+        and 0034. Without podman on the backend's host the request is
+        `feature_disabled` with `details.requires` `podman`.
       properties:
         name: {type: string}
-        url: {type: string, description: 'Base URL: scheme, host, port, base path; no userinfo, query or fragment.'}
+        transport: {type: string, enum: [http, oci], description: 'Left out: `http` (1.7.0).'}
+        url: {type: string, description: 'http: base URL: scheme, host, port, base path; no userinfo, query or fragment.'}
         openapi_url: {type: string}
         openapi_document: {type: string}
         auth_kind: {type: string, enum: [bearer, header, query, none]}
         auth_name: {type: string}
         key_name: {type: string, pattern: '^[A-Za-z_][A-Za-z0-9_]*$'}
+        image: {type: string, description: 'oci: NAME@sha256:<64 hex> (1.7.0).'}
+        args:
+          type: array
+          description: 'oci: the podman flags the entry signs (1.7.0).'
+          items: {type: string}
+        env_var_names:
+          type: array
+          description: 'oci: the vault NAMES the container receives; never a value (1.7.0).'
+          items: {type: string, pattern: '^[A-Za-z_][A-Za-z0-9_]*$'}
     RegisterUpstreamResult:
       allOf:
         - $ref: '#/components/schemas/ActionResult'
         - type: object
-          required: [name, url, source, auth, auth_derived, tools, skipped, ingest_warnings, signature]
+          required: [name, transport, url, source, auth, auth_derived, tools, skipped, ingest_warnings, signature]
+          description: For oci the http fields are empty, `auth` is `none` and `tools` is empty -- the container lists its tools once the gateway dials it.
           properties:
             name: {type: string}
+            transport: {type: string, x-gatte-open-enum: true, enum: [http, oci], description: The entry's (1.7.0).}
             url: {type: string, description: As registered, with a base path of the document folded in.}
+            image: {type: string, description: 'oci: the pinned image (1.7.0).'}
+            network: {type: string, description: 'oci: the network the container joins, resolved from `args` as the dial resolves it (1.7.0).'}
+            env_var_names:
+              type: array
+              description: 'oci: the vault NAMES the container receives (1.7.0).'
+              items: {type: string}
             source: {type: string, description: The URL read, or `the document sent`.}
             fetched_bytes: {type: integer}
             base_path: {type: string}
@@ -1970,7 +2012,7 @@ paths:
       x-gatte-idempotent: false
       tags: [upstreams, manage]
       x-gatte-socket: [operator]
-      summary: Register a REST API from its OpenAPI document -- the same ingestion, refusals and report as `upstream register -transport http` (1.6.0, `console_manages`). Writes `(upstream register)`. Only http; stdio and oci stay in the terminal.
+      summary: Register a REST API from its OpenAPI document -- the same ingestion, refusals and report as `upstream register -transport http` (1.6.0, `console_manages`) -- or, with `transport` `oci`, a container from its pinned image, as `upstream register -transport oci` (1.7.0, `oci_register`). Writes `(upstream register)`. stdio stays in the terminal.
       description: |
         Not idempotent: a second call answers `upstream_exists`. After an
         `internal` or a dropped connection, `GET /v1/upstreams/{name}` first.
@@ -1989,7 +2031,7 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/RegisterUpstreamResult'}
         default:
-          description: feature_disabled, invalid_argument (any refusal of the ingestion, with its message), upstream_exists, payload_too_large, ...
+          description: feature_disabled (with `details.requires` `podman` for an oci register on a host without it), invalid_argument (any refusal of the ingestion or of the entry, with its message), upstream_exists, payload_too_large, ...
           content:
             application/json:
               schema: {$ref: '#/components/schemas/ErrorResponse'}

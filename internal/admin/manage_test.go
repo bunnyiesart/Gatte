@@ -87,6 +87,10 @@ type manageHarness struct {
 	roles      *fakeRoles
 	registered map[string]bool
 	checked    [][]string
+	// entries are the requests RegisterEntry was handed; podman is what
+	// OCIRuntime answers.
+	entries []adminapi.RegisterUpstreamRequest
+	podman  error
 }
 
 func newManageHarness(t *testing.T) *manageHarness {
@@ -122,6 +126,16 @@ func newManageHarness(t *testing.T) *manageHarness {
 					Auth: adminapi.UpstreamAuth{Kind: "bearer", Secret: req.KeyName}, Signature: "no",
 					Tools: []adminapi.UpstreamOperation{{Name: "list", Method: "GET", Path: "/x"}, {Name: "close", Method: "POST", Path: "/x", Class: adminapi.ClassSensitive}}}, nil
 			},
+			RegisterEntry: func(_ context.Context, _ *config.Config, req adminapi.RegisterUpstreamRequest) (adminapi.RegisterUpstreamResult, error) {
+				if h.registered[req.Name] {
+					return adminapi.RegisterUpstreamResult{}, adminapi.NewError(adminapi.CodeUpstreamExists, "exists")
+				}
+				h.registered[req.Name] = true
+				h.entries = append(h.entries, req)
+				return adminapi.RegisterUpstreamResult{Name: req.Name, Transport: req.Transport, Image: req.Image, Network: "none",
+					EnvVarNames: req.EnvVarNames, Auth: adminapi.UpstreamAuth{Kind: "none"}, Signature: "no"}, nil
+			},
+			OCIRuntime: func() error { return h.podman },
 			Deregister: func(_ context.Context, _ *config.Config, name string) (adminapi.DeregisterResult, error) {
 				had := h.registered[name]
 				delete(h.registered, name)
@@ -251,6 +265,76 @@ func TestManage_RegisterUpstreamValidatesRecordsAndReports(t *testing.T) {
 	requireManageCode(t, err, adminapi.CodeUpstreamExists, "a second register")
 	if len(h.rows) != 1 {
 		t.Fatal("a refused register wrote a row")
+	}
+}
+
+func TestManage_RegisterOCIGoesToRegisterEntryAndRefusesWhatIsNotOCI(t *testing.T) {
+	h := newManageHarness(t)
+	ctx := context.Background()
+	const img = "ghcr.io/example/intel@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+	base := adminapi.RegisterUpstreamRequest{Name: "intel", Transport: adminapi.UpstreamTransportOCI, Image: img,
+		Args: []string{"--network=slirp4netns"}, EnvVarNames: []string{"INTEL_KEY"}}
+	for _, tc := range []struct {
+		name, field string
+		edit        func(*adminapi.RegisterUpstreamRequest)
+	}{
+		{"no image", "image", func(r *adminapi.RegisterUpstreamRequest) { r.Image = "" }},
+		{"an http field", "openapi_document", func(r *adminapi.RegisterUpstreamRequest) { r.OpenAPIDocument = "{}" }},
+		{"a key name", "key_name", func(r *adminapi.RegisterUpstreamRequest) { r.KeyName = "INTEL_KEY" }},
+		{"NAME=value", "env_var_names", func(r *adminapi.RegisterUpstreamRequest) { r.EnvVarNames = []string{"INTEL_KEY=hunter2"} }},
+		{"bad env name", "env_var_names", func(r *adminapi.RegisterUpstreamRequest) { r.EnvVarNames = []string{"1BAD"} }},
+		{"stdio", "transport", func(r *adminapi.RegisterUpstreamRequest) { r.Transport = "stdio" }},
+		{"unknown transport", "transport", func(r *adminapi.RegisterUpstreamRequest) { r.Transport = "remote" }},
+	} {
+		req := base
+		tc.edit(&req)
+		_, err := h.svc.RegisterUpstream(ctx, bob, req)
+		requireManageCode(t, err, adminapi.CodeInvalidArgument, tc.name)
+		var ae *adminapi.Error
+		if !errors.As(err, &ae) || ae.Details["field"] != tc.field {
+			t.Errorf("%s: field %v, want %s", tc.name, err, tc.field)
+		}
+		if strings.Contains(fmt.Sprint(err), "hunter2") {
+			t.Errorf("%s: the value after = is repeated: %v", tc.name, err)
+		}
+	}
+	// An oci field on an http register is refused by name too.
+	_, err := h.svc.RegisterUpstream(ctx, bob, adminapi.RegisterUpstreamRequest{Name: "x", URL: "https://x", OpenAPIDocument: "{}", Image: img})
+	requireManageCode(t, err, adminapi.CodeInvalidArgument, "image on http")
+
+	// No podman: feature_disabled, the reason said, nothing registered.
+	h.podman = errors.New("podman is not on PATH; install podman")
+	if h.svc.OCIRegister() {
+		t.Error("OCIRegister without podman")
+	}
+	_, err = h.svc.RegisterUpstream(ctx, bob, base)
+	requireManageCode(t, err, adminapi.CodeFeatureDisabled, "no podman")
+	var ae *adminapi.Error
+	if !errors.As(err, &ae) || ae.Details["requires"] != "podman" || !strings.Contains(err.Error(), "podman is not on PATH") {
+		t.Fatalf("no podman: %v", err)
+	}
+	if len(h.entries) != 0 || len(h.rows) != 0 {
+		t.Fatalf("a refused register reached the port: %v, rows %v", h.entries, h.rows)
+	}
+
+	h.podman = nil
+	if !h.svc.OCIRegister() {
+		t.Fatal("OCIRegister with podman")
+	}
+	res, err := h.svc.RegisterUpstream(ctx, bob, base)
+	if err != nil || !res.Changed || !res.Recorded || res.Tools == nil || res.Skipped == nil || res.IngestWarnings == nil {
+		t.Fatalf("register = %+v, %v", res, err)
+	}
+	if len(h.entries) != 1 || h.entries[0].Image != img || !slices.Equal(h.entries[0].Args, base.Args) {
+		t.Fatalf("port got %+v", h.entries)
+	}
+	if len(h.rows) != 1 || !strings.HasPrefix(h.rows[0].Reason, `upstream "intel" registered: oci `+img+`, network none, env INTEL_KEY [ui]`) {
+		t.Fatalf("row = %+v", h.rows)
+	}
+
+	h.cfg.Admin.ConsoleManages = false
+	if h.svc.OCIRegister() {
+		t.Error("OCIRegister with console_manages off")
 	}
 }
 

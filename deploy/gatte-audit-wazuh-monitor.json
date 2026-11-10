@@ -1,0 +1,47 @@
+{
+  "type": "monitor",
+  "monitor_type": "query_level_monitor",
+  "name": "Gatte heartbeat absent: gatte-jail-01",
+  "enabled": true,
+  "schedule": { "period": { "interval": 5, "unit": "MINUTES" } },
+  "inputs": [
+    {
+      "search": {
+        "indices": ["wazuh-alerts-*"],
+        "query": {
+          "size": 0,
+          "query": {
+            "bool": {
+              "filter": [
+                { "term": { "rule.groups": "gatte_heartbeat" } },
+                { "term": { "data.chain": "gatte-jail-01" } },
+                {
+                  "range": {
+                    "timestamp": {
+                      "gte": "{{period_end}}||-15m",
+                      "lte": "{{period_end}}",
+                      "format": "epoch_millis"
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    }
+  ],
+  "triggers": [
+    {
+      "name": "No heartbeat from gatte-jail-01 in 15 minutes",
+      "severity": "1",
+      "condition": {
+        "script": {
+          "source": "ctx.results[0].hits.total.value < 1",
+          "lang": "painless"
+        }
+      },
+      "actions": []
+    }
+  ]
+}

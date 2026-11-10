@@ -3,8 +3,9 @@ package gatteweb
 // Tab 1 of the revised console (design/adr/0051, 0052): "MCP Servers / APIs".
 // The noun for a backend is "MCP server / API". This file is the tab's shell:
 // the list with per-backend health and a needs-review marker, the zero-JS
-// /servers/new add page (REST API / OpenAPI -> generates MCP tools; stdio and
-// oci stay CLI-only, design/adr/0050 §2, 0034), the register result page where
+// /servers/new add page (REST API / OpenAPI -> generates MCP tools, and a
+// container (oci) where the backend has podman, design/adr/0059; stdio stays
+// CLI-only, design/adr/0034), the register result page where
 // signing is a separate attesting click (never sign-on-register, design/adr/0050
 // §5), and the server-detail page.
 //
@@ -209,7 +210,7 @@ func (f *Front) serverSign(w http.ResponseWriter, r *http.Request) {
 	}
 	name := r.PathValue("name")
 	res, err := f.acc.SignUpstream(r.Context(), name)
-	f.showResult(w, r, "servers", "Sign "+frontkit.VisibleText(name), serverBack(name), signResult(res, err))
+	f.showResult(w, r, "servers", "Attest "+frontkit.VisibleText(name), serverBack(name), signResult(res, err))
 }
 
 // serverRemove deregisters. The form makes the operator type the name; the
@@ -235,41 +236,82 @@ func (f *Front) serverRemove(w http.ResponseWriter, r *http.Request) {
 
 // ---- the add page and the register result
 
+// ociForm is what the Container (oci) form carries back after a refusal.
+// EnvNames is the vault names as typed, comma- or space-separated.
+type ociForm struct {
+	Name, Image, Network, EnvNames string
+}
+
+// Add-page kinds, the ?kind= of /servers/new.
+const (
+	kindREST = "rest"
+	kindOCI  = "oci"
+)
+
 type serverNewData struct {
-	Form      registerForm
+	// Kind is the form drawn: kindREST or kindOCI.
+	Kind    string
+	Form    registerForm
+	OCIForm ociForm
+	// OCI: the backend lists FeatureOCIRegister, so the Container form is
+	// offered. Without it (no podman, as on the Docker image) the choice is
+	// not drawn at all (design/adr/0059 §3).
+	OCI       bool
 	Root      bool
 	AuthKinds []struct{ Value, Label string }
 	MaxDocMiB int
 }
 
+// ociUnavailable is what the add page says when the Container form is asked
+// for and the backend does not offer it.
+const ociUnavailable = "Container (oci) backends cannot be added here: they need podman on the gateway's host, and this one has none (the Docker image ships without it). Register them in the terminal on a host with podman: mcp-gateway upstream register -transport oci."
+
 func (f *Front) serverNewPage(w http.ResponseWriter, r *http.Request) {
 	if !f.managed(w, r, false) {
 		return
 	}
-	f.renderServerNew(w, r, registerForm{}, "")
-}
-
-// renderServerNew draws the add page; form and refusal are a register the
-// backend refused, shown again as typed with its reason.
-func (f *Front) renderServerNew(w http.ResponseWriter, r *http.Request, form registerForm, refusal string) {
-	d := serverNewData{Form: form, Root: f.acc != nil, AuthKinds: authKinds, MaxDocMiB: adminapi.MaxUpstreamDocumentBytes >> 20}
-	errMsg := ""
-	if refusal != "" {
-		errMsg = "Not registered: " + refusal
+	d := f.newServerData(r, kindREST)
+	if r.URL.Query().Get("kind") == kindOCI {
+		if !d.OCI {
+			f.renderServerNew(w, r, d, ociUnavailable)
+			return
+		}
+		d.Kind = kindOCI
 	}
-	f.render(w, r, "server_new", "Add a REST API", page{Nav: "servers", Data: d, Error: errMsg})
+	f.renderServerNew(w, r, d, "")
 }
 
-// serverRegister registers an http backend from its OpenAPI document, then
-// shows the result page. It does NOT sign: the signature attests that someone
-// read the URL, where the key is injected and every operation, which the result
-// page shows, and signing is a separate button there (design/adr/0050 §5,
-// 0052 §3). stdio and oci are not offered here; they stay in the CLI.
+// newServerData is the add page's fixed part, for the form kind.
+func (f *Front) newServerData(r *http.Request, kind string) serverNewData {
+	return serverNewData{Kind: kind, OCI: f.feature(r.Context(), adminapi.FeatureOCIRegister), Root: f.acc != nil,
+		AuthKinds: authKinds, MaxDocMiB: adminapi.MaxUpstreamDocumentBytes >> 20}
+}
+
+// renderServerNew draws the add page; errMsg, when set, is why a register
+// was refused (the form shown again as typed) or why the page cannot offer
+// what was asked.
+func (f *Front) renderServerNew(w http.ResponseWriter, r *http.Request, d serverNewData, errMsg string) {
+	title := "Add a REST API"
+	if d.Kind == kindOCI {
+		title = "Add a container (oci)"
+	}
+	f.render(w, r, "server_new", title, page{Nav: "servers", Data: d, Error: errMsg})
+}
+
+// serverRegister registers an http backend from its OpenAPI document, or an
+// oci one (transport=oci), then shows the result page. It does NOT sign: the
+// signature attests that someone read what the result page shows, and
+// signing is a separate button there (design/adr/0050 §5, 0052 §3, 0059 §6).
+// stdio is not offered here; it stays in the CLI.
 func (f *Front) serverRegister(w http.ResponseWriter, r *http.Request) {
 	if !f.managed(w, r, false) {
 		return
 	}
 	pf := r.PostForm
+	if pf.Get("transport") == adminapi.UpstreamTransportOCI {
+		f.serverRegisterOCI(w, r)
+		return
+	}
 	form := registerForm{Name: strings.TrimSpace(pf.Get("name")), URL: strings.TrimSpace(pf.Get("url")),
 		OpenAPIURL: strings.TrimSpace(pf.Get("openapi_url")), OpenAPIText: pf.Get("openapi_text"),
 		AuthKind: pf.Get("auth_kind"), AuthName: strings.TrimSpace(pf.Get("auth_name")), KeyName: strings.TrimSpace(pf.Get("key_name")),
@@ -279,7 +321,9 @@ func (f *Front) serverRegister(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(form.KeyName, "=") {
 			form.KeyName = ""
 		}
-		f.renderServerNew(w, r, form, text)
+		d := f.newServerData(r, kindREST)
+		d.Form = form
+		f.renderServerNew(w, r, d, "Not registered: "+text)
 	}
 
 	doc, uploaded, err := documentFile(r)
@@ -350,5 +394,44 @@ func (f *Front) serverRegister(w http.ResponseWriter, r *http.Request) {
 	}
 	d.Output = strings.Join(out, "\n")
 	d.ReviewAt = serverBack(res.Name)
+	f.render(w, r, "server_registered", "Registered "+frontkit.VisibleText(res.Name), page{Nav: "servers", Data: d})
+}
+
+// serverRegisterOCI registers a container from its pinned image. The front
+// only turns the form into the request: the digest pin, the network
+// allowlist, the variable names' grammar and the podman gate are the
+// backend's (design/adr/0059 §2, §4).
+func (f *Front) serverRegisterOCI(w http.ResponseWriter, r *http.Request) {
+	pf := r.PostForm
+	form := ociForm{Name: strings.TrimSpace(pf.Get("name")), Image: strings.TrimSpace(pf.Get("image")),
+		Network: strings.TrimSpace(pf.Get("network")), EnvNames: strings.TrimSpace(pf.Get("env_var_names"))}
+	req := adminapi.RegisterUpstreamRequest{Name: form.Name, Transport: adminapi.UpstreamTransportOCI, Image: form.Image,
+		EnvVarNames: strings.FieldsFunc(form.EnvNames, func(c rune) bool { return c == ',' || c == ' ' || c == '\n' || c == '\r' || c == '\t' })}
+	// none is the default by omission, as the CLI writes it without -arg;
+	// any other policy is signed in the entry's args.
+	if form.Network != "" && form.Network != "none" {
+		req.Args = []string{"--network=" + form.Network}
+	}
+	res, err := f.op.RegisterUpstream(r.Context(), req)
+	if err != nil {
+		if strings.Contains(form.EnvNames, "=") {
+			// A NAME=value pasted as a name is not written back into the page.
+			form.EnvNames = ""
+		}
+		d := f.newServerData(r, kindOCI)
+		d.OCIForm = form
+		if !d.OCI {
+			// Refused because the backend does not offer it (no podman):
+			// say why over the REST form, never a Container form that
+			// cannot work here.
+			d.Kind = kindREST
+		}
+		f.renderServerNew(w, r, d, "Not registered: "+errText(err))
+		return
+	}
+	d := registered{Res: res, Root: f.acc != nil, Output: strings.Join(res.Messages, "\n"), ReviewAt: serverBack(res.Name)}
+	for _, wn := range res.Warnings {
+		d.Warnings = append(d.Warnings, wn.Message)
+	}
 	f.render(w, r, "server_registered", "Registered "+frontkit.VisibleText(res.Name), page{Nav: "servers", Data: d})
 }

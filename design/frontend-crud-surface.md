@@ -1,8 +1,8 @@
 # Frontend CRUD surface map
 
 The surface both Gatte frontends code against: the web console
-(`internal/front/gatteweb`, front tag `ui`) and the terminal console (the
-planned `mcp-gateway tui` subcommand, front tag `tui`).
+(`internal/front/gatteweb`, front tag `ui`) and the terminal console
+(`internal/front/gattetui`, the `mcp-gateway tui` subcommand, front tag `tui`).
 
 Both are thin clients over `pkg/adminapi`, which talks to the management API on
 the operator and accounts UNIX sockets (`api/admin.openapi.yaml`). All business
@@ -18,10 +18,11 @@ nothing.
 
 For local UI work, `make preview-console` serves the real console against the
 in-memory fake (`internal/adminapitest`) with sample rows for every surface
-below, including empty and error states. The fake is also the test double both
-tracks build on (`adminapitest.Start`). **Never build or host the real image on
-a workstation** — the mock preview is the only thing that runs locally; real
-builds and tests run in CI or on the server.
+below, including empty and error states; `make preview-tui` runs the terminal
+console against it (`ARGS=-gallery` prints every screen and state). The fake is
+also the test double both tracks build on (`adminapitest.Start`). **Never build
+or host the real image on a workstation** — the mock preview is the only thing
+that runs locally; real builds and tests run in CI or on the server.
 
 ## The 2-tab IA (ADR-0051)
 
@@ -288,9 +289,15 @@ Users), and within each, a panel/section registry each slice appends to from its
 own file's `init()`. Do not hand-maintain a menu or a switch over screens.
 
 ```go
-// Shape only; define concretely when the shell lands.
-registerScreen(Screen{ID: "servers", Title: "MCP Servers / APIs", Order: 10, New: func(c *adminapi.Client) tea.Model { /* ... */ }})
+// internal/front/gattetui/registry.go; each from its own file's init():
+registerScreen(Screen{ID: "servers", Title: "MCP Servers / APIs", Order: 10, Root: serversPage})
+registerDetailPanel(DetailPanel{ID: "tools", Order: 20, Rows: toolsPanel})
+registerUsersSection(UsersSection{ID: "roles", Order: 20, Rows: rolesSection})
 ```
+
+The roles splice rules are in `pkg/frontkit` (`roles.go`) for any front. The
+console still carries the same rules in `gatteweb/roles_toml.go` until it
+switches to them.
 
 ## Frozen shared files — consume, never edit
 

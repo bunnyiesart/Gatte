@@ -34,6 +34,11 @@ type peopleSectionData struct {
 	// button still renders, so adding someone stays possible through a
 	// transient read failure.
 	Error string
+	// Seen is who the audit trail has seen call the gateway, with the name the
+	// token carried. It is the operator socket's, so every console shows it,
+	// with or without the accounts socket. SeenError is its failed read.
+	Seen      []adminapi.Seen
+	SeenError string
 }
 
 // peopleSection renders the People section into the Users page. Listing the
@@ -48,6 +53,11 @@ func (f *Front) peopleSection(r *http.Request) (template.HTML, error) {
 		} else {
 			d.Accounts = list.Accounts
 		}
+	}
+	if p, err := f.op.People(r.Context()); err != nil {
+		d.SeenError = errText(err)
+	} else {
+		d.Seen = p.Seen
 	}
 	return f.renderFragment("section_people.html", d)
 }

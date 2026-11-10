@@ -49,6 +49,27 @@ func TestNavForOrderAndGating(t *testing.T) {
 	}
 }
 
+// The Users tab shows exactly one Roles section for every console: the editable
+// matrix with the managing console and the accounts socket (design/adr/0054),
+// the read-only view otherwise, so an operator without them still sees roles.
+func TestRolesSlot_EditableOrReadOnlyNeverBoth(t *testing.T) {
+	for _, caps := range []Capabilities{{}, {Manages: true}, {Root: true}, {Manages: true, Root: true}} {
+		var shown []string
+		for _, s := range orderedUsersSections() {
+			if (s.ID == "roles" || s.ID == "roles-view") && (s.Show == nil || s.Show(caps)) {
+				shown = append(shown, s.ID)
+			}
+		}
+		want := "roles-view"
+		if caps.Manages && caps.Root {
+			want = "roles"
+		}
+		if len(shown) != 1 || shown[0] != want {
+			t.Errorf("caps %+v: Roles sections shown = %v, want [%s]", caps, shown, want)
+		}
+	}
+}
+
 // The server-detail and Users containers draw their panels and sections from
 // their own registries (design/adr/0051): each slice appends one from its own
 // init(), and the container ranges in Order. A panel can slot between two with

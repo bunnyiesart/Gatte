@@ -119,7 +119,10 @@ func TestMaintenanceMessageIsQuotedSoItCannotCloseTheQuote(t *testing.T) {
 	h.maintain("casemgmt", msg, time.Time{})
 	h.maintain(health.GatewayTarget, msg, time.Time{})
 
-	for _, res := range []*mcp.CallToolResult{h.call(tokenAnalyst, toolListCases), h.call(tokenAnalyst, toolSearch)} {
+	// The message reaches a model through the honest result of the backend in
+	// maintenance and through gatte.status (which also carries the gateway's).
+	status, _ := h.gatteStatus(tokenAnalyst)
+	for _, res := range []*mcp.CallToolResult{h.call(tokenAnalyst, toolListCases), status} {
 		text := resultText(res)
 		if !strings.Contains(text, "Operator message: "+strconv.Quote(msg)+".") {
 			t.Errorf("text = %q, want the message quoted as %s", text, strconv.Quote(msg))

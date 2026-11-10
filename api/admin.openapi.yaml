@@ -167,7 +167,7 @@ tags:
   - name: people
   - name: connect
   - name: maintenance
-    description: Planned maintenance of one backend (design/adr/0041). Feature `maintenance`. Gateway-wide maintenance (scope `gateway`) is deprecated (design/adr/0055): it no longer adds a notice to call results and will be removed in `/v2`.
+    description: 'Planned maintenance of one backend (design/adr/0041). Feature `maintenance`. Gateway-wide maintenance (scope `gateway`) is deprecated (design/adr/0055): it no longer adds a notice to call results and will be removed in `/v2`.'
   - name: serve
     description: Requests to the running gateway process -- reload the reloadable configuration, re-dial one backend (design/adr/0044). Feature `serve_control`.
   - name: manage

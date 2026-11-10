@@ -3,49 +3,32 @@ package gatteweb
 import (
 	"html/template"
 	"net/http"
+	"slices"
 	"testing"
 
 	"github.com/bunnyiesart/Gatte/pkg/adminapi"
 )
 
-// TestNavForOrderAndGating checks the registry-built navigation: entries come
-// out in nav order, the current page is marked, and the managing-only entries
-// (Secrets, Roles) appear only with both capabilities.
-func TestNavForOrderAndGating(t *testing.T) {
-	// Tools is no longer a top-nav tab (design/adr/0051): it lives on each
-	// server's detail page, registered as a DetailPanel, not a NavItem. People
-	// and Access likewise moved into the Users tab as sections, not NavItems.
-	full := navFor("servers", Capabilities{Manages: true, Root: true})
-	var labels []string
-	current := ""
-	for _, n := range full {
-		labels = append(labels, n.Label)
-		if n.Current {
-			current = n.Label
+// The console has exactly two tabs, for every console (design/adr/0051):
+// everything else is a panel of the server-detail page or a section of the
+// Users tab, registered without a NavItem. The current page is marked.
+func TestNavFor_ExactlyTheTwoTabs(t *testing.T) {
+	want := []string{"MCP Servers / APIs", "Users"}
+	for _, caps := range []Capabilities{{}, {Manages: true}, {Root: true}, {Manages: true, Root: true}} {
+		var labels []string
+		current := ""
+		for _, n := range navFor("users", caps) {
+			labels = append(labels, n.Label)
+			if n.Current {
+				current = n.Label
+			}
 		}
-	}
-	want := []string{"Overview", "MCP Servers / APIs", "Users", "Audit", "Backends", "Secrets", "Roles", "Quota"}
-	if len(labels) != len(want) {
-		t.Fatalf("nav labels = %v, want %v", labels, want)
-	}
-	for i := range want {
-		if labels[i] != want[i] {
-			t.Fatalf("nav order = %v, want %v", labels, want)
+		if !slices.Equal(labels, want) {
+			t.Errorf("caps %+v: nav = %v, want %v", caps, labels, want)
 		}
-	}
-	if current != "MCP Servers / APIs" {
-		t.Fatalf("current = %q, want MCP Servers / APIs", current)
-	}
-
-	// Without the managing capabilities, Secrets and Roles are hidden.
-	plain := navFor("overview", Capabilities{})
-	for _, n := range plain {
-		if n.Label == "Secrets" || n.Label == "Roles" {
-			t.Fatalf("%q must not appear without manage + accounts socket", n.Label)
+		if current != "Users" {
+			t.Errorf("caps %+v: current = %q, want Users", caps, current)
 		}
-	}
-	if len(plain) != len(want)-2 {
-		t.Fatalf("plain nav has %d entries, want %d", len(plain), len(want)-2)
 	}
 }
 

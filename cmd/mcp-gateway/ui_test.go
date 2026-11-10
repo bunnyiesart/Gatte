@@ -14,7 +14,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bunnyiesart/Gatte/internal/audit"
 	"github.com/bunnyiesart/Gatte/internal/quarantine"
 )
 
@@ -81,8 +80,43 @@ func TestUI_TheCookieWithoutTheSessionPathIsNotEnough(t *testing.T) {
 	if w := uiDo(s, "GET", "/", nil, nil, nil); w.Code != http.StatusUnauthorized {
 		t.Fatalf("GET the session path with no cookie: %d, want 401", w.Code)
 	}
-	if w := uiDo(s, "GET", "/", nil, cookie, nil); w.Code != http.StatusOK {
+	if w := uiDo(s, "GET", "/servers", nil, cookie, nil); w.Code != http.StatusOK {
 		t.Fatalf("GET the session path with the cookie: %d, want 200", w.Code)
+	}
+}
+
+// The console root is the first tab (design/adr/0051): the login link lands
+// there, and the paths of the pages it replaced lead to where they went.
+func TestUI_TheRootAndTheReplacedPagesRedirect(t *testing.T) {
+	_, s, cookie := newUITest(t)
+	for target, want := range map[string]string{
+		"/": "/servers", "/upstreams": "/servers", "/upstreams/show?name=edr": "/servers/edr",
+		"/secrets": "/vault", "/roles": "/users",
+	} {
+		w := uiDo(s, "GET", target, nil, cookie, nil)
+		if w.Code != http.StatusSeeOther || w.Header().Get("Location") != s.session+want {
+			t.Errorf("GET %s: %d Location=%q, want 303 to %s", target, w.Code, w.Header().Get("Location"), s.session+want)
+		}
+	}
+	// Audit and Quota left the console (design/adr/0056, 0057).
+	for _, target := range []string{"/audit", "/audit/export?format=csv", "/quota"} {
+		if w := uiDo(s, "GET", target, nil, cookie, nil); w.Code != http.StatusNotFound {
+			t.Errorf("GET %s: %d, want 404", target, w.Code)
+		}
+	}
+}
+
+// The header says who is operating (design/adr/0051), as the backend saw them.
+func TestUI_TheHeaderNamesTheOperatorAndTheNavHasTwoTabs(t *testing.T) {
+	_, s, cookie := newUITest(t)
+	body := uiDo(s, "GET", "/servers", nil, cookie, nil).Body.String()
+	if !strings.Contains(body, `class="whoami"`) || !strings.Contains(body, uiOperator) {
+		t.Errorf("the header does not name the operator %q", uiOperator)
+	}
+	nav := body[strings.Index(body, `<nav aria-label="Console">`):]
+	nav = nav[:strings.Index(nav, "</nav>")]
+	if strings.Count(nav, "<a ") != 2 || !strings.Contains(nav, "MCP Servers / APIs") || !strings.Contains(nav, ">Users<") {
+		t.Errorf("the nav is not exactly the two tabs:\n%s", nav)
 	}
 }
 
@@ -100,14 +134,6 @@ func TestUI_AnOriginInAnotherCaseIsTheSameOrigin(t *testing.T) {
 	}
 	if blocked, _ := e.blocks().Blocks(context.Background()); len(blocked) != 1 {
 		t.Fatalf("after block: %+v", blocked)
-	}
-}
-
-func TestUI_TheAuditLimitIsBounded(t *testing.T) {
-	_, s, cookie := newUITest(t)
-	body := uiDo(s, "GET", "/audit?limit=100000000", nil, cookie, nil).Body.String()
-	if !strings.Contains(body, `value="5000"`) {
-		t.Fatal("the audit page did not cap its limit at 5000")
 	}
 }
 
@@ -131,13 +157,13 @@ func TestUI_RefusesAHostThatIsNotLoopback(t *testing.T) {
 	_, s, cookie := newUITest(t)
 	// DNS rebinding: attacker.example resolves to 127.0.0.1 after the page
 	// loaded, so the browser sends the operator's request with that Host.
-	w := uiDo(s, "GET", "/", nil, cookie, func(r *http.Request) { r.Host = "attacker.example:8090" })
+	w := uiDo(s, "GET", "/servers", nil, cookie, func(r *http.Request) { r.Host = "attacker.example:8090" })
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("Host attacker.example: %d, want 403", w.Code)
 	}
 	// An ssh -L tunnel may use any local port, so the port is not pinned.
 	for _, host := range []string{"localhost:9000", "127.0.0.1:8090", "[::1]:8090"} {
-		w := uiDo(s, "GET", "/", nil, cookie, func(r *http.Request) { r.Host = host })
+		w := uiDo(s, "GET", "/servers", nil, cookie, func(r *http.Request) { r.Host = host })
 		if w.Code != http.StatusOK {
 			t.Errorf("Host %s: %d, want 200", host, w.Code)
 		}
@@ -262,7 +288,7 @@ func TestUI_PagesCarryAStrictPolicyAndNoScript(t *testing.T) {
 	mustRegister(t, e, stdioEntry("edr"))
 	mustObserve(t, e, "edr", quarantine.ToolIdentity{Name: "get_host", Description: "d", InputSchema: []byte(`{}`)})
 
-	for _, page := range []string{"/", "/servers", "/servers/edr/tools/get_host", "/servers/edr/tools/review-set", "/users", "/audit", "/upstreams", "/quota"} {
+	for _, page := range []string{"/servers", "/servers/edr", "/servers/edr/tools/get_host", "/servers/edr/tools/review-set", "/users"} {
 		w := uiDo(s, "GET", page, nil, cookie, nil)
 		if w.Code != http.StatusOK {
 			t.Errorf("GET %s: %d\n%s", page, w.Code, w.Body)
@@ -285,7 +311,8 @@ func TestUI_PagesCarryAStrictPolicyAndNoScript(t *testing.T) {
 
 func TestUI_GetNeverChangesState(t *testing.T) {
 	e, s, cookie := newUITest(t)
-	for _, target := range []string{"/access/block?subject=ana&csrf=" + s.csrf, "/servers/edr/tools/x/approve", "/servers/edr/tools/x/revoke"} {
+	for _, target := range []string{"/access/block?subject=ana&csrf=" + s.csrf, "/servers/edr/tools/x/approve", "/servers/edr/tools/x/revoke",
+		"/servers/edr/maintenance/on?message=m&csrf=" + s.csrf, "/servers/edr/maintenance/off"} {
 		if w := uiDo(s, "GET", target, nil, cookie, nil); w.Code != http.StatusMethodNotAllowed {
 			t.Errorf("GET %s: %d, want 405", target, w.Code)
 		}
@@ -297,22 +324,17 @@ func TestUI_GetNeverChangesState(t *testing.T) {
 
 func TestUI_TablesEscapeUntrustedStrings(t *testing.T) {
 	e, s, cookie := newUITest(t)
-	// A reason is text the gateway copied from somewhere it does not
-	// control; a table cell must show a hidden code point, not carry it.
-	if err := e.auditTrail().Record(context.Background(), audit.Record{
-		AnalystIdentity: "ana", Tool: "edr.get_host", TargetUpstream: "edr",
-		Timestamp: time.Now().UTC(), Outcome: audit.OutcomeDenied,
-		Reason: "forbidden\u202eevil",
-	}); err != nil {
-		t.Fatal(err)
-	}
-	for _, page := range []string{"/audit", "/"} {
+	// A tool name is text a backend chose; a table cell and an attention line
+	// must show a hidden code point, not carry it.
+	mustRegister(t, e, stdioEntry("edr"))
+	mustObserve(t, e, "edr", quarantine.ToolIdentity{Name: "get\u202ehost", Description: "d", InputSchema: []byte(`{}`)})
+	for _, page := range []string{"/servers/edr", "/servers"} {
 		body := uiDo(s, "GET", page, nil, cookie, nil).Body.String()
 		if strings.ContainsRune(body, '\u202e') {
 			t.Errorf("GET %s carries the raw U+202E", page)
 		}
 		if !strings.Contains(body, `\u{202E}`) {
-			t.Errorf(`GET %s does not show the reason's hidden code point as \u{202E}`, page)
+			t.Errorf(`GET %s does not show the tool name's hidden code point as \u{202E}`, page)
 		}
 	}
 }
@@ -428,13 +450,13 @@ func TestUI_TheCommandServesTheConsoleOverTheSocketAsTheOperator(t *testing.T) {
 	}
 	resp.Body.Close()
 	u, _ := url.Parse(link)
-	req, _ := http.NewRequest("GET", "http://"+u.Host+resp.Header.Get("Location"), nil)
+	req, _ := http.NewRequest("GET", "http://"+u.Host+resp.Header.Get("Location")+"servers", nil)
 	for _, c := range resp.Cookies() {
 		req.AddCookie(c)
 	}
 	page, err := client.Do(req)
 	if err != nil || page.StatusCode != http.StatusOK {
-		t.Fatalf("overview: %v %v", page, err)
+		t.Fatalf("servers: %v %v", page, err)
 	}
 	page.Body.Close()
 	cancel()

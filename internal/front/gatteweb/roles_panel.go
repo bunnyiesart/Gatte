@@ -259,7 +259,7 @@ func (f *Front) finishSplice(w http.ResponseWriter, r *http.Request, title, role
 		noRole:  "Nothing changed: no [[role]] named " + role + " in the roles file.",
 		already: "No change: role " + role + " already " + grantedWord(op) + " " + ns + ".",
 		wildcard: "Not changed: " + ns + " is reached through a \"*\" grant over " + server +
-			". Edit the whole-backend grant on the raw Roles page to change it one tool at a time.",
+			". Change the whole-backend grant in the roles file, then reload the configuration, to change it one tool at a time.",
 		needNonRead: "Not granted: " + ns + " is a sensitive tool, reachable only by a role marked non_read that names it. " +
 			"Mark " + role + " non_read first, then grant it. A sensitive tool also needs a separate clear before it is served.",
 	}

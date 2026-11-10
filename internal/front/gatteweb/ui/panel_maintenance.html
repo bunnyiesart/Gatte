@@ -1,0 +1,39 @@
+{{/*
+  The Maintenance panel on the server-detail page. A fragment, embedded by the
+  container (server.html) through the DetailPanel registry, so it carries its
+  own Base and CSRF rather than the page's. Start, update and end post to this
+  backend's own maintenance routes.
+*/}}
+{{$csrf := .CSRF}}{{$base := .Base}}
+<section>
+  <h2>Planned maintenance</h2>
+  <p class="caption">A backend in maintenance keeps its tools listed; its calls are answered with your message and not sent to it, from the next call on, until you end it. The end time is only announced.</p>
+  {{if .ReadErr}}<div class="notice danger" role="alert">{{template "warn"}}<p>The maintenance state could not be read, so no form is shown: {{vis .ReadErr}}</p></div>
+  {{else}}{{with .Current}}
+  <div class="group row">
+    <span class="lead-icon maintenance">{{template "warn"}}</span>
+    <span class="row-text">
+      <span class="row-title">In maintenance</span>
+      <span class="row-detail">“{{vis .Message}}” · since {{time .StartedAt}}{{if .Until}} · until {{since .Until}}{{if .UntilPassed}} (passed){{end}}{{end}} · by {{vis .SetBy}}</span>
+    </span>
+    <form method="post" action="{{$base}}/servers/{{$.Server}}/maintenance/off">
+      <input type="hidden" name="csrf" value="{{$csrf}}">
+      <button class="btn small">End maintenance</button>
+    </form>
+  </div>
+  <form class="group form" method="post" action="{{$base}}/servers/{{$.Server}}/maintenance/on">
+    <input type="hidden" name="csrf" value="{{$csrf}}">
+    <label class="field wide"><span>Message to analysts</span><input name="message" required maxlength="200" autocomplete="off" value="{{.Message}}"></label>
+    <label class="field"><span>Until (UTC, optional)</span><input name="until" autocomplete="off" placeholder="2h or 2026-09-29T15:00" value="{{formend .Until .UntilPassed}}"></label>
+    <div class="form-end"><button class="btn small">Update maintenance</button></div>
+  </form>
+  <p class="caption">Updating keeps when the maintenance started. Clear the end to take it back.</p>
+  {{else}}
+  <form class="group form" method="post" action="{{$base}}/servers/{{$.Server}}/maintenance/on">
+    <input type="hidden" name="csrf" value="{{$csrf}}">
+    <label class="field wide"><span>Message to analysts</span><input name="message" required maxlength="200" autocomplete="off" placeholder="Version upgrade; back in about an hour"></label>
+    <label class="field"><span>Until (UTC, optional)</span><input name="until" autocomplete="off" placeholder="2h or 2026-09-29T15:00"></label>
+    <div class="form-end"><button class="btn small">Start maintenance</button></div>
+  </form>
+  {{end}}{{end}}
+</section>

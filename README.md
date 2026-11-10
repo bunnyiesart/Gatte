@@ -1014,7 +1014,7 @@ results Gatte builds itself carry `_meta` key
 `io.github.bunnyiesart.gatte/origin`, which an upstream result never does.
 No unauthenticated endpoint reports health: the state of backends is only
 ever told to an authenticated caller, as above, and to the operator (the
-Backends page and `GET /v1/overview` of the management API, over its
+console's MCP Servers / APIs tab and `GET /v1/overview` of the management API, over its
 operator socket). A tool of a backend that is down stays listed for as long
 as its registry entry is servable (registered, valid, signed, covered by
 the quota), from the definition a human approved and the backend last

@@ -7,7 +7,7 @@ import "net/http"
 // the detail page through the DetailPanel registry (sections.go), not nav items.
 func init() {
 	register(Section{
-		Nav: NavItem{ID: "servers", Path: "/servers", Label: "MCP Servers / APIs", Order: 15},
+		Nav: NavItem{ID: "servers", Path: "/servers", Label: "MCP Servers / APIs", Order: 10},
 		Mount: func(mux *http.ServeMux, f *Front) {
 			mux.HandleFunc("GET /servers", f.serversPage)
 			mux.HandleFunc("GET /servers/new", f.serverNewPage)
@@ -17,6 +17,8 @@ func init() {
 			mux.HandleFunc("POST /servers/{name}/redial", f.serverRedial)
 			mux.HandleFunc("POST /servers/{name}/sign", f.serverSign)
 			mux.HandleFunc("POST /servers/{name}/remove", f.serverRemove)
+			// The Refresh link of a reload or redial still pending.
+			mux.HandleFunc("GET /serve-requests", f.serveRequestPage)
 		},
 	})
 }

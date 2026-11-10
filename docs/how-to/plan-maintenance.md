@@ -7,8 +7,8 @@ for an upgrade or a host reboot. It says what analysts see at each step
 
 You need: a shell on the gateway host and `sudo` to run commands as the
 service account `mcpgw`. The examples use
-`CFG=/usr/local/etc/mcp-gateway/config.toml`. The same actions are on the
-console's **Backends** page, under **Planned maintenance**.
+`CFG=/usr/local/etc/mcp-gateway/config.toml`. One backend's maintenance is
+also on its page in the console, under **Planned maintenance**.
 
 No step here needs a restart: each takes effect on the running gateway's
 next call.

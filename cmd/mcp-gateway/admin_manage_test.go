@@ -153,7 +153,10 @@ func TestManage_RegisterOCIThroughTheAPIIsTheCLIsEntry(t *testing.T) {
 	}
 
 	for name, edit := range map[string]func(*adminapi.RegisterUpstreamRequest){
-		"a tag":          func(r *adminapi.RegisterUpstreamRequest) { r.Image = "localhost/casemgmt-mcp:latest" },
+		"a tag": func(r *adminapi.RegisterUpstreamRequest) { r.Image = "localhost/casemgmt-mcp:latest" },
+		"a control char": func(r *adminapi.RegisterUpstreamRequest) {
+			r.Image = "localhost/casemgmt\n" + ociTestImage[len("localhost/casemgmt"):]
+		},
 		"a wrapper flag": func(r *adminapi.RegisterUpstreamRequest) { r.Args = []string{"--privileged"} },
 		"host network":   func(r *adminapi.RegisterUpstreamRequest) { r.Args = []string{"--network=host"} },
 	} {
@@ -166,6 +169,14 @@ func TestManage_RegisterOCIThroughTheAPIIsTheCLIsEntry(t *testing.T) {
 		if _, err := e.upstreams().Get(ctx, "ioc2"); !errors.Is(err, registry.ErrNotFound) {
 			t.Fatalf("%s: a refused register left an entry: %v", name, err)
 		}
+	}
+	// The refusal says what is wrong, with the character shown, not drawn.
+	hidden := req
+	hidden.Name = "ioc2"
+	hidden.Image = "localhost/case" + string(rune(0x200B)) + "mgmt" + ociTestImage[len("localhost/casemgmt"):]
+	if _, err := svc.RegisterUpstream(ctx, carol, hidden); err == nil || !strings.Contains(err.Error(), `localhost/case\u{200B}mgmt`) ||
+		!strings.Contains(err.Error(), "hidden character") {
+		t.Errorf("hidden character: %v", err)
 	}
 }
 

@@ -132,8 +132,10 @@ type Actor struct {
 	// Via is the shared account (root, the service account) the process
 	// ran as when its loginuid named the human. Empty otherwise.
 	Via string
-	// Front labels where the action came from: "ui", "api", "cli",
-	// "cli env", or a third-party front's name. Display only.
+	// Front labels where the action came from: "ui" (the web console),
+	// "tui" (the terminal console), "api", "cli", "cli env", or a
+	// third-party front's name. Display only; it decides nothing. A front
+	// name is held to [a-z0-9._-]{1,32} at the socket boundary.
 	Front string
 	// Root is true when the kernel said the peer is uid 0. Only root
 	// reaches IdP accounts Gatte does not manage (design/adr/0040 §1).

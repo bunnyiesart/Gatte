@@ -1,4 +1,4 @@
-.PHONY: require-devtools race-noskip ci nofront cross-vet build test test-race vet lint fmt-check check lab-build lab-probe lab-probe-rest devtools
+.PHONY: require-devtools race-noskip ci nofront cross-vet build test test-race vet lint fmt-check check lab-build lab-probe lab-probe-rest devtools preview-console
 
 build:
 	go build -o bin/mcp-gateway ./cmd/mcp-gateway
@@ -37,6 +37,28 @@ lab-probe: lab-build
 # REST probe"). -count=1 so the proof is re-run, never served from cache.
 lab-probe-rest:
 	go test -count=1 -v -run '^TestLabProbeREST$$' ./internal/gateway/resthttp/
+
+# MOCK-ONLY live preview of the web console for local UI work. This is the one
+# approved exception to "never build or run Gatte on the Mac": it runs NO real
+# backend. It serves internal/front/gatteweb (the real console) against the
+# in-memory fake management API (internal/adminapitest), on loopback. There is
+# no way to point it at a real socket, backend, secret or network -- the fake is
+# started in-process on a throwaway UNIX socket (see cmd/gatte-preview). It
+# watches the source and relaunches on every change, so console CRUD updates as
+# you edit. Ctrl-C stops it; open the /login link it prints.
+#
+# Needs watchexec: `brew install watchexec` (macOS) or see
+# https://github.com/watchexec/watchexec#install. Override the address with
+# PREVIEW_LISTEN (loopback only), e.g. make preview-console PREVIEW_LISTEN=127.0.0.1:9000
+PREVIEW_LISTEN ?= 127.0.0.1:8099
+preview-console:
+	@command -v watchexec >/dev/null 2>&1 || { \
+		echo "preview-console needs watchexec. Install it: brew install watchexec"; \
+		echo "or see https://github.com/watchexec/watchexec#install"; exit 1; }
+	watchexec -r -e go,html,css \
+		--watch internal/front/gatteweb --watch internal/adminapitest \
+		--watch cmd/gatte-preview --watch pkg/adminapi --watch pkg/frontkit \
+		-- go run -tags preview ./cmd/gatte-preview $(PREVIEW_LISTEN)
 
 # -count=1 disables go test's result cache for the whole run. Required for
 # internal/fitness to be trustworthy -- see the comment in

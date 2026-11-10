@@ -12,17 +12,8 @@
   <div class="bar-inner">
     <a class="wordmark" href="{{$.Base}}/">Gatte</a>
     <nav aria-label="Console">
-      <a href="{{$.Base}}/" {{if eq .Nav "overview"}}aria-current="page"{{end}}>Overview</a>
-      <a href="{{$.Base}}/tools" {{if eq .Nav "tools"}}aria-current="page"{{end}}>Tools</a>
-      <a href="{{$.Base}}/people" {{if eq .Nav "people"}}aria-current="page"{{end}}>People</a>
-      <a href="{{$.Base}}/access" {{if eq .Nav "access"}}aria-current="page"{{end}}>Access</a>
-      <a href="{{$.Base}}/audit" {{if eq .Nav "audit"}}aria-current="page"{{end}}>Audit</a>
-      <a href="{{$.Base}}/upstreams" {{if eq .Nav "upstreams"}}aria-current="page"{{end}}>Backends</a>
-      {{if and .Manages .Root}}
-      <a href="{{$.Base}}/secrets" {{if eq .Nav "secrets"}}aria-current="page"{{end}}>Secrets</a>
-      <a href="{{$.Base}}/roles" {{if eq .Nav "roles"}}aria-current="page"{{end}}>Roles</a>
+      {{range .NavItems}}<a href="{{$.Base}}{{.Path}}" {{if .Current}}aria-current="page"{{end}}>{{.Label}}</a>
       {{end}}
-      <a href="{{$.Base}}/quota" {{if eq .Nav "quota"}}aria-current="page"{{end}}>Quota</a>
     </nav>
   </div>
 </header>

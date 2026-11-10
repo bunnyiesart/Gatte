@@ -363,7 +363,13 @@ func TestUIManage_UploadingTheDocumentWorksAndStillNeedsTheFormToken(t *testing.
 	if got := m.postMultipart(t, "/servers", fields, "openapi.json", restSpecJSON); got.code != http.StatusForbidden {
 		t.Fatalf("a multipart register without the form token: %d", got.code)
 	}
-	fields["csrf"] = "0" + m.s.csrf[1:]
+	// Swap the first character for a different one: a fixed "0" equals the
+	// real token whenever that token happens to start with "0".
+	wrong := "0"
+	if m.s.csrf[0] == '0' {
+		wrong = "1"
+	}
+	fields["csrf"] = wrong + m.s.csrf[1:]
 	if got := m.postMultipart(t, "/servers", fields, "openapi.json", restSpecJSON); got.code != http.StatusForbidden {
 		t.Fatalf("a multipart register with a wrong form token: %d", got.code)
 	}

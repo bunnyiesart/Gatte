@@ -44,11 +44,11 @@
 {{end}}
 
 <section>
-  <div class="section-head"><h2>Tools in review</h2><a href="{{$base}}/tools?server={{.Name}}">All its tools</a></div>
+  <div class="section-head"><h2>Tools in review</h2><a href="{{$base}}/servers/{{.Name}}">All its tools</a></div>
   {{if .Tools}}
   <ul class="group">
     {{range .Tools}}
-    <li><a class="row" href="{{$base}}/tools/show?server={{.Server}}&amp;tool={{.Tool}}">
+    <li><a class="row" href="{{$base}}/servers/{{.Server}}/tools/{{.Tool}}">
       <span class="row-text"><span class="row-title mono">{{vis .Tool}}</span><span class="row-detail">{{if .Usable}}Served{{else if eq .Status "approved"}}Approved, not served{{if eq .Class "sensitive"}}: clear it{{end}}{{else if eq .Status "changed"}}Changed since approved{{else}}Needs review{{end}}{{if eq .Class "sensitive"}} · sensitive{{end}}</span></span>
       {{template "chev"}}
     </a></li>

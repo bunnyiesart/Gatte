@@ -19,7 +19,7 @@
       {{if or (eq .Kind "unsigned") (eq .Kind "backend_unavailable") (eq .Kind "backend_maintenance") (eq .Kind "gateway_maintenance") (eq .Kind "serve_not_reporting")}}
       <a class="row" href="{{$.Base}}/upstreams">
       {{else}}
-      <a class="row" href="{{$.Base}}/tools/show?server={{.Server}}&amp;tool={{.Tool}}">
+      <a class="row" href="{{$.Base}}/servers/{{.Server}}/tools/{{.Tool}}">
       {{end}}
         <span class="lead-icon {{.Kind}}">{{if or (eq .Kind "pending") (eq .Kind "backend_maintenance") (eq .Kind "gateway_maintenance")}}{{template "dot"}}{{else}}{{template "warn"}}{{end}}</span>
         <span class="row-text">

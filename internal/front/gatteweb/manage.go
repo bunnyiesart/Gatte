@@ -240,10 +240,9 @@ func (f *Front) upstreamRegister(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	d.Output = strings.Join(out, "\n")
-	d.ReviewAt = "/tools?server=" + url.QueryEscape(res.Name)
-	if f.feature(r.Context(), adminapi.FeatureToolReviewSet) {
-		d.ReviewAt = "/tools/review-set?server=" + url.QueryEscape(res.Name)
-	}
+	// Tools are reviewed on the backend's detail page now (design/adr/0051): its
+	// Tools panel lists them and links to the one-page review set.
+	d.ReviewAt = serverBack(res.Name)
 	f.render(w, r, "registered", "Registered "+frontkit.VisibleText(res.Name), page{Nav: "upstreams", Data: d})
 }
 
@@ -559,26 +558,6 @@ func (f *Front) serveRequestPage(w http.ResponseWriter, r *http.Request) {
 		back, nav = showBack(q.Upstream), "upstreams"
 	}
 	f.showResult(w, r, nav, "Request "+strconv.FormatInt(id, 10), back, f.serveResult(q, err))
-}
-
-// ---- clearing a sensitive tool
-
-func (f *Front) toolClear(w http.ResponseWriter, r *http.Request) {
-	if !f.managed(w, r, false, adminapi.FeatureToolClear) {
-		return
-	}
-	server, tool := r.PostForm.Get("server"), r.PostForm.Get("tool")
-	res, err := f.op.ClearTool(r.Context(), adminapi.ToolRef{Server: server, Tool: tool})
-	out := actionResult(res.ActionResult, err)
-	if err == nil && len(res.ClearedBy) > 0 {
-		var roles []string
-		for _, c := range res.ClearedBy {
-			roles = append(roles, c.Role)
-		}
-		out.Output = strings.TrimSpace(out.Output + "\nReached by: " + strings.Join(roles, ", "))
-	}
-	f.showResult(w, r, "tools", "Clear "+frontkit.VisibleText(server+"."+tool),
-		"/tools/show?server="+url.QueryEscape(server)+"&tool="+url.QueryEscape(tool), out)
 }
 
 // ---- secrets (accounts socket)

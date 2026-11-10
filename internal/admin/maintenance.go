@@ -142,7 +142,7 @@ func (s *Service) StartMaintenance(ctx context.Context, a Actor, req adminapi.Ma
 	}
 	res.Changed = true
 	if req.Scope == adminapi.ScopeGateway {
-		res.Messages = append(res.Messages, "The gateway is in planned maintenance: calls are still served, text results and gatte.status carry the notice from the next call on.")
+		res.Messages = append(res.Messages, "The gateway is in planned maintenance: calls are still served, and gatte.status reports it. Gateway-wide maintenance is deprecated (design/adr/0055): announce a stop of the gateway itself out of band.")
 	} else {
 		res.Messages = append(res.Messages, fmt.Sprintf("%s is in planned maintenance: from the next call on, its calls are answered with your message and not sent to it. It stays in maintenance until you end it; the end time is only announced.", req.Upstream))
 	}

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Gatte management API
-  version: 1.6.0
+  version: 1.6.1
   summary: The backend every Gatte front talks to (design/adr/0040).
   description: |
     Served by `mcp-gateway admin` over UNIX sockets only. There is no TCP
@@ -141,6 +141,16 @@ info:
       With the key off every one of these operations answers
       `feature_disabled`. Body limits are larger for the three routes that
       carry a document (see each).
+    - 1.6.1 (design/adr/0055): gateway-wide maintenance is deprecated. The
+      notice appended to every `tools/call` result while the gateway was in
+      maintenance is removed (it is not part of this contract; it was MCP
+      serving behaviour), so gateway-wide maintenance no longer changes a
+      call's result and reports only in `gatte.status`. `MaintenanceScope`
+      `gateway`, the `gateway` field of `MaintenanceList`, and the
+      `gateway_maintenance` `Attention.kind` are deprecated: they keep
+      working for now and will be removed in `/v2`, which serves per-backend
+      maintenance only (bound to the backend's name). The `maintenance`
+      feature and the per-backend surface are unchanged.
   license:
     name: Apache-2.0
 servers:
@@ -157,7 +167,7 @@ tags:
   - name: people
   - name: connect
   - name: maintenance
-    description: Planned maintenance of one backend or of the whole gateway (design/adr/0041). Feature `maintenance`.
+    description: Planned maintenance of one backend (design/adr/0041). Feature `maintenance`. Gateway-wide maintenance (scope `gateway`) is deprecated (design/adr/0055): it no longer adds a notice to call results and will be removed in `/v2`.
   - name: serve
     description: Requests to the running gateway process -- reload the reloadable configuration, re-dial one backend (design/adr/0044). Feature `serve_control`.
   - name: manage
@@ -401,7 +411,8 @@ components:
             The key a front localises on and links from. Since 1.1.0
             (`backend_health`): `backend_unavailable` (a backend is
             `reconnecting` or `down`; `upstream` set), `backend_maintenance`
-            (`upstream` set), `gateway_maintenance`, and `serve_not_reporting`
+            (`upstream` set), `gateway_maintenance` (DEPRECATED since 1.6.1,
+            design/adr/0055; removed in `/v2`), and `serve_not_reporting`
             (the gateway process has not completed a round for longer than
             it should; see `ServeStatus`).
           enum: [changed, pending, unsigned, backend_unavailable, backend_maintenance, gateway_maintenance, serve_not_reporting]
@@ -987,7 +998,7 @@ components:
       properties:
         serve: {$ref: '#/components/schemas/ServeStatus'}
         gateway_maintenance:
-          description: Present while the whole gateway is in maintenance.
+          description: 'DEPRECATED (design/adr/0055; removed in `/v2`). Present while the whole gateway is in maintenance.'
           $ref: '#/components/schemas/Maintenance'
         backends:
           type: array
@@ -1037,7 +1048,7 @@ components:
           description: When the row last changed. Operator only.
     MaintenanceScope:
       type: string
-      description: '`upstream`: one backend, named in `upstream`. `gateway`: a notice on text-only and unavailable call results and in `gatte.status`; calls are still served.'
+      description: '`upstream`: one backend, named in `upstream`. `gateway` (DEPRECATED, design/adr/0055; removed in `/v2`): the whole gateway; it no longer adds a notice to call results and reports only in `gatte.status`.'
       enum: [upstream, gateway]
     MaintenanceRequest:
       type: object
@@ -1209,7 +1220,7 @@ components:
       required: [upstreams]
       properties:
         gateway:
-          description: Present while the whole gateway is in maintenance.
+          description: 'DEPRECATED (design/adr/0055; removed in `/v2`). Present while the whole gateway is in maintenance.'
           $ref: '#/components/schemas/Maintenance'
         upstreams:
           type: array
@@ -2199,13 +2210,13 @@ paths:
       description: |
         Takes effect on the gateway's next call, without a restart. For a
         backend, its calls are answered with the maintenance text and not
-        dialed; for the gateway, text-only and unavailable call results get a
-        notice (and `gatte.status` reports it), and calls
-        are still served. The row is written first and recorded second: if
-        the trail fails, the maintenance is in force and `recorded` is
-        false. The same message and `until` again answers `changed: false`;
-        another message or `until` replaces `message`, `until`, `set_by` and
-        `set_at`, keeps `started_at`, and writes a row.
+        dialed. Scope `gateway` is deprecated (design/adr/0055): it no longer
+        adds a notice to call results and reports only in `gatte.status`;
+        calls are still served. The row is written first and recorded
+        second: if the trail fails, the maintenance is in force and
+        `recorded` is false. The same message and `until` again answers
+        `changed: false`; another message or `until` replaces `message`,
+        `until`, `set_by` and `set_at`, keeps `started_at`, and writes a row.
       parameters: [{$ref: '#/components/parameters/GatteFront'}]
       requestBody:
         required: true

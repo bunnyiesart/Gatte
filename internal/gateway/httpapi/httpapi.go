@@ -1064,7 +1064,6 @@ func (h *Handler) dispatchTool(c gateway.Caller, namespaced string) mcp.ToolHand
 			return nil, h.rejectCall(ctx, c.Identity, namespaced,
 				fmt.Errorf("upstream result is not representable: %w", err))
 		}
-		appendNotice(out, res.Notice)
 		return out, nil
 	}
 }

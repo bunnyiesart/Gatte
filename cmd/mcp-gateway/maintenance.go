@@ -28,9 +28,11 @@ func maintenanceUsage(w io.Writer) {
 
 A backend in maintenance keeps its tools listed; from the running gateway's
 next call on, a call to one of them is answered with your message and is not
-sent to the backend. The whole gateway in maintenance is a notice, not a
-block: calls are still served, and text results and gatte.status carry it.
-No restart is needed either way.
+sent to the backend. No restart is needed.
+
+Gateway-wide maintenance (the "maintenance on|off" commands) is deprecated
+(design/adr/0055): it no longer adds a notice to call results, only reports in
+gatte.status. Announce a stop of the gateway itself out of band.
 
 -message is what analysts and their models read: 1 to 200 characters on one
 line, no control or hidden characters. -until announces the end, as an

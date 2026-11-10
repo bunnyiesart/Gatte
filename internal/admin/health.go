@@ -136,7 +136,7 @@ func healthAttention(h *adminapi.Health) (first, backends, last []adminapi.Atten
 	backends = append(backends, inMaint...)
 	if h.GatewayMaintenance != nil {
 		last = append(last, adminapi.Attention{Kind: adminapi.AttentionGatewayMaintenance, Title: "The gateway is in planned maintenance",
-			Detail: "Calls are still served; analysts see the notice until the maintenance is ended."})
+			Detail: "Calls are still served and gatte.status reports it. Gateway-wide maintenance is deprecated (design/adr/0055) and no longer adds a notice to call results."})
 	}
 	return first, backends, last
 }

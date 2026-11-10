@@ -2254,7 +2254,6 @@ func (g *Gateway) Dispatch(ctx context.Context, c Caller, namespacedTool string,
 	// with no live connection, is answered with its state and not dialled.
 	maint, _ := g.readMaintenance(ctx)
 	now := g.now()
-	gwNotice := gatewayNotice(maint, now)
 	if ue := g.availability(rt.route.upstream, up, maint, now); ue != nil {
 		g.auditRefusal(ctx, c, namespacedTool, rt.route.upstream, ue.reason())
 		return Result{}, ue
@@ -2274,7 +2273,7 @@ func (g *Gateway) Dispatch(ctx context.Context, c Caller, namespacedTool string,
 		// Typed, so the caller is told how many calls it already has in
 		// flight and to retry unchanged (design/adr/0042 item 2). The
 		// limit is the operator's; the count is the caller's own.
-		return Result{}, &ConcurrencyLimitedError{Limit: g.slots.max, Gateway: gwNotice}
+		return Result{}, &ConcurrencyLimitedError{Limit: g.slots.max}
 	}
 	defer release()
 
@@ -2311,7 +2310,7 @@ func (g *Gateway) Dispatch(ctx context.Context, c Caller, namespacedTool string,
 			// window arithmetic, never a count.
 			var budget *quota.ExhaustedError
 			if errors.As(err, &budget) {
-				return Result{}, &QuotaExhaustedError{Budget: budget, Gateway: gwNotice}
+				return Result{}, &QuotaExhaustedError{Budget: budget}
 			}
 			return Result{}, err
 		}
@@ -2364,16 +2363,16 @@ func (g *Gateway) Dispatch(ctx context.Context, c Caller, namespacedTool string,
 			next := g.nextAttempt()
 			g.mu.RUnlock()
 			return Result{}, &UnavailableError{Backend: rt.route.upstream, State: StateReconnecting, Since: now,
-				NextAttempt: next, Gateway: gwNotice, cause: ErrUpstreamGone}
+				NextAttempt: next, cause: ErrUpstreamGone}
 		case errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil:
 			// The gateway's own ceiling ran out, not the caller: said as
 			// such, with the limit, so a narrower request can be tried
 			// (design/adr/0042 item 2, amending ADR-0041 item 2).
-			return Result{}, &CallTimeoutError{Backend: rt.route.upstream, Limit: g.callTimeout, Gateway: gwNotice}
+			return Result{}, &CallTimeoutError{Backend: rt.route.upstream, Limit: g.callTimeout}
 		case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded), errors.Is(err, ErrInternal):
 			return Result{}, fmt.Errorf("gateway: call %q: %w", namespacedTool, err)
 		default:
-			return Result{}, &BackendFailedError{Backend: rt.route.upstream, Gateway: gwNotice, cause: ErrBackendFailed}
+			return Result{}, &BackendFailedError{Backend: rt.route.upstream, cause: ErrBackendFailed}
 		}
 	}
 	// Step 7, added by design/adr/0014: the backend answered, and what it
@@ -2390,7 +2389,7 @@ func (g *Gateway) Dispatch(ctx context.Context, c Caller, namespacedTool string,
 			// granted this tool, so saying "too large, narrow it" tells
 			// them nothing their own data would not (design/adr/0042
 			// item 2, reversing the silence of ADR-0014's first test).
-			return Result{}, &ResultTooLargeError{Tool: namespacedTool, Limit: g.maxResultBytes, Gateway: gwNotice,
+			return Result{}, &ResultTooLargeError{Tool: namespacedTool, Limit: g.maxResultBytes,
 				cause: fmt.Errorf("gateway: call %q: %w", namespacedTool, err)}
 		}
 		return Result{}, fmt.Errorf("gateway: call %q: %w", namespacedTool, err)
@@ -2409,9 +2408,6 @@ func (g *Gateway) Dispatch(ctx context.Context, c Caller, namespacedTool string,
 		g.auditFailure(ctx, c, namespacedTool, rt.route.upstream, err)
 		return Result{}, fmt.Errorf("gateway: call %q: %w", namespacedTool, err)
 	}
-	// After the checks and the scrub, so the notice counts against nothing
-	// and never enters structuredContent (ADR-0041 item 6).
-	scrubbed.Notice = gwNotice
 	return scrubbed, nil
 }
 

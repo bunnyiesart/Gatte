@@ -245,15 +245,14 @@ func TestDispatch_UnavailableCarriesNoUpstreamText(t *testing.T) {
 	}
 }
 
-func TestDispatch_GatewayMaintenanceIsANoticeNotABlock(t *testing.T) {
+// A gateway maintenance row (still reachable through the deprecated
+// admin API) must not touch a call's result: the per-result notice is gone
+// (design/adr/0055), so a call is served exactly as without it.
+func TestDispatch_GatewayMaintenanceDoesNotTouchTheResult(t *testing.T) {
 	h := liveAndApproved(t)
-	m := h.startMaintenance(health.GatewayTarget, "Atualização do Gatte às 18h", fixedAt.Add(time.Hour))
-	res, err := h.dispatch("casemgmt.list_cases")
-	if err != nil {
+	h.startMaintenance(health.GatewayTarget, "Atualização do Gatte às 18h", fixedAt.Add(time.Hour))
+	if _, err := h.dispatch("casemgmt.list_cases"); err != nil {
 		t.Fatalf("Dispatch during gateway maintenance = %v, want it served", err)
-	}
-	if res.Notice == nil || res.Notice.Message != m.Message || !res.Notice.Since.Equal(m.StartedAt) {
-		t.Errorf("Result.Notice = %+v, want the gateway maintenance", res.Notice)
 	}
 }
 

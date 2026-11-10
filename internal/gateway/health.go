@@ -106,8 +106,6 @@ type UnavailableError struct {
 	NextAttempt time.Time
 	// Maintenance is set for StateMaintenance.
 	Maintenance *MaintenanceNotice
-	// Gateway is the whole gateway's maintenance, when there is one.
-	Gateway *MaintenanceNotice
 	// cause is a sentinel -- ErrBackendUnavailable or ErrUpstreamGone --
 	// and never an upstream's error, which may carry its text.
 	cause error
@@ -124,7 +122,6 @@ func (e *UnavailableError) Unwrap() error { return e.cause }
 // kept; the gateway does not forward why.
 type BackendFailedError struct {
 	Backend string
-	Gateway *MaintenanceNotice
 	// cause is ErrBackendFailed or context.DeadlineExceeded.
 	cause error
 }
@@ -348,11 +345,10 @@ func gatewayNotice(maint map[string]health.Maintenance, now time.Time) *Maintena
 func (g *Gateway) availability(name string, up Upstream, maint map[string]health.Maintenance, now time.Time) *UnavailableError {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
-	gw := gatewayNotice(maint, now)
 	if m, ok := maint[name]; ok {
 		st, _ := g.publicState(name, maint, now)
 		return &UnavailableError{Backend: name, State: StateMaintenance, Since: m.StartedAt, LastAttempt: st.LastAttempt,
-			NextAttempt: st.NextAttempt, Maintenance: noticeOf(m, now), Gateway: gw, cause: ErrBackendUnavailable}
+			NextAttempt: st.NextAttempt, Maintenance: noticeOf(m, now), cause: ErrBackendUnavailable}
 	}
 	if up != nil && g.gone[name] != up && g.unlisted[name] != up {
 		return nil
@@ -369,7 +365,7 @@ func (g *Gateway) availability(name string, up Upstream, maint map[string]health
 		}
 	}
 	return &UnavailableError{Backend: name, State: st.State, Since: st.Since, LastAttempt: st.LastAttempt,
-		NextAttempt: st.NextAttempt, Gateway: gw, cause: ErrBackendUnavailable}
+		NextAttempt: st.NextAttempt, cause: ErrBackendUnavailable}
 }
 
 // markListed records that up, the connection for name, has been listed

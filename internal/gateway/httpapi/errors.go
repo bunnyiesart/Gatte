@@ -354,13 +354,6 @@ func backendFailedText(e *gateway.BackendFailedError) string {
 		strconv.Quote(e.Backend))
 }
 
-// gatewayNoticeText is the block appended to results while the whole
-// gateway is in planned maintenance.
-func gatewayNoticeText(n *gateway.MaintenanceNotice) string {
-	return fmt.Sprintf("Gatte notice: the Gatte gateway is in planned maintenance since %s, %s. Operator message: %s. Calls are still being served; if one fails as unavailable, call gatte.status.",
-		stamp(n.Since), untilPhrase(n), quoteMessage(n.Message))
-}
-
 // ------------------------------------------------ design/adr/0042: texts
 //
 // Four more answers a model can act on, for a granted, approved call the
@@ -459,40 +452,28 @@ func honestResult(err error) *mcp.CallToolResult {
 		qe   *gateway.QuotaExhaustedError
 		cl   *gateway.ConcurrencyLimitedError
 		text string
-		gw   *gateway.MaintenanceNotice
 	)
 	switch {
 	case errors.As(err, &ue):
-		text, gw = unavailableText(ue), ue.Gateway
+		text = unavailableText(ue)
 	case errors.As(err, &bf):
-		text, gw = backendFailedText(bf), bf.Gateway
+		text = backendFailedText(bf)
 	case errors.As(err, &tl):
-		text, gw = tooLargeText(tl), tl.Gateway
+		text = tooLargeText(tl)
 	case errors.As(err, &to):
-		text, gw = timeoutText(to), to.Gateway
+		text = timeoutText(to)
 	case errors.As(err, &qe):
-		text, gw = quotaText(qe), qe.Gateway
+		text = quotaText(qe)
 	case errors.As(err, &cl):
-		text, gw = concurrencyText(cl), cl.Gateway
+		text = concurrencyText(cl)
 	default:
 		return nil
 	}
-	res := &mcp.CallToolResult{
+	return &mcp.CallToolResult{
 		Meta:    mcp.Meta{OriginMetaKey: "gateway"},
 		Content: []mcp.Content{&mcp.TextContent{Text: text}},
 		IsError: true,
 	}
-	appendNotice(res, gw)
-	return res
-}
-
-// appendNotice adds the gateway's maintenance notice as a last text block.
-// Never into structuredContent: an upstream's output schema governs that.
-func appendNotice(res *mcp.CallToolResult, n *gateway.MaintenanceNotice) {
-	if n == nil {
-		return
-	}
-	res.Content = append(res.Content, &mcp.TextContent{Text: gatewayNoticeText(n)})
 }
 
 // writeServiceUnavailable answers a ListTools failure after admission.

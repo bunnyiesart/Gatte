@@ -1031,7 +1031,8 @@ escreve na trilha (ADR-0017).
     `TestDispatch_MaintenanceAnswersWithoutDialingOrDebiting`,
     `TestDispatch_UnreadableMaintenanceServesNormally`,
     `TestDispatch_UnavailableCarriesNoUpstreamText`,
-    `TestDispatch_GatewayMaintenanceIsANoticeNotABlock`,
+    `TestDispatch_GatewayMaintenanceDoesNotTouchTheResult` (renomeado com a
+    ADR-0055: o aviso saiu),
     `TestHealth_ReconnectingUnlessDialsAreHeldBack`,
     `TestHealth_TransitionsAreAuditedOncePerTransition`,
     `TestHealth_FirstObservationPerProcessIsAudited`,
@@ -1058,7 +1059,8 @@ escreve na trilha (ADR-0017).
     `TestInitializeCarriesTheInstructions`,
     `TestInstructionsFitTheClientCutAndAreStateless` (o limite de 1.024 virou 1.200 para a constante e 2.000 com as linhas do operador, ADR-0042),
     `TestInstructionsAreTheSameConstantDuringGatewayMaintenance`,
-    `TestGatewayMaintenanceNoticeIsAppendedToTextAndHonestResults`,
+    `TestGatewayMaintenanceAddsNoNoticeToResults` (renomeado com a
+    ADR-0055: o aviso saiu),
     `TestSuspendedFleetAnswers503WithTheConstantText` e
     `TestBrokenQuarantineIsTheConstant503` (o mesmo corpo para o store de
     aprovações ilegível).

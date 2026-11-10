@@ -26,9 +26,8 @@ type ResultTooLargeError struct {
 	// Tool is the namespaced name the caller called.
 	Tool string
 	// Limit is the ceiling in bytes, from the operator's file.
-	Limit   int64
-	Gateway *MaintenanceNotice
-	cause   error
+	Limit int64
+	cause error
 }
 
 func (e *ResultTooLargeError) Error() string {
@@ -43,8 +42,7 @@ func (e *ResultTooLargeError) Unwrap() error { return e.cause }
 type CallTimeoutError struct {
 	Backend string
 	// Limit is the per-call ceiling, from the operator's file.
-	Limit   time.Duration
-	Gateway *MaintenanceNotice
+	Limit time.Duration
 }
 
 func (e *CallTimeoutError) Error() string {
@@ -56,8 +54,7 @@ func (e *CallTimeoutError) Unwrap() error { return context.DeadlineExceeded }
 // ConcurrencyLimitedError is a call refused because the caller already has
 // Limit calls in flight, across every session of theirs (ADR-0035).
 type ConcurrencyLimitedError struct {
-	Limit   int
-	Gateway *MaintenanceNotice
+	Limit int
 }
 
 func (e *ConcurrencyLimitedError) Error() string {
@@ -71,8 +68,7 @@ func (e *ConcurrencyLimitedError) Unwrap() error { return ErrConcurrencyLimited 
 // quota's own typed refusal: account, limit, window and reset -- policy,
 // never a count.
 type QuotaExhaustedError struct {
-	Budget  *quota.ExhaustedError
-	Gateway *MaintenanceNotice
+	Budget *quota.ExhaustedError
 }
 
 func (e *QuotaExhaustedError) Error() string { return e.Budget.Error() }

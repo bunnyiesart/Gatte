@@ -119,7 +119,10 @@ func TestMaintenanceMessageIsQuotedSoItCannotCloseTheQuote(t *testing.T) {
 	h.maintain("casemgmt", msg, time.Time{})
 	h.maintain(health.GatewayTarget, msg, time.Time{})
 
-	for _, res := range []*mcp.CallToolResult{h.call(tokenAnalyst, toolListCases), h.call(tokenAnalyst, toolSearch)} {
+	// The message reaches a model through the honest result of the backend in
+	// maintenance and through gatte.status (which also carries the gateway's).
+	status, _ := h.gatteStatus(tokenAnalyst)
+	for _, res := range []*mcp.CallToolResult{h.call(tokenAnalyst, toolListCases), status} {
 		text := resultText(res)
 		if !strings.Contains(text, "Operator message: "+strconv.Quote(msg)+".") {
 			t.Errorf("text = %q, want the message quoted as %s", text, strconv.Quote(msg))
@@ -330,19 +333,22 @@ func TestInstructionsAreTheSameConstantDuringGatewayMaintenance(t *testing.T) {
 	}
 }
 
-func TestGatewayMaintenanceNoticeIsAppendedToTextAndHonestResults(t *testing.T) {
+// The gateway-wide maintenance notice appended to every result is gone
+// (design/adr/0055): a gateway maintenance row (still reachable through the
+// deprecated admin API) adds nothing to a text result or an honest result,
+// and gatte.status stays the authoritative carrier of the gateway's state.
+func TestGatewayMaintenanceAddsNoNoticeToResults(t *testing.T) {
 	h := newHarness(t)
 	h.maintain(health.GatewayTarget, "Atualização do Gatte", harnessNow.Add(time.Hour))
 	h.maintain("logsearch", "Reindexação", time.Time{})
-	wantNotice := `Gatte notice: the Gatte gateway is in planned maintenance since 2026-09-08T11:11:11Z, expected until 2026-09-08T13:00:00Z. Operator message: "Atualização do Gatte". Calls are still being served; if one fails as unavailable, call gatte.status.`
 
 	text := h.call(tokenAnalyst, toolListCases)
-	if n := len(text.Content); n != 2 || !strings.HasSuffix(resultText(text), wantNotice+"\n") || text.IsError {
-		t.Errorf("text result = %s, want its block and the notice", wholeResult(t, text))
+	if n := len(text.Content); n != 1 || text.IsError || strings.Contains(resultText(text), "Gatte notice") {
+		t.Errorf("text result = %s, want only its own block and no gateway notice", wholeResult(t, text))
 	}
 	honest := h.call(tokenAnalyst, toolSearch)
-	if n := len(honest.Content); n != 2 || !strings.HasSuffix(resultText(honest), wantNotice+"\n") || !honest.IsError {
-		t.Errorf("honest result = %s, want its text and the notice", wholeResult(t, honest))
+	if n := len(honest.Content); n != 1 || !honest.IsError || strings.Contains(resultText(honest), "Gatte notice") {
+		t.Errorf("honest result = %s, want only its own text and no gateway notice", wholeResult(t, honest))
 	}
 
 	// A structured result keeps its structuredContent untouched.

@@ -103,54 +103,19 @@ func New(o Options) (*Front, error) {
 // Serve serves the console through the kit until the kit is shut down.
 func (f *Front) Serve() error { return f.kit.Serve(f.routes()) }
 
+// routes builds the console mux from the section registry (sections.go): each
+// entity mounts its own routes from its own file, so adding or changing an
+// entity never edits this method. The management operations (design/adr/0050)
+// are mounted unconditionally and answer 404 unless the backend lists
+// FeatureConsoleManages (and, for root's, the console has -manage-users); the
+// handlers gate that, not the routing. app.css is the shell's own asset.
 func (f *Front) routes() *http.ServeMux {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /{$}", f.overview)
-	mux.HandleFunc("GET /tools", f.toolsPage)
-	mux.HandleFunc("GET /tools/show", f.toolShowPage)
-	mux.HandleFunc("POST /tools/approve", f.toolApprove)
-	mux.HandleFunc("GET /tools/review-set", f.reviewSetPage)
-	mux.HandleFunc("POST /tools/approve-set", f.toolApproveSet)
-	mux.HandleFunc("POST /tools/revoke", f.toolRevoke)
-	mux.HandleFunc("GET /access", f.accessPage)
-	mux.HandleFunc("POST /access/block", f.accessBlock)
-	mux.HandleFunc("POST /access/unblock", f.accessUnblock)
-	mux.HandleFunc("GET /audit", f.auditPage)
-	mux.HandleFunc("GET /audit/export", f.auditExport)
-	mux.HandleFunc("POST /audit/verify", f.auditVerify)
-	mux.HandleFunc("GET /people", f.peoplePage)
-	mux.HandleFunc("GET /people/account", f.accountPage)
-	mux.HandleFunc("GET /people/new", f.newPersonPage)
-	mux.HandleFunc("GET /people/new/access", f.newPersonPage)
-	mux.HandleFunc("GET /people/new/review", f.newPersonPage)
-	mux.HandleFunc("GET /people/connect", f.connectPage)
-	mux.HandleFunc("GET /people/connect/script", f.connectScript)
-	mux.HandleFunc("POST /people/add", f.accountAdd)
-	mux.HandleFunc("POST /people/groups", f.accountGroups)
-	mux.HandleFunc("POST /people/disable", f.accountDisable)
-	mux.HandleFunc("POST /people/enable", f.accountEnable)
-	mux.HandleFunc("POST /people/reset", f.accountReset)
-	mux.HandleFunc("POST /people/offboard", f.accountOffboard)
-	mux.HandleFunc("POST /people/delete", f.accountDelete)
-	mux.HandleFunc("GET /upstreams", f.upstreamsPage)
-	mux.HandleFunc("POST /upstreams/maintenance/on", f.maintenanceOn)
-	mux.HandleFunc("POST /upstreams/maintenance/off", f.maintenanceOff)
-	mux.HandleFunc("GET /quota", f.quotaPage)
-	// design/adr/0050: each answers 404 unless the backend lists
-	// FeatureConsoleManages (and, for root's, the console has -manage-users).
-	mux.HandleFunc("POST /upstreams/register", f.upstreamRegister)
-	mux.HandleFunc("GET /upstreams/show", f.upstreamShowPage)
-	mux.HandleFunc("POST /upstreams/sign", f.upstreamSign)
-	mux.HandleFunc("POST /upstreams/redial", f.upstreamRedial)
-	mux.HandleFunc("POST /upstreams/remove", f.upstreamRemove)
-	mux.HandleFunc("POST /tools/clear", f.toolClear)
-	mux.HandleFunc("POST /reload", f.reload)
-	mux.HandleFunc("GET /serve-requests", f.serveRequestPage)
-	mux.HandleFunc("GET /secrets", f.secretsPage)
-	mux.HandleFunc("POST /secrets/set", f.secretSet)
-	mux.HandleFunc("POST /secrets/delete", f.secretDelete)
-	mux.HandleFunc("GET /roles", f.rolesPage)
-	mux.HandleFunc("POST /roles", f.rolesApply)
+	for _, s := range sections {
+		if s.Mount != nil {
+			s.Mount(mux, f)
+		}
+	}
 	mux.HandleFunc("GET /app.css", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/css; charset=utf-8")
 		_, _ = w.Write(f.css)
@@ -170,6 +135,10 @@ type page struct {
 	// Roles entries.
 	Manages bool
 	Root    bool
+	// NavItems are the top-navigation links for this request, built from the
+	// section registry (sections.go). The layout ranges over them; no page
+	// sets this itself.
+	NavItems []navView
 	// Notice is what the backend answered to the action that led here,
 	// when the page shown next is not its result page.
 	Notice string
@@ -185,6 +154,7 @@ func (f *Front) render(w http.ResponseWriter, r *http.Request, tmpl, title strin
 	}
 	p.Title, p.CSRF, p.Base = title, f.kit.CSRFToken(), f.kit.Base()
 	p.Manages, p.Root = f.feature(r.Context(), adminapi.FeatureConsoleManages), f.acc != nil
+	p.NavItems = navFor(p.Nav, Capabilities{Manages: p.Manages, Root: p.Root})
 	var b bytes.Buffer
 	if err := f.pages.ExecuteTemplate(&b, tmpl+".html", p); err != nil {
 		http.Error(w, "rendering: "+err.Error(), http.StatusInternalServerError)

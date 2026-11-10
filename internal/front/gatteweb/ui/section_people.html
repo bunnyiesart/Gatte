@@ -1,0 +1,28 @@
+{{$csrf := .CSRF}}{{$base := .Base}}
+<section>
+  <div class="section-head"><h2>People</h2>{{if .Manage}}<a class="btn primary small" href="{{$base}}/people/new">Add person</a>{{end}}</div>
+  <p class="sub">People sign in at your identity provider; their groups decide their role here. Disabling an account stops new sign-ins; to cut off a session already open, block the subject in the Blocklist below.</p>
+  {{if .Manage}}
+    {{if .Error}}<div class="notice error" role="alert">{{template "warn"}}<pre>{{vistext .Error}}</pre></div>{{end}}
+    {{if .Accounts}}
+    <ul class="group">
+      {{range .Accounts}}
+      <li>
+        <a class="row" href="{{$base}}/people/account?u={{.Username}}">
+          <span class="avatar{{if .Disabled}} off{{end}}" aria-hidden="true">{{initial .DisplayName .Username}}</span>
+          <span class="row-text">
+            <span class="row-title">{{vis .DisplayName}}{{if .Disabled}} <span class="badge">Disabled</span>{{end}}</span>
+            <span class="row-detail"><span class="mono">{{vis .Username}}</span>{{if .Groups}} · {{range $i, $g := .Groups}}{{if $i}}, {{end}}{{vis $g}}{{end}}{{else}} · no groups{{end}}</span>
+          </span>
+          {{template "chev"}}
+        </a>
+      </li>
+      {{end}}
+    </ul>
+    {{else if not .Error}}
+    <div class="group empty-state"><p><b>No accounts yet.</b></p></div>
+    {{end}}
+  {{else}}
+  <div class="notice" role="note">{{template "dot"}}<p>To add people or change their groups, start the console with the accounts socket: <code>sudo mcp-gateway ui -manage-users</code>, or without sudo if you're in the accounts group. The normal console can't edit accounts, on purpose.</p></div>
+  {{end}}
+</section>

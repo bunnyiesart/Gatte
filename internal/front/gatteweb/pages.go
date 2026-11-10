@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/bunnyiesart/Gatte/pkg/adminapi"
 	"github.com/bunnyiesart/Gatte/pkg/frontkit"
@@ -41,62 +40,6 @@ func (f *Front) overview(w http.ResponseWriter, r *http.Request) {
 		errs = append(errs, p.Part+": "+p.Message)
 	}
 	f.render(w, r, "overview", "Overview", page{Data: d, Error: strings.Join(errs, "\n")})
-}
-
-// ---- access
-
-// accessData is the Access page: the blocklist, and whether the backend
-// takes an end for a block (feature block_until, design/adr/0046).
-type accessData struct {
-	Blocks []adminapi.Block
-	Until  bool
-}
-
-func (f *Front) accessPage(w http.ResponseWriter, r *http.Request) {
-	list, err := f.op.ListBlocks(r.Context())
-	d := accessData{Blocks: list.Blocks}
-	if me, werr := f.op.WhoAmI(r.Context()); werr == nil {
-		d.Until = slices.Contains(me.Features, adminapi.FeatureBlockUntil)
-	}
-	f.render(w, r, "access", "Access", page{Data: d, Error: errText(err)})
-}
-
-func (f *Front) accessBlock(w http.ResponseWriter, r *http.Request)   { f.accessChange(w, r, true) }
-func (f *Front) accessUnblock(w http.ResponseWriter, r *http.Request) { f.accessChange(w, r, false) }
-
-// accessChange blocks or unblocks. The backend validates the subject and
-// the reason, and tags the row [ui] from the client's front name.
-func (f *Front) accessChange(w http.ResponseWriter, r *http.Request, block bool) {
-	req := adminapi.BlockRequest{Subject: r.PostForm.Get("subject"), Reason: strings.TrimSpace(r.PostForm.Get("reason"))}
-	verb := "Unblock"
-	call := f.op.UnblockSubject
-	if block {
-		verb, call = "Block", f.op.BlockSubject
-		if v := strings.TrimSpace(r.PostForm.Get("until")); v != "" {
-			until, err := blockEnd(v, time.Now())
-			if err != nil {
-				f.showResult(w, r, "access", verb+" "+frontkit.VisibleText(req.Subject), "/access", result{Summary: err.Error(), Output: err.Error()})
-				return
-			}
-			req.Until = &until
-		}
-	}
-	res, err := call(r.Context(), req)
-	f.showResult(w, r, "access", verb+" "+frontkit.VisibleText(req.Subject), "/access", actionResult(res.ActionResult, err))
-}
-
-// blockEnd reads the Access form's end: a duration from now ("8h") or a
-// time as the audit filters take it. The backend refuses one that is not
-// in the future.
-func blockEnd(v string, now time.Time) (time.Time, error) {
-	if d, err := time.ParseDuration(v); err == nil && d > 0 {
-		return now.Add(d).UTC(), nil
-	}
-	t, err := formTime("Until", v)
-	if err != nil {
-		return time.Time{}, fmt.Errorf("%v, or a duration such as 8h", err)
-	}
-	return t, nil
 }
 
 // ---- audit

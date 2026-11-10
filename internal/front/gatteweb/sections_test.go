@@ -13,7 +13,8 @@ import (
 // (Secrets, Roles) appear only with both capabilities.
 func TestNavForOrderAndGating(t *testing.T) {
 	// Tools is no longer a top-nav tab (design/adr/0051): it lives on each
-	// server's detail page, registered as a DetailPanel, not a NavItem.
+	// server's detail page, registered as a DetailPanel, not a NavItem. People
+	// and Access likewise moved into the Users tab as sections, not NavItems.
 	full := navFor("servers", Capabilities{Manages: true, Root: true})
 	var labels []string
 	current := ""
@@ -23,7 +24,7 @@ func TestNavForOrderAndGating(t *testing.T) {
 			current = n.Label
 		}
 	}
-	want := []string{"Overview", "MCP Servers / APIs", "People", "Users", "Access", "Audit", "Backends", "Secrets", "Roles", "Quota"}
+	want := []string{"Overview", "MCP Servers / APIs", "Users", "Audit", "Backends", "Secrets", "Roles", "Quota"}
 	if len(labels) != len(want) {
 		t.Fatalf("nav labels = %v, want %v", labels, want)
 	}

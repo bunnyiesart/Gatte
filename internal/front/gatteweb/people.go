@@ -11,7 +11,9 @@ package gatteweb
 // (design/adr/0040 §1).
 
 import (
+	"bytes"
 	"errors"
+	"html/template"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -22,29 +24,44 @@ import (
 	"github.com/bunnyiesart/Gatte/pkg/frontkit"
 )
 
-type peopleData struct {
-	Manage   bool
-	Accounts []adminapi.Account
-	Roles    []adminapi.Role
-	Seen     []adminapi.Seen
+// renderFragment executes a template that draws part of a page -- a Users
+// section -- into HTML the container embeds. The template's output is
+// html/template's own escaped HTML.
+func (f *Front) renderFragment(name string, data any) (template.HTML, error) {
+	var b bytes.Buffer
+	if err := f.pages.ExecuteTemplate(&b, name+".html", data); err != nil {
+		return "", err
+	}
+	return template.HTML(b.Bytes()), nil // #nosec G203 -- the template's own escaped output
 }
 
-func (f *Front) peoplePage(w http.ResponseWriter, r *http.Request) {
-	p, err := f.op.People(r.Context())
-	d := peopleData{Roles: p.Roles, Seen: p.Seen}
-	errs := []string{}
-	if err != nil {
-		errs = append(errs, errText(err))
-	}
+// peopleSectionData is the People section of the Users page: the accounts the
+// identity provider holds, drawn only with the accounts socket (Manage).
+type peopleSectionData struct {
+	Base     string
+	CSRF     string
+	Manage   bool
+	Accounts []adminapi.Account
+	// Error is a failed read of the accounts, shown inline. The Add-person
+	// button still renders, so adding someone stays possible through a
+	// transient read failure.
+	Error string
+}
+
+// peopleSection renders the People section into the Users page. Listing the
+// accounts is the accounts socket's: without it the section draws the notice
+// that says how to start the console with it, and the actions stay 404. A
+// failed read is shown inline and keeps the management controls in place.
+func (f *Front) peopleSection(r *http.Request) (template.HTML, error) {
+	d := peopleSectionData{Base: f.kit.Base(), CSRF: f.kit.CSRFToken(), Manage: f.acc != nil}
 	if f.acc != nil {
-		d.Manage = true
-		list, err := f.acc.ListAccounts(r.Context())
-		if err != nil {
-			errs = append(errs, errText(err))
+		if list, err := f.acc.ListAccounts(r.Context()); err != nil {
+			d.Error = errText(err)
+		} else {
+			d.Accounts = list.Accounts
 		}
-		d.Accounts = list.Accounts
 	}
-	f.render(w, r, "people", "People", page{Data: d, Error: strings.Join(errs, "\n")})
+	return f.renderFragment("section_people", d)
 }
 
 type accountData struct {
@@ -69,7 +86,7 @@ func (f *Front) accountPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		f.render(w, r, "account", "Account", page{Nav: "people", Error: errText(err)})
+		f.render(w, r, "account", "Account", page{Nav: "users", Error: errText(err)})
 		return
 	}
 	d := accountData{Account: a, Has: map[string]bool{}}
@@ -87,7 +104,7 @@ func (f *Front) accountPage(w http.ResponseWriter, r *http.Request) {
 			d.Seen = p.Seen
 		}
 	}
-	f.render(w, r, "account", frontkit.VisibleText(a.DisplayName), page{Nav: "people", Data: d, Error: errText(err)})
+	f.render(w, r, "account", frontkit.VisibleText(a.DisplayName), page{Nav: "users", Data: d, Error: errText(err)})
 }
 
 // accountAction runs one account change and shows its result. A one-time
@@ -100,7 +117,7 @@ func (f *Front) accountAction(w http.ResponseWriter, r *http.Request, title stri
 	}
 	username, secret, ar, err := fn()
 	res := actionResult(ar, err)
-	back := "/people"
+	back := "/users"
 	if err != nil && lostAnswer(err) && username != "" {
 		// A creation is not idempotent: the account may exist although the
 		// answer, and the password in it, never arrived. Say so instead of
@@ -119,7 +136,7 @@ func (f *Front) accountAction(w http.ResponseWriter, r *http.Request, title stri
 		panel := f.connectPanelFor(r, username)
 		res.Connect = &panel
 	}
-	f.render(w, r, "result", title+" "+frontkit.VisibleText(username), page{Nav: "people", Data: res.withBack(f.kit.Base() + back)})
+	f.render(w, r, "result", title+" "+frontkit.VisibleText(username), page{Nav: "users", Data: res.withBack(f.kit.Base() + back)})
 }
 
 // lostAnswer reports whether err is a call that got no answer from the
@@ -197,7 +214,7 @@ func (f *Front) accountOffboard(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	f.render(w, r, "result", "Offboard "+frontkit.VisibleText(u), page{Nav: "people", Data: out.withBack(f.kit.Base() + "/people/account?u=" + url.QueryEscape(u))})
+	f.render(w, r, "result", "Offboard "+frontkit.VisibleText(u), page{Nav: "users", Data: out.withBack(f.kit.Base() + "/people/account?u=" + url.QueryEscape(u))})
 }
 
 // accountDelete removes the account. The form carries a confirmation the
@@ -209,12 +226,12 @@ func (f *Front) accountDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	u := r.PostForm.Get("username")
 	if r.PostForm.Get("confirm") != "yes" {
-		f.showResult(w, r, "people", "Delete "+frontkit.VisibleText(u), "/people/account?u="+url.QueryEscape(u),
+		f.showResult(w, r, "users", "Delete "+frontkit.VisibleText(u), "/people/account?u="+url.QueryEscape(u),
 			result{Summary: "Nothing was deleted: tick the confirmation first."})
 		return
 	}
 	res, err := f.acc.DeleteAccount(r.Context(), u)
-	f.showResult(w, r, "people", "Delete "+frontkit.VisibleText(u), "/people", actionResult(res.ActionResult, err))
+	f.showResult(w, r, "users", "Delete "+frontkit.VisibleText(u), "/users", actionResult(res.ActionResult, err))
 }
 
 // ---- connect
@@ -241,7 +258,7 @@ func (f *Front) connectPanelFor(r *http.Request, username string) connectPanel {
 
 func (f *Front) connectPage(w http.ResponseWriter, r *http.Request) {
 	p := f.connectPanelFor(r, r.URL.Query().Get("u"))
-	f.render(w, r, "connect", "Connect a computer", page{Nav: "people", Data: p, Error: p.Error})
+	f.render(w, r, "connect", "Connect a computer", page{Nav: "users", Data: p, Error: p.Error})
 }
 
 var fileNameRe = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
@@ -336,5 +353,5 @@ func (f *Front) newPersonPage(w http.ResponseWriter, r *http.Request) {
 			d.Step = 3
 		}
 	}
-	f.render(w, r, "newperson", "Add a person", page{Nav: "people", Data: d, Error: strings.Join(errs, "\n")})
+	f.render(w, r, "newperson", "Add a person", page{Nav: "users", Data: d, Error: strings.Join(errs, "\n")})
 }

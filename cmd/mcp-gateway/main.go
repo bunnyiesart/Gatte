@@ -106,6 +106,8 @@ func runWithStdin(args []string, stdin io.Reader, stdout, stderr io.Writer) int 
 		return cmdAdmin(rest, stdin, stdout, stderr)
 	case "ui":
 		return cmdUI(rest, stdout, stderr)
+	case "tui":
+		return cmdTUI(rest, stdout, stderr)
 	case "check":
 		return cmdCheck(rest, stdout, stderr)
 	case "backup":
@@ -143,6 +145,7 @@ Commands:
   reload       Apply [[role]], [group_to_role] and [quota] to the running gateway.
   admin        Serve the management API on a UNIX socket (for the fronts).
   ui           Serve the operator console as a web page on loopback.
+  tui          Draw the operator console in this terminal.
   check        Check the configuration and this host's files offline, with the fix for each problem.
   backup       Write a consistent copy of the database while serve runs.
   restore      Replace the database with a checked backup, with serve stopped.

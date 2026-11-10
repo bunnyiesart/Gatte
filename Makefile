@@ -1,4 +1,4 @@
-.PHONY: require-devtools race-noskip ci nofront cross-vet build test test-race vet lint fmt-check check lab-build lab-probe lab-probe-rest devtools preview-console
+.PHONY: require-devtools race-noskip ci nofront cross-vet build test test-race vet lint fmt-check check lab-build lab-probe lab-probe-rest devtools preview-console preview-tui
 
 build:
 	go build -o bin/mcp-gateway ./cmd/mcp-gateway
@@ -59,6 +59,14 @@ preview-console:
 		--watch internal/front/gatteweb --watch internal/adminapitest \
 		--watch cmd/gatte-preview --watch pkg/adminapi --watch pkg/frontkit \
 		-- go run -tags preview ./cmd/gatte-preview $(PREVIEW_LISTEN)
+
+# MOCK-ONLY run of the terminal console (internal/front/gattetui) against the
+# same in-memory fake, under the same approved exception as preview-console: no
+# real backend, socket, secret or network, and no flag to point it at one (see
+# cmd/gatte-preview-tui). ARGS=-gallery prints every screen and state as text
+# and exits; ARGS=-read-only runs it as `tui` without -manage-users.
+preview-tui:
+	go run -tags preview ./cmd/gatte-preview-tui $(ARGS)
 
 # -count=1 disables go test's result cache for the whole run. Required for
 # internal/fitness to be trustworthy -- see the comment in

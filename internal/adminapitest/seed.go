@@ -48,6 +48,12 @@ func (s *Server) seedToolsAndUpstreams() {
 		up("threatintel", adminapi.BackendDown, "stream closed"),
 	}
 	s.upstreams[3].NetworkError = "last dial refused"
+	// Declared secret names, so the per-server Secrets panel has rows: a key
+	// shared by two backends, and threatintel's three (one missing from the
+	// vault, see seedSecrets).
+	s.upstreams[0].EnvVarNames = []string{"SIEM_TOKEN"}
+	s.upstreams[1].EnvVarNames = []string{"SIEM_TOKEN"}
+	s.upstreams[3].EnvVarNames = []string{"THREATINTEL_API_KEY", "VIRUSTOTAL_KEY", "SHODAN_KEY"}
 
 	add := func(server, tool, status, class string, usable bool) {
 		fp := "sha256:" + server + "-" + tool
@@ -118,6 +124,7 @@ func (s *Server) seedSecrets() {
 		s.secrets[name] = &adminapi.Secret{Name: name, InVault: inVault, DeclaredBy: declaredBy}
 		s.secretOrder = append(s.secretOrder, name)
 	}
+	set("SIEM_TOKEN", true, "casemgmt", "logsearch") // shared across two backends
 	set("THREATINTEL_API_KEY", true, "threatintel")
 	set("VIRUSTOTAL_KEY", true, "threatintel")
 	set("SHODAN_KEY", false, "threatintel") // declared by an entry, missing from the vault

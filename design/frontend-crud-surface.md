@@ -299,13 +299,19 @@ collide:
   genuinely missing; do not change another slice's rows or the routing.
 - `internal/front/gatteweb/gatteweb.go` — the console shell (`routes`, `render`,
   `page`, `Front`).
-- `internal/front/gatteweb/sections.go` — the route registry, the `DetailPanel`
-  and `UsersSection` registry types and helpers, and the two nav tabs.
+- `internal/front/gatteweb/sections.go` — the route registry, and the
+  `DetailPanel` and `UsersSection` registry types, helpers (`registerDetailPanel`,
+  `registerUsersSection`, `orderedDetailPanels`, `orderedUsersSections`) and the
+  `fragment` view. A slice appends to these from its own `reg_<slice>.go`; it
+  never edits this file.
 - `internal/front/gatteweb/ui/layout.html`, `ui/app.css` — the shared shell and
   styles.
-- The server-detail container (`ui/server.html` + its handler) and the Users
-  container (`ui/users.html` + its handler) — owned by M1.1; other slices add
-  panels/sections through the registries, never by editing these.
+- The two nav tabs and the Tab-1/Tab-2 containers, owned by M1.1: the
+  `reg_servers.go`/`reg_users.go` registrations, the handlers in `servers.go`
+  and `users.go`, and the templates `ui/servers.html`, `ui/server_new.html`,
+  `ui/server.html`, `ui/server_registered.html`, `ui/users.html`. Other slices
+  add panels/sections through the registries, never by editing these; they add
+  no nav items (there are only the two tabs).
 - The TUI shell and its registries, once Track A creates them.
 
 ## Coverage

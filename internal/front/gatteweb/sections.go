@@ -1,8 +1,11 @@
 package gatteweb
 
 import (
+	"html/template"
 	"net/http"
 	"sort"
+
+	"github.com/bunnyiesart/Gatte/pkg/adminapi"
 )
 
 // A Section is one CRUD entity's self-registration into the console shell.
@@ -95,3 +98,86 @@ func navFor(current string, c Capabilities) []navView {
 // manages and root are the common Show predicates: an entry only the managing
 // console shows (Secrets, Roles).
 func managesAndRoot(c Capabilities) bool { return c.Manages && c.Root }
+
+// manages is the Show predicate for a contribution only the managing console
+// shows (design/adr/0050), regardless of the accounts socket.
+func manages(c Capabilities) bool { return c.Manages }
+
+// The revised two-tab IA (design/adr/0051) makes two pages shared: the
+// server-detail page (/servers/{name}) and the Users page (/users). So the
+// console carries three registries, all here: the route registry above
+// (register/Section), and the two below. Each Tab-1 slice appends one
+// DetailPanel from its own reg_<slice>.go init(); each Tab-2 slice appends one
+// UsersSection the same way. The two container pages (servers.go, users.go)
+// range over these in order, so a slice adds its panel or section without
+// editing a shared file, the shell, or another slice's work.
+//
+// Order uses gaps of ten so a slice can slot between two without renumbering.
+// Planned: DetailPanel Tools 20, Secrets 30, Maintenance 40; UsersSection
+// People 10, Roles 20, Blocklist 30.
+
+// A DetailPanel is one Tab-1 slice's contribution to the server-detail page.
+// Render draws the panel's HTML for one backend; the container embeds it. A nil
+// Show means the panel always appears.
+type DetailPanel struct {
+	ID     string
+	Order  int
+	Show   func(Capabilities) bool
+	Render func(f *Front, r *http.Request, d adminapi.UpstreamDetail) (template.HTML, error)
+}
+
+// A UsersSection is one Tab-2 slice's contribution to the Users page. Render
+// draws the section's own HTML (it reads what it needs from the API itself). A
+// nil Show means the section always appears.
+type UsersSection struct {
+	ID     string
+	Order  int
+	Show   func(Capabilities) bool
+	Render func(f *Front, r *http.Request) (template.HTML, error)
+}
+
+var (
+	detailPanels []DetailPanel
+	usersGroups  []UsersSection
+)
+
+// registerDetailPanel adds one server-detail panel. Tab-1 slices call it from
+// init().
+func registerDetailPanel(p DetailPanel) { detailPanels = append(detailPanels, p) }
+
+// registerUsersSection adds one Users-page section. Tab-2 slices call it from
+// init().
+func registerUsersSection(s UsersSection) { usersGroups = append(usersGroups, s) }
+
+// orderedDetailPanels and orderedUsersSections return the registries sorted by
+// order then ID, as copies, so a caller may range over them safely.
+func orderedDetailPanels() []DetailPanel {
+	out := make([]DetailPanel, len(detailPanels))
+	copy(out, detailPanels)
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Order != out[j].Order {
+			return out[i].Order < out[j].Order
+		}
+		return out[i].ID < out[j].ID
+	})
+	return out
+}
+
+func orderedUsersSections() []UsersSection {
+	out := make([]UsersSection, len(usersGroups))
+	copy(out, usersGroups)
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Order != out[j].Order {
+			return out[i].Order < out[j].Order
+		}
+		return out[i].ID < out[j].ID
+	})
+	return out
+}
+
+// fragment is one rendered panel or section the container template prints in
+// order. The HTML is the slice's own escaped output.
+type fragment struct {
+	ID   string
+	HTML template.HTML
+}

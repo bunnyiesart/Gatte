@@ -1,0 +1,88 @@
+{{template "top" .}}
+{{$csrf := .CSRF}}{{$base := .Base}}
+<a class="back" href="{{$base}}/servers"><svg viewBox="0 0 8 14" width="8" height="14" aria-hidden="true"><path d="M7 1L1 7l6 6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>MCP Servers / APIs</a>
+{{with .Data}}{{with $d := .}}{{with .D}}{{if .Name}}
+<div class="head">
+  <h1 class="mono-title">{{vis .Name}}</h1>
+  <p class="sub">{{if eq .Transport "oci"}}Container{{else if eq .Transport "http"}}REST API{{else}}Process{{end}} · {{if eq .Signature "yes"}}<span class="badge ok">{{template "check"}}Signed</span>{{else if eq .Signature "INVALID"}}<span class="badge danger">{{template "warn"}}Signature invalid</span>{{else}}<span class="badge danger">{{template "warn"}}Not signed</span>{{end}}{{with .Health}} · <span class="badge {{if eq .State "up"}}ok{{else if or (eq .State "reconnecting") (eq .State "down")}}danger{{end}}">{{state .State}}</span>{{end}}</p>
+</div>
+
+<section>
+  <h2>Entry</h2>
+  <div class="group">
+    <dl class="facts pad">
+      {{if .URL}}<div><dt>Base URL</dt><dd class="mono">{{vis .URL}}</dd></div>{{end}}
+      {{if .Command}}<div><dt>Command</dt><dd class="mono">{{vis .Command}}{{range .Args}} {{vis .}}{{end}}</dd></div>{{end}}
+      {{if .Image}}<div><dt>Image</dt><dd class="mono">{{vis .Image}}</dd></div>{{end}}
+      <div><dt>Network</dt><dd>{{if .NetworkError}}<span class="badge danger">Refused</span> {{vis .NetworkError}}{{else}}{{dash .Network}}{{end}}</dd></div>
+      <div><dt>Credentials (vault names)</dt><dd class="mono">{{range $i, $n := .EnvVarNames}}{{if $i}}, {{end}}{{vis $n}}{{else}}None{{end}}</dd></div>
+      {{with .Auth}}<div><dt>Auth</dt><dd>{{if eq .Kind "none"}}None{{else}}{{vis .Kind}}{{if .Name}} <span class="mono">{{vis .Name}}</span>{{end}}{{if .Secret}} from <span class="mono">{{vis .Secret}}</span>{{end}}{{end}}</dd></div>{{end}}
+      <div><dt>Registered</dt><dd>{{time .CreatedAt}} · last changed {{time .UpdatedAt}}</dd></div>
+      {{with .Health}}{{if .Cause}}<div><dt>Last cause</dt><dd class="mono">{{vis .Cause}}</dd></div>{{end}}{{end}}
+    </dl>
+  </div>
+</section>
+
+{{if or .Operations .OperationsError}}
+<section>
+  <h2>Operations</h2>
+  <p class="caption">The signed set: each operation is one MCP tool, pending your review until approved.</p>
+  {{if .OperationsError}}<div class="notice danger" role="alert">{{template "warn"}}<p>The stored operation set does not decode: {{vis .OperationsError}}</p></div>{{end}}
+  {{if .Operations}}
+  <div class="group">
+    <table class="list">
+      <thead><tr><th>Tool</th><th>Method</th><th>Path</th><th>Class</th></tr></thead>
+      <tbody>
+      {{range .Operations}}
+        <tr><td class="mono t-title" data-label="Tool">{{vis .Name}}</td><td class="mono t-sub" data-label="Method">{{vis .Method}}</td><td class="mono wrap t-sub2" data-label="Path">{{vis .Path}}</td><td class="t-badge" data-label="Class">{{if eq .Class "sensitive"}}<span class="badge danger">Sensitive</span>{{else}}<span class="badge ok">Safe</span>{{end}}</td></tr>
+      {{end}}
+      </tbody>
+    </table>
+  </div>
+  <p class="caption">The signature covers this set: sha256:{{short .OperationsSHA256}}.</p>
+  {{end}}
+</section>
+{{end}}
+
+{{if $d.Manages}}
+<section>
+  <h2>Actions</h2>
+  <div class="group row">
+    <span class="row-text">
+      <span class="row-title">Operator actions</span>
+      <span class="row-detail">Signing attests you read the entry above. Redial reconnects the backend. Removing drops the approvals with it.</span>
+    </span>
+    <div class="actions-inline">
+      {{if $d.Root}}
+      <form method="post" action="{{$base}}/servers/{{.Name}}/sign"><input type="hidden" name="csrf" value="{{$csrf}}"><button class="btn{{if ne .Signature "yes"}} primary{{end}} small">{{if eq .Signature "yes"}}Re-sign{{else}}Sign{{end}}</button></form>
+      {{end}}
+      {{if $d.Redial}}
+      <form method="post" action="{{$base}}/servers/{{.Name}}/redial"><input type="hidden" name="csrf" value="{{$csrf}}"><button class="btn small">Redial</button></form>
+      {{end}}
+    </div>
+  </div>
+  {{if not $d.Root}}<p class="caption">Signing needs root's accounts socket: start the console with <code>sudo mcp-gateway ui -manage-users</code>, or sign in the terminal with <code>sudo mcp-gateway sign {{vis .Name}}</code>.</p>{{end}}
+
+  <form class="group form" method="post" action="{{$base}}/servers/{{.Name}}/remove">
+    <input type="hidden" name="csrf" value="{{$csrf}}">
+    <label class="field wide"><span>Remove this backend — type its name to confirm</span><input name="confirm" required autocomplete="off" spellcheck="false" class="mono" placeholder="{{vis .Name}}"></label>
+    <div class="form-end"><button class="btn small destructive">Remove</button></div>
+  </form>
+  <p class="caption">Removing deregisters the backend and forgets its approvals and signature. Type the name to confirm.</p>
+</section>
+{{end}}
+
+{{range $d.Panels}}
+{{.HTML}}
+{{else}}
+{{if $d.Manages}}
+<section>
+  <div class="group empty-state"><p><b>Tools, secrets and maintenance appear here.</b> Each is a separate panel added by its own slice (M1.2 tools, M1.3 secrets, M2.1 maintenance). This is the detail shell; the panels mount into it.</p></div>
+</section>
+{{end}}
+{{end}}
+
+{{else}}
+<div class="group empty-state"><p><b>No such backend.</b></p></div>
+{{end}}{{end}}{{end}}{{end}}
+{{template "bottom" .}}

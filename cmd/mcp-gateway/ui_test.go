@@ -262,7 +262,7 @@ func TestUI_PagesCarryAStrictPolicyAndNoScript(t *testing.T) {
 	mustRegister(t, e, stdioEntry("edr"))
 	mustObserve(t, e, "edr", quarantine.ToolIdentity{Name: "get_host", Description: "d", InputSchema: []byte(`{}`)})
 
-	for _, page := range []string{"/", "/servers", "/servers/edr/tools/get_host", "/servers/edr/tools/review-set", "/access", "/audit", "/upstreams", "/quota"} {
+	for _, page := range []string{"/", "/servers", "/servers/edr/tools/get_host", "/servers/edr/tools/review-set", "/users", "/audit", "/upstreams", "/quota"} {
 		w := uiDo(s, "GET", page, nil, cookie, nil)
 		if w.Code != http.StatusOK {
 			t.Errorf("GET %s: %d\n%s", page, w.Code, w.Body)

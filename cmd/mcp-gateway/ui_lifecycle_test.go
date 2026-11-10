@@ -92,15 +92,15 @@ func TestUI_AuditDownloadsAreTheFilteredRowsCSVGuarded(t *testing.T) {
 // TestUI_AccessBlockWithAnEnd.
 func TestUI_AccessBlockWithAnEnd(t *testing.T) {
 	_, s, cookie := newUITest(t)
-	page := uiDo(s, "GET", "/access", nil, cookie, nil).Body.String()
+	page := uiDo(s, "GET", "/users", nil, cookie, nil).Body.String()
 	if !strings.Contains(page, `name="until"`) {
-		t.Fatal("the Access page has no end field")
+		t.Fatal("the Blocklist section has no end field")
 	}
 	w := uiDo(s, "POST", "/access/block", url.Values{"subject": {"sub-ana"}, "until": {"8h"}, "csrf": {s.csrf}}, cookie, samePost)
 	if !strings.Contains(w.Body.String(), "ends by itself") {
 		t.Fatalf("block with an end:\n%s", w.Body.String())
 	}
-	if page := uiDo(s, "GET", "/access", nil, cookie, nil).Body.String(); !strings.Contains(page, "ends 20") {
+	if page := uiDo(s, "GET", "/users", nil, cookie, nil).Body.String(); !strings.Contains(page, "ends 20") {
 		t.Fatalf("the list does not show the end:\n%s", page)
 	}
 	w = uiDo(s, "POST", "/access/block", url.Values{"subject": {"sub-bruno"}, "until": {"soon"}, "csrf": {s.csrf}}, cookie, samePost)

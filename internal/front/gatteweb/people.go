@@ -11,7 +11,6 @@ package gatteweb
 // (design/adr/0040 §1).
 
 import (
-	"bytes"
 	"errors"
 	"html/template"
 	"net/http"
@@ -23,17 +22,6 @@ import (
 	"github.com/bunnyiesart/Gatte/pkg/adminapi"
 	"github.com/bunnyiesart/Gatte/pkg/frontkit"
 )
-
-// renderFragment executes a template that draws part of a page -- a Users
-// section -- into HTML the container embeds. The template's output is
-// html/template's own escaped HTML.
-func (f *Front) renderFragment(name string, data any) (template.HTML, error) {
-	var b bytes.Buffer
-	if err := f.pages.ExecuteTemplate(&b, name+".html", data); err != nil {
-		return "", err
-	}
-	return template.HTML(b.Bytes()), nil // #nosec G203 -- the template's own escaped output
-}
 
 // peopleSectionData is the People section of the Users page: the accounts the
 // identity provider holds, drawn only with the accounts socket (Manage).
@@ -61,7 +49,7 @@ func (f *Front) peopleSection(r *http.Request) (template.HTML, error) {
 			d.Accounts = list.Accounts
 		}
 	}
-	return f.renderFragment("section_people", d)
+	return f.renderFragment("section_people.html", d)
 }
 
 type accountData struct {

@@ -47,7 +47,7 @@ func (f *Front) blocklistSection(r *http.Request) (template.HTML, error) {
 	if me, werr := f.op.WhoAmI(r.Context()); werr == nil {
 		d.Until = slices.Contains(me.Features, adminapi.FeatureBlockUntil)
 	}
-	return f.renderFragment("section_access", d)
+	return f.renderFragment("section_access.html", d)
 }
 
 func (f *Front) accessBlock(w http.ResponseWriter, r *http.Request)   { f.accessChange(w, r, true) }

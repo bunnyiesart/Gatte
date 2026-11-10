@@ -214,7 +214,7 @@ var manageRoutes = []struct {
 	{"POST", "/upstreams/sign", url.Values{"name": {"ioc"}}},
 	{"POST", "/upstreams/redial", url.Values{"name": {"ioc"}}},
 	{"POST", "/upstreams/remove", url.Values{"name": {"ioc"}, "confirm": {"ioc"}}},
-	{"POST", "/tools/clear", url.Values{"server": {"reporting"}, "tool": {"submit_report"}}},
+	{"POST", "/servers/reporting/tools/submit_report/clear", nil},
 	{"POST", "/reload", url.Values{}},
 	{"GET", "/serve-requests?id=1", nil},
 	{"GET", "/secrets", nil},
@@ -319,7 +319,7 @@ func TestUIManage_RegisterWritesTheKeySignsAndShowsTheReport(t *testing.T) {
 		t.Fatalf("register: %d\n%s", got.code, got.body)
 	}
 	for _, want := range []string{"Registered ioc", "1 safe, 1 sensitive", "report", "Sensitive", "Safe", "Derived from the document",
-		"X-API-Key", "IOC_KEY", "Not signed yet", "Sign ioc", "Review the tools", "/tools/review-set?server=ioc", "Clear the sensitive ones", "upload"} {
+		"X-API-Key", "IOC_KEY", "Not signed yet", "Sign ioc", "Review the tools", m.s.session + "/servers/ioc", "Clear the sensitive ones", "upload"} {
 		if !got.has(want) {
 			t.Errorf("the register report lacks %q", want)
 		}
@@ -468,24 +468,24 @@ func TestUIManage_ASensitiveToolIsClearedFromItsPage(t *testing.T) {
 	m := newManageUI(t, true, false)
 	mustObserveSensitive(t, m.e, "reporting", submitReport)
 	mustApprove(t, m.e, "reporting", "submit_report")
-	page := m.get("/tools/show?server=reporting&tool=submit_report")
-	if !page.has("Sensitive") || !page.has("Not cleared") || !page.has("/tools/clear") || page.has("Approve this version") {
+	page := m.get("/servers/reporting/tools/submit_report")
+	if !page.has("Sensitive") || !page.has("Not cleared") || !page.has("/servers/reporting/tools/submit_report/clear") || page.has("Approve this version") {
 		t.Fatalf("the tool page of an approved, uncleared sensitive tool:\n%s", page.body)
 	}
 	// No role reaches it: the backend refuses, and says why.
-	got := m.post("/tools/clear", url.Values{"server": {"reporting"}, "tool": {"submit_report"}})
+	got := m.post("/servers/reporting/tools/submit_report/clear", nil)
 	if !got.has("result-icon danger") || !got.has("non_read") {
 		t.Fatalf("clear with no role reaching it:\n%s", got.body)
 	}
 	m.e.cfg.Roles = []config.Role{{Name: "ir-act", Tools: []string{"reporting.submit_report"}, NonRead: true}}
-	got = m.post("/tools/clear", url.Values{"server": {"reporting"}, "tool": {"submit_report"}})
+	got = m.post("/servers/reporting/tools/submit_report/clear", nil)
 	if !got.has("result-icon ok") || !got.has("ir-act") {
 		t.Fatalf("clear:\n%s", got.body)
 	}
 	if after, _ := m.e.tools().Get(context.Background(), "reporting", "submit_report"); !after.Usable() {
 		t.Fatal("cleared and still not usable")
 	}
-	if page := m.get("/tools/show?server=reporting&tool=submit_report"); !page.has("Cleared") || page.has("/tools/clear") {
+	if page := m.get("/servers/reporting/tools/submit_report"); !page.has("Cleared") || page.has("/servers/reporting/tools/submit_report/clear") {
 		t.Fatalf("the tool page after clearing:\n%s", page.body)
 	}
 }

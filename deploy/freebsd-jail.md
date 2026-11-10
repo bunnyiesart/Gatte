@@ -338,6 +338,7 @@ installed; if none is, the sink is a file that grows and anchors nothing.
 
 The one this deployment runs is fluent-bit, and its config is in the repo
 at `deploy/gatte-audit-fluentbit.conf` with install steps in its header.
+A Wazuh agent can read the same file beside it: `deploy/gatte-audit-wazuh.md`.
 Two FreeBSD specifics are load-bearing and both fail silently:
 
 - **`Inotify_Watcher false` is required.** inotify is a Linux API. On

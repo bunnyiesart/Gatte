@@ -20,7 +20,8 @@ use `CFG=/usr/local/etc/mcp-gateway/config.toml`.
 | Says when it lost messages | no: a missing line shows as a gap in the chain | yes: a `telemetry_gap` message after an outage |
 
 The silence alert and the chain comparison need the JSON Lines copy. You
-can run both copies at once.
+can run both copies at once. For Wazuh, the agent input, rules and silence
+monitor are in [`deploy/gatte-audit-wazuh.md`](../../deploy/gatte-audit-wazuh.md).
 
 ```toml
 [audit.siem]

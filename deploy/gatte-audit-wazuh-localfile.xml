@@ -1,0 +1,24 @@
+<!--
+  Wazuh agent input for the audit sink. Runs on the VM HOST (not in the jail),
+  pasted inside <ossec_config> in /var/ossec/etc/ossec.conf. The Wazuh
+  counterpart of the [INPUT] in deploy/gatte-audit-fluentbit.conf; install and
+  checks are in deploy/gatte-audit-wazuh.md.
+
+  The path is the sink as the host sees it: the jail is a directory on the
+  host. The file is 0600 owned by the gateway's service user, so it is read by
+  wazuh-logcollector, which runs as root. Do not widen the mode to make
+  another reader work.
+
+  log_format json: one JSON object per line, decoded by Wazuh's stock JSON
+  decoder, so every key of the line (hash, prev_hash, chain, type, ...) is a
+  field. The raw line is kept as full_log.
+
+  only-future-events no: after an agent restart, read what was written while
+  it was down instead of skipping to the end. A skipped stretch is a gap in
+  the chain as the SIEM sees it.
+-->
+<localfile>
+  <log_format>json</log_format>
+  <location>/usr/local/bastille/jails/gatte/root/var/log/mcp-gateway/audit.jsonl</location>
+  <only-future-events>no</only-future-events>
+</localfile>

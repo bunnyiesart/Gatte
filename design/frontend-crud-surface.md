@@ -101,6 +101,11 @@ ADR-0050 §2; stdio/oci stay CLI-only. **Signing is a separate attesting click o
 the result page, never sign-on-register** (ADR-0050 §5). Deregister asks the
 operator to type the name, because it drops approvals (ADR-0050 §2).
 
+> **M5 extends Add to a 3-way choice** (REST API / Remote MCP server (URL) /
+> Container (oci); ADR-0059) and relabels the signed/unsigned state to "Config
+> attested" (ADR-0060). That work (M5.4, M5.5) touches these M1.1-owned Servers
+> files and must be coordinated with M1.1 — see "M5 · Remote + oci Add" below.
+
 - **Console:** owns `reg_servers.go`, the list/add/detail handlers, the detail
   **container** template, `ui/servers.html`, `ui/server_new.html`,
   `ui/server.html`. Registers the two nav tabs and the `DetailPanel`/
@@ -322,3 +327,68 @@ maintenance). `TestClient_CoversEveryOperationOfTheContractAgainstTheRealBackend
 holds the client to exactly the contract's operation set. No client gap blocks
 either track. The /v2 per-backend maintenance surface (ADR-0055) is added to the
 contract and the client as part of M2.1, before its panel is built.
+
+---
+
+## M5 · Remote + oci Add, 3-way Add menu, attestation relabel
+
+M5 adds two new ways to register a backend from the console and clarifies the
+signed/unsigned labels. ADRs: 0058 (remote transport), 0059 (oci + remote from
+the console, 3-way Add), 0060 (attestation relabel).
+
+### New transport: `remote` (ADR-0058)
+
+A native MCP server reached by URL, held as a **live connection** (adapter
+`internal/gateway/remotemcp`, mirroring stdio — not the stateless resthttp
+shape). Streamable HTTP now, SSE deferred. Signed by a new `v4-remote` canonical
+tag covering the full URL + auth descriptor + `remote_kind` (no op-set digest).
+Static bearer/header auth resolved from the vault at dial; the gateway→remote
+hop reuses the resthttp egress/SSRF guard, lifted into a shared package both
+adapters import. A remote backend is un-isolatable and its downstream egress is
+invisible to ADR-0033 — declared, gated on operator trust in the endpoint. This
+is backend work (M5.2); the console only gains a form for it (M5.4).
+
+### The 3-way Add menu (ADR-0059) — slice M5.4
+
+`/servers/new` becomes a transport-aware choice: **REST API** / **Remote MCP
+server (URL)** / **Container (oci)**. stdio stays CLI-only (console stdio is a
+declared regression, default NO). The register request gains `transport` and the
+per-transport fields; the service branches to a `RegisterEntry` port reusing the
+transport-agnostic `validateEntry` + `credentialedStdioRefusal`. oci requires
+podman: on the Docker image (no podman) the Container option is **not offered**
+(feature `oci_register`), and a direct call is refused gracefully — never a
+broken button. oci keeps full ADR-0034 hardening + digest pin, unchanged.
+
+| Op | Method / path | Client | Socket |
+|---|---|---|---|
+| registerUpstream (extended: transport + per-transport fields) | POST /v1/upstreams | `RegisterUpstream` | op (`console_manages`) |
+| signUpstream | POST /v1/upstreams/{name}/sign | `SignUpstream` | acc (`console_manages`) |
+
+- **Console:** M5.4 extends the **M1.1-owned** `/servers/new` page and handler,
+  `ui/server_new.html`, and `reg_servers.go`. **These are M1.1 frozen files** —
+  M5.4 coordinates with the M1.1 shell owner, it does not fork them.
+- **TUI:** the Servers add flow gains the same 3-way choice.
+
+### Attestation relabel (ADR-0060) — slice M5.5
+
+Rename the backend state labels: `Signed` -> `Config attested`, `Unsigned` ->
+`Config not attested`; the register-result button `Sign` -> `Attest this
+configuration`. "Attested" means an operator signed the config (URL/command/args
++ secret names); it is **not** a tool-safety claim — tool safety is the separate
+approve/clear gate in the tools panel. Exact copy is in ADR-0060 §2. This is
+template + text only, no new logic.
+
+- **Console:** M5.5 edits the servers **list, detail, and register-result**
+  templates/copy and the tools-panel header — these live in the **M1.1-owned**
+  Servers files and the **M1.2-owned** tools panel. Coordinate with those
+  owners; do not fork the files.
+- **TUI:** mirror the same labels on the Servers screen.
+
+### Dependency / ownership flags
+
+- M5.1 (ADRs + this surface update) blocks M5.2–M5.5.
+- M5.4 depends on M5.2 (remote transport) **and** M5.3 (oci-from-console
+  contract/service/front).
+- M5.4 and M5.5 touch files **owned by M1.1** (Servers list/add/detail) and, for
+  M5.5, by M1.2 (tools panel). They are not independent slices: they extend
+  frozen shared files and must be sequenced with the M1.1/M1.2 owners.

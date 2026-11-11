@@ -5,6 +5,12 @@ console de `0036`/`0040` (listar e paginar a trilha pela tela). A trilha, o
 encadeamento por hash e o envio ao SIEM de `0015`/`0017`/`0029` **não mudam**; o
 que sai é a **tela** de auditoria.
 
+*Revisto por `0061`:* nenhuma visão da trilha fica na UI, no console nem no
+TUI — saíram também "Seen on the gateway" (aba Users e página da conta) e o
+marcador de pendência na lista de servidores. A gravação e o envio não mudam;
+a leitura acontece no Wazuh, o SIEM principal (o caminho do Graylog fica
+durante a migração).
+
 ## Contexto
 
 O console tinha uma página de auditoria: listar a trilha com filtros, paginação

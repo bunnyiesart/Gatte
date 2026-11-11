@@ -23,6 +23,10 @@ quem executa código como o gateway se daria acesso a todas as tools.
 (sujeito, última chamada, número de chamadas), com um botão Block que é o
 `access block` de sempre (`0031`). Só leitura.
 
+*Revisto por `0061`:* a lista de quem a trilha já viu e o botão Block saíram
+da tela. A leitura da trilha fica no SIEM; bloquear fica no CLI
+(`access block|unblock|list`).
+
 ### 2. Edição de contas só num console root
 
 *Revisto por `0040`:* a regra passa a ser do socket de contas

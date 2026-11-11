@@ -104,7 +104,8 @@ isso como "Still to do by hand".
   de exibição seria decidir sobre o campo que a `0037` proíbe de decidir
   qualquer coisa. A página da conta lista quem a trilha viu (subject e,
   para leitura, o nome) e aceita um subject digitado; nada vem
-  pré-selecionado. Sem subject (a pessoa nunca usou o gateway) o offboard só
+  pré-selecionado. *Revisto por `0061`:* a lista de quem a trilha viu saiu da
+  tela; o operador digita o subject. Sem subject (a pessoa nunca usou o gateway) o offboard só
   desabilita, e `remaining` diz que não há bloqueio.
 - **Bloquear é de operador.** O `account_group` recebeu contas, não o kill
   switch. Um offboard **com subject** por um par que não é root exige que o

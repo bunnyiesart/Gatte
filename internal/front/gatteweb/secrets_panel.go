@@ -8,7 +8,7 @@ package gatteweb
 // root (managed with root), and the result page names the secret only.
 //
 // A connected backend keeps the key it was dialled with until it is redialled,
-// so a set or replace points the operator at Redial, which lives on the server
+// so a set or replace points the operator at Reconnect, which lives on the server
 // page (servers.go).
 
 import (
@@ -196,7 +196,7 @@ func (f *Front) secretDeleteTo(w http.ResponseWriter, r *http.Request, back stri
 
 func (f *Front) serverSecretSet(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	redial := "The backend keeps the key it was dialled with until it is redialled: redial " +
+	redial := "The backend keeps the key it was connected with until it reconnects: reconnect " +
 		frontkit.VisibleText(name) + " from its page."
 	f.secretSetTo(w, r, serverBack(name), redial)
 }
@@ -207,7 +207,7 @@ func (f *Front) serverSecretDelete(w http.ResponseWriter, r *http.Request) {
 
 func (f *Front) vaultSecretSet(w http.ResponseWriter, r *http.Request) {
 	f.secretSetTo(w, r, "/vault",
-		"A connected backend keeps the key it was dialled with: redial each backend that uses it from its page.")
+		"A connected backend keeps the key it was connected with: reconnect each backend that uses it from its page.")
 }
 
 func (f *Front) vaultSecretDelete(w http.ResponseWriter, r *http.Request) {

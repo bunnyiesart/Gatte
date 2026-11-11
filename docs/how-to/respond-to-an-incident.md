@@ -7,9 +7,11 @@ checking the trail against the SIEM, and taking a backend out.
 
 You need: a shell on the gateway host, and `sudo` to run commands as the
 service account `mcpgw`. The examples use
-`CFG=/usr/local/etc/mcp-gateway/config.toml`. Each step also exists in the
-web console (**Access**, **Audit**, **Backends**), with the same checks and
-the same audit rows.
+`CFG=/usr/local/etc/mcp-gateway/config.toml`. Blocking and reading the
+trail are CLI and SIEM work: the web console shows no audit data and has no
+block button (`design/adr/0061`). Its **Offboard** and a backend's
+maintenance and **Remove** are the same actions as the CLI, with the same
+checks and the same audit rows.
 
 ## Cut off one analyst now
 
@@ -17,10 +19,9 @@ An incident needs two actions: a block at the gateway, which takes effect
 on the next request, and a revoke at the identity provider, which Gatte
 cannot do for you (`design/adr/0031`).
 
-1. Find the analyst's subject, the token's `sub`. On **People**, **Seen on
-   the gateway** lists each subject with the name the IdP gave. On the
-   host, `audit` shows the subject in the ANALYST column and the name in
-   NAME:
+1. Find the analyst's subject, the token's `sub`, on their rows in the
+   SIEM. On the host, `audit` shows the subject in the ANALYST column and
+   the name in NAME:
 
    ```sh
    sudo -u mcpgw mcp-gateway audit -config "$CFG" -limit 200
@@ -116,15 +117,10 @@ When you read the rows:
 
 ## Hand the trail over
 
-1. In the console, open **Audit** and set the filters (analyst, outcome,
-   tool, backend, source, from, to). Times are UTC.
-2. Choose **CSV** or **JSON Lines**. The file holds the filtered rows,
-   newest first, up to 50 000. If the export stopped there, the file name
-   says `-first50000`: narrow the window and export again.
-
-In the CSV, hidden characters are written as `\u{XXXX}` and a cell a
-spreadsheet would run as a formula starts with an apostrophe. On the host,
-the same rows come out of `audit ... -limit 0 -json`.
+Export the rows from the SIEM, which holds the shipped copy of the trail
+(`design/adr/0056`). On the host, the same rows come out of
+`audit ... -limit 0 -json`, with the filters of [`audit`](../reference/cli.md).
+Times are UTC.
 
 ## Check the trail was not edited
 
@@ -158,8 +154,7 @@ You need `[audit.siem]` configured and a shipper forwarding the file.
 The limit, stated plainly: whoever controls the gateway host also controls
 what the shipper sends, and can forge lines that agree with a shortened
 trail. The comparison catches a lost, rolled-back or carelessly edited
-trail, not an attacker who also forged the shipped lines. In the console,
-the same check is **Audit**, **Verify the trail**, with **Expected head**.
+trail, not an attacker who also forged the shipped lines.
 
 ## If a backend is compromised
 

@@ -80,6 +80,13 @@ O offboard (`0046`) deixa de oferecer a lista "quem a trilha viu" como
 seletor: o operador digita o subject (o campo digitado já existe). Continua
 valendo que nada vem pré-selecionado.
 
+> **Anotação (10 nov 2026, M6.1).** Sai o marcador de pendência das tools
+> que esperam revisão, mas uma tool cuja definição **mudou depois de
+> aprovada** continua sinalizada na lista de servidores ("Tool changed", em
+> vermelho, por backend): é o sinal de troca de definição (rug pull) e não
+> pode ficar escondido dentro da página do servidor. É estado da quarentena,
+> não auditoria.
+
 ### 4. Blocklist sai da UI; fica no CLI
 
 A seção Blocklist sai da aba Users do console e da tela Users do TUI. A

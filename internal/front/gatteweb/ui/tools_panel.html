@@ -1,7 +1,7 @@
-{{$base := .Base}}
+{{$base := .Base}}{{$csrf := .CSRF}}
 <section>
-  <h2>Tool safety</h2>
-  <p class="caption">Attesting the configuration does not approve any tool. Each tool is reviewed and approved here, by its fingerprint; a sensitive tool also needs Clear.</p>
+  <h2>Tool security</h2>
+  <p class="caption">Approving the configuration does not approve any tool. Each tool is reviewed and approved here, by its fingerprint; a sensitive tool also needs Clear. Each tool's actions are in its Actions menu.</p>
   <p class="caption">A tool is served only after you approve it, and only at the exact version you reviewed. A sensitive tool (one that can act) needs clearing on top of approval before it is served.</p>
 
   {{if and .ReviewSet (gt .Review 1)}}
@@ -11,7 +11,7 @@
   {{if .Tools}}
   <div class="group">
     <table class="list">
-      <thead><tr><th>Tool</th><th>Class</th><th>Status</th><th>Updated</th><th><span class="sr">Open</span></th></tr></thead>
+      <thead><tr><th>Tool</th><th>Class</th><th>Status</th><th>Updated</th><th><span class="sr">Actions</span></th></tr></thead>
       <tbody>
       {{range .Tools}}
         <tr>
@@ -19,7 +19,16 @@
           <td class="t-badge" data-label="Class">{{if .Sensitive}}<span class="badge danger">Sensitive</span>{{else}}<span class="badge ok">Safe</span>{{end}}</td>
           <td class="t-badge" data-label="Status">{{template "toolstatus" .Status}}{{if .NotServed}} <span class="badge">Not served</span>{{end}}</td>
           <td class="muted num t-hide" data-label="Updated">{{time .UpdatedAt}}</td>
-          <td class="end">{{template "chev"}}</td>
+          <td class="end t-menu">
+            <details class="menu">
+              <summary class="btn small">Actions <span class="menu-arrow" aria-hidden="true"></span></summary>
+              <ul class="menu-list">
+                <li><a href="{{$base}}{{.Path}}">{{if eq .Status "approved"}}Review{{else}}Review and approve tool...{{end}}</a></li>
+                {{if and .NotServed $.CanClear}}<li><form method="post" action="{{$base}}{{.Path}}/clear"><input type="hidden" name="csrf" value="{{$csrf}}"><button>Clear for serving</button></form></li>{{end}}
+                {{if eq .Status "approved"}}<li class="sep"><form method="post" action="{{$base}}{{.Path}}/revoke"><input type="hidden" name="csrf" value="{{$csrf}}"><button class="danger">Revoke approval</button></form></li>{{end}}
+              </ul>
+            </details>
+          </td>
         </tr>
       {{end}}
       </tbody>

@@ -71,6 +71,11 @@ does not cut off a token already issued; a block does.
 | "Seen on the gateway" (Users + account page), the needs-review marker on the servers list | Wazuh, the primary SIEM; the gateway still records every call | 0061 |
 | Blocklist (Users section) | CLI `mcp-gateway access block\|unblock\|list` | 0061 |
 
+The needs-review marker goes for pending tools only: a tool whose definition
+changed after approval stays flagged on the servers list ("Tool changed",
+red, per backend), because it signals a definition swap (ADR-0061 §3
+annotation).
+
 ### Look and labels (ADR-0061)
 
 Both fronts use a **classic system UI** look: grey panels, bevelled 1px

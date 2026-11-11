@@ -13,27 +13,8 @@ import (
 	"github.com/bunnyiesart/Gatte/internal/audit"
 )
 
-// design/adr/0046 on the Gatte web console.
-
-// TestUI_AccessBlockWithAnEnd.
-func TestUI_AccessBlockWithAnEnd(t *testing.T) {
-	_, s, cookie := newUITest(t)
-	page := uiDo(s, "GET", "/users", nil, cookie, nil).Body.String()
-	if !strings.Contains(page, `name="until"`) {
-		t.Fatal("the Blocklist section has no end field")
-	}
-	w := uiDo(s, "POST", "/access/block", url.Values{"subject": {"sub-ana"}, "until": {"8h"}, "csrf": {s.csrf}}, cookie, samePost)
-	if !strings.Contains(w.Body.String(), "ends by itself") {
-		t.Fatalf("block with an end:\n%s", w.Body.String())
-	}
-	if page := uiDo(s, "GET", "/users", nil, cookie, nil).Body.String(); !strings.Contains(page, "ends 20") {
-		t.Fatalf("the list does not show the end:\n%s", page)
-	}
-	w = uiDo(s, "POST", "/access/block", url.Values{"subject": {"sub-bruno"}, "until": {"soon"}, "csrf": {s.csrf}}, cookie, samePost)
-	if !strings.Contains(w.Body.String(), "duration such as 8h") {
-		t.Fatalf("an unreadable end:\n%s", w.Body.String())
-	}
-}
+// design/adr/0046 on the Gatte web console, with the offboard subject typed
+// (design/adr/0061 §3).
 
 // TestUI_OffboardBlocksDisablesAndListsWhatIsLeft, and Delete.
 func TestUI_OffboardBlocksDisablesAndListsWhatIsLeft(t *testing.T) {
@@ -43,8 +24,13 @@ func TestUI_OffboardBlocksDisablesAndListsWhatIsLeft(t *testing.T) {
 		t.Fatal(err)
 	}
 	page := uiDo(s, "GET", "/people/account?u=ana", nil, cookie, nil).Body.String()
-	if !strings.Contains(page, "/people/offboard") || !strings.Contains(page, `value="sub-ana"`) || !strings.Contains(page, "/people/delete") {
+	if !strings.Contains(page, "/people/offboard") || !strings.Contains(page, `name="subject"`) || !strings.Contains(page, "/people/delete") {
 		t.Fatalf("the account page has no offboard or delete:\n%s", page)
+	}
+	// The subject is typed: the page reads no audit data to offer one, and
+	// nothing comes pre-selected (design/adr/0046, 0061).
+	if strings.Contains(page, "sub-ana") || strings.Contains(page, "<select name=\"subject\"") {
+		t.Fatalf("the offboard form offers a subject from the audit trail:\n%s", page)
 	}
 	w := uiDo(s, "POST", "/people/offboard", url.Values{"username": {"ana"}, "subject": {"sub-ana"}, "reason": {"left"}, "csrf": {s.csrf}}, cookie, samePost)
 	body := w.Body.String()

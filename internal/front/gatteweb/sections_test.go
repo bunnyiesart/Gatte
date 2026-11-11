@@ -53,6 +53,19 @@ func TestRolesSlot_EditableOrReadOnlyNeverBoth(t *testing.T) {
 	}
 }
 
+// The Users tab has two sections, People and Roles (design/adr/0061 §4): the
+// blocklist stays in the CLI.
+func TestUsersSections_PeopleAndRolesOnly(t *testing.T) {
+	var ids []string
+	for _, s := range orderedUsersSections() {
+		ids = append(ids, s.ID)
+	}
+	slices.Sort(ids)
+	if want := []string{"people", "roles", "roles-view"}; !slices.Equal(ids, want) {
+		t.Fatalf("Users sections = %v, want %v", ids, want)
+	}
+}
+
 // The server-detail and Users containers draw their panels and sections from
 // their own registries (design/adr/0051): each slice appends one from its own
 // init(), and the container ranges in Order. A panel can slot between two with
@@ -82,14 +95,14 @@ func TestDetailAndUsersRegistries_OrderByOrderThenID(t *testing.T) {
 	}
 
 	noSec := func(*Front, *http.Request) (template.HTML, error) { return "", nil }
-	registerUsersSection(UsersSection{ID: "blocklist", Order: 30, Render: noSec})
+	registerUsersSection(UsersSection{ID: "later", Order: 30, Render: noSec})
 	registerUsersSection(UsersSection{ID: "people", Order: 10, Render: noSec})
 	registerUsersSection(UsersSection{ID: "roles", Order: 20, Render: noSec})
 	got = nil
 	for _, s := range orderedUsersSections() {
 		got = append(got, s.ID)
 	}
-	want = []string{"people", "roles", "blocklist"}
+	want = []string{"people", "roles", "later"}
 	for i := range want {
 		if got[i] != want[i] {
 			t.Fatalf("section order = %v, want %v", got, want)

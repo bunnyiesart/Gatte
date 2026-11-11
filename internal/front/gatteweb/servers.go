@@ -2,16 +2,18 @@ package gatteweb
 
 // Tab 1 of the revised console (design/adr/0051, 0052): "MCP Servers / APIs".
 // The noun for a backend is "MCP server / API". This file is the tab's shell:
-// the list with per-backend health and a needs-review marker, the zero-JS
+// the list with per-backend health and a flag for a tool changed after its
+// approval (no marker for pending tools, design/adr/0061 §3), the zero-JS
 // /servers/new add page (a three-way choice, design/adr/0059: REST API /
 // OpenAPI -> generates MCP tools, a remote MCP server by URL, and a container
-// (oci) where the backend has podman; stdio stays CLI-only, design/adr/0034),
-// the register result page where
-// signing is a separate attesting click (never sign-on-register, design/adr/0050
-// §5), and the server-detail page.
+// (oci) where the backend has podman; stdio stays CLI-only,
+// design/adr/0034), the register result page
+// where approving the configuration (signing it) is a separate click (never
+// sign-on-register, design/adr/0050 §5), and the server-detail page.
 //
 // The server-detail page is a container: it draws the entry, its health and the
-// operator actions (redial, sign, deregister), then ranges over the DetailPanel
+// operator actions (Approve configuration, Reconnect, Remove: the API's sign,
+// redial and deregister, design/adr/0061 §2), then ranges over the DetailPanel
 // registry (sections.go) and embeds each registered panel in order. The Tools,
 // Secrets and Maintenance panels self-register from their own files; this
 // shell owns only the mount points.
@@ -39,7 +41,7 @@ func serverBack(name string) string { return "/servers/" + url.PathEscape(name) 
 // ---- the list
 
 type serversData struct {
-	Servers []serverRow
+	Servers []adminapi.Upstream
 	// Health is FeatureBackendHealth: the list shows a per-backend state.
 	Health bool
 	// Manages is FeatureConsoleManages: the Add button.
@@ -48,16 +50,13 @@ type serversData struct {
 	// FeatureServeControl).
 	Reload bool
 	// Gateway is the attention that names no backend (the gateway process not
-	// reporting, a gateway-wide maintenance): shown above the list.
+	// reporting, a gateway-wide maintenance): shown above the list. It is the
+	// gateway's state, not audit data, so it stays (design/adr/0061 §3).
 	Gateway []adminapi.Attention
-}
-
-// serverRow is one backend as the list shows it: the entry, and the reasons it
-// needs the operator's attention, drawn from Overview.Attention
-// (design/adr/0051 keeps "needs review" inside this tab).
-type serverRow struct {
-	adminapi.Upstream
-	Attention []string
+	// Changed counts, per backend, the tools whose definition changed after
+	// they were approved. A pending tool is not flagged here, but a changed
+	// one is: it signals a definition swap (design/adr/0061 §3 annotation).
+	Changed map[string]int
 }
 
 func (f *Front) serversPage(w http.ResponseWriter, r *http.Request) {
@@ -70,34 +69,24 @@ func (f *Front) serversPage(w http.ResponseWriter, r *http.Request) {
 		Reload:  has(adminapi.FeatureConsoleManages) && has(adminapi.FeatureServeControl),
 	}
 
-	// The backends that need attention, and why, keyed by name. A tool's
-	// attention names its Server; a backend's own (unsigned, down, in
-	// maintenance) names its Upstream.
-	attn := map[string][]string{}
 	errs := []string{}
 	if err != nil {
 		errs = append(errs, errText(err))
 	}
 	ov, overr := f.op.Overview(r.Context())
 	if overr != nil {
-		errs = append(errs, "attention: "+errText(overr))
+		errs = append(errs, "gateway state: "+errText(overr))
 	}
+	d.Changed = map[string]int{}
 	for _, a := range ov.Attention {
-		name := a.Upstream
-		if name == "" {
-			name = a.Server
-		}
-		if name == "" {
+		switch {
+		case a.Kind == adminapi.AttentionChanged && a.Server != "":
+			d.Changed[a.Server]++
+		case a.Upstream == "" && a.Server == "":
 			d.Gateway = append(d.Gateway, a)
-			continue
-		}
-		if !slices.Contains(attn[name], a.Title) {
-			attn[name] = append(attn[name], a.Title)
 		}
 	}
-	for _, u := range list.Upstreams {
-		d.Servers = append(d.Servers, serverRow{Upstream: u, Attention: attn[u.Name]})
-	}
+	d.Servers = list.Upstreams
 	f.render(w, r, "servers", "MCP Servers / APIs", page{Data: d, Error: strings.Join(errs, "\n")})
 }
 
@@ -203,7 +192,7 @@ func (f *Front) serverRedial(w http.ResponseWriter, r *http.Request) {
 	}
 	name := r.PathValue("name")
 	res, err := f.op.RedialUpstream(r.Context(), adminapi.RedialRequest{Upstream: name})
-	f.showResult(w, r, "servers", "Redial "+frontkit.VisibleText(name), serverBack(name), f.serveResult(res, err))
+	f.showResult(w, r, "servers", "Reconnect "+frontkit.VisibleText(name), serverBack(name), f.serveResult(res, err))
 }
 
 func (f *Front) serverSign(w http.ResponseWriter, r *http.Request) {
@@ -212,10 +201,10 @@ func (f *Front) serverSign(w http.ResponseWriter, r *http.Request) {
 	}
 	name := r.PathValue("name")
 	res, err := f.acc.SignUpstream(r.Context(), name)
-	f.showResult(w, r, "servers", "Attest "+frontkit.VisibleText(name), serverBack(name), signResult(res, err))
+	f.showResult(w, r, "servers", "Approve the configuration of "+frontkit.VisibleText(name), serverBack(name), signResult(res, err))
 }
 
-// serverRemove deregisters. The form makes the operator type the name; the
+// serverRemove deregisters (the console's Remove). The form makes the operator type the name; the
 // backend refuses a confirmation that does not repeat it (it drops the
 // approvals with the entry, design/adr/0050 §2), so this front forwards what
 // was typed and holds no rule of its own.
@@ -332,8 +321,8 @@ func (f *Front) renderServerNew(w http.ResponseWriter, r *http.Request, d server
 
 // serverRegister registers an http backend from its OpenAPI document, a
 // remote one (transport=remote) or an oci one (transport=oci), then shows
-// the result page. It does NOT sign: the signature attests that someone read
-// what the result page shows, and signing is a separate button there
+// the result page. It does NOT sign: the signature records that someone read
+// what the result page shows, and approving it is a separate button there
 // (design/adr/0050 §5, 0052 §3, 0059 §6). stdio is not offered here; it
 // stays in the CLI.
 func (f *Front) serverRegister(w http.ResponseWriter, r *http.Request) {

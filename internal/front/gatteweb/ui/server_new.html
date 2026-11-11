@@ -26,7 +26,7 @@
 </nav>
 
 {{if not .Root}}
-<div class="notice" role="note">{{template "dot"}}<p>Attesting a backend's configuration and writing its key to the vault need root's accounts socket: start the console with <code>sudo mcp-gateway ui -manage-users</code>. Without it, a backend you add here is not served until its configuration is attested with <code>sudo mcp-gateway sign NAME</code>.</p></div>
+<div class="notice" role="note">{{template "dot"}}<p>Approving a backend's configuration and writing its key to the vault need root's accounts socket: start the console with <code>sudo mcp-gateway ui -manage-users</code>. Without it, a backend you add here is not served until its configuration is approved with <code>sudo mcp-gateway sign NAME</code>.</p></div>
 {{end}}
 
 {{if eq .Kind "oci"}}
@@ -43,7 +43,7 @@
     <div class="form-end"><button class="btn primary">Add container</button></div>
   </form>
   {{end}}
-  <p class="caption">The image must be pinned by digest (<code>podman inspect --format '{{"{{"}}index .RepoDigests 0{{"}}"}}' NAME:TAG</code> prints it); a tag is refused. Network is <code>none</code> unless you choose <code>slirp4netns</code>, <code>pasta</code> or a podman network by name; <code>host</code> is never allowed. Variable names are the vault names the container receives, never values: set the values on the backend's page or in the vault. Registering does not start the container and does not attest its configuration: the next page shows the image, the network and the names, and an Attest this configuration button. Its tools are listed once the gateway runs it, each waiting for your review.</p>
+  <p class="caption">The image must be pinned by digest (<code>podman inspect --format '{{"{{"}}index .RepoDigests 0{{"}}"}}' NAME:TAG</code> prints it); a tag is refused. Network is <code>none</code> unless you choose <code>slirp4netns</code>, <code>pasta</code> or a podman network by name; <code>host</code> is never allowed. Variable names are the vault names the container receives, never values: set the values on the backend's page or in the vault. Registering does not start the container and does not approve its configuration: the next page shows the image, the network and the names, and an Approve configuration button. Its tools are listed once the gateway runs it, each waiting for your review.</p>
 </section>
 {{else if eq .Kind "remote"}}
 <section>
@@ -64,7 +64,7 @@
     <div class="form-end"><button class="btn primary">Add remote server</button></div>
   </form>
   {{end}}
-  <p class="caption">The URL is the server's MCP endpoint, http or https, signed whole; a credential, a query or a fragment in it is refused. Auth is where the gateway sends its own key on every request: the analyst's token is never forwarded. The key's name is the vault name, never a value: set the value on the backend's page or in the vault. An empty key name is NAME_API_KEY for a keyed server. Registering does not connect and does not attest the configuration: the next page shows the URL, the auth and the transport, and an Attest this configuration button. Its tools are listed once the gateway connects, each waiting for your review.</p>
+  <p class="caption">The URL is the server's MCP endpoint, http or https, signed whole; a credential, a query or a fragment in it is refused. Auth is where the gateway sends its own key on every request: the analyst's token is never forwarded. The key's name is the vault name, never a value: set the value on the backend's page or in the vault. An empty key name is NAME_API_KEY for a keyed server. Registering does not connect and does not approve the configuration: the next page shows the URL, the auth and the transport, and an Approve configuration button. Its tools are listed once the gateway connects, each waiting for your review.</p>
 </section>
 {{else}}
 <section>
@@ -86,7 +86,7 @@
     <div class="form-end"><button class="btn primary">Add API</button></div>
   </form>
   {{end}}
-  <p class="caption">One way to give the document: a URL (fetched once, under the gateway's egress rules), pasted text, or a file (use the file for a large document: pasted text counts up to three times its size against the form's limit). Registering does not call the API and does not attest its configuration: the next page shows the URL, where the key is injected and every operation, and an Attest this configuration button. Every operation becomes a tool waiting for your review; a POST, PUT, PATCH or DELETE is sensitive and also needs clearing.{{if .Root}} The key's value, if you give one, goes straight to the vault and is never shown again. The role you name gets every safe tool of the API once approved; leave it empty to grant nothing.{{end}} An empty key name is NAME_API_KEY for a keyed API.</p>
+  <p class="caption">One way to give the document: a URL (fetched once, under the gateway's egress rules), pasted text, or a file (use the file for a large document: pasted text counts up to three times its size against the form's limit). Registering does not call the API and does not approve its configuration: the next page shows the URL, where the key is injected and every operation, and an Approve configuration button. Every operation becomes a tool waiting for your review; a POST, PUT, PATCH or DELETE is sensitive and also needs clearing.{{if .Root}} The key's value, if you give one, goes straight to the vault and is never shown again. The role you name gets every safe tool of the API once approved; leave it empty to grant nothing.{{end}} An empty key name is NAME_API_KEY for a keyed API.</p>
 </section>
 {{end}}
 

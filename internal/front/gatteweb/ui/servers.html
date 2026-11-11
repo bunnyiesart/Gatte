@@ -3,7 +3,7 @@
 {{with .Data}}
 <div class="head">
   <h1>MCP Servers / APIs</h1>
-  <p class="sub">Each row is a backend served as MCP tools. {{if .Manages}}Add a REST API, or register a stdio or container backend in the terminal.{{else}}Register backends and attest their configuration in the terminal.{{end}} A backend whose configuration is not attested isn't served.</p>
+  <p class="sub">Each row is a backend served as MCP tools. {{if .Manages}}Add a REST API, or register a stdio or container backend in the terminal.{{else}}Register backends and approve their configuration in the terminal.{{end}} A backend whose configuration is not approved isn't served.</p>
 </div>
 {{range .Gateway}}
 {{if eq .Kind "gateway_maintenance"}}<div class="notice" role="status">{{else}}<div class="notice danger" role="alert">{{end}}{{template "warn"}}<p><b>{{vis .Title}}</b>{{if .Detail}}: {{vis .Detail}}{{end}}{{if eq .Kind "gateway_maintenance"}} End it in the terminal with <code>mcp-gateway maintenance off</code>.{{end}}</p></div>
@@ -20,30 +20,32 @@
   {{if .Servers}}
   <div class="group">
     <table class="list">
-      <thead><tr><th>MCP server / API</th>{{if .Health}}<th>State</th>{{end}}<th>Kind</th><th>Credentials</th><th>Configuration</th><th>Needs review</th></tr></thead>
+      <thead><tr><th>MCP server / API</th>{{if .Health}}<th>State</th>{{end}}<th>Kind</th><th>Credentials</th><th>Configuration</th></tr></thead>
       <tbody>
       {{range .Servers}}
         <tr>
-          <td class="t-title" data-label="MCP server / API"><a class="cell-link" href="{{$base}}/servers/{{.Name}}"><b>{{vis .Name}}</b></a></td>
+          <td class="t-title" data-label="MCP server / API"><a class="cell-link" href="{{$base}}/servers/{{.Name}}"><b>{{vis .Name}}</b></a>{{with index $.Data.Changed .Name}}<span class="cell-sub"><span class="badge danger">{{template "warn"}}{{if eq . 1}}Tool changed{{else}}{{.}} tools changed{{end}}</span></span>{{end}}</td>
           {{if $.Data.Health}}<td data-label="State">{{with .Health}}<span class="badge {{if eq .State "up"}}ok{{else if or (eq .State "reconnecting") (eq .State "down")}}danger{{end}}">{{state .State}}</span>{{if .Since}}<span class="cell-sub">since {{since .Since}}</span>{{end}}{{if .Cause}}<span class="cell-sub mono">{{vis .Cause}}</span>{{end}}{{else}}<span class="muted">-</span>{{end}}</td>{{end}}
           <td class="muted" data-label="Kind">{{if eq .Transport "oci"}}Container{{else if eq .Transport "http"}}REST API{{else if eq .Transport "remote"}}Remote MCP{{else}}Process{{end}}{{if .URL}}<span class="mono wrap cell-sub">{{vis .URL}}</span>{{end}}</td>
           <td class="mono" data-label="Credentials">{{range $i, $n := .EnvVarNames}}{{if $i}}, {{end}}{{vis $n}}{{else}}<span class="muted">None</span>{{end}}</td>
-          <td data-label="Configuration">{{template "attestation" .Signature}}</td>
-          <td data-label="Needs review">{{if .Attention}}<span class="badge changed">{{template "warn"}}{{len .Attention}}</span>{{range .Attention}}<span class="cell-sub">{{vis .}}</span>{{end}}{{else}}<span class="muted">-</span>{{end}}</td>
+          <td data-label="Configuration">{{template "approval" .Signature}}</td>
         </tr>
       {{end}}
       </tbody>
     </table>
   </div>
-  <p class="caption legend"><span class="k">Config attested</span>: an operator signed this server's configuration — its URL or command, its arguments, and the names of its secrets — with the gateway key. It is not a statement that the server or its tools are safe: tool safety is the separate approve and clear step on each server's page.</p>
+  <p class="caption legend"><span class="k">Config approved</span>: an operator signed this server's configuration — its URL or command, its arguments, and the names of its secrets — with the gateway key. It is not a statement that the server or its tools are safe: tool security is the separate approve and clear step on each server's page.</p>
+  {{if .Changed}}<p class="caption legend"><span class="k">Tool changed</span>: a tool's definition changed after it was approved. It is not served until you review it again on the server's page.</p>{{end}}
   {{else if not $.Error}}
-  <div class="group empty-state"><p><b>No backends yet.</b> {{if .Manages}}Add a REST API, or register{{else}}Register{{end}} one with <code>mcp-gateway upstream register</code>, then attest its configuration.</p></div>
+  <div class="group empty-state"><p><b>No backends yet.</b> {{if .Manages}}Add a REST API, or register{{else}}Register{{end}} one with <code>mcp-gateway upstream register</code>, then approve its configuration.</p></div>
   {{end}}
 </section>
 {{end}}
 {{template "bottom" .}}
 
-{{/* attestation is a backend's signature state in ADR-0060's words: the
-signature attests the configuration, never the safety of its tools. Not
-attested blocks serving but is not a failure, so it is neutral, not red. */}}
-{{define "attestation"}}{{if eq . "yes"}}<span class="badge ok">{{template "check"}}Config attested</span>{{else if eq . "INVALID"}}<span class="badge danger">{{template "warn"}}Attestation invalid</span>{{else}}<span class="badge pending">{{template "dot"}}Config not attested</span>{{end}}{{end}}
+{{/* approval is a backend's signature state in ADR-0061's words: approving
+the configuration signs it; it says nothing about the safety of its tools. Not
+approved blocks serving but is not a failure, so it is neutral, not red. The
+API's INVALID (a signature that no longer matches) reads "Changed since
+approved". */}}
+{{define "approval"}}{{if eq . "yes"}}<span class="badge ok">{{template "check"}}Config approved</span>{{else if eq . "INVALID"}}<span class="badge danger">{{template "warn"}}Changed since approved</span>{{else}}<span class="badge pending">{{template "dot"}}Config not approved</span>{{end}}{{end}}

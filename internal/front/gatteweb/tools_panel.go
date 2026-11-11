@@ -5,6 +5,7 @@ import (
 	"html/template"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -25,14 +26,17 @@ import (
 
 // toolsPanelView is the per-server Tools panel: the backend's own tools, how
 // many wait for review, and whether this console can offer the one-page review
-// of the set (FeatureToolReviewSet).
+// of the set (FeatureToolReviewSet). CanClear is whether the per-tool menu
+// offers Clear (FeatureConsoleManages and FeatureToolClear).
 type toolsPanelView struct {
 	Base       string
+	CSRF       string
 	ServerPath string
 	Tools      []toolRow
 	Review     int
 	Sensitive  int
 	ReviewSet  bool
+	CanClear   bool
 }
 
 // toolRow is one tool as the panel lists it. NotServed marks an approved
@@ -49,12 +53,18 @@ type toolRow struct {
 
 // toolsPanel renders the Tools panel for one backend. It reads the backend's
 // tools from the detail the shell already fetched (UpstreamDetail.Tools), so
-// the panel costs no extra call.
+// the panel costs no extra call. Each row's actions sit in a <details> menu
+// (design/adr/0061 §5); Approve opens the review page, because an approval
+// binds to the definition the operator was shown (design/adr/0040 §3).
 func (f *Front) toolsPanel(r *http.Request, d adminapi.UpstreamDetail) (template.HTML, error) {
+	me, _ := f.op.WhoAmI(r.Context())
+	has := func(name string) bool { return slices.Contains(me.Features, name) }
 	v := toolsPanelView{
 		Base:       f.kit.Base(),
+		CSRF:       f.kit.CSRFToken(),
 		ServerPath: serverBack(d.Name),
-		ReviewSet:  f.feature(r.Context(), adminapi.FeatureToolReviewSet),
+		ReviewSet:  has(adminapi.FeatureToolReviewSet),
+		CanClear:   has(adminapi.FeatureConsoleManages) && has(adminapi.FeatureToolClear),
 	}
 	for _, t := range d.Tools {
 		row := toolRow{Name: t.Tool, Status: t.Status, UpdatedAt: t.UpdatedAt,

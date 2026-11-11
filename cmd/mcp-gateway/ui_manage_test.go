@@ -289,14 +289,14 @@ func TestUIManage_RootScreensDoNotExistWithoutManageUsers(t *testing.T) {
 	if _, err := m.e.upstreams().Get(context.Background(), "ioc"); !errors.Is(err, registry.ErrNotFound) {
 		t.Fatal("registered although the key's value could not be written")
 	}
-	// Registering without root works, and says how to attest.
+	// Registering without root works, and says how to approve the configuration.
 	got = m.post("/servers", url.Values{"name": {"ioc"}, "url": {"https://ioc.example.net"}, "openapi_text": {restSpecJSON}, "key_name": {"IOC_KEY"}})
-	if got.code != http.StatusOK || !got.has("not attested yet") || !got.has("sudo mcp-gateway sign ioc") {
+	if got.code != http.StatusOK || !got.has("not approved yet") || !got.has("sudo mcp-gateway sign ioc") {
 		t.Fatalf("register without -manage-users:\n%s", got.body)
 	}
 	detail := m.get("/servers/ioc")
 	if detail.has("/servers/ioc/sign") || !detail.has("sudo mcp-gateway ui -manage-users") {
-		t.Errorf("the server page offers to attest without -manage-users:\n%s", detail.body)
+		t.Errorf("the server page offers to approve the configuration without -manage-users:\n%s", detail.body)
 	}
 }
 
@@ -317,7 +317,7 @@ func TestUIManage_RegisterWritesTheKeyAndShowsTheReport(t *testing.T) {
 		t.Fatalf("register: %d\n%s", got.code, got.body)
 	}
 	for _, want := range []string{"Registered as a REST API", "1 safe · 1 sensitive", "report", "Sensitive", "Safe", "derived from the document",
-		"X-API-Key", "IOC_KEY", "not attested yet", "Attest ioc", "Attest this configuration", "nothing about the tools", m.s.session + "/servers/ioc"} {
+		"X-API-Key", "IOC_KEY", "not approved yet", "Approve the configuration of ioc", "Approve configuration", "nothing about the tools", m.s.session + "/servers/ioc"} {
 		if !got.has(want) {
 			t.Errorf("the register report lacks %q", want)
 		}
@@ -333,7 +333,7 @@ func TestUIManage_RegisterWritesTheKeyAndShowsTheReport(t *testing.T) {
 	if len(m.signed) != 0 {
 		t.Fatalf("registering signed %v", m.signed)
 	}
-	if sg := m.post("/servers/ioc/sign", nil); !sg.has("Configuration attested with a trusted key") || !slices.Equal(m.signed, []string{"ioc"}) {
+	if sg := m.post("/servers/ioc/sign", nil); !sg.has("Configuration approved with a trusted key") || !slices.Equal(m.signed, []string{"ioc"}) {
 		t.Fatalf("signing from the report: %v\n%s", m.signed, sg.body)
 	}
 	entry, err := m.e.upstreams().Get(context.Background(), "ioc")
@@ -401,28 +401,29 @@ func TestUIManage_TheServerPageSignsRedialsAndRemovesOnlyWithTheNameTyped(t *tes
 		t.Fatalf("the page of an unknown backend: %d", got.code)
 	}
 	page := m.get("/servers/ioc")
-	// The attestation state names the configuration, and the tools panel
-	// is the separate tool-safety gate (ADR-0060).
+	// The approval state names the configuration, and the tools panel is
+	// the separate tool-security gate (ADR-0060, 0061).
 	for _, want := range []string{"ioc", "REST API", "https://ioc.example.net/api/v2", "POST", "/report", "Sensitive", "Safe", "Remove this backend", `name="confirm"`, "/servers/ioc/sign",
-		"Config not attested", "It is not served until a configuration is attested", "Attest this configuration",
-		"Tool safety", "Attesting the configuration does not approve any tool"} {
+		"Config not approved", "It is not served until the configuration is approved", "Approve configuration", ">Reconnect<",
+		"Tool security", "Approving the configuration does not approve any tool"} {
 		if !page.has(want) {
 			t.Errorf("the server page lacks %q", want)
 		}
 	}
-	if list := m.get("/servers"); !list.has("Config not attested") || list.has("Not signed") {
-		t.Errorf("the servers list does not show the attestation state:\n%s", list.body)
+	if list := m.get("/servers"); !list.has("Config not approved") || list.has("Not signed") || list.has("Needs review") {
+		t.Errorf("the servers list does not show the approval state alone:\n%s", list.body)
 	}
-	if sign := m.post("/servers/ioc/sign", nil); !sign.has("Configuration attested with a trusted key") || !sign.has("ed25519:test-key") {
+	if sign := m.post("/servers/ioc/sign", nil); !sign.has("Configuration approved with a trusted key") || !sign.has("ed25519:test-key") {
 		t.Fatalf("sign:\n%s", sign.body)
 	}
 
-	// Redial with no gateway process: the backend's refusal.
+	// Reconnect (the API's redial) with no gateway process: the backend's
+	// refusal.
 	if !page.has("/servers/ioc/redial") {
-		t.Error("the server page offers no redial")
+		t.Error("the server page offers no Reconnect")
 	}
-	if got := m.post("/servers/ioc/redial", nil); !got.has("result-icon danger") {
-		t.Fatalf("a redial with nothing to ring:\n%s", got.body)
+	if got := m.post("/servers/ioc/redial", nil); !got.has("result-icon danger") || !got.has("Reconnect ioc") {
+		t.Fatalf("a reconnect with nothing to ring:\n%s", got.body)
 	}
 
 	for _, confirm := range []string{"", "IOC", "io"} {
@@ -474,6 +475,44 @@ func TestUIManage_ReloadAndRedialShowAPendingRequestWithARefresh(t *testing.T) {
 	}
 	if m.get("/serve-requests?id=x").code != http.StatusNotFound {
 		t.Fatal("a request id that is not a number was looked up")
+	}
+}
+
+// Each tool's actions sit in its own <details> menu (design/adr/0061 §5):
+// each item is a link or a CSRF-carrying POST form, never a GET that acts,
+// and approving goes through the review page, where the fingerprint shown is
+// the one approved.
+func TestUIManage_EachToolsActionsAreInItsMenu(t *testing.T) {
+	m := newManageUI(t, true, false)
+	mustRegister(t, m.e, stdioEntry("reporting"))
+	mustObserveSensitive(t, m.e, "reporting", submitReport)
+	mustApprove(t, m.e, "reporting", "submit_report")
+	mustObserve(t, m.e, "reporting", quarantine.ToolIdentity{Name: "list_reports", Description: "d", InputSchema: []byte(`{}`)})
+
+	page := m.get("/servers/reporting")
+	if n := strings.Count(page.body, `<details class="menu">`); n != 2 {
+		t.Fatalf("%d tool menus, want one per tool:\n%s", n, page.body)
+	}
+	for _, want := range []string{
+		`action="` + m.s.session + `/servers/reporting/tools/submit_report/clear"`,
+		`action="` + m.s.session + `/servers/reporting/tools/submit_report/revoke"`,
+		`href="` + m.s.session + `/servers/reporting/tools/list_reports">Review and approve tool...`,
+		`name="csrf" value="` + m.s.csrf + `"`,
+	} {
+		if !page.has(want) {
+			t.Errorf("the tools panel lacks %q", want)
+		}
+	}
+	if page.has("/servers/reporting/tools/list_reports/approve") || page.has("/servers/reporting/tools/list_reports/revoke") {
+		t.Error("a pending tool's menu approves or revokes without its review page")
+	}
+	menu := page.body[strings.Index(page.body, `<details class="menu">`):]
+	menu = menu[:strings.Index(menu, "</details>")]
+	if strings.Count(menu, `method="post"`) != strings.Count(menu, `name="csrf"`) {
+		t.Errorf("a menu form carries no CSRF token:\n%s", menu)
+	}
+	if got := m.post("/servers/reporting/tools/submit_report/revoke", nil); !got.has("result-icon ok") {
+		t.Fatalf("revoke from the menu:\n%s", got.body)
 	}
 }
 
@@ -692,7 +731,7 @@ func TestUIManage_TheContainerFormRegistersAndDoesNotSign(t *testing.T) {
 	if got.code != http.StatusOK {
 		t.Fatalf("register: %d\n%s", got.code, got.body)
 	}
-	for _, want := range []string{"Registered as a container (oci)", ociTestImage, "slirp4netns", "INTEL_KEY", "OTHER_KEY", "not attested yet", "Attest intel", "Attest this configuration", "the image digest, the network and the variable names"} {
+	for _, want := range []string{"Registered as a container (oci)", ociTestImage, "slirp4netns", "INTEL_KEY", "OTHER_KEY", "not approved yet", "Approve the configuration of intel", "Approve configuration", "the image digest, the network and the variable names"} {
 		if !got.has(want) {
 			t.Errorf("the register result lacks %q", want)
 		}
@@ -769,7 +808,7 @@ func TestUIManage_TheRemoteFormRegistersAndDoesNotSign(t *testing.T) {
 		t.Fatalf("register: %d\n%s", got.code, got.body)
 	}
 	for _, want := range []string{"Registered as a remote MCP server", "https://mcp.vendor.example/mcp", "streamable", "X-Api-Key", "VENDOR_TOKEN",
-		"not attested yet", "Attest vendor", "Attest this configuration", "the URL, the auth and its secret name, and the transport"} {
+		"not approved yet", "Approve the configuration of vendor", "Approve configuration", "the URL, the auth and its secret name, and the transport"} {
 		if !got.has(want) {
 			t.Errorf("the register result lacks %q", want)
 		}

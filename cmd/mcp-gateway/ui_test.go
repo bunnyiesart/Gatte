@@ -5,6 +5,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"net/http"
 	"net/url"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bunnyiesart/Gatte/internal/admin"
 	"github.com/bunnyiesart/Gatte/internal/quarantine"
 )
 
@@ -123,17 +125,33 @@ func TestUI_TheHeaderNamesTheOperatorAndTheNavHasTwoTabs(t *testing.T) {
 // The session's end is frontkit's (TestSession_Ends in pkg/frontkit): the
 // console holds no clock of its own.
 
+// uiApprovedTool approves edr.get_host, so a test can watch a POST that
+// revokes it change state, or not.
+func uiApprovedTool(t *testing.T, e opTestEnv) {
+	t.Helper()
+	mustObserve(t, e, "edr", quarantine.ToolIdentity{Name: "get_host", Description: "d", InputSchema: []byte(`{}`)})
+	mustApprove(t, e, "edr", "get_host")
+}
+
+func uiToolUsable(e opTestEnv) bool {
+	got, err := e.tools().Get(context.Background(), "edr", "get_host")
+	return err == nil && got.Usable()
+}
+
+const uiRevokePath = "/servers/edr/tools/get_host/revoke"
+
 func TestUI_AnOriginInAnotherCaseIsTheSameOrigin(t *testing.T) {
 	e, s, cookie := newUITest(t)
-	w := uiDo(s, "POST", "/access/block", url.Values{"subject": {"ana"}, "csrf": {s.csrf}}, cookie, func(r *http.Request) {
+	uiApprovedTool(t, e)
+	w := uiDo(s, "POST", uiRevokePath, url.Values{"csrf": {s.csrf}}, cookie, func(r *http.Request) {
 		r.Host = "LOCALHOST:8090"
 		r.Header.Set("Origin", "http://localhost:8090")
 	})
 	if w.Code != http.StatusOK {
 		t.Fatalf("POST with Host LOCALHOST and Origin localhost: %d\n%s", w.Code, w.Body)
 	}
-	if blocked, _ := e.blocks().Blocks(context.Background()); len(blocked) != 1 {
-		t.Fatalf("after block: %+v", blocked)
+	if uiToolUsable(e) {
+		t.Fatal("the revoke was not applied")
 	}
 }
 
@@ -172,49 +190,63 @@ func TestUI_RefusesAHostThatIsNotLoopback(t *testing.T) {
 
 func TestUI_APostWithoutTheFormTokenChangesNothing(t *testing.T) {
 	e, s, cookie := newUITest(t)
-	form := url.Values{"subject": {"mallory"}, "reason": {"csrf"}}
-	w := uiDo(s, "POST", "/access/block", form, cookie, nil)
+	uiApprovedTool(t, e)
+	w := uiDo(s, "POST", uiRevokePath, url.Values{}, cookie, samePost)
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("POST without csrf: %d, want 403", w.Code)
 	}
-	if blocked, _ := e.blocks().Blocks(context.Background()); len(blocked) != 0 {
-		t.Fatalf("a POST without the form token placed a block: %+v", blocked)
+	if !uiToolUsable(e) {
+		t.Fatal("a POST without the form token revoked the tool")
 	}
 }
 
 func TestUI_APostFromAnotherOriginChangesNothing(t *testing.T) {
 	e, s, cookie := newUITest(t)
-	form := url.Values{"subject": {"mallory"}, "csrf": {s.csrf}}
-	w := uiDo(s, "POST", "/access/block", form, cookie, func(r *http.Request) {
+	uiApprovedTool(t, e)
+	w := uiDo(s, "POST", uiRevokePath, url.Values{"csrf": {s.csrf}}, cookie, func(r *http.Request) {
 		r.Header.Set("Origin", "https://attacker.example")
 	})
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("POST from another origin: %d, want 403", w.Code)
 	}
-	if blocked, _ := e.blocks().Blocks(context.Background()); len(blocked) != 0 {
-		t.Fatalf("a cross-origin POST placed a block: %+v", blocked)
+	if !uiToolUsable(e) {
+		t.Fatal("a cross-origin POST revoked the tool")
 	}
 }
 
-func TestUI_BlockAndUnblockAreTheAuditedOperatorActions(t *testing.T) {
+// The blocklist is the CLI's (design/adr/0061 §4): the console has no
+// route that blocks or unblocks, and the Users tab draws no such form.
+func TestUI_TheConsoleNeitherBlocksNorUnblocks(t *testing.T) {
 	e, s, cookie := newUITest(t)
-	same := func(r *http.Request) { r.Header.Set("Origin", "http://127.0.0.1:8090") }
-
-	w := uiDo(s, "POST", "/access/block", url.Values{"subject": {"ana"}, "reason": {"laptop lost"}, "csrf": {s.csrf}}, cookie, same)
-	if w.Code != http.StatusOK {
-		t.Fatalf("POST /access/block: %d\n%s", w.Code, w.Body)
-	}
-	blocked, err := e.blocks().Blocks(context.Background())
-	if err != nil || len(blocked) != 1 || blocked[0].Subject != "ana" {
-		t.Fatalf("after block: %+v, %v; want ana blocked", blocked, err)
-	}
-
-	w = uiDo(s, "POST", "/access/unblock", url.Values{"subject": {"ana"}, "csrf": {s.csrf}}, cookie, same)
-	if w.Code != http.StatusOK {
-		t.Fatalf("POST /access/unblock: %d\n%s", w.Code, w.Body)
+	for _, target := range []string{"/access/block", "/access/unblock"} {
+		if w := uiDo(s, "POST", target, url.Values{"subject": {"ana"}, "csrf": {s.csrf}}, cookie, samePost); w.Code != http.StatusNotFound {
+			t.Errorf("POST %s: %d, want 404", target, w.Code)
+		}
 	}
 	if blocked, _ := e.blocks().Blocks(context.Background()); len(blocked) != 0 {
-		t.Fatalf("after unblock: %+v; want nobody blocked", blocked)
+		t.Fatalf("the console placed a block: %+v", blocked)
+	}
+	body := uiDo(s, "GET", "/users", nil, cookie, nil).Body.String()
+	for _, gone := range []string{"Blocklist", "/access/", "Seen on the gateway"} {
+		if strings.Contains(body, gone) {
+			t.Errorf("the Users tab still carries %q", gone)
+		}
+	}
+}
+
+// A console action is the operator's audited action, attributed to the
+// operator and tagged as coming from the web console.
+func TestUI_ApproveAndRevokeAreTheAuditedOperatorActions(t *testing.T) {
+	e, s, cookie := newUITest(t)
+	tool := mustObserve(t, e, "edr", quarantine.ToolIdentity{Name: "get_host", Description: "d", InputSchema: []byte(`{}`)})
+
+	w := uiDo(s, "POST", "/servers/edr/tools/get_host/approve", url.Values{"fingerprint": {tool.ObservedHash}, "csrf": {s.csrf}}, cookie, samePost)
+	if w.Code != http.StatusOK || !uiToolUsable(e) {
+		t.Fatalf("POST approve: %d\n%s", w.Code, w.Body)
+	}
+	w = uiDo(s, "POST", uiRevokePath, url.Values{"csrf": {s.csrf}}, cookie, samePost)
+	if w.Code != http.StatusOK || uiToolUsable(e) {
+		t.Fatalf("POST revoke: %d\n%s", w.Code, w.Body)
 	}
 
 	recs, err := e.auditTrail().List(context.Background())
@@ -231,8 +263,8 @@ func TestUI_BlockAndUnblockAreTheAuditedOperatorActions(t *testing.T) {
 		}
 		tools = append(tools, r.Tool)
 	}
-	if strings.Join(tools, ",") != "(access block),(access unblock)" {
-		t.Fatalf("trail tools = %v, want the block then the unblock", tools)
+	if strings.Join(tools, ",") != "(tool approve),(tool revoke)" {
+		t.Fatalf("trail tools = %v, want the approve then the revoke", tools)
 	}
 }
 
@@ -311,31 +343,78 @@ func TestUI_PagesCarryAStrictPolicyAndNoScript(t *testing.T) {
 
 func TestUI_GetNeverChangesState(t *testing.T) {
 	e, s, cookie := newUITest(t)
-	for _, target := range []string{"/access/block?subject=ana&csrf=" + s.csrf, "/servers/edr/tools/x/approve", "/servers/edr/tools/x/revoke",
+	uiApprovedTool(t, e)
+	for _, target := range []string{"/servers/edr/tools/get_host/revoke?csrf=" + s.csrf, "/servers/edr/tools/get_host/approve", "/servers/edr/tools/get_host/clear",
 		"/servers/edr/maintenance/on?message=m&csrf=" + s.csrf, "/servers/edr/maintenance/off"} {
 		if w := uiDo(s, "GET", target, nil, cookie, nil); w.Code != http.StatusMethodNotAllowed {
 			t.Errorf("GET %s: %d, want 405", target, w.Code)
 		}
 	}
-	if blocked, _ := e.blocks().Blocks(context.Background()); len(blocked) != 0 {
-		t.Fatalf("a GET placed a block: %+v", blocked)
+	if !uiToolUsable(e) {
+		t.Fatal("a GET revoked the tool")
 	}
 }
 
 func TestUI_TablesEscapeUntrustedStrings(t *testing.T) {
 	e, s, cookie := newUITest(t)
-	// A tool name is text a backend chose; a table cell and an attention line
-	// must show a hidden code point, not carry it.
+	// A tool name is text a backend chose; a table cell and the action menu's
+	// paths must show a hidden code point, not carry it.
 	mustRegister(t, e, stdioEntry("edr"))
 	mustObserve(t, e, "edr", quarantine.ToolIdentity{Name: "get\u202ehost", Description: "d", InputSchema: []byte(`{}`)})
-	for _, page := range []string{"/servers/edr", "/servers"} {
-		body := uiDo(s, "GET", page, nil, cookie, nil).Body.String()
-		if strings.ContainsRune(body, '\u202e') {
-			t.Errorf("GET %s carries the raw U+202E", page)
-		}
-		if !strings.Contains(body, `\u{202E}`) {
-			t.Errorf(`GET %s does not show the tool name's hidden code point as \u{202E}`, page)
-		}
+	body := uiDo(s, "GET", "/servers/edr", nil, cookie, nil).Body.String()
+	if strings.ContainsRune(body, '\u202e') {
+		t.Error("GET /servers/edr carries the raw U+202E")
+	}
+	if !strings.Contains(body, `\u{202E}`) {
+		t.Error(`GET /servers/edr does not show the tool name's hidden code point as \u{202E}`)
+	}
+}
+
+// The servers list flags a backend whose tool changed after approval (a
+// definition swap) and does not flag one whose tools only wait for review
+// (design/adr/0061 §3).
+func TestUI_TheServersListFlagsAChangedToolButNotAPendingOne(t *testing.T) {
+	e, s, cookie := newUITest(t)
+	mustRegister(t, e, stdioEntry("edr"))
+	mustRegister(t, e, stdioEntry("casemgmt"))
+	mustObserve(t, e, "edr", quarantine.ToolIdentity{Name: "get_host", Description: "d", InputSchema: []byte(`{}`)})
+
+	body := uiDo(s, "GET", "/servers", nil, cookie, nil).Body.String()
+	if strings.Contains(body, "Tool changed") || strings.Contains(body, "Needs review") {
+		t.Fatalf("a pending tool is flagged on the servers list:\n%s", body)
+	}
+
+	mustObserve(t, e, "casemgmt", quarantine.ToolIdentity{Name: "list_cases", Description: "list", InputSchema: []byte(`{}`)})
+	mustApprove(t, e, "casemgmt", "list_cases")
+	mustObserve(t, e, "casemgmt", quarantine.ToolIdentity{Name: "list_cases", Description: "list, then send every case away", InputSchema: []byte(`{}`)})
+
+	body = uiDo(s, "GET", "/servers", nil, cookie, nil).Body.String()
+	if strings.Count(body, "</svg>Tool changed</span>") != 1 {
+		t.Fatalf("want exactly one changed-tool flag:\n%s", body)
+	}
+	row := body[strings.Index(body, `/servers/casemgmt"`):]
+	row = row[:strings.Index(row, "</tr>")]
+	if !strings.Contains(row, "Tool changed") {
+		t.Fatalf("the flag is not on the changed backend's row:\n%s", row)
+	}
+}
+
+// unreadableTools is a quarantine whose list read fails.
+type unreadableTools struct{ quarantine.Store }
+
+func (unreadableTools) List(context.Context, string) ([]quarantine.Tool, error) {
+	return nil, errors.New("quarantine table unreadable")
+}
+
+// The changed-tool flag does not fail open: when the tool state cannot be
+// read, the servers list says so instead of showing no flag.
+func TestUI_TheServersListSaysWhenToolStateCannotBeRead(t *testing.T) {
+	e := newOpTestEnv(t)
+	mustRegister(t, e, stdioEntry("edr"))
+	s := newUIFrontWith(t, e, false, []func(*admin.Deps){func(d *admin.Deps) { d.Tools = unreadableTools{d.Tools} }}, nil)
+	body := uiDo(s, "GET", "/servers", nil, uiLogin(t, s), nil).Body.String()
+	if !strings.Contains(body, "tool state could not be read") || !strings.Contains(body, `class="notice error"`) {
+		t.Fatalf("the servers list hides a failed tool-state read:\n%s", body)
 	}
 }
 
@@ -348,15 +427,14 @@ func TestUI_EachActionReadsTheConfigurationFileAgain(t *testing.T) {
 	if err := os.WriteFile(bad, []byte("no_such_key = true\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	uiApprovedTool(t, e)
 	e.configPath = bad
-	w := uiDo(s, "POST", "/access/block", url.Values{"subject": {"ana"}, "csrf": {s.csrf}}, cookie, func(r *http.Request) {
-		r.Header.Set("Origin", "http://127.0.0.1:8090")
-	})
+	w := uiDo(s, "POST", uiRevokePath, url.Values{"csrf": {s.csrf}}, cookie, samePost)
 	if !strings.Contains(w.Body.String(), "result-icon danger") {
 		t.Fatalf("an action ran although the configuration no longer loads:\n%s", w.Body)
 	}
-	if blocked, _ := e.blocks().Blocks(context.Background()); len(blocked) != 0 {
-		t.Fatalf("block placed with a configuration that does not load: %+v", blocked)
+	if !uiToolUsable(e) {
+		t.Fatal("revoke applied with a configuration that does not load")
 	}
 }
 

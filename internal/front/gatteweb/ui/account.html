@@ -36,7 +36,7 @@
       <span class="row-text"><span class="row-title">Disabled</span><span class="row-detail">They can't sign in.</span></span>
       <form method="post" action="{{$base}}/people/enable"><input type="hidden" name="csrf" value="{{$csrf}}"><input type="hidden" name="username" value="{{.Username}}"><button class="btn small">Enable</button></form>
       {{else}}
-      <span class="row-text"><span class="row-title">Disable</span><span class="row-detail">Stops new sign-ins. To cut off a session already open, also block them in the Blocklist.</span></span>
+      <span class="row-text"><span class="row-title">Disable</span><span class="row-detail">Stops new sign-ins. To cut off a session already open, {{if $d.Offboard}}offboard them below{{else}}block their subject with <code>mcp-gateway access block</code>{{end}}.</span></span>
       <form method="post" action="{{$base}}/people/disable"><input type="hidden" name="csrf" value="{{$csrf}}"><input type="hidden" name="username" value="{{.Username}}"><button class="btn small destructive">Disable</button></form>
       {{end}}
     </li>
@@ -49,17 +49,11 @@
   <form class="group form" method="post" action="{{$base}}/people/offboard">
     <input type="hidden" name="csrf" value="{{$csrf}}">
     <input type="hidden" name="username" value="{{.Username}}">
-    <label class="field wide"><span>Their subject</span>
-      <select name="subject">
-        <option value="">None: they never used the gateway (no block)</option>
-        {{range $d.Seen}}<option value="{{.Identity}}">{{if .Name}}{{vis .Name}} · {{end}}{{vis .Identity}}{{if .Blocked}} (blocked){{end}}</option>{{end}}
-      </select>
-    </label>
-    <label class="field wide"><span>Or type it</span><input name="subject_typed" autocomplete="off" spellcheck="false" class="mono" placeholder="As the audit trail shows it"></label>
+    <label class="field wide"><span>Their gateway ID (the sub your SIEM shows)</span><input name="subject" autocomplete="off" spellcheck="false" class="mono"></label>
     <label class="field wide"><span>Reason</span><input name="reason" autocomplete="off" placeholder="Who is acting, and why"></label>
     <div class="form-end"><button class="btn destructive">Offboard</button></div>
   </form>
-  <p class="caption">Blocks the subject in the gateway, which refuses their next request whatever token they hold, then disables the account. Pick the subject yourself: the names beside them are what the identity provider said, for reading only. Revoking their sessions at the identity provider stays a step by hand; the result page lists it.</p>
+  <p class="caption">Blocks their gateway ID, so the gateway refuses their next request whatever token they hold, then disables the account. Type the ID yourself, as your SIEM shows it; leave it empty if they never used the gateway, and nothing is blocked. Revoking their sessions at the identity provider stays a step by hand; the result page lists it.</p>
 </section>
 {{end}}
 

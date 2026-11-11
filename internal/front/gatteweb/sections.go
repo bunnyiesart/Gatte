@@ -111,7 +111,7 @@ func managesAndRoot(c Capabilities) bool { return c.Manages && c.Root }
 //
 // Order uses gaps of ten so a slice can slot between two without renumbering:
 // DetailPanel Tools 20, Secrets 30, Maintenance 40; UsersSection People 10,
-// Roles 20, Blocklist 30.
+// Roles 20.
 
 // A DetailPanel is one Tab-1 slice's contribution to the server-detail page.
 // Render draws the panel's HTML for one backend; the container embeds it. A nil

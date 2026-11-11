@@ -2,14 +2,14 @@
 {{with .Data}}
 <div class="head">
   <h1>Users</h1>
-  <p class="sub">People and their roles, and the blocklist. People sign in at your identity provider; their groups decide their role here.</p>
+  <p class="sub">People and their roles. People sign in at your identity provider; their groups decide their role here.</p>
 </div>
 
 {{range .Sections}}
 {{.HTML}}
 {{else}}
 <section>
-  <div class="group empty-state"><p><b>People, roles and the blocklist appear here.</b> Each is a separate section added by its own slice (M1.4a people, M1.5 roles, M1.4b blocklist). This is the Users shell; the sections mount into it.</p></div>
+  <div class="group empty-state"><p><b>People and roles appear here.</b></p></div>
 </section>
 {{end}}
 {{end}}

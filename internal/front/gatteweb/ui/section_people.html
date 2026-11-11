@@ -1,7 +1,7 @@
-{{$csrf := .CSRF}}{{$base := .Base}}
+{{$base := .Base}}
 <section>
   <div class="section-head"><h2>People</h2>{{if .Manage}}<a class="btn primary small" href="{{$base}}/people/new">Add person</a>{{end}}</div>
-  <p class="sub">People sign in at your identity provider; their groups decide their role here. Disabling an account stops new sign-ins; to cut off a session already open, block the subject in the Blocklist below.</p>
+  <p class="sub">People sign in at your identity provider; their groups decide their role here. Disabling an account stops new sign-ins; to cut off a session already open, {{if .Offboard}}offboard them from their page{{else}}block their gateway ID with <code>mcp-gateway access block</code>{{end}}.</p>
   {{if .Manage}}
     {{if .Error}}<div class="notice error" role="alert">{{template "warn"}}<pre>{{vistext .Error}}</pre></div>{{end}}
     {{if .Accounts}}
@@ -24,28 +24,5 @@
     {{end}}
   {{else}}
   <div class="notice" role="note">{{template "dot"}}<p>To add people or change their groups, start the console with the accounts socket: <code>sudo mcp-gateway ui -manage-users</code>, or without sudo if you're in the accounts group. The normal console can't edit accounts, on purpose.</p></div>
-  {{end}}
-
-  <div class="section-head sub-head"><h3>Seen on the gateway</h3></div>
-  {{if .SeenError}}
-  <div class="notice error" role="alert">{{template "warn"}}<pre>{{vistext .SeenError}}</pre></div>
-  {{else if .Seen}}
-  <div class="group">
-    <table class="list">
-      <thead><tr><th>Person</th><th>Last call</th><th class="num">Calls</th><th><span class="sr">Action</span></th></tr></thead>
-      <tbody>
-      {{range .Seen}}
-        <tr>
-          <td class="t-title" data-label="Person">{{if .Name}}{{vis .Name}} <span class="cell-sub mono">{{vis .Identity}}</span>{{else}}<span class="mono">{{vis .Identity}}</span>{{end}}</td>
-          <td class="muted num t-sub" data-label="Last call">{{time .LastCall}}</td>
-          <td class="num t-hide" data-label="Calls">{{.Calls}}</td>
-          <td class="end t-badge">{{if .Blocked}}<span class="badge danger">{{template "warn"}}Blocked</span>{{else}}<form method="post" action="{{$base}}/access/block"><input type="hidden" name="csrf" value="{{$csrf}}"><input type="hidden" name="subject" value="{{.Identity}}"><input type="hidden" name="reason" value="from the Users page"><button class="btn small">Block</button></form>{{end}}</td>
-        </tr>
-      {{end}}
-      </tbody>
-    </table>
-  </div>
-  {{else}}
-  <div class="group empty-state"><p><b>No one has called the gateway yet.</b></p></div>
   {{end}}
 </section>

@@ -3,7 +3,7 @@ package gatteweb
 import "net/http"
 
 // Roles section of the Users tab (design/adr/0051, 0054), slot 20 in the
-// UsersSection registry (sections.go: People 10, Roles 20, Blocklist 30). It
+// UsersSection registry (sections.go: People 10, Roles 20). It
 // self-registers, so adding it edits no shared file and no shell.
 //
 // Two registrations, from this one init(): the UsersSection that draws the

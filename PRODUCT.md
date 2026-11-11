@@ -12,7 +12,9 @@ A few operators on one SOC team share the operator role and take turns. They
 run the gateway for about seven analysts. They reach the operator console at
 a laptop, on the gateway host or through `ssh -L`, to work the tool approval
 queue (reading a changed tool's definition and diff before approving it),
-cut off an analyst during an incident, and read or verify the audit trail.
+manage backends, and add, change or offboard people. Reading the audit trail
+and blocking a subject happen in the SIEM and the CLI, not in the console
+(design/adr/0061).
 
 ## Product Purpose
 
@@ -22,8 +24,7 @@ tools live encrypted on one host instead of on every analyst's laptop. Every
 call is checked (token, blocklist, role, quarantine, limits), recorded in a
 hash-chained audit trail before it runs, and shipped to the SIEM. The
 operator console is where a human makes the decisions the gateway cannot:
-which tool definitions are trusted, who is cut off, whether the trail is
-intact.
+which configurations and tool definitions are trusted, and who has access.
 
 ## Positioning
 
@@ -39,12 +40,13 @@ part of the claim: what it does not cover is stated next to what it does.
   and a binary built with `-tags nofront` has no console at all.
 - Every action on the page is the management API's action of the same name,
   the one the CLI commands call too, and the page shows what the backend
-  answered. Registering and signing a backend stay in the terminal.
+  answered.
 - Tool definitions are untrusted text written by backends; hidden code points
   are shown as `\u{XXXX}` and a changed tool is shown as a diff against the
   approved one.
-- Incidents are the high-stakes moments: blocking an analyst, reading
-  refusals, verifying the chain against the SIEM's head.
+- Incidents are the high-stakes moments; in the console that means
+  offboarding a person or taking a backend out. The block, the trail and its
+  verification are CLI and SIEM work.
 
 ## Capabilities and Constraints
 
@@ -53,18 +55,20 @@ part of the claim: what it does not cover is stated next to what it does.
   no inline styles, no external fonts or assets.
 - Embedded in a single Go binary that runs on a deliberately light Linux VM;
   no new dependency, no build step.
-- Pages: Overview, Tools (queue and per-tool review), Access, Audit,
-  Backends, Quota, and an action result page.
+- Two tabs (design/adr/0051): MCP Servers / APIs (each backend's page holds
+  its tools, secrets and maintenance) and Users (People and Roles), plus the
+  per-tool review and an action result page.
 - The public tree is sanitized (`internal/fitness/sanitize_test.go`): no real
   deployment names, hosts or addresses in any file, including design files.
 
 ## Brand Commitments
 
 - Name: Gatte. No logo exists.
-- Palette: blue and black shades (owner's commitment, 29 Sep 2026).
-- Standing preference (owner, 29 Sep 2026): Apple-style simplicity, with App
-  Store Connect as the reference product: the familiar standard, done at full
-  craft. The signal-box direction was built, found confusing, and replaced.
+- Look (design/adr/0061): classic system UI, the same in the console and the
+  TUI. Grey panels, bevelled edges, plain system font, square buttons. It
+  replaced the earlier Apple-style direction.
+- Words: plain operator terms (Approve configuration, Reconnect, Remove,
+  Tool security), not the gateway's internal ones.
 
 ## Evidence on Hand
 

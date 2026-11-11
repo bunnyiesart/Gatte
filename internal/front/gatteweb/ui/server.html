@@ -4,10 +4,10 @@
 {{with .Data}}{{with $d := .}}{{with .D}}{{if .Name}}
 <div class="head">
   <h1 class="mono-title">{{vis .Name}}</h1>
-  <p class="sub">{{if eq .Transport "oci"}}Container{{else if eq .Transport "http"}}REST API{{else if eq .Transport "remote"}}Remote MCP{{else}}Process{{end}} · {{template "attestation" .Signature}}{{with .Health}} · <span class="badge {{if eq .State "up"}}ok{{else if or (eq .State "reconnecting") (eq .State "down")}}danger{{end}}">{{state .State}}</span>{{end}}</p>
-  {{if eq .Signature "yes"}}<p class="caption">An operator signed this server's configuration — its URL or command, its arguments, and the names of its secrets — with the gateway key. This attests the configuration was reviewed. It is not a statement that the server or its tools are safe: tool safety is the separate approve and clear step below.</p>
-  {{else if eq .Signature "INVALID"}}<p class="caption">The stored signature does not match this configuration, or its key is not trusted. It is not served until the configuration is attested again.</p>
-  {{else}}<p class="caption">No operator has signed this server's configuration. It is not served until a configuration is attested.</p>{{end}}
+  <p class="sub">{{if eq .Transport "oci"}}Container{{else if eq .Transport "http"}}REST API{{else if eq .Transport "remote"}}Remote MCP{{else}}Process{{end}} · {{template "approval" .Signature}}{{with .Health}} · <span class="badge {{if eq .State "up"}}ok{{else if or (eq .State "reconnecting") (eq .State "down")}}danger{{end}}">{{state .State}}</span>{{end}}</p>
+  {{if eq .Signature "yes"}}<p class="caption">An operator approved this server's configuration — its URL or command, its arguments, and the names of its secrets — by signing it with the gateway key. It is not a statement that the server or its tools are safe: tool security is the separate approve and clear step below.</p>
+  {{else if eq .Signature "INVALID"}}<p class="caption">The configuration changed since it was approved, or the key that approved it is not trusted. It is not served until the configuration is approved again.</p>
+  {{else}}<p class="caption">No operator has approved this server's configuration. It is not served until the configuration is approved.</p>{{end}}
 </div>
 
 <section>
@@ -30,7 +30,7 @@
 {{if or .Operations .OperationsError}}
 <section>
   <h2>Operations</h2>
-  <p class="caption">The attested set: each operation is one MCP tool, pending your review until approved.</p>
+  <p class="caption">The set the configuration approval covers: each operation is one MCP tool, pending your review until approved.</p>
   {{if .OperationsError}}<div class="notice danger" role="alert">{{template "warn"}}<p>The stored operation set does not decode: {{vis .OperationsError}}</p></div>{{end}}
   {{if .Operations}}
   <div class="group">
@@ -43,7 +43,7 @@
       </tbody>
     </table>
   </div>
-  <p class="caption">The attestation covers this set: sha256:{{short .OperationsSHA256}}.</p>
+  <p class="caption">The configuration approval covers this set: sha256:{{short .OperationsSHA256}}.</p>
   {{end}}
 </section>
 {{end}}
@@ -54,25 +54,25 @@
   <div class="group row">
     <span class="row-text">
       <span class="row-title">Operator actions</span>
-      <span class="row-detail">Attesting signs the configuration above with the gateway key; it approves no tool. Redial reconnects the backend. Removing drops the approvals with it.</span>
+      <span class="row-detail">Approving the configuration signs it with the gateway key; it approves no tool. Reconnect drops the connection to the backend and connects again. Removing drops the approvals with it.</span>
     </span>
     <div class="actions-inline">
       {{if $d.Root}}
-      <form method="post" action="{{$base}}/servers/{{.Name}}/sign"><input type="hidden" name="csrf" value="{{$csrf}}"><button class="btn{{if ne .Signature "yes"}} primary{{end}} small">{{if eq .Signature "yes"}}Attest again{{else}}Attest this configuration{{end}}</button></form>
+      <form method="post" action="{{$base}}/servers/{{.Name}}/sign"><input type="hidden" name="csrf" value="{{$csrf}}"><button class="btn{{if ne .Signature "yes"}} primary{{end}} small">{{if eq .Signature "yes"}}Approve again{{else}}Approve configuration{{end}}</button></form>
       {{end}}
       {{if $d.Redial}}
-      <form method="post" action="{{$base}}/servers/{{.Name}}/redial"><input type="hidden" name="csrf" value="{{$csrf}}"><button class="btn small">Redial</button></form>
+      <form method="post" action="{{$base}}/servers/{{.Name}}/redial"><input type="hidden" name="csrf" value="{{$csrf}}"><button class="btn small">Reconnect</button></form>
       {{end}}
     </div>
   </div>
-  {{if not $d.Root}}<p class="caption">Attesting needs root's accounts socket: start the console with <code>sudo mcp-gateway ui -manage-users</code>, or attest in the terminal with <code>sudo mcp-gateway sign {{vis .Name}}</code>.</p>{{end}}
+  {{if not $d.Root}}<p class="caption">Approving the configuration needs root's accounts socket: start the console with <code>sudo mcp-gateway ui -manage-users</code>, or approve it in the terminal with <code>sudo mcp-gateway sign {{vis .Name}}</code>.</p>{{end}}
 
   <form class="group form" method="post" action="{{$base}}/servers/{{.Name}}/remove">
     <input type="hidden" name="csrf" value="{{$csrf}}">
     <label class="field wide"><span>Remove this backend — type its name to confirm</span><input name="confirm" required autocomplete="off" spellcheck="false" class="mono" placeholder="{{vis .Name}}"></label>
     <div class="form-end"><button class="btn small destructive">Remove</button></div>
   </form>
-  <p class="caption">Removing deregisters the backend and forgets its approvals and attestation. Type the name to confirm.</p>
+  <p class="caption">Removing the backend forgets its tool approvals and its configuration approval. Type the name to confirm.</p>
 </section>
 {{end}}
 

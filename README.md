@@ -114,10 +114,10 @@ can act on, to an analyst granted that tool and nobody else.
 |---|---|---|
 | **Honest answers to the analyst** | Refusals the model can act on (result too large, timeout, spent budget with its reset time, calls in flight, a tool pulled mid-session, a blocked account), server instructions that explain missing tools, and a built-in `gatte.status` tool with the caller's backends, roles and budget use. | `0041`, `0042` |
 | **Connect script** | For each analyst, a script for macOS, Linux or Windows that sets up Claude Code against the gateway and installs `gatte-status`, a local check for when Gatte cannot be reached at all. | `0039`, `0041` |
-| **People** | Roles, their groups and who has used the gateway. With the root-only accounts socket, edit the identity provider's accounts (Authelia file backend): add a person with a one-time password, change groups, disable, **offboard** (disable + block in one audited action) or delete. | `0038`, `0046` |
+| **People** | Roles and their groups. With the root-only accounts socket, edit the identity provider's accounts (Authelia file backend): add a person with a one-time password, change groups, disable, **offboard** (disable + block in one audited action) or delete. | `0038`, `0046` |
 | **Change without a restart** | `reload` applies roles, groups and quota to the running gateway and records what changed; `upstream redial` picks up one backend's rotated credential or new container. | `0044` |
 | **Safe host care** | `check` says whether the host is right (owners, modes, vault, signatures, chain, schema) with the fix for each problem; `backup` takes a consistent, verified copy while `serve` runs; `restore` refuses a copy it cannot verify; a schema guard stops an old binary from opening a newer database. | `0045` |
-| **Web console** | `mcp-gateway ui` serves the operator console on loopback: the approval queue with diffs, people, access, the audit trail, backends and maintenance, quota. No JavaScript, strict CSP, a one-time login link. Optional: `-tags nofront` builds the binary without it. | `0036`, `0040` |
+| **Web console** | `mcp-gateway ui` serves the operator console on loopback, in two tabs: MCP Servers / APIs (tools, secrets, maintenance) and Users (People, Roles). No JavaScript, strict CSP, a one-time login link. Optional: `-tags nofront` builds the binary without it. | `0036`, `0040` |
 | **Terminal console** | `mcp-gateway tui` draws the same two tabs in the terminal: backends with their health, tools to review, approve, revoke and clear, secret names, maintenance, redial, sign and deregister; accounts, roles and the blocklist. A client of the management API like `ui`, its rows tagged `[tui]`; `sudo mcp-gateway tui -manage-users` adds the accounts socket. Also left out by `-tags nofront`. | `0040`, `0051` |
 | **Management API** | `mcp-gateway admin` serves every console operation as versioned JSON (`api/admin.openapi.yaml`) on UNIX sockets only, socket-activated and idle-exiting. The operator is whoever the kernel says connected. Any front can be built on `pkg/adminapi` and `pkg/frontkit`. | `0040` |
 
@@ -652,7 +652,7 @@ map to a role. Every change is an audited operator row.
 | Task | Command |
 |---|---|
 | Read the trail | `audit [-subject ID] [-outcome denied] [-tool SERVER.TOOL] [-server NAME] [-source SRC] [-since TIME] [-until TIME] [-limit N] [-json]` |
-| Hand the trail to someone | console, **Audit**: filter, then **CSV** or **JSON Lines** (the filtered rows, newest first, up to 50 000) |
+| Hand the trail to someone | the SIEM, or on the host `audit … -limit 0 -json` |
 | Check the trail was not edited | `audit -verify [-expect-head HASH]` |
 | See quota spend | `quota usage [-analyst SUBJECT]` |
 

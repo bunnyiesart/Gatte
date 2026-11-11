@@ -251,8 +251,9 @@ O front do Gatte esconde o campo ou o botão quando a feature falta.
   `TestAdmin_TheAuditWriterTakesTheOffboardRows`,
   `TestServe_TheRoundRecordsAnExpiredBlockThenRemovesIt`,
   `TestRunAudit_ToolServerAndUntil`, `TestAccessBlock_UntilThroughTheBinary`,
-  `TestUI_AccessBlockWithAnEnd`,
   `TestUI_OffboardBlocksDisablesAndListsWhatIsLeft`. A busca e o download da
   trilha pela página de auditoria do console saíram com a página (`0056`), e
   as duas provas dela com eles; os filtros seguem provados no CLI e no cliente.
+  O bloqueio com fim pelo console saiu com a seção Blocklist (`0061`); o fim
+  segue provado no CLI por `TestAccessBlock_UntilThroughTheBinary`.
 - Quando roda: a cada build/CI (`make ci`).

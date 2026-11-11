@@ -38,7 +38,7 @@
   <form method="post" action="{{$base}}{{.Path}}/approve">
     <input type="hidden" name="csrf" value="{{$csrf}}">
     <input type="hidden" name="fingerprint" value="{{.Fingerprint}}">
-    <button class="btn{{if not .Hidden}} primary{{end}}">Approve this version</button>
+    <button class="btn{{if not .Hidden}} primary{{end}}">Approve tool</button>
   </form>
   <p class="caption">Approves exactly what's shown here (sha256:{{short .Fingerprint}}). If the backend changes it before you click, nothing is approved. Then the next tool of this backend waiting for review opens.</p>
   {{end}}

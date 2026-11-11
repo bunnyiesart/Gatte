@@ -199,22 +199,26 @@ before any page exists. The person-level steps are in
 ## What the console does and does not do
 
 The console has two tabs (`design/adr/0051`). **MCP Servers / APIs** lists
-the backends with their state and what needs review; each backend's page
-holds its tools, its secrets and its planned maintenance. **Users** holds
-People, Roles and the Blocklist. The header names the operator the
-management API sees.
+the backends with their state, whether their configuration is approved,
+and a red **Tool changed** flag when a tool's definition changed after it
+was approved; each backend's page holds its tools (each tool's actions are in
+its **Actions** menu), its secrets and its planned maintenance. **Users**
+holds People and Roles. The header names the operator the management API
+sees.
 
 With `[admin] console_manages = false`, the default, the console approves,
-revokes and reviews tools, blocks and unblocks, puts one backend in planned
-maintenance and ends it, and with `-manage-users` edits accounts. Nothing
-else below appears, and its routes answer 404. The audit trail is read in
-the SIEM and verified with `audit verify` (`design/adr/0056`); quota usage
+revokes and reviews tools, puts one backend in planned maintenance and ends
+it, and with `-manage-users` edits and offboards accounts. Nothing else
+below appears, and its routes answer 404. The console shows no audit data
+and does not block or unblock: the audit trail is read in the SIEM and
+verified with `audit verify` (`design/adr/0056`, `0061`), and blocking a
+subject is `mcp-gateway access block|unblock|list` (`0061` §4); quota usage
 is in `gatte.status` and the CLI (`design/adr/0057`); a gateway-wide
 maintenance stays in the terminal (`design/adr/0055`).
 
 With `[admin] console_manages = true` (`design/adr/0050`) it also:
 
-- **Adds a REST API** from **Add a REST API** on the list, from its OpenAPI
+- **Adds a REST API** from **Add a backend** on the list, from its OpenAPI
   document by URL, pasted or uploaded as a file (up to 4 MiB), with the auth
   kind (derived from the document, none, bearer, header or query), the
   header or parameter name and the key's vault name (`NAME_API_KEY` when
@@ -223,7 +227,7 @@ With `[admin] console_manages = true` (`design/adr/0050`) it also:
   to the backend's page. Registering does not call the API.
 - **Shows each backend's operations** on its page, with method, path and
   class, and the signature they are covered by.
-- **Redials** a backend from its page and **reloads** the configuration
+- **Reconnects** a backend from its page and **reloads** the configuration
   from the list; a request `serve` has not answered yet shows a Refresh
   link.
 - **Removes** a backend once you type its name; its signature and every

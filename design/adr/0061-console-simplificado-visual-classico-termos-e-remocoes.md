@@ -80,6 +80,13 @@ O offboard (`0046`) deixa de oferecer a lista "quem a trilha viu" como
 seletor: o operador digita o subject (o campo digitado já existe). Continua
 valendo que nada vem pré-selecionado.
 
+> **Anotação (10 nov 2026, M6.1).** Sai o marcador de pendência das tools
+> que esperam revisão, mas uma tool cuja definição **mudou depois de
+> aprovada** continua sinalizada na lista de servidores ("Tool changed", em
+> vermelho, por backend): é o sinal de troca de definição (rug pull) e não
+> pode ficar escondido dentro da página do servidor. É estado da quarentena,
+> não auditoria.
+
 ### 4. Blocklist sai da UI; fica no CLI
 
 A seção Blocklist sai da aba Users do console e da tela Users do TUI. A
@@ -97,6 +104,11 @@ clicar, um por tool, feito com `<details>`/`<summary>` — sem JS (`0036`). Cada
 item do menu continua sendo a ação de mesmo nome da API, com CSRF e
 confirmação como hoje (`0040`). No TUI, as mesmas ações ficam agrupadas num
 menu por tool.
+
+> **Anotação (11 nov 2026, M6.1).** Os itens do menu que se ligam ao que o
+> operador viu — aprovar (a definição e o fingerprint) e clear (os papéis
+> `non_read` que passam a alcançar a tool) — abrem a página de revisão da
+> tool, onde a ação acontece. Só o revogar é enviado direto do menu.
 
 ### Restrições que não se cruzam
 

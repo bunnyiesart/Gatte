@@ -118,17 +118,24 @@ time. A tool you never approve is never served.
 The console's buttons are the same actions, with the same checks and the
 same audit rows, tagged `[ui]`.
 
-- **Tools** lists every tool, filtered by backend and by **Needs review**
-  or **Approved**.
+- Each backend's page lists its tools under **Tool security**, each with
+  its status and an **Actions** menu: **Review** (or **Review and approve
+  tool...** while it waits), **Clear for serving...** for an approved
+  sensitive tool not yet cleared, when the console manages
+  (`console_manages`), and **Revoke approval**. Approve and Clear open the
+  tool's page, where you see what you approve or clear before you click.
 - Open a tool to see its definition, or the **What changed** diff for a
-  changed one. **Approve this version** approves the fingerprint on the
-  page: if the backend changes the tool before you click, nothing is
-  approved. After an approval the next tool waiting for review opens.
-- With one backend selected and more than one of its tools waiting,
-  **Review them on one page** shows the whole set. **Approve these N**
-  carries the set's manifest and approves exactly the definitions on the
-  page, or none.
-- **Revoke approval**, on an approved tool, withdraws it.
+  changed one. **Approve tool** approves the fingerprint on the page: if
+  the backend changes the tool before you click, nothing is approved. After
+  an approval the next tool waiting for review opens.
+- On an approved sensitive tool's page, **Reachable by** lists the roles
+  that reach it; **Clear for serving** below it clears the tool.
+- When more than one of a backend's tools is waiting,
+  **Review them on one page** shows the whole set. **Approve these N
+  tools** carries the set's manifest and approves exactly the definitions
+  on the page, or none.
+- **Revoke approval**, on an approved tool's page or in its menu,
+  withdraws it.
 
 ## Hidden code points
 

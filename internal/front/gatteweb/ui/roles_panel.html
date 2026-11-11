@@ -70,7 +70,7 @@
       <form method="post" action="{{$base}}/users/roles/non-read">
         <input type="hidden" name="csrf" value="{{$csrf}}">
         <input type="hidden" name="role" value="{{.Name}}">
-        {{if .NonRead}}<input type="hidden" name="on" value="false"><button class="btn small">Clear non_read</button>{{else}}<input type="hidden" name="on" value="true"><button class="btn small">Mark non_read</button>{{end}}
+        {{if .NonRead}}<input type="hidden" name="on" value="false"><button class="btn small">Unmark non_read</button>{{else}}<input type="hidden" name="on" value="true"><button class="btn small">Mark non_read</button>{{end}}
       </form>
       {{end}}
     </li>

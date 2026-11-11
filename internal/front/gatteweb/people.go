@@ -26,19 +26,16 @@ import (
 // peopleSectionData is the People section of the Users page: the accounts the
 // identity provider holds, drawn only with the accounts socket (Manage).
 type peopleSectionData struct {
-	Base     string
-	CSRF     string
-	Manage   bool
+	Base   string
+	Manage bool
+	// Offboard is whether the accounts socket serves offboard; without it
+	// the section points at the CLI's block instead.
+	Offboard bool
 	Accounts []adminapi.Account
 	// Error is a failed read of the accounts, shown inline. The Add-person
 	// button still renders, so adding someone stays possible through a
 	// transient read failure.
 	Error string
-	// Seen is who the audit trail has seen call the gateway, with the name the
-	// token carried. It is the operator socket's, so every console shows it,
-	// with or without the accounts socket. SeenError is its failed read.
-	Seen      []adminapi.Seen
-	SeenError string
 }
 
 // peopleSection renders the People section into the Users page. Listing the
@@ -46,18 +43,16 @@ type peopleSectionData struct {
 // that says how to start the console with it, and the actions stay 404. A
 // failed read is shown inline and keeps the management controls in place.
 func (f *Front) peopleSection(r *http.Request) (template.HTML, error) {
-	d := peopleSectionData{Base: f.kit.Base(), CSRF: f.kit.CSRFToken(), Manage: f.acc != nil}
+	d := peopleSectionData{Base: f.kit.Base(), Manage: f.acc != nil}
 	if f.acc != nil {
 		if list, err := f.acc.ListAccounts(r.Context()); err != nil {
 			d.Error = errText(err)
 		} else {
 			d.Accounts = list.Accounts
 		}
-	}
-	if p, err := f.op.People(r.Context()); err != nil {
-		d.SeenError = errText(err)
-	} else {
-		d.Seen = p.Seen
+		if me, err := f.acc.WhoAmI(r.Context()); err == nil {
+			d.Offboard = slices.Contains(me.Features, adminapi.FeatureOffboard)
+		}
 	}
 	return f.renderFragment("section_people.html", d)
 }
@@ -67,10 +62,10 @@ type accountData struct {
 	Groups  []adminapi.AssignableGroup
 	Has     map[string]bool
 	// Offboard and Delete: the accounts socket serves them (features
-	// offboard and account_delete, design/adr/0046). Seen is who the trail
-	// has seen, for the offboard's subject: the operator picks it.
+	// offboard and account_delete, design/adr/0046). The offboard's subject
+	// is typed: the console reads no audit data to offer one
+	// (design/adr/0061 §3).
 	Offboard, Delete bool
-	Seen             []adminapi.Seen
 }
 
 func (f *Front) accountPage(w http.ResponseWriter, r *http.Request) {
@@ -96,11 +91,6 @@ func (f *Front) accountPage(w http.ResponseWriter, r *http.Request) {
 	if me, werr := f.acc.WhoAmI(r.Context()); werr == nil {
 		d.Offboard = slices.Contains(me.Features, adminapi.FeatureOffboard)
 		d.Delete = slices.Contains(me.Features, adminapi.FeatureAccountDelete)
-	}
-	if d.Offboard {
-		if p, perr := f.op.People(r.Context()); perr == nil {
-			d.Seen = p.Seen
-		}
 	}
 	f.render(w, r, "account", frontkit.VisibleText(a.DisplayName), page{Nav: "users", Data: d, Error: errText(err)})
 }
@@ -198,10 +188,7 @@ func (f *Front) accountOffboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u := r.PostForm.Get("username")
-	subject := strings.TrimSpace(r.PostForm.Get("subject_typed"))
-	if subject == "" {
-		subject = r.PostForm.Get("subject")
-	}
+	subject := strings.TrimSpace(r.PostForm.Get("subject"))
 	res, err := f.acc.OffboardAccount(r.Context(), u, adminapi.OffboardRequest{Subject: subject, Reason: strings.TrimSpace(r.PostForm.Get("reason"))})
 	out := actionResult(res.ActionResult, err)
 	if err == nil {

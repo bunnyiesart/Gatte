@@ -68,8 +68,9 @@ and its groups.
 sudo -u mcpgw mcp-gateway audit -config "$CFG" -tool "(account add)" -limit 5
 ```
 
-After the person's first sign-in and call, they appear under **People**,
-**Seen on the gateway**, with their subject.
+After the person's first sign-in and call, their subject (the `sub` claim
+of their token) is on their audit rows: read it in the SIEM. The console
+shows no audit data (`design/adr/0061`).
 
 To hand the script to an existing account, open the person's page and
 choose **Connect a computer**. A front of your own gets the same script
@@ -109,8 +110,8 @@ To change what a role grants, rather than who has it, see
 
 The IdP refuses their next sign-in once it reloads its users file. Disable
 does not end a session already open or a token already issued: to cut
-those off at the gateway, block the subject in **Access**, or use
-**Offboard**, which does both. **Enable** undoes it. The trail records
+those off at the gateway, block the subject with `mcp-gateway access
+block`, or use **Offboard**, which does both. **Enable** undoes it. The trail records
 `(account disable)` and `(account enable)`.
 
 ## When someone leaves: Offboard
@@ -119,11 +120,10 @@ those off at the gateway, block the subject in **Access**, or use
 their account, in one call.
 
 1. Open the person's page.
-2. Under **Offboard**, choose **Their subject** from the list of subjects
-   the audit trail has seen, or type it under **Or type it**, exactly as
-   the audit trail shows it. Pick it yourself: the names beside the
-   subjects are what the IdP said, for reading only. Choose **None** only
-   if the person never used the gateway; then no block is placed.
+2. Under **Offboard**, type **Their gateway ID** (their subject, the `sub`)
+   exactly as their audit rows show it in the SIEM. Nothing is pre-filled: the console shows no audit
+   data (`design/adr/0061`). Leave it empty only if the person never used
+   the gateway; then no block is placed.
 3. In **Reason**, write who is acting and why. It goes in the trail.
 4. Choose **Offboard**.
 5. Read **Still to do by hand** on the result page, and do each item. It
@@ -231,7 +231,7 @@ What a delegated member cannot do:
 - **Offboard** with a subject, unless they are also in
   `[admin] operator_group`, because blocking is an operator's action (the
   answer is `forbidden_peer`, and nothing changes). They can offboard with
-  **None** as the subject and ask an operator to block it.
+  the subject left empty and ask an operator to block it.
 
 Check it worked: the member's console shows the account buttons on
 **People**, and each change they make is a row naming their login account,

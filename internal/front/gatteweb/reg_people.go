@@ -12,7 +12,8 @@ import "net/http"
 //
 // Disabling an account is not blocking a subject (design/adr/0038): disable
 // stops new sign-ins and lives here; the block that cuts an already-issued
-// token is the Blocklist section, a separate action on this same tab.
+// token is part of Offboard here, or the CLI's `access block`
+// (design/adr/0061 §4).
 func init() {
 	registerUsersSection(UsersSection{ID: "people", Order: 10, Render: (*Front).peopleSection})
 	register(Section{

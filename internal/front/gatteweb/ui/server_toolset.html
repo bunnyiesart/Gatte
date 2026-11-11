@@ -24,7 +24,7 @@
   <form method="post" action="{{$base}}{{.ServerPath}}/tools/approve-set">
     <input type="hidden" name="csrf" value="{{$csrf}}">
     <input type="hidden" name="manifest" value="{{.Manifest}}">
-    <button class="btn{{if not .Hidden}} primary{{end}}">Approve these {{len .Tools}}</button>
+    <button class="btn{{if not .Hidden}} primary{{end}}">Approve {{if eq (len .Tools) 1}}this tool{{else}}these {{len .Tools}} tools{{end}}</button>
   </form>
   <p class="caption">Approves exactly the {{len .Tools}} definitions shown on this page (review set sha256:{{short .Manifest}}). If any tool of {{vis .Server}} appears, disappears or changes before you click, nothing is approved.</p>
 </div>

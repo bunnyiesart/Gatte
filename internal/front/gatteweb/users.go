@@ -1,15 +1,13 @@
 package gatteweb
 
-// Tab 2 of the revised console (design/adr/0051): "Users". One page, several
-// sections, each with its own socket gate: People/accounts (root), Roles
-// (accounts socket), Blocklist (operator socket). People and Blocklist stay
-// distinct, because disabling an account is not blocking a subject
-// (design/adr/0038).
+// Tab 2 of the revised console (design/adr/0051): "Users". One page, two
+// sections, each with its own socket gate: People/accounts (root) and Roles
+// (accounts socket). Blocking a subject is not on this tab: it stays in the
+// CLI (design/adr/0061 §4), and Offboard places the block it needs.
 //
 // This file is the tab's container: it ranges over the UsersSection registry
-// (sections.go) and embeds each registered section in order. The People, Roles
-// and Blocklist sections are later slices (M1.4a/M1.5/M1.4b) that
-// self-register; this shell owns only the mount points.
+// (sections.go) and embeds each registered section in order; each section
+// self-registers from its own file.
 
 import (
 	"net/http"
@@ -21,7 +19,7 @@ import (
 
 type usersData struct {
 	// Sections are the registered UsersSection contributions, rendered in
-	// order (sections.go). Empty in this slice: the sections are later slices.
+	// order (sections.go).
 	Sections []fragment
 	Root     bool
 }

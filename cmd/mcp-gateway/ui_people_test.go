@@ -51,10 +51,12 @@ func newPeopleTest(t *testing.T, manage bool) (opTestEnv, *uiHarness, *http.Cook
 	return e, s, uiLogin(t, s), path
 }
 
-func TestUI_PeopleShowsRolesTheirGroupsAndWhoWasSeen(t *testing.T) {
+// The Users tab shows roles and their groups, and no audit data
+// (design/adr/0061 §3): who called the gateway is read in the SIEM.
+func TestUI_PeopleShowsRolesAndTheirGroupsButNoAuditData(t *testing.T) {
 	e, s, cookie, _ := newPeopleTest(t, false)
 	for _, rec := range []audit.Record{
-		{AnalystIdentity: "95f757fe-0c7b-4272", Tool: "logsearch.search_relative", TargetUpstream: "logsearch", Outcome: audit.OutcomeAllowed},
+		{AnalystIdentity: "95f757fe-0c7b-4272", AnalystName: "Ana Souza", Tool: "logsearch.search_relative", TargetUpstream: "logsearch", Outcome: audit.OutcomeAllowed},
 		{AnalystIdentity: "(gateway)", Tool: "x.y", TargetUpstream: "x", Outcome: audit.OutcomeDenied, Reason: "first seen"},
 	} {
 		rec.Timestamp = time.Now().UTC()
@@ -63,13 +65,15 @@ func TestUI_PeopleShowsRolesTheirGroupsAndWhoWasSeen(t *testing.T) {
 		}
 	}
 	body := uiDo(s, "GET", "/users", nil, cookie, nil).Body.String()
-	for _, want := range []string{"ir-lead", "blue-ir", "tier1-analyst", "logsearch.search_relative", "casemgmt.create_case", "95f757fe-0c7b-4272", "sudo mcp-gateway ui -manage-users"} {
+	for _, want := range []string{"ir-lead", "blue-ir", "tier1-analyst", "logsearch.search_relative", "casemgmt.create_case", "sudo mcp-gateway ui -manage-users"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("People page lacks %q", want)
 		}
 	}
-	if strings.Contains(body, "(gateway)") {
-		t.Error("the gateway's own rows are listed as a person")
+	for _, gone := range []string{"95f757fe-0c7b-4272", "Ana Souza", "(gateway)", "Seen on the gateway"} {
+		if strings.Contains(body, gone) {
+			t.Errorf("the Users tab shows audit data: %q", gone)
+		}
 	}
 }
 
@@ -192,18 +196,5 @@ func TestUI_ManageUsersRefusesAnAccountsSocketNotServedByRoot(t *testing.T) {
 	}
 	if strings.Contains(out.String(), "/login?token=") {
 		t.Fatal("ui printed a login link although it refused the accounts socket")
-	}
-}
-
-func TestUI_PeopleShowTheNameNextToTheSubject(t *testing.T) {
-	e, s, cookie, _ := newPeopleTest(t, false)
-	rec := audit.Record{AnalystIdentity: "95f757fe-0c7b-4272", AnalystName: "Ana Souza", Tool: "logsearch.search_relative",
-		TargetUpstream: "logsearch", Outcome: audit.OutcomeAllowed, Timestamp: time.Now().UTC()}
-	if err := e.auditTrail().Record(context.Background(), rec); err != nil {
-		t.Fatal(err)
-	}
-	body := uiDo(s, "GET", "/users", nil, cookie, nil).Body.String()
-	if !strings.Contains(body, "Ana Souza") || !strings.Contains(body, "95f757fe-0c7b-4272") {
-		t.Error("GET /users does not show the name next to the subject")
 	}
 }

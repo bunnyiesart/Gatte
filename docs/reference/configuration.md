@@ -236,6 +236,24 @@ naming no registered backend loads, grants nothing, and is logged by
 |---|---|---|---|---|
 | `"GROUP"` | string | none | no | The key is the exact value in the `groups_claim` claim; the value is a `[[role]]` name. A mapping to an undefined role, an empty group and a group with edge whitespace are refused. A group with no mapping is ignored. A caller with no mapped group has no role and can call nothing. |
 
+## [[preset]]
+
+A preset is a named list of tools that the console and the TUI offer under
+"New role from preset" (`design/adr/0062`). It lives in the file that holds
+the roles: with `roles_file` set, there and only there (a main file that also
+has `[[preset]]` is refused). It is a template, not a role: `serve` never
+reads it, it grants nothing, and changing it needs no `reload` or restart.
+
+| Key | Type | Default | Required | Constraints and meaning |
+|---|---|---|---|---|
+| `name` | string | none | yes | Unique among presets; not empty; no leading or trailing whitespace. |
+| `tools` | list of strings | none | yes | Namespaced names, `BACKEND.TOOL`, as in a role's `tools`. Not empty; no wildcard (`.*`); no repeated name. |
+
+Creating a role from a preset writes a new `[[role]]` whose `[role.grants]`
+holds the preset's tools. A preset never sets `non_read`, so a sensitive tool
+it names is skipped and reported when the role is created; grant it afterwards
+as its own act (mark the role `non_read`, then add the tool to `tools`).
+
 ## [[quota.provider]]
 
 A per-analyst limit on one third-party account (`design/adr/0030`). The

@@ -101,6 +101,29 @@ purpose: it is the anchor against whoever can write the database
    - `NOT applied until a restart`, if anything else in the file differs.
      Restart `serve` for those, or put the file back.
 
+## Create a role from a preset
+
+A preset is a named starting list of tools kept in the roles file
+(`[[preset]]`, see the [configuration reference](../reference/configuration.md#preset)):
+
+```toml
+[[preset]]
+name  = "Blue team analyst"
+tools = ["siem.search_events", "siem.get_event", "cases.get_case"]
+```
+
+Creating a role from a preset takes a role name, the groups that get it,
+and the preset. The new `[[role]]` is written to the roles file with the
+preset's tools as `[role.grants]`, the groups are added to
+`[group_to_role]`, and nothing else in the file changes. Then `reload` as
+in the steps above.
+
+A preset never lets a role act. A sensitive tool in a preset is skipped,
+and the screen lists it. To grant it, mark the role able to act and add the
+tool, each as its own step.
+
+Presets themselves grant nothing: editing one needs no `reload`.
+
 ## If it is refused
 
 - **The file does not load.** `reload` validates it first and prints the

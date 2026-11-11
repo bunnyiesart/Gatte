@@ -199,6 +199,10 @@ const (
 	SpliceAlready                         // already in the asked-for state
 	SpliceWildcard                        // reached only by a "*" grant; not editable one tool at a time
 	SpliceNeedNonRead                     // a sensitive grant onto a role that is not non_read
+	SpliceRoleExists                      // a [[role]] of that name is already defined
+	SpliceNoPreset                        // no [[preset]] of that name
+	SpliceGroupTaken                      // the group is already mapped in [group_to_role]
+	SpliceBadName                         // empty, edge whitespace, or a character a TOML string here cannot carry
 )
 
 // GrantSafeTool adds tool id `tool` to the [role.grants] of `server`, the

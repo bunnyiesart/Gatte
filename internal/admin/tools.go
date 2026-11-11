@@ -262,7 +262,7 @@ func (s *Service) ApproveTool(ctx context.Context, a Actor, req adminapi.Approve
 	if len(res.CallableBy) == 0 {
 		msg := "No configured role covers this tool: approving makes it servable, not callable by anyone."
 		if sensitive(after) {
-			msg = "No role marked non_read names this tool in `tools`: approving made it servable, and clearing it will be refused until one does. A \"*\" grant or a [role.grants] name does not reach a sensitive tool."
+			msg = "No role marked non_read names this tool in `tools`: it is not served until it is cleared, and clearing it will be refused until one does. A \"*\" grant or a [role.grants] name does not reach a sensitive tool."
 		}
 		res.Warnings = append(res.Warnings, adminapi.Warning{Code: adminapi.WarnNoRoleGrants, Message: msg})
 	}

@@ -141,10 +141,11 @@ func uiUsage(w io.Writer) {
 	fmt.Fprint(w, `Usage:
   mcp-gateway ui [-socket PATH] [-listen 127.0.0.1:8090] [-manage-users [-accounts-socket PATH]]
 
-Serves the operator console as a web page on loopback: the tool approval
-queue with each definition's review and diff, the blocklist, the audit
-trail and its verification, the people and roles, the registered backends
-and quota spend.
+Serves the operator console as a web page on loopback, with two tabs:
+"MCP Servers / APIs" (each backend, its tools to review, approve, revoke
+and clear, and its maintenance) and "Users" (people and roles). The audit
+trail is read in the SIEM and verified with audit -verify; blocking is
+mcp-gateway access; quota spend is in the CLI.
 
 It is a client of the management API (mcp-gateway admin): every page is a
 call to it over the operator socket, and every button is the API's action

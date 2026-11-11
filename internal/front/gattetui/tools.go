@@ -279,10 +279,10 @@ func fillReviewSet(e env, server string) content {
 	c.actions = append(c.actions, action{key: "A", label: "approve all", run: func() tea.Cmd {
 		// The manifest names exactly the set shown; the backend approves all
 		// of it or nothing.
-		return confirm(fmt.Sprintf("Approve all %d tools of %s shown here (manifest %s)?", n, vis(server), vis(manifest)), func() tea.Cmd {
+		return confirm(fmt.Sprintf("Approve all tools of %s shown here (%d, manifest %s)?", vis(server), n, vis(manifest)), func() tea.Cmd {
 			return do(func() result {
 				res, err := e.op.ApproveToolSet(ctx(), adminapi.ApproveSetRequest{Server: server, Manifest: manifest})
-				r := fromAction(res.ActionResult, err, fmt.Sprintf("Approved %d tools of %s.", len(res.Approved), server))
+				r := fromAction(res.ActionResult, err, fmt.Sprintf("Approved the review set of %s (%d approved).", server, len(res.Approved)))
 				r.back = err == nil
 				return r
 			})

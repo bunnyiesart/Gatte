@@ -28,7 +28,7 @@ func init() {
 
 func serversPage() *page { return newPage("MCP Servers / APIs", fillServers) }
 
-var serverCols = []int{16, 15, 23}
+var serverCols = []int{16, 15, 23, 11}
 
 func fillServers(e env) content {
 	var c content
@@ -36,17 +36,22 @@ func fillServers(e env) content {
 	if err != nil {
 		c.problems = append(c.problems, errText(err))
 	}
-	// Only what concerns the whole gateway (it not reporting, or in
-	// maintenance) goes above the list. The list carries no per-backend
-	// review marker (design/adr/0061 §3): pending tools are shown in each
-	// backend's tools panel.
+	// What concerns the whole gateway (it not reporting, or in maintenance)
+	// goes above the list. Per backend, only a tool whose definition changed
+	// after approval is flagged: a backend swapping an approved tool is the
+	// one review signal kept on the list. Pending tools carry no marker here
+	// (design/adr/0061 §3); they are shown in each backend's tools panel.
 	ov, overr := e.op.Overview(ctx())
 	if overr != nil {
 		c.problems = append(c.problems, "Gateway state: "+errText(overr))
 	}
+	changed := map[string]bool{}
 	for _, a := range ov.Attention {
-		if a.Upstream == "" && a.Server == "" {
+		switch {
+		case a.Upstream == "" && a.Server == "":
 			c.rows = append(c.rows, textRow(stWarn.Render(vis(a.Title)+": "+vis(a.Detail))))
+		case a.Kind == adminapi.AttentionChanged:
+			changed[a.Server] = true
 		}
 	}
 	health := e.has(adminapi.FeatureBackendHealth)
@@ -60,8 +65,12 @@ func fillServers(e env) content {
 			state = stateText(u.Health.State)
 		}
 		name := u.Name
+		flag := ""
+		if changed[u.Name] {
+			flag = stBad.Render("tool changed since approved")
+		}
 		c.rows = append(c.rows, row{
-			text:    cols(serverCols, vis(u.Name), state, configText(u.Signature), kindText(u.Transport)),
+			text:    cols(serverCols, vis(u.Name), state, configText(u.Signature), kindText(u.Transport), flag),
 			actions: []action{{key: "enter", label: "open", run: func() tea.Cmd { return push(serverPage(name)) }}},
 		})
 	}

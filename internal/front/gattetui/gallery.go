@@ -26,7 +26,7 @@ func Gallery(w io.Writer, o Options) error {
 		page  func() *page
 		keys  []string
 	}{
-		{"Servers: list with health and config approval", o, false, nil, nil},
+		{"Servers: list with health, config approval and changed tools", o, false, nil, nil},
 		{"Server detail: up, with tools, secrets and maintenance", o, false, func() *page { return serverPage("casemgmt") }, nil},
 		{"Server detail: down, with a secret missing from the vault", o, false, func() *page { return serverPage("threatintel") }, nil},
 		{"Server detail: in maintenance", o, false, func() *page { return serverPage("docsearch") }, nil},

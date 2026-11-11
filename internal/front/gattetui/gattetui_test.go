@@ -126,6 +126,29 @@ func TestServersListShowsHealthAndConfigApprovalButNoReviewMarker(t *testing.T) 
 	mustNotShow(t, a, "NEEDS REVIEW", "Tool waits for review", "Tool definition changed")
 }
 
+// TestServersListFlagsOnlyAChangedTool: a backend with a tool changed since
+// approval is flagged on the list; one with pending tools only is not.
+func TestServersListFlagsOnlyAChangedTool(t *testing.T) {
+	a, _ := start(t, false)
+	row := func(name string) string {
+		for _, r := range a.top().rows {
+			if strings.HasPrefix(r.text, name+" ") {
+				return r.text
+			}
+		}
+		t.Fatalf("no row for %s:\n%s", name, a.View())
+		return ""
+	}
+	if !strings.Contains(row("docsearch"), "tool changed since approved") {
+		t.Errorf("docsearch has a changed tool and is not flagged: %q", row("docsearch"))
+	}
+	for _, pendingOnly := range []string{"logsearch", "threatintel", "casemgmt"} {
+		if strings.Contains(row(pendingOnly), "changed") {
+			t.Errorf("%s has no changed tool and is flagged: %q", pendingOnly, row(pendingOnly))
+		}
+	}
+}
+
 func TestConfigTextUsesTheApprovalWords(t *testing.T) {
 	for sig, want := range map[string]string{"yes": "Config approved", "INVALID": "Changed since approved", "no": "Config not approved", "": "Config not approved"} {
 		if got := configText(sig); got != want {
@@ -411,7 +434,7 @@ func TestGalleryDrawsEveryState(t *testing.T) {
 	if n := strings.Count(b.String(), "\n==== "); n < 20 {
 		t.Fatalf("the gallery drew %d states:\n%s", n, b.String())
 	}
-	for _, want := range []string{"fake-otp-reset-ana.lima", "Reload the configuration now", "no backend \"no-such-backend\"", "**************"} {
+	for _, want := range []string{"fake-otp-reset-ana.lima", "Reload the configuration now", "no backend \"no-such-backend\"", "**************", "tool changed since approved"} {
 		if !strings.Contains(b.String(), want) {
 			t.Errorf("the gallery lacks %q", want)
 		}

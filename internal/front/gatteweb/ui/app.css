@@ -82,7 +82,7 @@ b { font-weight: 700; }
 .result-icon, .avatar, .stepper span, .step-n, .check, .lead-icon {
   border: 1px solid; border-color: var(--hi) var(--lo) var(--lo) var(--hi);
 }
-input, select, textarea, .badge, .code, .secret-value, .matrix-scroll, .prose, .diff {
+input, select, textarea, .badge, .code, .secret-value, .prose, .diff {
   border: 1px solid; border-color: var(--lo) var(--hi) var(--hi) var(--lo);
 }
 
@@ -102,6 +102,8 @@ input, select, textarea, .badge, .code, .secret-value, .matrix-scroll, .prose, .
 .bar nav a[aria-current] { font-weight: 700; padding-bottom: 6px; margin-bottom: -1px; }
 .whoami { margin-left: auto; min-width: 0; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .whoami b { color: var(--on-title); }
+.help-link { margin-left: auto; flex: none; }
+.whoami + .help-link { margin-left: 8px; }
 
 /* ---- page ---- */
 
@@ -419,33 +421,5 @@ details.inline[open] summary { margin-bottom: 4px; }
 /* a container image: repository, then the short digest, each on one line */
 .cell-sub.image span { display: block; white-space: nowrap; }
 
-/* ---- roles matrix (design/adr/0054): role x tool grant view ---- */
-/* The display rules are set explicitly, not left to defaults, so the generic
-   mobile rule that turns every table into stacked blocks does not reach a
-   matrix that must stay a grid; the class selector wins by specificity. */
-.matrix-scroll { overflow-x: auto; background: var(--field); }
-.matrix { display: table; width: auto; min-width: 100%; border-collapse: collapse; font-size: 12px; }
-.matrix thead { display: table-header-group; position: static; width: auto; height: auto; clip-path: none; }
-.matrix tbody { display: table-row-group; }
-.matrix tr { display: table-row; }
-.matrix th, .matrix td { display: table-cell; padding: 4px 8px; border: 1px solid var(--lo); vertical-align: middle; }
-.matrix th::before { content: none; }
-.matrix .corner { text-align: left; }
-.matrix .srv { text-align: center; font-weight: 700; }
-.matrix .tool { text-align: center; min-width: 84px; background: var(--field); }
-.matrix .tool .tn { display: block; overflow-wrap: anywhere; }
-.matrix .tool .tag { display: block; margin-top: 2px; font-size: 10px; color: var(--text-2); }
-.matrix .tool.sens, .matrix .cell.sens { background: var(--face); }
-.matrix .rolename { text-align: left; min-width: 160px; }
-.matrix .rolename .rn { font-weight: 700; }
-.matrix .rolename .grp { display: block; margin-top: 1px; font-size: 11px; color: var(--text-2); overflow-wrap: anywhere; }
-.matrix .cell { text-align: center; }
-.matrix .cell.on { color: var(--ok); font-weight: 700; }
-.matrix .cell.on.sens { color: var(--text); }
-.matrix .cell .off { color: var(--text-3); }
-.caption.legend { margin-top: 6px; max-width: 80ch; }
-.caption.legend .k { font-weight: 700; color: var(--text); }
-.caption.legend .k.sens { color: var(--text); }
-.sub-head { margin-top: 18px; }
-.sub-head h3 { margin: 0; font-size: 13px; }
+/* ---- roles (design/adr/0054) ---- */
 .btn-pair { display: flex; gap: 8px; }

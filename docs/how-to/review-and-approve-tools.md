@@ -137,6 +137,27 @@ same audit rows, tagged `[ui]`.
 - **Revoke approval**, on an approved tool's page or in its menu,
   withdraws it.
 
+What the console's badges mean:
+
+- **Config approved**: an operator signed the backend's configuration (its
+  URL or command, its arguments and the names of its secrets) with the
+  gateway key. It is not a statement that the backend or its tools are
+  safe: tool security is the separate approve and clear step.
+- **Config not approved**: nobody has signed the configuration. The backend
+  is not served until it is approved.
+- **Changed since approved**: the configuration changed after it was
+  signed, or the key that signed it is not trusted. It is not served until
+  it is approved again.
+- **Tool changed**, on the backend list: a tool's definition changed after
+  it was approved. It is not served until you review it again on the
+  backend's page.
+- **Safe** and **Sensitive**: a safe tool only reads, and is served once
+  approved to the roles that grant it. A sensitive tool can act (for a REST
+  API, a POST, PUT, PATCH or DELETE); it is served only once approved and
+  cleared, and only to a role marked `non_read` that names it in its
+  `tools` list. **Not served** on an approved sensitive tool means it is
+  not cleared yet.
+
 ## Hidden code points
 
 A tool definition can hold code points a terminal or a browser does not

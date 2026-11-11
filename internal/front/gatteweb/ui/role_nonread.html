@@ -1,0 +1,19 @@
+{{template "top" .}}
+{{$csrf := .CSRF}}{{$base := .Base}}
+{{with .Data}}
+<div class="head">
+  <h1>Turn non_read on for {{vis .Role}}{{if .Give}} and give it:{{end}}</h1>
+</div>
+{{if .Give}}<ul class="group steps">{{range .Give}}<li class="mono">{{vis .}}</li>{{end}}</ul>{{end}}
+{{if .Safe}}<p class="caption">Not given here (safe; use Grant selected): {{range $i, $t := .Safe}}{{if $i}}, {{end}}<span class="mono">{{vis $t}}</span>{{end}}</p>{{end}}
+<form class="actions" method="post" action="{{$base}}/users/roles/non-read">
+  <input type="hidden" name="csrf" value="{{$csrf}}">
+  <input type="hidden" name="role" value="{{.Role}}">
+  <input type="hidden" name="on" value="true">
+  <input type="hidden" name="confirm" value="yes">
+  {{range .Give}}<input type="hidden" name="tool" value="{{.}}">{{end}}
+  <button class="btn primary">Turn on</button>
+  <a class="btn" href="{{$base}}{{.Back}}">Cancel</a>
+</form>
+{{end}}
+{{template "bottom" .}}

@@ -201,6 +201,15 @@ type result struct {
 	// Refresh, for a request to the gateway process still pending, is the
 	// page that reads it again (no script refreshes anything).
 	Refresh string
+	// Lists, for an action over several items, name what happened to each,
+	// so a partly refused action hides nothing.
+	Lists []resultList
+}
+
+// resultList is one titled list on a result page.
+type resultList struct {
+	Title string
+	Items []string
 }
 
 // actionResult is the result page of a state change. A change the trail

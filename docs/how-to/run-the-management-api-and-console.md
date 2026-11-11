@@ -204,7 +204,8 @@ and a red **Tool changed** flag when a tool's definition changed after it
 was approved; each backend's page holds its tools (each tool's actions are in
 its **Actions** menu), its secrets and its planned maintenance. **Users**
 holds People and Roles. The header names the operator the management API
-sees.
+sees, and links a **Help** page: the terminal commands, what the console's
+words mean, and the docs to read.
 
 With `[admin] console_manages = false`, the default, the console approves,
 revokes and reviews tools, puts one backend in planned maintenance and ends
@@ -247,11 +248,13 @@ root's), it also:
   or declared by none. A value is entered in a password field, written once
   and never shown again, in a page, a log or the audit trail, which records
   the name only.
-- **Roles**: on the Users tab, a role-by-tool matrix that grants or revokes
-  one tool and marks a role `non_read`, each one edit to the `roles_file`
-  that keeps its comments and is validated before it is written
-  (`design/adr/0054`). A write is applied by the next reload. This needs
-  `roles_file` set.
+- **Roles**: on the Users tab, a list of the roles; each role's page lists
+  the tools by backend as checkboxes, grants or revokes the selected ones,
+  and turns `non_read` on or off. Each action is one write of the
+  `roles_file` that keeps its comments and is validated before it is
+  written (`design/adr/0054`). A write is applied by the next reload. This
+  needs `roles_file` set. The steps are in
+  [Change roles, groups and quota](change-roles-and-quota.md).
 
 Without `-manage-users`, the add page says to start the console with
 `sudo mcp-gateway ui -manage-users` to sign and to write keys, and an API

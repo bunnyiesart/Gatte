@@ -1,0 +1,59 @@
+{{template "top" .}}
+{{$csrf := .CSRF}}{{$base := .Base}}
+<a class="back" href="{{$base}}/users"><svg viewBox="0 0 8 14" width="8" height="14" aria-hidden="true"><path d="M7 1L1 7l6 6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>Users</a>
+{{with .Data}}
+<div class="head">
+  <h1 class="mono-title">{{vis .Name}}</h1>
+  {{if .Found}}<p class="sub">Groups: {{range $i, $g := .Groups}}{{if $i}}, {{end}}{{vis $g}}{{else}}none{{end}}</p>{{end}}
+</div>
+{{if not .Found}}
+{{if not $.Error}}<div class="group empty-state"><p><b>No such role.</b></p></div>{{end}}
+{{else if not .InFile}}
+<div class="notice" role="note">{{template "dot"}}<p>Not in the roles file{{if .FilePath}} <span class="mono">{{vis .FilePath}}</span>{{end}}.</p></div>
+{{else}}
+<section>
+  {{if .NonRead}}
+  <form class="group row" method="post" action="{{$base}}/users/roles/non-read">
+    <input type="hidden" name="csrf" value="{{$csrf}}">
+    <input type="hidden" name="role" value="{{.Name}}">
+    <span class="row-text"><span class="row-title">non_read</span></span>
+    <span class="badge danger">On</span><input type="hidden" name="on" value="false"><button class="btn small">Turn off</button>
+  </form>
+  {{else}}
+  {{/* Turning non_read on carries the sensitive tools ticked below. */}}
+  <div class="group row">
+    <span class="row-text"><span class="row-title">non_read</span></span>
+    <span class="badge">Off</span><button class="btn small" form="role-tools" formaction="{{$base}}/users/roles/non-read" name="on" value="true">Turn on</button>
+  </div>
+  {{end}}
+</section>
+
+<form id="role-tools" method="post" action="{{$base}}/users/roles/edit">
+  <input type="hidden" name="csrf" value="{{$csrf}}">
+  <input type="hidden" name="role" value="{{.Name}}">
+  {{range .Servers}}
+  <section>
+    <h2>{{vis .Name}}</h2>
+    <ul class="group">
+      {{range .Tools}}
+      <li class="row">
+        <label class="check wide"><input type="checkbox" name="tool" value="{{.NS}}"><span class="mono">{{vis .Tool}}</span></label>
+        {{if .Sensitive}}<span class="badge danger">Sensitive</span>{{end}}
+        {{if eq .How "wildcard"}}<span class="badge pending">Granted by *</span>{{else if .How}}<span class="badge ok">{{template "check"}}Granted</span>{{end}}
+      </li>
+      {{end}}
+    </ul>
+  </section>
+  {{else}}
+  <div class="group empty-state"><p><b>No tools yet.</b></p></div>
+  {{end}}
+  {{if .Servers}}
+  <div class="actions btn-pair">
+    <button class="btn primary" name="op" value="grant">Grant selected</button>
+    <button class="btn" name="op" value="revoke">Revoke selected</button>
+  </div>
+  {{end}}
+</form>
+{{end}}
+{{end}}
+{{template "bottom" .}}

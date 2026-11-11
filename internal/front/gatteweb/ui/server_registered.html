@@ -5,11 +5,11 @@
 <div class="head">
   <h1 class="mono-title">{{vis .Name}}</h1>
   {{if eq .Transport "oci"}}
-  <p class="sub">Registered as a container (oci). Its tools are listed once the gateway runs it, each pending your review, and its configuration is <b>not approved yet</b> — review the entry below and approve it.</p>
+  <p class="sub">Container · <span class="badge pending">{{template "dot"}}Config not approved</span></p>
   {{else if eq .Transport "remote"}}
-  <p class="sub">Registered as a remote MCP server. Its tools are listed once the gateway connects, each pending your review, and its configuration is <b>not approved yet</b> — review the entry below and approve it.</p>
+  <p class="sub">Remote MCP · <span class="badge pending">{{template "dot"}}Config not approved</span></p>
   {{else}}
-  <p class="sub">Registered as a REST API. Its tools are pending your review, and its configuration is <b>not approved yet</b> — review the entry below and approve it.</p>
+  <p class="sub">REST API · <span class="badge pending">{{template "dot"}}Config not approved</span></p>
   {{end}}
 </div>
 
@@ -42,7 +42,6 @@
 {{if .Tools}}
 <section>
   <h2>Operations</h2>
-  <p class="caption">Each is one MCP tool, pending review. A POST, PUT, PATCH or DELETE is sensitive: it needs clearing and a non_read role before it is served.</p>
   <div class="group">
     <table class="list">
       <thead><tr><th>Tool</th><th>Method</th><th>Path</th><th>Class</th></tr></thead>
@@ -70,7 +69,6 @@
 
 <section>
   <h2>Approve configuration</h2>
-  <p class="caption">Approving signs the configuration shown above with the gateway key. Review {{if eq .Transport "oci"}}the image digest, the network and the variable names{{else if eq .Transport "remote"}}the URL, the auth and its secret name, and the transport{{else}}the URL or command, the arguments, and the secret names{{end}} first — the approval covers exactly what is shown, nothing about the tools. It is a separate step from registering, on purpose: the gateway doesn't serve a backend whose configuration is not approved.</p>
   {{if $.Data.Root}}
   <form class="group row" method="post" action="{{$base}}/servers/{{.Name}}/sign">
     <input type="hidden" name="csrf" value="{{$csrf}}">

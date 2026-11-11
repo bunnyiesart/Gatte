@@ -18,6 +18,11 @@ whole gateway to a new host, see
    sudo install -d -m 0700 -o mcpgw -g mcpgw /var/backups/mcp-gateway
    ```
 
+   On FreeBSD `/var/backups` is `root:wheel 0750` and the service account
+   cannot reach a directory inside it: use one it can, such as
+   `/var/db/mcp-gateway-backups`, wherever this page says
+   `/var/backups/mcp-gateway`.
+
 2. As the service account, take the copy. `serve` may keep running:
 
    ```sh

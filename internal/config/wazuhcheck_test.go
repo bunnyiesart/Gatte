@@ -32,6 +32,9 @@ ca_file       = "/usr/local/etc/mcp-gateway/wazuh-ca.pem"
 		"colon in user":    {`"gatte-check"`, `"gatte:check"`, "idp.wazuh_check.user"},
 		"value not name":   {`"WAZUH_CHECK_PASSWORD"`, `"s3cr3t-value!"`, "idp.wazuh_check.password_name"},
 		"relative ca":      {`"/usr/local/etc/mcp-gateway/wazuh-ca.pem"`, `"wazuh-ca.pem"`, "idp.wazuh_check.ca_file"},
+		"empty query":      {`"https://wazuh-indexer.example:9200"`, `"https://wazuh-indexer.example:9200?"`, "idp.wazuh_check.url"},
+		"slash and query":  {`"https://wazuh-indexer.example:9200"`, `"https://wazuh-indexer.example:9200/?"`, "idp.wazuh_check.url"},
+		"empty fragment":   {`"https://wazuh-indexer.example:9200"`, `"https://wazuh-indexer.example:9200#"`, "idp.wazuh_check.url"},
 		"keys without url": {`"https://wazuh-indexer.example:9200"`, `""`, "url is empty"},
 	}
 	for name, b := range bad {
@@ -42,6 +45,21 @@ ca_file       = "/usr/local/etc/mcp-gateway/wazuh-ca.pem"
 			}
 		})
 	}
+
+	// A refused value is never echoed: the URL's userinfo, and a password
+	// pasted where its vault name belongs, would reach the log and the console.
+	t.Run("secrets are not echoed", func(t *testing.T) {
+		for _, b := range []struct{ from, to string }{
+			{`"https://wazuh-indexer.example:9200"`, `"https://a:SECRETPW@wazuh-indexer.example:9200"`},
+			{`"https://wazuh-indexer.example:9200"`, `"https://a:SECRETPW@wazuh-indexer.example:9200/%zz"`},
+			{`"WAZUH_CHECK_PASSWORD"`, `"SECRETPW!"`},
+		} {
+			err := loadErr(t, strings.Replace(good, b.from, b.to, 1))
+			if strings.Contains(err.Error(), "SECRETPW") {
+				t.Fatalf("the error echoes the secret: %v", err)
+			}
+		}
+	})
 
 	t.Run("no vault", func(t *testing.T) {
 		err := loadErr(t, withoutLine(t, good, "secrets_file"))

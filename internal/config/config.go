@@ -1525,18 +1525,26 @@ func (c *Config) validateWazuhCheck() []error {
 		return nil
 	}
 	var errs []error
+	// The URL is never echoed: a refused one may carry a password in its
+	// userinfo, and this error reaches the startup log and every console
+	// operator. A parsed URL is shown redacted; an unparsable one not at all.
 	u, err := url.Parse(w.URL)
 	switch {
 	case err != nil:
-		errs = append(errs, fmt.Errorf("idp.wazuh_check.url: %q does not parse: %v", w.URL, err))
-	case u.Scheme != "https" || u.Host == "" || u.User != nil || (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "":
-		errs = append(errs, fmt.Errorf("idp.wazuh_check.url: %q: use https://HOST[:PORT] with no path, query or userinfo -- the request carries the indexer password", w.URL))
+		errs = append(errs, errors.New("idp.wazuh_check.url: does not parse as a URL -- use https://HOST[:PORT]"))
+	case u.Scheme != "https" || u.Host == "" || u.User != nil || (u.Path != "" && u.Path != "/") ||
+		u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || strings.ContainsAny(w.URL, "?#"):
+		// '?' and '#' are refused even when empty: "https://h:9200?" parses
+		// with no query, and a URL built from it by string joining would ask
+		// the indexer's root, which answers 200 for any name.
+		errs = append(errs, fmt.Errorf("idp.wazuh_check.url: %q: use https://HOST[:PORT] with no path, query, fragment or userinfo -- the request carries the indexer password", u.Redacted()))
 	}
 	if w.User == "" || strings.TrimSpace(w.User) != w.User || strings.ContainsAny(w.User, ":\r\n") {
 		errs = append(errs, fmt.Errorf("idp.wazuh_check.user: %q: required, with no ':', line break or edge whitespace", w.User))
 	}
 	if !wazuhVaultNameRe.MatchString(w.PasswordName) {
-		errs = append(errs, fmt.Errorf("idp.wazuh_check.password_name: %q: the vault NAME of the password (a letter or _ then letters, digits or _), never the value", w.PasswordName))
+		// Not echoed: a value written here by mistake is the password itself.
+		errs = append(errs, errors.New("idp.wazuh_check.password_name: not a vault name -- write the NAME the password has in the vault (a letter or _ then letters, digits or _), never the value"))
 	}
 	if w.CAFile != "" && !filepath.IsAbs(w.CAFile) {
 		errs = append(errs, fmt.Errorf("idp.wazuh_check.ca_file: %q is not an absolute path", w.CAFile))

@@ -14,7 +14,9 @@ You need:
 - `[connect] client_id` and `callback_port` set, so the console can hand out
   connect scripts ([Connect Claude Code](connect-claude-code.md#before-you-start-the-operator-once));
 - optional: `[idp.wazuh_check]` set, to check each new username against
-  Wazuh ([Configuration reference](../reference/configuration.md#idpwazuh_check));
+  Wazuh ([Configuration reference](../reference/configuration.md#idpwazuh_check)).
+  The indexer account it uses holds security REST API rights (there is no
+  read-only grant), so make it a dedicated account;
 - an identity provider that re-reads its users file when it changes
   (Authelia: `watch: true` in its configuration, or a restart). Every
   account change below reaches the IdP only when it reloads that file.

@@ -102,8 +102,9 @@ type Deps struct {
 // Service is the management service. Its methods are safe for concurrent
 // use; state changes are serialised.
 type Service struct {
-	d  Deps
-	mu sync.Mutex
+	d     Deps
+	mu    sync.Mutex
+	wazuh wazuhCache // recent Wazuh username answers (wazuhcheck.go)
 }
 
 // New builds the service.

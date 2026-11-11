@@ -172,14 +172,26 @@ Opt-in check of a new account's username against the Wazuh indexer
 warning only; it never refuses an account. One request per check, at most
 5 seconds, no redirect followed, certificate verified, through the egress
 guard with private ranges allowed (loopback and link-local stay refused).
+`found` needs a 200 whose JSON names the user; any other 200 is
+`unchecked`. A `found` or `not_found` answer for a name is reused for 60
+seconds, so repeated checks do not reach the indexer.
 Off when `url` is empty; any other key set without `url` is refused.
 
 | Key | Type | Default | Required | Constraints and meaning |
 |---|---|---|---|---|
-| `url` | string | `""` (check off) | to turn it on | The indexer's base URL: `https://HOST[:PORT]`, no path, query or userinfo. |
-| `user` | string | none | with `url` | The indexer user the backend authenticates as (HTTP basic). It needs read access to the security plugin's internal users. No `:`, line break or edge whitespace. |
+| `url` | string | `""` (check off) | to turn it on | The indexer's base URL: `https://HOST[:PORT]`, no path, query, fragment or userinfo (an empty `?` or `#` is refused too). A refused value is not echoed in the error. |
+| `user` | string | none | with `url` | The indexer user the backend authenticates as (HTTP basic). No `:`, line break or edge whitespace. See the privilege note below. |
 | `password_name` | string | none | with `url` | The vault NAME of that user's password, read from `[vault]` on each check and never printed. A letter or `_`, then letters, digits or `_`. Needs `[vault] secrets_file`. |
 | `ca_file` | string | `""` (system roots) | no | Absolute path of a PEM CA for the indexer's certificate. Must pass the same root-ownership check as `users_file`. |
+
+The internal users endpoint is part of the security plugin's REST API,
+which has no read-only grant. The `user` needs a role allowed that API: a
+role listed in `plugins.security.restapi.roles_enabled`, or, where the
+indexer supports per-endpoint REST permissions, a role with
+`restapi:admin/internalusers`. Either one can also create, change and
+delete internal users. Use a dedicated account that does nothing else,
+keep its password only in the vault, and rotate it like the other
+credentials ([Rotate credentials and keys](../how-to/rotate-credentials-and-keys.md)).
 
 ## [admin]
 

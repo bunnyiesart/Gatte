@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -12,7 +13,7 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
-	"strings"
+	"sync"
 	"time"
 
 	"github.com/bunnyiesart/Gatte/internal/config"
@@ -27,8 +28,48 @@ import (
 // line on the check, never a refusal, and an indexer that cannot be asked
 // costs the wizard at most wazuhCheckTimeout.
 
-// wazuhCheckTimeout bounds the whole exchange: the wizard waits on it.
-const wazuhCheckTimeout = 5 * time.Second
+// wazuhCheckTimeout bounds the whole exchange: the wizard waits on it. A
+// variable only so a test can shorten it.
+var wazuhCheckTimeout = 5 * time.Second
+
+// wazuhCacheTTL is how long a found / not-found answer for one name is
+// reused. The wizard re-checks on every step, and the indexer account
+// holds REST API admin rights, so repeated asks are kept off it; it also
+// slows walking the indexer's user list through this check.
+const wazuhCacheTTL = 60 * time.Second
+
+// wazuhCacheMax bounds the cache; past it, the cache is dropped whole.
+const wazuhCacheMax = 256
+
+// wazuhCache holds recent definite answers, keyed by indexer, user and name.
+type wazuhCache struct {
+	mu sync.Mutex
+	m  map[string]wazuhCached
+}
+
+type wazuhCached struct {
+	at  time.Time
+	ans adminapi.WazuhUserCheck
+}
+
+func (c *wazuhCache) get(key string, now time.Time) (adminapi.WazuhUserCheck, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	e, ok := c.m[key]
+	if !ok || now.Sub(e.at) >= wazuhCacheTTL {
+		return adminapi.WazuhUserCheck{}, false
+	}
+	return e.ans, true
+}
+
+func (c *wazuhCache) put(key string, now time.Time, ans adminapi.WazuhUserCheck) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.m == nil || len(c.m) >= wazuhCacheMax {
+		c.m = map[string]wazuhCached{}
+	}
+	c.m[key] = wazuhCached{at: now, ans: ans}
+}
 
 // wazuhAddrPolicy is the egress policy for the indexer. Unlike a
 // backend's URL, which reaches the registry through the console, this
@@ -48,6 +89,10 @@ func (s *Service) wazuhUser(ctx context.Context, cfg *config.Config, username st
 	w := cfg.IdP.WazuhCheck
 	if !w.Enabled() {
 		return nil
+	}
+	key := w.URL + "\x00" + w.User + "\x00" + username
+	if ans, ok := s.wazuh.get(key, s.d.Now()); ok {
+		return &ans
 	}
 	unchecked := func(why string) *adminapi.WazuhUserCheck {
 		return &adminapi.WazuhUserCheck{Status: adminapi.WazuhUserUnchecked, Message: "Could not check Wazuh: " + why + "."}
@@ -72,8 +117,14 @@ func (s *Service) wazuhUser(ctx context.Context, cfg *config.Config, username st
 	if err != nil {
 		return unchecked(err.Error())
 	}
-	endpoint := strings.TrimSuffix(w.URL, "/") + "/_plugins/_security/api/internalusers/" + url.PathEscape(username)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	base, err := url.Parse(w.URL)
+	if err != nil {
+		return unchecked("the configured url does not parse")
+	}
+	// JoinPath escapes the name as one path segment, so a name cannot walk
+	// to another endpoint of the indexer.
+	endpoint := base.JoinPath("_plugins", "_security", "api", "internalusers", username)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
 	if err != nil {
 		return unchecked("the request could not be built")
 	}
@@ -85,18 +136,30 @@ func (s *Service) wazuhUser(ctx context.Context, cfg *config.Config, username st
 		return unchecked(wazuhReason(err))
 	}
 	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10)) // nothing in it is needed
 
+	var ans adminapi.WazuhUserCheck
 	switch resp.StatusCode {
 	case http.StatusOK:
-		return &adminapi.WazuhUserCheck{Status: adminapi.WazuhUserFound, Message: fmt.Sprintf("Found in Wazuh: %s.", username)}
+		// A 200 counts only when it is the internal-users answer for this
+		// name: a JSON object with the name as a top-level key. Anything
+		// else (a proxy page, the cluster banner) would call every name found.
+		var body map[string]json.RawMessage
+		if err := json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&body); err != nil {
+			return unchecked("the indexer's answer is not the internal users API")
+		}
+		if _, ok := body[username]; !ok {
+			return unchecked("the indexer's answer does not name the user")
+		}
+		ans = adminapi.WazuhUserCheck{Status: adminapi.WazuhUserFound, Message: fmt.Sprintf("Found in Wazuh: %s.", username)}
 	case http.StatusNotFound:
-		return &adminapi.WazuhUserCheck{Status: adminapi.WazuhUserNotFound, Message: fmt.Sprintf("Not found in Wazuh: %s. Use the same username the person has in the SIEM.", username)}
+		ans = adminapi.WazuhUserCheck{Status: adminapi.WazuhUserNotFound, Message: fmt.Sprintf("Not found in Wazuh: %s. Use the same username the person has in the SIEM.", username)}
 	case http.StatusUnauthorized, http.StatusForbidden:
 		return unchecked(fmt.Sprintf("the indexer refused user %s (HTTP %d)", w.User, resp.StatusCode))
 	default:
 		return unchecked(fmt.Sprintf("the indexer answered HTTP %d", resp.StatusCode))
 	}
+	s.wazuh.put(key, s.d.Now(), ans)
+	return &ans
 }
 
 // wazuhClient is an HTTP client pinned to the indexer: the shared egress

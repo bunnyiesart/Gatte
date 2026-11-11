@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -656,6 +657,47 @@ func TestAuditAndPeople_DoNotReadTheWholeTrail(t *testing.T) {
 	people, err := svc.People(context.Background())
 	if err != nil || len(people.Seen) != 1 || people.Seen[0].Calls != 3 || people.Seen[0].Name != "Ana" || !people.Seen[0].LastCall.Equal(now.Add(2*time.Second)) {
 		t.Fatalf("people %+v, %v", people, err)
+	}
+}
+
+// failingAnalysts is a trail whose per-analyst summary fails: a read that
+// must not touch the trail still answers on it.
+type failingAnalysts struct{ *auditsqlite.Recorder }
+
+func (failingAnalysts) Analysts(context.Context) ([]audit.AnalystSeen, error) {
+	return nil, errors.New("the trail was read")
+}
+
+// TestPeopleRoles_ReadsNothingFromTheTrail: GET /v1/people/roles answers the
+// roles and groups of /v1/people without the trail read that builds seen
+// (design/adr/0061 §3); /v1/people still makes that read.
+func TestPeopleRoles_ReadsNothingFromTheTrail(t *testing.T) {
+	h := newHarness(t)
+	svc, err := admin.New(admin.Deps{
+		Config: func() (*config.Config, error) { return h.cfg, nil },
+		Tools:  h.tools, Blocks: h.blocks, Trail: failingAnalysts{h.trail},
+		Record: func(context.Context, *config.Config, audit.Record) error { return nil },
+		IsBusy: store.IsBusy,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	roles, err := svc.PeopleRoles(context.Background())
+	if err != nil {
+		t.Fatalf("people roles on a failing trail: %v", err)
+	}
+	want := adminapi.PeopleRoles{
+		Roles: []adminapi.Role{
+			{Name: "ir", Groups: []string{"blue-ir"}, Tools: []string{"casemgmt.*"}},
+			{Name: "tier1", Groups: []string{"blue-tier1"}, Tools: []string{"casemgmt.list_cases"}},
+		},
+		Groups: []adminapi.Group{{Name: "blue-ir", Role: "ir"}, {Name: "blue-tier1", Role: "tier1"}},
+	}
+	if !reflect.DeepEqual(roles, want) {
+		t.Fatalf("people roles = %+v, want %+v", roles, want)
+	}
+	if _, err := svc.People(context.Background()); err == nil {
+		t.Fatal("people answered without reading the trail")
 	}
 }
 

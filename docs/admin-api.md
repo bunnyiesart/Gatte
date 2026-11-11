@@ -430,6 +430,11 @@ front writes CSV through `frontkit.CSVCell` (hidden code points written
 visibly, a cell starting with `=`, `+`, `-`, `@`, tab or CR prefixed with
 an apostrophe), and a front that offers CSV should do the same.
 
+`GET /v1/people` reads the trail as well, to build `seen`. A front that
+draws only roles and groups calls `GET /v1/people/roles` (contract 1.10.0)
+instead: the same `roles` and `groups`, and no read of the trail. A
+backend older than 1.10.0 answers it `unknown_route`.
+
 ## Blocks that end, deleting and offboarding
 
 With the feature `block_until` (1.4.0), `POST /v1/access/block` takes

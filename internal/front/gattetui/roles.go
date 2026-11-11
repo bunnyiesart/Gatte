@@ -44,7 +44,7 @@ func rolesSection(e env) ([]row, error) {
 		notes = append(notes, textRow(stDim.Render("Read-only: editing needs console_manages and -manage-users.")))
 	}
 	rows := append([]row{heading("Roles")}, notes...)
-	p, err := e.op.People(ctx())
+	p, err := e.op.PeopleRoles(ctx())
 	if err != nil {
 		return append(rows, textRow(stBad.Render("The roles could not be read: "+vis(errText(err))))), nil
 	}

@@ -346,6 +346,13 @@ func (c *Client) People(ctx context.Context) (People, error) {
 	return v, c.do(ctx, http.MethodGet, "/v1/people", nil, nil, &v)
 }
 
+// PeopleRoles returns roles and groups only. Unlike People it makes the
+// gateway read nothing from the audit trail (1.10.0).
+func (c *Client) PeopleRoles(ctx context.Context) (PeopleRoles, error) {
+	var v PeopleRoles
+	return v, c.do(ctx, http.MethodGet, "/v1/people/roles", nil, nil, &v)
+}
+
 // Connect returns how an analyst connects, with the scripts rendered.
 func (c *Client) Connect(ctx context.Context, username string) (Connect, error) {
 	q := url.Values{}

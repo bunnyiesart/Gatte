@@ -12,7 +12,7 @@ import "time"
 
 // ContractVersion is the api/admin.openapi.yaml info.version these types
 // implement.
-const ContractVersion = "1.9.0"
+const ContractVersion = "1.10.0"
 
 // Default socket paths (design/adr/0040 §1).
 const (
@@ -548,6 +548,13 @@ type Seen struct {
 	LastCall time.Time `json:"last_call"`
 	Calls    int       `json:"calls"`
 	Blocked  bool      `json:"blocked"`
+}
+
+// PeopleRoles answers GET /v1/people/roles: People without Seen, so the
+// gateway does not read the audit trail to answer it.
+type PeopleRoles struct {
+	Roles  []Role  `json:"roles"`
+	Groups []Group `json:"groups"`
 }
 
 // People answers GET /v1/people.

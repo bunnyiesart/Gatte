@@ -75,6 +75,7 @@ type Server struct {
 	acctOrder   []string
 	groups      []adminapi.AssignableGroup
 	people      adminapi.People
+	peopleReads int // GET /v1/people answered: the read that touches the trail
 	quota       []adminapi.QuotaUsage
 
 	serveReqs map[int64]adminapi.ServeRequest
@@ -100,6 +101,15 @@ func New() *Server {
 	s.seed()
 	s.routes()
 	return s
+}
+
+// PeopleReads is how many times GET /v1/people was answered. That is the
+// read for which the real gateway reads the audit trail; a front that shows
+// roles only must leave it at zero.
+func (s *Server) PeopleReads() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.peopleReads
 }
 
 // Handler is the fake's HTTP surface. Mount it on a listener, or serve it from

@@ -12,6 +12,14 @@ import (
 // testFront builds a console wired to the seeded fake, for rendering checks.
 func testFront(t *testing.T) *Front {
 	t.Helper()
+	f, _ := testFrontOn(t)
+	return f
+}
+
+// testFrontOn is testFront that also hands back the fake, to check what the
+// console asked of it.
+func testFrontOn(t *testing.T) (*Front, *adminapitest.Clients) {
+	t.Helper()
 	c := adminapitest.Start(t)
 	kit, err := frontkit.New(frontkit.Config{Listen: "127.0.0.1:0"})
 	if err != nil {
@@ -22,7 +30,33 @@ func testFront(t *testing.T) *Front {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	return f
+	return f, c
+}
+
+// TestRolesSections_MakeNoAuditRead: both Roles sections draw roles and
+// groups from GET /v1/people/roles and never call GET /v1/people, the read
+// that makes the gateway read the audit trail (design/adr/0061 §3).
+func TestRolesSections_MakeNoAuditRead(t *testing.T) {
+	f, c := testFrontOn(t)
+	r := httptest.NewRequest("GET", "/users", nil)
+	panel, err := f.rolesPanelFragment(r)
+	if err != nil {
+		t.Fatalf("roles panel: %v", err)
+	}
+	view, err := f.rolesViewSection(r)
+	if err != nil {
+		t.Fatalf("roles view: %v", err)
+	}
+	for name, html := range map[string]string{"panel": string(panel), "view": string(view)} {
+		for _, want := range []string{"tier1-analyst", "soc-tier1", "ir-lead", "soc-ir"} {
+			if !strings.Contains(html, want) {
+				t.Errorf("roles %s is missing %q", name, want)
+			}
+		}
+	}
+	if n := c.Server.PeopleReads(); n != 0 {
+		t.Errorf("the Roles sections called GET /v1/people %d times; it reads the audit trail", n)
+	}
 }
 
 // TestRolesPanel_RendersTheMatrixFromTheSeededFake renders the Roles section

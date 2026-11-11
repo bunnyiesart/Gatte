@@ -32,14 +32,14 @@ func RoleTools(r config.Role) []string {
 	return tools
 }
 
-// People returns the roles with their groups and tools, and the analysts
-// the trail has seen, most recent first.
-func (s *Service) People(ctx context.Context) (adminapi.People, error) {
+// PeopleRoles returns the roles with their groups and tools, from the
+// configuration alone: it reads nothing from the audit trail.
+func (s *Service) PeopleRoles(context.Context) (adminapi.PeopleRoles, error) {
 	cfg, err := s.config()
 	if err != nil {
-		return adminapi.People{}, err
+		return adminapi.PeopleRoles{}, err
 	}
-	p := adminapi.People{Roles: []adminapi.Role{}, Groups: Groups(cfg), Seen: []adminapi.Seen{}}
+	p := adminapi.PeopleRoles{Roles: []adminapi.Role{}, Groups: Groups(cfg)}
 	for _, role := range cfg.Roles {
 		r := adminapi.Role{Name: role.Name, Groups: []string{}, Tools: RoleTools(role)}
 		for _, g := range p.Groups {
@@ -49,6 +49,17 @@ func (s *Service) People(ctx context.Context) (adminapi.People, error) {
 		}
 		p.Roles = append(p.Roles, r)
 	}
+	return p, nil
+}
+
+// People returns the roles with their groups and tools, and the analysts
+// the trail has seen, most recent first.
+func (s *Service) People(ctx context.Context) (adminapi.People, error) {
+	roles, err := s.PeopleRoles(ctx)
+	if err != nil {
+		return adminapi.People{}, err
+	}
+	p := adminapi.People{Roles: roles.Roles, Groups: roles.Groups, Seen: []adminapi.Seen{}}
 	if err := need(s.d.Trail != nil, "audit trail"); err != nil {
 		return p, err
 	}

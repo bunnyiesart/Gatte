@@ -190,6 +190,10 @@ var table = []route{
 		v, err := s.o.Service.People(r.Context())
 		return 200, v, err
 	}},
+	{Route{"GET", "/v1/people/roles", "peopleRoles", opSock}, func(s *Server, r *request) (int, any, error) {
+		v, err := s.o.Service.PeopleRoles(r.Context())
+		return 200, v, err
+	}},
 	{Route{"GET", "/v1/connect", "connect", opSock}, func(s *Server, r *request) (int, any, error) {
 		v, err := s.o.Service.Connect(r.Context(), r.URL.Query().Get("username"))
 		return 200, v, err

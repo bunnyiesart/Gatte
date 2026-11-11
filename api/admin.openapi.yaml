@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Gatte management API
-  version: 1.9.0
+  version: 1.10.0
   summary: The backend every Gatte front talks to (design/adr/0040).
   description: |
     Served by `mcp-gateway admin` over UNIX sockets only. There is no TCP
@@ -169,6 +169,9 @@ info:
       `auth_name`, `key_name` and `remote_kind` (left out: `streamable`).
       The result carries `remote_kind`. Under `console_manages`; no new
       feature, since a remote entry needs nothing on the host.
+    - 1.10.0: `GET /v1/people/roles` on the operator socket: the roles and
+      groups of `GET /v1/people` without `seen`, so the gateway reads
+      nothing from the audit trail to answer it. No new feature.
   license:
     name: Apache-2.0
 servers:
@@ -1291,6 +1294,17 @@ components:
         last_call: {type: string, format: date-time}
         calls: {type: integer}
         blocked: {type: boolean}
+    PeopleRoles:
+      type: object
+      required: [roles, groups]
+      properties:
+        roles:
+          type: array
+          items: {$ref: '#/components/schemas/Role'}
+        groups:
+          type: array
+          description: Every `[group_to_role]` key, sorted.
+          items: {$ref: '#/components/schemas/Group'}
     People:
       type: object
       required: [roles, groups, seen]
@@ -2433,6 +2447,19 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/People'}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/people/roles:
+    get:
+      operationId: peopleRoles
+      tags: [people]
+      x-gatte-socket: [operator]
+      summary: Roles with their groups and tools, and every group, without reading the audit trail (1.10.0).
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PeopleRoles'}
         default: {$ref: '#/components/responses/Error'}
   /v1/connect:
     get:

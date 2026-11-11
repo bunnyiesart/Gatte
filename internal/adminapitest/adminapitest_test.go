@@ -39,6 +39,7 @@ func TestFakeServesEveryOperation(t *testing.T) {
 	check("listMaintenance", first(op.ListMaintenance(ctx)))
 	check("quotaUsage", first(op.QuotaUsage(ctx, adminapi.QuotaQuery{})))
 	check("people", first(op.People(ctx)))
+	check("peopleRoles", first(op.PeopleRoles(ctx)))
 	check("connect", first(op.Connect(ctx, "ana.lima")))
 	_, _, err := op.ConnectScript(ctx, adminapi.OSMacOS, "ana.lima")
 	check("connectScript", err)

@@ -5,8 +5,9 @@ package gattetui
 // Every gate is the backend's (design/adr/0047, 0048, 0040 §3, 0032): a tool
 // stays pending until approved, an approval binds to the fingerprint the
 // review showed, and a sensitive tool also needs a clear and a non_read role
-// before it is served. So approving, revoking and clearing happen on the
-// review page only, where the definition and its fingerprint are on screen.
+// before it is served. Each tool's actions open as one menu (design/adr/0061
+// §5); approving is offered only on the review page, where the definition
+// and its fingerprint are on screen.
 
 import (
 	"fmt"
@@ -45,17 +46,79 @@ func toolsPanel(e env, d adminapi.UpstreamDetail) ([]row, error) {
 		})
 	}
 	for _, t := range d.Tools {
-		tool := t.Tool
 		note := classText(t.Class)
 		if t.Class == adminapi.ClassSensitive && t.Status == adminapi.StatusApproved && !t.Usable {
 			note += stWarn.Render("  not served until cleared")
 		}
 		rows = append(rows, row{
-			text:    cols(toolCols, vis(t.Tool), toolStatusText(t), note),
-			actions: []action{{key: "enter", label: "review", run: func() tea.Cmd { return push(toolPage(server, tool)) }}},
+			text: cols(toolCols, vis(t.Tool), toolStatusText(t), note),
+			actions: []action{{key: "enter", label: "actions", run: func() tea.Cmd {
+				return openMenu(vis(server+"."+t.Tool), toolActions(e, t, false, false))
+			}}},
 		})
 	}
 	return rows, nil
+}
+
+// toolActions are one tool's actions, offered together in one menu
+// (design/adr/0061 §5). Approving binds to the fingerprint of the
+// definition on screen, so "Approve tool" is offered only on the review page
+// (onReview) and only when that page could draw the definition (shown);
+// from the tools panel the menu offers the review instead.
+func toolActions(e env, t adminapi.Tool, onReview, shown bool) []action {
+	server, tool, ref := t.Server, t.Tool, vis(t.Server+"."+t.Tool)
+	var out []action
+	if !onReview {
+		label := "Review"
+		if t.Status != adminapi.StatusApproved {
+			label = "Review to approve"
+		}
+		out = append(out, action{key: "r", label: label, run: func() tea.Cmd { return push(toolPage(server, tool)) }})
+	}
+	if shown && t.Status != adminapi.StatusApproved {
+		fp := t.ObservedHash
+		out = append(out, action{key: "a", label: "Approve tool", run: func() tea.Cmd {
+			// The fingerprint sent is the one this read showed; the backend
+			// refuses it if the tool advertises another by now.
+			return confirm("Approve tool "+ref+" at fingerprint "+vis(fp)+"?", func() tea.Cmd {
+				return do(func() result {
+					res, err := e.op.ApproveTool(ctx(), adminapi.ApproveRequest{Server: server, Tool: tool, Fingerprint: fp})
+					return fromAction(res.ActionResult, err, "Approved "+server+"."+tool+".")
+				})
+			})
+		}})
+	}
+	if t.Status == adminapi.StatusApproved {
+		out = append(out, action{key: "v", label: "Revoke", run: func() tea.Cmd {
+			return confirm("Revoke "+ref+"? It returns to pending and is no longer served.", func() tea.Cmd {
+				return do(func() result {
+					res, err := e.op.RevokeTool(ctx(), adminapi.ToolRef{Server: server, Tool: tool})
+					return fromAction(res.ActionResult, err, "Revoked "+server+"."+tool+".")
+				})
+			})
+		}})
+	}
+	cleared := t.SensitiveClearedHash != "" && t.SensitiveClearedHash == t.ApprovedHash
+	if t.Class == adminapi.ClassSensitive && t.Status == adminapi.StatusApproved && !cleared && e.caps().Manages && e.has(adminapi.FeatureToolClear) {
+		approved := t.ApprovedHash
+		out = append(out, action{key: "c", label: "Clear for serving", run: func() tea.Cmd {
+			return confirm("Clear "+ref+" for serving at its approved fingerprint "+vis(approved)+"?", func() tea.Cmd {
+				return do(func() result {
+					res, err := e.op.ClearTool(ctx(), adminapi.ToolRef{Server: server, Tool: tool})
+					r := fromAction(res.ActionResult, err, "Cleared "+server+"."+tool+".")
+					if err == nil && len(res.ClearedBy) > 0 {
+						var roles []string
+						for _, cb := range res.ClearedBy {
+							roles = append(roles, cb.Role)
+						}
+						r.output = append(r.output, "Reached by: "+strings.Join(roles, ", "))
+					}
+					return r
+				})
+			})
+		}})
+	}
+	return out
 }
 
 // ---- one tool's review
@@ -103,45 +166,9 @@ func fillTool(e env, server, tool string) content {
 		}
 	}
 
-	fp := t.ObservedHash
-	if shown && t.Status != adminapi.StatusApproved {
-		c.actions = append(c.actions, action{key: "a", label: "approve", run: func() tea.Cmd {
-			// The fingerprint sent is the one this read showed; the backend
-			// refuses it if the tool advertises another by now.
-			return confirm("Approve "+vis(server+"."+tool)+" at fingerprint "+vis(fp)+"?", func() tea.Cmd {
-				return do(func() result {
-					res, err := e.op.ApproveTool(ctx(), adminapi.ApproveRequest{Server: server, Tool: tool, Fingerprint: fp})
-					return fromAction(res.ActionResult, err, "Approved "+server+"."+tool+".")
-				})
-			})
-		}})
-	}
-	if t.Status == adminapi.StatusApproved {
-		c.actions = append(c.actions, action{key: "v", label: "revoke", run: func() tea.Cmd {
-			return confirm("Revoke "+vis(server+"."+tool)+"? It returns to pending and is no longer served.", func() tea.Cmd {
-				return do(func() result {
-					res, err := e.op.RevokeTool(ctx(), adminapi.ToolRef{Server: server, Tool: tool})
-					return fromAction(res.ActionResult, err, "Revoked "+server+"."+tool+".")
-				})
-			})
-		}})
-	}
-	if sensitive && t.Status == adminapi.StatusApproved && !cleared && e.caps().Manages && e.has(adminapi.FeatureToolClear) {
-		c.actions = append(c.actions, action{key: "c", label: "clear", run: func() tea.Cmd {
-			return confirm("Clear "+vis(server+"."+tool)+" for serving at its approved fingerprint "+vis(t.ApprovedHash)+"?", func() tea.Cmd {
-				return do(func() result {
-					res, err := e.op.ClearTool(ctx(), adminapi.ToolRef{Server: server, Tool: tool})
-					r := fromAction(res.ActionResult, err, "Cleared "+server+"."+tool+".")
-					if err == nil && len(res.ClearedBy) > 0 {
-						var roles []string
-						for _, cb := range res.ClearedBy {
-							roles = append(roles, cb.Role)
-						}
-						r.output = append(r.output, "Reached by: "+strings.Join(roles, ", "))
-					}
-					return r
-				})
-			})
+	if items := toolActions(e, t, true, shown); len(items) > 0 {
+		c.actions = append(c.actions, action{key: "enter", label: "actions", run: func() tea.Cmd {
+			return openMenu(vis(server+"."+tool), items)
 		}})
 	}
 	return c

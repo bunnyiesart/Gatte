@@ -16,7 +16,7 @@ import (
 //
 // Order uses gaps of ten, as in the console: tabs Servers 10, Users 20;
 // detail panels Tools 20, Secrets 30, Maintenance 40; Users sections People
-// 10, Roles 20, Blocklist 30.
+// 10, Roles 20.
 
 // A Screen is one tab. Root builds the tab's first page.
 type Screen struct {

@@ -109,8 +109,26 @@ type (
 	}
 	pushMsg   struct{ p *page }
 	promptMsg struct{ p *prompt }
+	menuMsg   struct{ m *menu }
 	resultMsg struct{ r result }
 )
+
+// A menu is a small popup of actions that belong together, such as one
+// tool's (design/adr/0061 §5). An item is chosen with the arrows and enter,
+// or by its key; esc closes it and nothing is sent.
+type menu struct {
+	title  string
+	items  []action
+	cursor int
+}
+
+func openMenu(title string, items []action) tea.Cmd {
+	if len(items) == 0 {
+		return nil
+	}
+	m := &menu{title: title, items: items}
+	return func() tea.Msg { return menuMsg{m} }
+}
 
 func push(p *page) tea.Cmd { return func() tea.Msg { return pushMsg{p} } }
 
@@ -129,6 +147,7 @@ type app struct {
 	width  int
 	height int
 	prompt *prompt
+	menu   *menu
 	result *result
 	// origin is the page the last action started from: the page a result
 	// with back leaves, whichever tab is shown when it answers.
@@ -206,6 +225,9 @@ func (a *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case promptMsg:
 		a.prompt = m.p
 		return a, nil
+	case menuMsg:
+		a.menu = m.m
+		return a, nil
 	case resultMsg:
 		r := m.r
 		a.result = &r
@@ -257,6 +279,9 @@ func (a *app) key(m tea.KeyMsg) tea.Cmd {
 		return a.promptKey(m)
 	}
 	a.result = nil
+	if a.menu != nil {
+		return a.menuKey(k)
+	}
 	p := a.top()
 	switch k {
 	case "q":
@@ -329,11 +354,54 @@ func (a *app) promptKey(m tea.KeyMsg) tea.Cmd {
 	return nil
 }
 
+// menuKey drives an open menu; it holds every key until an item runs or it
+// is closed.
+func (a *app) menuKey(k string) tea.Cmd {
+	m := a.menu
+	switch k {
+	case "esc", "q", "left", "h":
+		a.menu = nil
+		return nil
+	case "up", "k":
+		m.cursor = max(0, m.cursor-1)
+		return nil
+	case "down", "j":
+		m.cursor = min(len(m.items)-1, m.cursor+1)
+		return nil
+	case "enter":
+		a.menu = nil
+		return m.items[m.cursor].run()
+	}
+	for _, it := range m.items {
+		if it.key == k {
+			a.menu = nil
+			return it.run()
+		}
+	}
+	return nil
+}
+
+func (m *menu) view() string {
+	lines := []string{stBold.Render(m.title)}
+	for i, it := range m.items {
+		line := " " + it.key + "  " + it.label + " "
+		if i == m.cursor {
+			line = stMenuSel.Render(line)
+		}
+		lines = append(lines, line)
+	}
+	return bevel(true).Render(strings.Join(lines, "\n"))
+}
+
 func cancelled() tea.Cmd {
 	return func() tea.Msg { return resultMsg{result{summary: "Cancelled. Nothing was sent."}} }
 }
 
 // ---- drawing
+//
+// The screen is a classic window: a grey title bar, the tabs as square
+// buttons, the page in a sunken bevelled panel, then the result, the prompt
+// or the open menu, and the buttons of the actions in force.
 
 func (a *app) View() string {
 	var b strings.Builder
@@ -343,7 +411,7 @@ func (a *app) View() string {
 	if p == nil {
 		return b.String()
 	}
-	b.WriteString(stTitle.Render(a.crumbs()) + "\n")
+	b.WriteString(stBold.Render(a.crumbs()) + "\n")
 
 	var foot []string
 	if a.result != nil {
@@ -352,8 +420,12 @@ func (a *app) View() string {
 	if a.prompt != nil {
 		foot = append(foot, a.prompt.view())
 	}
-	foot = append(foot, a.help(p))
+	if a.menu != nil {
+		foot = append(foot, strings.Split(a.menu.view(), "\n")...)
+	}
+	foot = append(foot, a.help(p)...)
 
+	inner := max(10, a.width-4) // the panel's border and padding
 	var body []string
 	if a.meErr != nil {
 		body = append(body, stBad.Render("The management API did not answer: "+vis(a.meErr.Error())))
@@ -364,7 +436,7 @@ func (a *app) View() string {
 	if !p.loaded {
 		body = append(body, stDim.Render("Reading..."))
 	}
-	room := a.height - 3 - len(foot) - len(body)
+	room := a.height - 5 - len(foot) - len(body)
 	if room < 3 {
 		room = 3
 	}
@@ -386,9 +458,10 @@ func (a *app) View() string {
 		}
 		body = append(body, line)
 	}
-	for _, l := range body {
-		b.WriteString(a.fit(l) + "\n")
+	for i, l := range body {
+		body[i] = lipgloss.NewStyle().MaxWidth(inner).Render(l)
 	}
+	b.WriteString(bevel(false).Width(inner+2).Render(strings.Join(body, "\n")) + "\n")
 	for _, l := range foot {
 		b.WriteString(a.fit(l) + "\n")
 	}
@@ -402,19 +475,21 @@ func (a *app) header() string {
 	if who == "" {
 		who = a.env.me.Operator.Identity
 	}
-	parts := []string{stBold.Render("Gatte"), "operator " + vis(dash(who))}
+	// Holding the accounts socket is root's power, so it is marked in red.
+	socket := stBar.Render("operator socket only")
 	if a.env.acc != nil {
-		parts = append(parts, stWarn.Render("accounts socket open (root)"))
-	} else {
-		parts = append(parts, stDim.Render("operator socket only"))
+		socket = stBar.Foreground(lipgloss.Color("1")).Bold(true).Render("accounts socket open (root)")
 	}
-	return strings.Join(parts, "  ")
+	line := stBar.Bold(true).Render(" Gatte") + stBar.Render("  |  operator "+vis(dash(who))+"  |  ") + socket
+	// MaxWidth truncates; Width would wrap a long line onto a second row.
+	line = lipgloss.NewStyle().MaxWidth(a.width).Render(line)
+	return line + stBar.Render(strings.Repeat(" ", max(0, a.width-lipgloss.Width(line))))
 }
 
 func (a *app) tabBar() string {
 	var out []string
 	for i, s := range a.tabs {
-		label := " " + string(rune('1'+i)) + " " + s.Title + " "
+		label := "[ " + string(rune('1'+i)) + " " + s.Title + " ]"
 		if i == a.active {
 			out = append(out, stTabOn.Render(label))
 		} else {
@@ -432,17 +507,32 @@ func (a *app) crumbs() string {
 	return strings.Join(t, " > ")
 }
 
-func (a *app) help(p *page) string {
+// help is the row of buttons in force, wrapped to the screen's width, and
+// the keys that work everywhere.
+func (a *app) help(p *page) []string {
 	switch {
 	case a.prompt != nil && a.prompt.yesNo:
-		return stKey.Render("y") + " yes  " + stDim.Render("any other key: no, nothing is sent")
+		return []string{button("y", "Yes") + "  " + stDim.Render("any other key: No, nothing is sent")}
 	case a.prompt != nil:
-		return stKey.Render("enter") + " send  " + stKey.Render("esc") + " cancel"
+		return []string{button("enter", "OK") + " " + button("esc", "Cancel")}
+	case a.menu != nil:
+		return []string{button("enter", "OK") + " " + button("esc", "Cancel") + "  " + stDim.Render("up/down choose")}
 	}
-	var parts []string
+	var lines []string
+	line := ""
 	for _, act := range p.keys() {
-		parts = append(parts, stKey.Render(act.key)+" "+act.label)
+		bt := button(act.key, act.label)
+		if line != "" && lipgloss.Width(line)+1+lipgloss.Width(bt) > a.width {
+			lines = append(lines, line)
+			line = ""
+		}
+		if line != "" {
+			line += " "
+		}
+		line += bt
 	}
-	parts = append(parts, stDim.Render("tab switch  r refresh  esc back  q quit"))
-	return strings.Join(parts, "  ")
+	if line != "" {
+		lines = append(lines, line)
+	}
+	return append(lines, stDim.Render("tab switch  r refresh  esc back  q quit"))
 }

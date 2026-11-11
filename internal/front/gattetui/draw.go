@@ -10,23 +10,52 @@ import (
 	"github.com/bunnyiesart/Gatte/pkg/frontkit"
 )
 
-// State is drawn by colour and words, never by an emoji or a glyph alone:
-// green is fine, yellow needs a look, red is broken or refused. The ANSI 16
-// colours keep to the operator's own terminal palette, and lipgloss drops
-// colour where NO_COLOR or a dumb terminal asks it to.
+// The look is a classic system UI (design/adr/0061 §1): grey bars, line
+// borders bevelled light on one side and dark on the other, square
+// [ key Label ] buttons, plain text. Colour is kept for state only, never
+// for decoration, and state is always words too, never an emoji or a glyph
+// alone: green is fine, yellow needs a look, red is broken or refused. The
+// ANSI 16 colours keep to the operator's own terminal palette, and lipgloss
+// drops colour where NO_COLOR or a dumb terminal asks it to.
 var (
 	stOK     = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
 	stWarn   = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
 	stBad    = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
 	stDim    = lipgloss.NewStyle().Faint(true)
 	stBold   = lipgloss.NewStyle().Bold(true)
-	stTitle  = lipgloss.NewStyle().Bold(true).Underline(true)
-	stHead   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("4"))
-	stKey    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
 	stCursor = lipgloss.NewStyle().Reverse(true)
-	stTabOn  = lipgloss.NewStyle().Reverse(true).Bold(true)
-	stTabOff = lipgloss.NewStyle().Faint(true)
+
+	grey      = lipgloss.Color("7")
+	light     = lipgloss.Color("15")
+	dark      = lipgloss.Color("8")
+	ink       = lipgloss.Color("0")
+	stBar     = lipgloss.NewStyle().Background(grey).Foreground(ink)
+	stButton  = lipgloss.NewStyle().Background(grey).Foreground(ink)
+	stTabOn   = lipgloss.NewStyle().Background(grey).Foreground(ink).Bold(true)
+	stTabOff  = lipgloss.NewStyle().Faint(true)
+	stMenuSel = lipgloss.NewStyle().Reverse(true).Bold(true)
 )
+
+// bevel is a line border lit from the top left: raised for a popup, sunken
+// for the page's panel, as a classic window draws them.
+func bevel(raised bool) lipgloss.Style {
+	hi, lo := light, dark
+	if !raised {
+		hi, lo = dark, light
+	}
+	return lipgloss.NewStyle().Border(lipgloss.NormalBorder()).
+		BorderTopForeground(hi).BorderLeftForeground(hi).
+		BorderBottomForeground(lo).BorderRightForeground(lo).
+		Padding(0, 1)
+}
+
+// button draws an action as a square [ key Label ] button.
+func button(key, label string) string {
+	if label != "" {
+		label = strings.ToUpper(label[:1]) + label[1:]
+	}
+	return stButton.Render("[ ") + stBold.Inherit(stButton).Render(key) + stButton.Render(" "+label+" ]")
+}
 
 // vis makes untrusted text safe to draw: a control character, an escape
 // sequence or a hidden code point is written as \u{XXXX}.
@@ -70,7 +99,7 @@ func cols(widths []int, cells ...string) string {
 	return b.String()
 }
 
-func heading(s string) row { return textRow(stHead.Render(s)) }
+func heading(s string) row { return textRow(stBold.Render(s)) }
 
 func blank() row { return textRow("") }
 
@@ -92,14 +121,17 @@ func stateText(s string) string {
 	return vis(s)
 }
 
-func signatureText(s string) string {
+// configText is a backend's signature state in the operator's words
+// (design/adr/0061 §2): approving the configuration is an operator's
+// signature over the entry, not a claim that the backend is safe.
+func configText(s string) string {
 	switch s {
 	case "yes":
-		return stOK.Render("Signed")
+		return stOK.Render("Config approved")
 	case "INVALID":
-		return stBad.Render("Signature invalid")
+		return stBad.Render("Changed since approved")
 	}
-	return stBad.Render("Not signed")
+	return stBad.Render("Config not approved")
 }
 
 func toolStatusText(t adminapi.Tool) string {

@@ -33,7 +33,7 @@ func secretsPanel(e env, d adminapi.UpstreamDetail) ([]row, error) {
 	for _, s := range list.Secrets {
 		inVault[s.Name] = s.InVault
 	}
-	redial := "The backend keeps the key it was dialled with until it is redialled: press D on this page."
+	reconnect := "The backend keeps the key it connected with until it reconnects: press C on this page."
 	for _, n := range d.EnvVarNames {
 		state := stDim.Render("unknown")
 		if err == nil {
@@ -42,18 +42,18 @@ func secretsPanel(e env, d adminapi.UpstreamDetail) ([]row, error) {
 				state = stOK.Render("in the vault")
 			}
 		}
-		rows = append(rows, row{text: cols([]int{28}, vis(n), state), actions: secretActions(e, n, redial)})
+		rows = append(rows, row{text: cols([]int{28}, vis(n), state), actions: secretActions(e, n, reconnect)})
 	}
 	return rows, nil
 }
 
-// secretActions are set and delete for one name. A set points at redial,
+// secretActions are set and delete for one name. A set points at reconnecting,
 // since a connected backend keeps the old value until then.
-func secretActions(e env, name, redial string) []action {
+func secretActions(e env, name, reconnect string) []action {
 	return []action{
-		{key: "s", label: "set value", run: func() tea.Cmd { return setSecret(e, name, redial) }},
+		{key: "s", label: "set value", run: func() tea.Cmd { return setSecret(e, name, reconnect) }},
 		{key: "x", label: "delete value", run: func() tea.Cmd {
-			return confirm("Delete the vault's value of "+vis(name)+"? A backend that needs it cannot be dialled again without it.", func() tea.Cmd {
+			return confirm("Delete the vault's value of "+vis(name)+"? A backend that needs it cannot connect again without it.", func() tea.Cmd {
 				return do(func() result {
 					res, err := e.acc.DeleteSecret(ctx(), name)
 					return fromAction(res.ActionResult, err, "Deleted the value of "+name+".")
@@ -63,13 +63,13 @@ func secretActions(e env, name, redial string) []action {
 	}
 }
 
-func setSecret(e env, name, redial string) tea.Cmd {
+func setSecret(e env, name, reconnect string) tea.Cmd {
 	return askHidden("Value of "+vis(name)+" (hidden, never shown again)", func(value string) tea.Cmd {
 		return do(func() result {
 			res, err := e.acc.SetSecret(ctx(), name, value)
 			r := fromAction(res.ActionResult, err, "Wrote "+name+" to the vault.")
 			if r.ok {
-				r.output = append(r.output, redial)
+				r.output = append(r.output, reconnect)
 			}
 			return r
 		})
@@ -89,7 +89,7 @@ func fillVault(e env) content {
 	for _, p := range list.Problems {
 		c.problems = append(c.problems, vis(p.Message))
 	}
-	redial := "A connected backend keeps the key it was dialled with: redial each backend that uses it."
+	reconnect := "A connected backend keeps the key it connected with: reconnect each backend that uses it."
 	c.rows = append(c.rows, textRow(stDim.Render(cols([]int{24, 24}, "NAME", "VALUE", "DECLARED BY"))))
 	for _, s := range list.Secrets {
 		state := stOK.Render("in the vault")
@@ -107,7 +107,7 @@ func fillVault(e env) content {
 		if len(s.DeclaredBy) > 1 {
 			by += stDim.Render("  (shared)")
 		}
-		c.rows = append(c.rows, row{text: cols([]int{24, 24}, vis(s.Name), state, by), actions: secretActions(e, s.Name, redial)})
+		c.rows = append(c.rows, row{text: cols([]int{24, 24}, vis(s.Name), state, by), actions: secretActions(e, s.Name, reconnect)})
 	}
 	c.actions = append(c.actions, action{key: "n", label: "new name", run: func() tea.Cmd {
 		return ask("Secret name", "", func(name string) tea.Cmd {
@@ -119,7 +119,7 @@ func fillVault(e env) content {
 					return refused("Nothing was written: the name looks like NAME=value (the value is not repeated here). Give " + vis(before) + " as the name and the value at the next prompt.")
 				})
 			}
-			return setSecret(e, name, redial)
+			return setSecret(e, name, reconnect)
 		})
 	}})
 	return c

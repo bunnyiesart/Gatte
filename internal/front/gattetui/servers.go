@@ -1,10 +1,11 @@
 package gattetui
 
-// Tab 1, "MCP Servers / APIs" (design/adr/0051, 0052): the list of backends
-// with their health and what needs the operator, and each backend's detail
-// page. The detail page draws the entry and its operator actions (redial,
-// sign, deregister), then every registered DetailPanel in order; the Tools,
-// Secrets and Maintenance panels register from their own files.
+// Tab 1, "MCP Servers / APIs" (design/adr/0051, 0052, 0061): the list of
+// backends with their health and config approval, and each backend's detail
+// page. The detail page draws the entry and its operator actions (reconnect,
+// approve configuration, remove), then every registered DetailPanel in
+// order; the Tools, Secrets and Maintenance panels register from their own
+// files.
 //
 // Adding a backend stays in the CLI and the web console: this front lists,
 // reviews and acts on what is registered.
@@ -27,7 +28,7 @@ func init() {
 
 func serversPage() *page { return newPage("MCP Servers / APIs", fillServers) }
 
-var serverCols = []int{16, 15, 18, 10}
+var serverCols = []int{16, 15, 23}
 
 func fillServers(e env) content {
 	var c content
@@ -35,28 +36,21 @@ func fillServers(e env) content {
 	if err != nil {
 		c.problems = append(c.problems, errText(err))
 	}
-	// What needs the operator, keyed by backend; what names none (the gateway
-	// not reporting) goes above the list.
-	attn := map[string][]string{}
+	// Only what concerns the whole gateway (it not reporting, or in
+	// maintenance) goes above the list. The list carries no per-backend
+	// review marker (design/adr/0061 §3): pending tools are shown in each
+	// backend's tools panel.
 	ov, overr := e.op.Overview(ctx())
 	if overr != nil {
-		c.problems = append(c.problems, "Attention: "+errText(overr))
+		c.problems = append(c.problems, "Gateway state: "+errText(overr))
 	}
 	for _, a := range ov.Attention {
-		name := a.Upstream
-		if name == "" {
-			name = a.Server
-		}
-		if name == "" {
+		if a.Upstream == "" && a.Server == "" {
 			c.rows = append(c.rows, textRow(stWarn.Render(vis(a.Title)+": "+vis(a.Detail))))
-			continue
-		}
-		if !slices.Contains(attn[name], a.Title) {
-			attn[name] = append(attn[name], a.Title)
 		}
 	}
 	health := e.has(adminapi.FeatureBackendHealth)
-	c.rows = append(c.rows, textRow(stDim.Render(cols(serverCols, "MCP SERVER / API", "STATE", "SIGNED", "KIND", "NEEDS REVIEW"))))
+	c.rows = append(c.rows, textRow(stDim.Render(cols(serverCols, "MCP SERVER / API", "STATE", "CONFIG", "KIND"))))
 	if err == nil && len(list.Upstreams) == 0 {
 		c.rows = append(c.rows, textRow(stDim.Render("No backend is registered. Register one with mcp-gateway upstream register.")))
 	}
@@ -65,13 +59,9 @@ func fillServers(e env) content {
 		if health && u.Health != nil {
 			state = stateText(u.Health.State)
 		}
-		need := stOK.Render("nothing")
-		if a := attn[u.Name]; len(a) > 0 {
-			need = stWarn.Render(vis(strings.Join(a, "; ")))
-		}
 		name := u.Name
 		c.rows = append(c.rows, row{
-			text:    cols(serverCols, vis(u.Name), state, signatureText(u.Signature), kindText(u.Transport), need),
+			text:    cols(serverCols, vis(u.Name), state, configText(u.Signature), kindText(u.Transport)),
 			actions: []action{{key: "enter", label: "open", run: func() tea.Cmd { return push(serverPage(name)) }}},
 		})
 	}
@@ -174,7 +164,7 @@ func entryRows(e env, d adminapi.UpstreamDetail) []row {
 	if d.RemoteKind != "" {
 		rows = append(rows, kv("Remote kind", vis(d.RemoteKind)))
 	}
-	rows = append(rows, kv("Signature", signatureText(d.Signature)))
+	rows = append(rows, kv("Config", configText(d.Signature)+stDim.Render("  an operator's approval of this entry, not a safety rating")))
 	if h := d.Health; h != nil && e.has(adminapi.FeatureBackendHealth) {
 		state := stateText(h.State) + stDim.Render("  since "+showTimePtr(h.Since))
 		if h.Cause != "" {
@@ -219,8 +209,8 @@ func serverActions(e env, d adminapi.UpstreamDetail) []action {
 	name := d.Name
 	var out []action
 	if caps.Manages && e.has(adminapi.FeatureServeControl) {
-		out = append(out, action{key: "D", label: "redial", run: func() tea.Cmd {
-			return confirm("Drop the connection to "+vis(name)+" and dial it again?", func() tea.Cmd {
+		out = append(out, action{key: "C", label: "reconnect", run: func() tea.Cmd {
+			return confirm("Drop the connection to "+vis(name)+" and connect again?", func() tea.Cmd {
 				return do(func() result {
 					q, err := e.op.RedialUpstream(ctx(), adminapi.RedialRequest{Upstream: name})
 					return serveResult(e, q, err)
@@ -229,28 +219,28 @@ func serverActions(e env, d adminapi.UpstreamDetail) []action {
 		}})
 	}
 	if managesAndRoot(caps) {
-		verb := "Sign"
+		label := "approve configuration"
 		if d.Signature == "yes" {
-			verb = "Re-sign"
+			label = "approve configuration again"
 		}
-		out = append(out, action{key: "S", label: strings.ToLower(verb), run: func() tea.Cmd {
-			// The signature attests that someone read the entry shown above:
-			// its URL or command, where its key goes and its operations
-			// (design/adr/0050 §5).
-			return confirm(verb+" "+vis(name)+" with the root signing key, attesting the configuration shown?", func() tea.Cmd {
+		out = append(out, action{key: "A", label: label, run: func() tea.Cmd {
+			// Approving signs the entry shown above: its URL or command,
+			// where its key goes and its operations (design/adr/0050 §5,
+			// 0060). It does not say the backend or its tools are safe.
+			return confirm("Approve the configuration of "+vis(name)+" shown above, signing it with the root key?", func() tea.Cmd {
 				return do(func() result { res, err := e.acc.SignUpstream(ctx(), name); return signResult(res, err) })
 			})
 		}})
 	}
 	if caps.Manages {
-		out = append(out, action{key: "X", label: "deregister", run: func() tea.Cmd {
+		out = append(out, action{key: "X", label: "remove", run: func() tea.Cmd {
 			// The backend refuses a confirmation that does not repeat the
 			// name (it drops the approvals with the entry); what is typed is
 			// forwarded as it is.
-			return ask("Deregister drops "+vis(name)+" and every approval of its tools. Type its name to confirm", "", func(typed string) tea.Cmd {
+			return ask("Remove drops "+vis(name)+" and every approval of its tools. Type its name to confirm", "", func(typed string) tea.Cmd {
 				return do(func() result {
 					res, err := e.op.DeregisterUpstream(ctx(), name, typed)
-					r := fromAction(res.ActionResult, err, "Deregistered "+name+".")
+					r := fromAction(res.ActionResult, err, "Removed "+name+".")
 					if err == nil {
 						r.output = append(r.output, fmt.Sprintf("Registry entry removed: %t. Signature removed: %t. Quarantine entries removed: %d.",
 							res.Registered, res.SignatureRemoved, res.ToolsForgotten))
@@ -265,7 +255,7 @@ func serverActions(e env, d adminapi.UpstreamDetail) []action {
 }
 
 func signResult(res adminapi.SignResult, err error) result {
-	r := fromAction(res.ActionResult, err, "Signed with a trusted key.")
+	r := fromAction(res.ActionResult, err, "Config approved, signed with a trusted key.")
 	if err != nil {
 		return r
 	}
@@ -273,12 +263,12 @@ func signResult(res adminapi.SignResult, err error) result {
 		r.output = append(r.output, "Signing key: "+res.KeyFingerprint)
 	}
 	if r.ok && !res.Trusted {
-		r.ok, r.summary = false, "Signed, with a key that is not in signer.trusted_keys: the gateway will not serve it until that key is trusted."
+		r.ok, r.summary = false, "Config approved with a key that is not in signer.trusted_keys: the gateway will not serve it until that key is trusted."
 	}
 	return r
 }
 
-// serveResult is a reload's or a redial's answer. A request still pending is
+// serveResult is a reload's or a reconnect's answer. A request still pending is
 // read again a few times before it is reported, since nothing on a terminal
 // page refreshes it by itself.
 func serveResult(e env, q adminapi.ServeRequest, err error) result {
@@ -292,7 +282,7 @@ func serveResult(e env, q adminapi.ServeRequest, err error) result {
 	}
 	what := "The reload"
 	if q.Kind == adminapi.ServeKindRedial {
-		what = "The redial of " + q.Upstream
+		what = "The reconnect of " + q.Upstream
 	}
 	var r result
 	switch {

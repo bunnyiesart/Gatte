@@ -1,9 +1,8 @@
 package gattetui
 
-// Tab 2, "Users" (design/adr/0051): one page of sections, each with its own
-// socket gate. People, Roles and Blocklist register from their own files.
-// People and Blocklist stay distinct: disabling an account is not blocking a
-// subject (design/adr/0038).
+// Tab 2, "Users" (design/adr/0051, 0061 §4): one page of sections, each with
+// its own socket gate. People and Roles register from their own files.
+// Blocking a subject is not a section: it stays in the CLI.
 
 func init() {
 	registerScreen(Screen{ID: "users", Title: "Users", Order: 20, Root: usersPage})

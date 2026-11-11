@@ -3,11 +3,13 @@ package gattetui
 // People: the identity provider's accounts (design/adr/0038), a section of
 // the Users tab, with each account's page and the add flow. Account edits
 // are the accounts socket's (-manage-users, design/adr/0040 §1); without it
-// the section shows only who the gateway has seen.
+// the section says how to open it. No screen reads the audit trail
+// (design/adr/0061 §3): who called what is read in the SIEM.
 //
 // Disabling an account stops new sign-ins; it does not cut off a token
-// already issued. That is the Blocklist section's block, a separate action
-// (design/adr/0038).
+// already issued. Only a block does, and blocking lives in the CLI
+// (mcp-gateway access block, design/adr/0038, 0061 §4); offboarding blocks
+// the subject the operator types.
 
 import (
 	"errors"
@@ -29,40 +31,24 @@ var accountCols = []int{16, 22, 24}
 func peopleSection(e env) ([]row, error) {
 	rows := []row{heading("People")}
 	if e.acc == nil {
-		rows = append(rows, textRow(stDim.Render("Accounts are edited through the accounts socket: start with sudo mcp-gateway tui -manage-users.")))
-	} else {
-		list, err := e.acc.ListAccounts(ctx())
-		if err != nil {
-			rows = append(rows, textRow(stBad.Render("The accounts could not be read: "+vis(errText(err)))))
-		}
-		rows = append(rows, row{text: stKey.Render("+ Add a person"),
-			actions: []action{{key: "enter", label: "add", run: func() tea.Cmd { return addPerson(e) }}}})
-		for _, a := range list.Accounts {
-			u := a.Username
-			state := stOK.Render("active")
-			if a.Disabled {
-				state = stWarn.Render("disabled")
-			}
-			rows = append(rows, row{
-				text:    cols(accountCols, vis(a.Username), vis(a.DisplayName), vis(strings.Join(a.Groups, ", ")), state),
-				actions: []action{{key: "enter", label: "open", run: func() tea.Cmd { return push(accountPage(u)) }}},
-			})
-		}
+		return append(rows, textRow(stDim.Render("Accounts are edited through the accounts socket: start with sudo mcp-gateway tui -manage-users."))), nil
 	}
-	p, err := e.op.People(ctx())
+	list, err := e.acc.ListAccounts(ctx())
 	if err != nil {
-		return append(rows, textRow(stBad.Render("Who the gateway has seen could not be read: "+vis(errText(err))))), nil
+		rows = append(rows, textRow(stBad.Render("The accounts could not be read: "+vis(errText(err)))))
 	}
-	if len(p.Seen) > 0 {
-		rows = append(rows, textRow(stDim.Render("Seen by the gateway")))
-		for _, s := range p.Seen {
-			state := ""
-			if s.Blocked {
-				state = stBad.Render("blocked")
-			}
-			rows = append(rows, textRow(cols(accountCols, vis(s.Identity), vis(dash(s.Name)), state,
-				stDim.Render(fmt.Sprintf("%d calls, last %s", s.Calls, showTime(s.LastCall))))))
+	rows = append(rows, row{text: button("+", "Add a person"),
+		actions: []action{{key: "enter", label: "add", run: func() tea.Cmd { return addPerson(e) }}}})
+	for _, a := range list.Accounts {
+		u := a.Username
+		state := stOK.Render("active")
+		if a.Disabled {
+			state = stWarn.Render("disabled")
 		}
+		rows = append(rows, row{
+			text:    cols(accountCols, vis(a.Username), vis(a.DisplayName), vis(strings.Join(a.Groups, ", ")), state),
+			actions: []action{{key: "enter", label: "open", run: func() tea.Cmd { return push(accountPage(u)) }}},
+		})
 	}
 	return rows, nil
 }
@@ -117,7 +103,7 @@ func fillAccount(e env, username string) content {
 		}})
 	} else {
 		c.actions = append(c.actions, action{key: "d", label: "disable", run: func() tea.Cmd {
-			return confirm("Disable "+vis(u)+"? New sign-ins are refused; a token already issued is cut off only by a block.", func() tea.Cmd {
+			return confirm("Disable "+vis(u)+"? New sign-ins are refused; a token already issued is cut off only by a block (offboard, or mcp-gateway access block).", func() tea.Cmd {
 				return do(func() result {
 					res, err := e.acc.DisableAccount(ctx(), u)
 					return fromAction(res.ActionResult, err, "Disabled "+u+".")
@@ -151,6 +137,8 @@ func fillAccount(e env, username string) content {
 	return c
 }
 
+// offboard asks for the subject to block as typed text: nothing is offered
+// or pre-selected from the audit trail (design/adr/0046, 0061 §3).
 func offboard(e env, u string) tea.Cmd {
 	return ask("Analyst identity to block (the token's sub; empty if they never used the gateway)", "", func(subject string) tea.Cmd {
 		return ask("Reason", "", func(reason string) tea.Cmd {

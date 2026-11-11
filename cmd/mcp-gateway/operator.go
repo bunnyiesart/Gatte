@@ -391,7 +391,7 @@ func opShortHash(h string) string {
 // Arguments containing whitespace are quoted, so a single argument with a
 // space in it cannot be misread as two.
 func opCommandLine(s registry.UpstreamServer) string {
-	if s.Transport == registry.TransportHTTP {
+	if s.Transport == registry.TransportHTTP || s.Transport == registry.TransportRemote {
 		return opDash(s.URL)
 	}
 	// For oci the first token is the image rather than a command: an oci

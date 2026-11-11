@@ -4,7 +4,7 @@
 {{with .Data}}{{with $d := .}}{{with .D}}{{if .Name}}
 <div class="head">
   <h1 class="mono-title">{{vis .Name}}</h1>
-  <p class="sub">{{if eq .Transport "oci"}}Container{{else if eq .Transport "http"}}REST API{{else}}Process{{end}} · {{template "attestation" .Signature}}{{with .Health}} · <span class="badge {{if eq .State "up"}}ok{{else if or (eq .State "reconnecting") (eq .State "down")}}danger{{end}}">{{state .State}}</span>{{end}}</p>
+  <p class="sub">{{if eq .Transport "oci"}}Container{{else if eq .Transport "http"}}REST API{{else if eq .Transport "remote"}}Remote MCP{{else}}Process{{end}} · {{template "attestation" .Signature}}{{with .Health}} · <span class="badge {{if eq .State "up"}}ok{{else if or (eq .State "reconnecting") (eq .State "down")}}danger{{end}}">{{state .State}}</span>{{end}}</p>
   {{if eq .Signature "yes"}}<p class="caption">An operator signed this server's configuration — its URL or command, its arguments, and the names of its secrets — with the gateway key. This attests the configuration was reviewed. It is not a statement that the server or its tools are safe: tool safety is the separate approve and clear step below.</p>
   {{else if eq .Signature "INVALID"}}<p class="caption">The stored signature does not match this configuration, or its key is not trusted. It is not served until the configuration is attested again.</p>
   {{else}}<p class="caption">No operator has signed this server's configuration. It is not served until a configuration is attested.</p>{{end}}
@@ -19,6 +19,7 @@
       {{if .Image}}<div><dt>Image</dt><dd class="mono">{{vis .Image}}</dd></div>{{end}}
       <div><dt>Network</dt><dd>{{if .NetworkError}}<span class="badge danger">Refused</span> {{vis .NetworkError}}{{else}}{{dash .Network}}{{end}}</dd></div>
       <div><dt>Credentials (vault names)</dt><dd class="mono">{{range $i, $n := .EnvVarNames}}{{if $i}}, {{end}}{{vis $n}}{{else}}None{{end}}</dd></div>
+      {{if .RemoteKind}}<div><dt>Remote kind</dt><dd class="mono">{{vis .RemoteKind}}</dd></div>{{end}}
       {{with .Auth}}<div><dt>Auth</dt><dd>{{if eq .Kind "none"}}None{{else}}{{vis .Kind}}{{if .Name}} <span class="mono">{{vis .Name}}</span>{{end}}{{if .Secret}} from <span class="mono">{{vis .Secret}}</span>{{end}}{{end}}</dd></div>{{end}}
       <div><dt>Registered</dt><dd>{{time .CreatedAt}} · last changed {{time .UpdatedAt}}</dd></div>
       {{with .Health}}{{if .Cause}}<div><dt>Last cause</dt><dd class="mono">{{vis .Cause}}</dd></div>{{end}}{{end}}

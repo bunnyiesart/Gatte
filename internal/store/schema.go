@@ -40,7 +40,11 @@ import (
 // serving as a sensitive tool. Guarded ALTERs again; both default to the
 // empty string, which reads as a safe, uncleared tool -- what every tool
 // was before.
-const SchemaVersion = 3
+//
+// 4 (ADR-0058): the upstream_servers table gains remote_kind, the remote
+// transport's signed MCP client transport. A guarded ALTER defaulting to
+// the empty string, which is what every non-remote entry holds.
+const SchemaVersion = 4
 
 // ErrSchemaTooNew means the file was written by a binary that knows a
 // newer schema than this one.

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Gatte management API
-  version: 1.7.0
+  version: 1.8.0
   summary: The backend every Gatte front talks to (design/adr/0040).
   description: |
     Served by `mcp-gateway admin` over UNIX sockets only. There is no TCP
@@ -159,6 +159,11 @@ info:
       `transport` and, for oci, `image`, `network` and `env_var_names`. An
       oci register on a host without podman is `feature_disabled` with
       `details.requires` `podman`; `stdio` is refused.
+    - 1.8.0 (design/adr/0058): `Upstream.transport` value `remote`, a native
+      MCP server reached by URL (registered in the terminal only;
+      `POST /v1/upstreams` still refuses it as `invalid_argument`).
+      `Upstream.remote_kind` for remote entries, and `UpstreamDetail.auth`
+      for remote entries as well as http.
   license:
     name: Apache-2.0
 servers:
@@ -915,11 +920,12 @@ components:
       required: [name, transport, network, env_var_names, signature, created_at, updated_at]
       properties:
         name: {type: string}
-        transport: {type: string, x-gatte-open-enum: true, enum: [stdio, http, oci]}
+        transport: {type: string, x-gatte-open-enum: true, enum: [stdio, http, oci, remote]}
         command: {type: string}
         args: {type: array, items: {type: string}}
         url: {type: string}
         image: {type: string}
+        remote_kind: {type: string, x-gatte-open-enum: true, enum: [streamable], description: 'remote only: the MCP client transport the signature covers (1.8.0).'}
         network: {type: string}
         network_error: {type: string}
         env_var_names:
@@ -1459,7 +1465,7 @@ components:
                 no copy.
     UpstreamAuth:
       type: object
-      description: An http entry's credential-injection descriptor. Names only, never a value.
+      description: An http or (1.8.0) remote entry's credential-injection descriptor. Names only, never a value.
       required: [kind]
       properties:
         kind: {type: string, x-gatte-open-enum: true, enum: [none, bearer, header, query]}
@@ -1480,7 +1486,9 @@ components:
         - type: object
           required: [tools]
           properties:
-            auth: {$ref: '#/components/schemas/UpstreamAuth'}
+            auth:
+              description: http and remote (1.8.0); the descriptor the signature covers.
+              $ref: '#/components/schemas/UpstreamAuth'
             operations:
               type: array
               description: http only; the frozen set, sorted by name.

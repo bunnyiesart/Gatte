@@ -26,7 +26,7 @@
         <tr>
           <td class="t-title" data-label="MCP server / API"><a class="cell-link" href="{{$base}}/servers/{{.Name}}"><b>{{vis .Name}}</b></a></td>
           {{if $.Data.Health}}<td data-label="State">{{with .Health}}<span class="badge {{if eq .State "up"}}ok{{else if or (eq .State "reconnecting") (eq .State "down")}}danger{{end}}">{{state .State}}</span>{{if .Since}}<span class="cell-sub">since {{since .Since}}</span>{{end}}{{if .Cause}}<span class="cell-sub mono">{{vis .Cause}}</span>{{end}}{{else}}<span class="muted">-</span>{{end}}</td>{{end}}
-          <td class="muted" data-label="Kind">{{if eq .Transport "oci"}}Container{{else if eq .Transport "http"}}REST API{{else}}Process{{end}}{{if .URL}}<span class="mono wrap cell-sub">{{vis .URL}}</span>{{end}}</td>
+          <td class="muted" data-label="Kind">{{if eq .Transport "oci"}}Container{{else if eq .Transport "http"}}REST API{{else if eq .Transport "remote"}}Remote MCP{{else}}Process{{end}}{{if .URL}}<span class="mono wrap cell-sub">{{vis .URL}}</span>{{end}}</td>
           <td class="mono" data-label="Credentials">{{range $i, $n := .EnvVarNames}}{{if $i}}, {{end}}{{vis $n}}{{else}}<span class="muted">None</span>{{end}}</td>
           <td data-label="Configuration">{{template "attestation" .Signature}}</td>
           <td data-label="Needs review">{{if .Attention}}<span class="badge changed">{{template "warn"}}{{len .Attention}}</span>{{range .Attention}}<span class="cell-sub">{{vis .}}</span>{{end}}{{else}}<span class="muted">-</span>{{end}}</td>

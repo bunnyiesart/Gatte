@@ -95,6 +95,18 @@ const canonicalTagImage = "mcp-gateway/signer/canonical/v2-image"
 // operation digest signs in this phase rather than a later one).
 const canonicalTagV3HTTP = "mcp-gateway/signer/canonical/v3-http"
 
+// canonicalTagV4Remote is the tag of the encoding for a remote entry, a
+// native MCP server reached by URL (ADR-0058 §5). It covers what v1 covers
+// -- the full URL (scheme, host, port, path) among it -- and then the auth
+// descriptor (AuthKind, AuthName) and RemoteKind, which decides the wire
+// protocol. There is no operation digest: a remote entry has no frozen set,
+// its tools are observed live by quarantine.
+//
+// A separate tag for the same reason as v2 and v3: no other layout can
+// coincide with it, so a remote row that loses its URL, descriptor or
+// remote kind to a direct database write stops verifying.
+const canonicalTagV4Remote = "mcp-gateway/signer/canonical/v4-remote"
+
 // Canonical returns the exact bytes a signature over s covers.
 //
 // # What is covered, and what is deliberately not
@@ -104,7 +116,8 @@ const canonicalTagV3HTTP = "mcp-gateway/signer/canonical/v3-http"
 // EnvVarNames *sorted*. For an http entry (canonicalTagV3HTTP), also the
 // credential-injection descriptor (AuthKind, AuthName) and a SHA-256 digest
 // of the frozen operation set -- so the injection location and the method/
-// path each tool maps to are attested, not just stored (ADR-0047 §4).
+// path each tool maps to are attested, not just stored (ADR-0047 §4). For
+// a remote entry (canonicalTagV4Remote), the descriptor and RemoteKind.
 //
 // Name is covered although ADR-0003 lists only command/url, args and env
 // var names. Including it binds a signature to the entry it was made for,
@@ -147,9 +160,12 @@ func Canonical(s registry.UpstreamServer) []byte {
 
 	withImage := s.Image != "" || s.Transport == registry.TransportOCI
 	isHTTP := s.Transport == registry.TransportHTTP
+	isRemote := s.Transport == registry.TransportRemote
 	switch {
 	case isHTTP:
 		buf = appendField(buf, canonicalTagV3HTTP)
+	case isRemote:
+		buf = appendField(buf, canonicalTagV4Remote)
 	case withImage:
 		buf = appendField(buf, canonicalTagImage)
 	default:
@@ -195,6 +211,13 @@ func Canonical(s registry.UpstreamServer) []byte {
 		buf = appendField(buf, s.AuthName)
 		opsDigest := sha256.Sum256(s.Operations)
 		buf = appendField(buf, string(opsDigest[:]))
+	}
+	// remote-only tail (ADR-0058 §5): where the credential goes and which
+	// MCP client transport reaches the endpoint.
+	if isRemote {
+		buf = appendField(buf, string(s.AuthKind))
+		buf = appendField(buf, s.AuthName)
+		buf = appendField(buf, string(s.RemoteKind))
 	}
 
 	return buf

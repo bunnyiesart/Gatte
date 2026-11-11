@@ -97,6 +97,8 @@ func kindText(transport string) string {
 		return "Container"
 	case "stdio":
 		return "Process"
+	case "remote":
+		return "Remote MCP"
 	}
 	return vis(transport)
 }
@@ -168,6 +170,9 @@ func entryRows(e env, d adminapi.UpstreamDetail) []row {
 		rows = append(rows, kv("Image", vis(d.Image)))
 	case d.Command != "":
 		rows = append(rows, kv("Command", vis(strings.Join(append([]string{d.Command}, d.Args...), " "))))
+	}
+	if d.RemoteKind != "" {
+		rows = append(rows, kv("Remote kind", vis(d.RemoteKind)))
 	}
 	rows = append(rows, kv("Signature", signatureText(d.Signature)))
 	if h := d.Health; h != nil && e.has(adminapi.FeatureBackendHealth) {

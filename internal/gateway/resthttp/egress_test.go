@@ -14,59 +14,6 @@ import (
 	"github.com/bunnyiesart/Gatte/internal/gateway/resthttp"
 )
 
-// TestRefuseAddr_Policy pins the IP policy of ADR-0048 Decisão 6 as a
-// table: what is refused, what is not, with the v4, v6 and v4-mapped
-// spellings side by side. No network is involved.
-func TestRefuseAddr_Policy(t *testing.T) {
-	refused := []string{
-		// loopback
-		"127.0.0.1", "127.255.255.254", "::1", "::ffff:127.0.0.1",
-		// unspecified and "this network"
-		"0.0.0.0", "::", "0.0.0.1", "0.255.255.255", "::ffff:0.0.0.0",
-		// private
-		"10.0.0.1", "172.16.0.1", "172.31.255.255", "192.168.77.5", "::ffff:10.0.0.1", "fc00::1", "fd12::1",
-		// link-local, metadata
-		"169.254.169.254", "169.254.0.1", "fe80::1", "::ffff:169.254.169.254",
-		// CGNAT
-		"100.64.0.1", "100.127.255.255", "::ffff:100.64.0.1",
-		// multicast and broadcast
-		"224.0.0.1", "239.255.255.255", "ff02::1", "255.255.255.255",
-		// IPv6 addresses that embed a forbidden IPv4: NAT64 well-known,
-		// NAT64 local-use (RFC 8215), 6to4
-		"64:ff9b::7f00:1", "64:ff9b::a9fe:a9fe", "64:ff9b:1::7f00:1", "64:ff9b:1::a9fe:a9fe", "64:ff9b:1:ffff::a00:1",
-		"2002:7f00:1::1", "2002:a9fe:a9fe::1",
-		// a zone
-		"fe80::1%lo0",
-	}
-	for _, s := range refused {
-		a, err := netip.ParseAddr(s)
-		if err != nil {
-			t.Fatalf("parse %q: %v", s, err)
-		}
-		err = resthttp.RefuseAddr(a)
-		if !errors.Is(err, resthttp.ErrEgressRefused) {
-			t.Errorf("%s: want ErrEgressRefused, got %v", s, err)
-		}
-	}
-
-	allowed := []string{
-		"203.0.113.10", "8.8.8.8", "1.1.1.1", "198.51.100.1", "::ffff:203.0.113.10",
-		"2606:4700:4700::1111", "2001:db8::1",
-		// NAT64 (well-known and local-use) and 6to4 of a public IPv4
-		"64:ff9b::cb00:710a", "64:ff9b:1::cb00:710a", "2002:cb00:710a::1",
-	}
-	for _, s := range allowed {
-		a := netip.MustParseAddr(s)
-		if err := resthttp.RefuseAddr(a); err != nil {
-			t.Errorf("%s: want allowed, got %v", s, err)
-		}
-	}
-
-	if err := resthttp.RefuseAddr(netip.Addr{}); !errors.Is(err, resthttp.ErrEgressRefused) {
-		t.Errorf("zero address: want refused, got %v", err)
-	}
-}
-
 // TestDial_ResolvedForbiddenAddressIsRefused: a name whose resolver answer
 // is a forbidden address -- the DNS-rebind case -- is refused with
 // ErrEgressRefused by the dial path, before any socket is opened. The

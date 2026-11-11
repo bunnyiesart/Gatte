@@ -288,8 +288,11 @@ On the **operator socket**:
 
 - `GET /v1/upstreams/{name}`: one entry in detail. For http, `auth` (kind,
   header or parameter name, and the vault NAME injected -- never a value)
-  and `operations`, each with `method`, `path` and `class`; the signature
-  state; and `tools`, every quarantine entry under the name.
+  and `operations`, each with `method`, `path` and `class`. For remote
+  (contract 1.8.0, design/adr/0058), `auth` and `remote_kind`, which the
+  signature covers with the URL. Then the signature state; and `tools`,
+  every quarantine entry under the name. A remote entry is registered in
+  the terminal only: `POST /v1/upstreams` refuses `"transport": "remote"`.
 - `POST /v1/upstreams`: register a REST API. `{"name", "url",
   "openapi_url" | "openapi_document", "auth_kind", "auth_name",
   "key_name"}`: exactly one of the URL (http or https only, fetched once

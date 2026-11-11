@@ -18,6 +18,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/bunnyiesart/Gatte/internal/egress"
 	"github.com/bunnyiesart/Gatte/internal/gateway"
 	"github.com/bunnyiesart/Gatte/internal/vault"
 )
@@ -107,8 +108,8 @@ type Dialer struct {
 	// They are fields so that _test.go can point a name at a forbidden
 	// address, or let httptest's loopback through, without a network;
 	// nothing outside the tests assigns them (export_test.go).
-	lookup lookupFunc
-	egress func(addr netip.Addr) error
+	lookup egress.Lookup
+	egress egress.Policy
 }
 
 var _ gateway.Dialer = (*Dialer)(nil)
@@ -152,7 +153,7 @@ func New(provider vault.Provider, opts ...Option) *Dialer {
 		provider: provider,
 		timeout:  defaultClientTimeout,
 		maxBody:  defaultMaxBodyBytes,
-		lookup:   defaultLookup,
+		lookup:   egress.SystemLookup,
 		egress:   refuseAddr,
 	}
 	for _, opt := range opts {
@@ -383,34 +384,10 @@ func parseBase(raw string) (base, error) {
 	return base{
 		scheme:   u.Scheme,
 		host:     host,
-		origin:   u.Scheme + "://" + joinHostPort(strings.ToLower(hostname), port),
+		origin:   u.Scheme + "://" + egress.JoinHostPort(strings.ToLower(hostname), port),
 		path:     path,
 		hostname: strings.ToLower(hostname),
 	}, nil
-}
-
-// joinHostPort brackets an IPv6 literal, as net.JoinHostPort does.
-func joinHostPort(host, port string) string {
-	if strings.Contains(host, ":") {
-		return "[" + host + "]:" + port
-	}
-	return host + ":" + port
-}
-
-// originOf renders u's origin the way parseBase did for the base, with
-// the default port explicit, so "https://h" and "https://h:443" compare
-// equal and "https://h" and "http://h:443" do not.
-func originOf(u *url.URL) string {
-	port := u.Port()
-	if port == "" {
-		switch u.Scheme {
-		case "https":
-			port = "443"
-		case "http":
-			port = "80"
-		}
-	}
-	return strings.ToLower(u.Scheme) + "://" + joinHostPort(strings.ToLower(u.Hostname()), port)
 }
 
 // checkRedirect is the http.Client.CheckRedirect of every upstream's
@@ -423,13 +400,7 @@ func originOf(u *url.URL) string {
 // as an IsError result with its Location header, which the gateway's
 // scrubResult masks like any header.
 func (b base) checkRedirect(req *http.Request, via []*http.Request) error {
-	if got := originOf(req.URL); got != b.origin {
-		return fmt.Errorf("%w: redirect to %s refused; this upstream is pinned to %s", ErrEgressRefused, got, b.origin)
-	}
-	if len(via) >= maxRedirects {
-		return http.ErrUseLastResponse
-	}
-	return nil
+	return egress.PinRedirects(b.origin, maxRedirects)(req, via)
 }
 
 // route is one operation with what CallTool needs pre-computed from its

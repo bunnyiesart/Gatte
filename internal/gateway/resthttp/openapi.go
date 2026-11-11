@@ -19,6 +19,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/bunnyiesart/Gatte/internal/egress"
 	"github.com/bunnyiesart/Gatte/internal/gateway"
 	"github.com/bunnyiesart/Gatte/internal/quarantine"
 	"github.com/bunnyiesart/Gatte/internal/visible"
@@ -1285,7 +1286,7 @@ func (in *ingestion) servers(operatorURL string) (baseURL, basePath string, err 
 		return "", "", fmt.Errorf("%w: servers[0].url %q carries a query, fragment or opaque part", ErrInvalidDocument, clip(raw))
 	}
 	if u.Scheme != "" || u.Host != "" {
-		specOrigin := originOf(u)
+		specOrigin := egress.Origin(u)
 		switch {
 		case !haveOperator:
 			in.warn("servers[0].url names %s; ignored: the host is always the registered -url (ADR-0048 Decisão 6)", visible.Escape(clip(specOrigin)))

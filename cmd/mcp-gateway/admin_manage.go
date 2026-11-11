@@ -74,11 +74,11 @@ func operatorManageDeps(envFor func(*config.Config) *opEnv) admin.ManageDeps {
 // apiUpstream is upstreamRow in the contract's shape.
 func apiUpstream(r upstreamJSON) adminapi.Upstream {
 	return adminapi.Upstream{Name: r.Name, Transport: r.Transport, Command: r.Command, Args: r.Args, URL: r.URL,
-		Image: r.Image, Network: r.Network, NetworkError: r.NetworkError, EnvVarNames: r.EnvVarNames, Signature: r.Signature,
+		Image: r.Image, RemoteKind: r.RemoteKind, Network: r.Network, NetworkError: r.NetworkError, EnvVarNames: r.EnvVarNames, Signature: r.Signature,
 		CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt}
 }
 
-// authOf is an http entry's descriptor in the contract's words: the
+// authOf is an http or remote entry's descriptor in the contract's words: the
 // location and the vault NAME, never a value (the registry has no field
 // for one).
 func authOf(s registry.UpstreamServer) adminapi.UpstreamAuth {
@@ -114,9 +114,13 @@ func upstreamDetail(e *opEnv, name string) (adminapi.UpstreamDetail, error) {
 		return adminapi.UpstreamDetail{}, err
 	}
 	d := adminapi.UpstreamDetail{Upstream: apiUpstream(upstreamRow(entry, state)), Tools: []adminapi.Tool{}}
-	if entry.Transport == registry.TransportHTTP {
+	if entry.Transport == registry.TransportHTTP || entry.Transport == registry.TransportRemote {
+		// Both encodings sign the descriptor (canonical/v3-http,
+		// v4-remote); a console that attests the entry must show it.
 		a := authOf(entry)
 		d.Auth = &a
+	}
+	if entry.Transport == registry.TransportHTTP {
 		sum := sha256.Sum256(entry.Operations)
 		d.OperationsSHA256 = hex.EncodeToString(sum[:])
 		if ops, err := gwrest.Decode(entry.Operations, string(entry.AuthKind), entry.AuthName); err != nil {

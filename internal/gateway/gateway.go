@@ -247,14 +247,15 @@ type UpstreamSpec struct {
 	// Name is the upstream's registered name, used to namespace its tools
 	// and to attribute audit records.
 	Name string
-	// Transport is "stdio", "oci" or "http" as a TYPE. "stdio" spawns a
+	// Transport is "stdio", "oci", "http" or "remote" as a TYPE. "stdio" spawns a
 	// process and "oci" is a stdio child that is `podman run`
 	// (internal/gateway/oci). "http" is a REST API the gateway itself calls,
 	// served by the stateless adapter in internal/gateway/resthttp
 	// (ADR-0047 §2, ADR-0048 Decisões 6, 7, 9): no connection is held, the
 	// entry's secret is re-resolved per call, and health is a fixed "up".
-	// All three are served by this build; cmd/mcp-gateway/dialer.go routes
-	// on this field.
+	// "remote" is a native MCP server reached by URL over a live session
+	// (internal/gateway/remotemcp, ADR-0058). All four are served by this
+	// build; cmd/mcp-gateway/dialer.go routes on this field.
 	Transport string
 	// Command and Args describe the process to spawn, for stdio. For oci,
 	// Command is empty and Args are the extra `podman run` flags the entry
@@ -266,16 +267,22 @@ type UpstreamSpec struct {
 	// Never a value: credentials reach the container as environment, set by
 	// the dialer from the resolved env map, not through the reference.
 	Image string
-	// URL is the endpoint to reach, for http: scheme, host, port and base
-	// path, as signed (signer canonical/v3-http). Empty for stdio and oci.
+	// URL is the endpoint to reach, for http and remote: scheme, host, port
+	// and path, as signed (signer canonical/v3-http, v4-remote). Empty for
+	// stdio and oci.
 	URL string
 	// AuthKind and AuthName are the http credential-injection descriptor
 	// (ADR-0047 §5): where on the outbound request the secret is placed. The
 	// secret *value* is not here -- the resthttp adapter re-resolves it per
 	// call from the Credential Vault, using the single name in the resolved
-	// env map as the secret reference. Both empty for stdio and oci.
+	// env map as the secret reference. For remote they say how the secret
+	// resolved at dial is sent (bearer, or the named header) on every
+	// request of the session. Both empty for stdio and oci.
 	AuthKind string
 	AuthName string
+	// RemoteKind is the MCP client transport of a remote entry
+	// ("streamable"), signed under canonical/v4-remote. Empty otherwise.
+	RemoteKind string
 	// Operations is the frozen REST operation set an http entry serves, as
 	// canonical JSON (ADR-0047 §3): one entry per generated tool, carrying
 	// its method, path, namespaced input schema and security class. Empty for

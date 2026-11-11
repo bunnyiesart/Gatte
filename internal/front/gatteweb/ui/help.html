@@ -33,7 +33,7 @@
   <h2>Words</h2>
   <dl class="group facts pad">
     <div><dt>Config approved</dt><dd>An operator signed the backend's configuration. Says nothing about its tools.</dd></div>
-    <div><dt>Changed since approved</dt><dd>The configuration changed after it was signed. Not served until approved again.</dd></div>
+    <div><dt>Changed since approved</dt><dd>The configuration changed after it was signed, or the signing key is no longer trusted. Not served until approved again.</dd></div>
     <div><dt>Tool changed</dt><dd>A tool's definition changed after approval. Not served until reviewed again.</dd></div>
     <div><dt>Safe tool</dt><dd>Only reads. Served once approved, to roles that grant it.</dd></div>
     <div><dt>Sensitive tool</dt><dd>Can act. Served once approved and cleared, to a non_read role that names it.</dd></div>

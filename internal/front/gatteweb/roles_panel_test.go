@@ -72,7 +72,7 @@ func TestRolesPanel_ListsTheRoles(t *testing.T) {
 	}
 	s := string(html)
 	for _, want := range []string{
-		"/users/roles/tier1-analyst", "/users/roles/ir-lead",
+		"/users/roles/view?name=tier1-analyst", "/users/roles/view?name=ir-lead",
 		"soc-tier1", "soc-ir", "non_read", ">On<", ">Off<",
 	} {
 		if !strings.Contains(s, want) {
@@ -90,7 +90,7 @@ func TestRolesPanel_ListsTheRoles(t *testing.T) {
 func TestRolePage_ToolsAsCheckboxesByServer(t *testing.T) {
 	f := testFront(t)
 	w := httptest.NewRecorder()
-	f.routes().ServeHTTP(w, httptest.NewRequest("GET", "/users/roles/ir-lead", nil))
+	f.routes().ServeHTTP(w, httptest.NewRequest("GET", "/users/roles/view?name=ir-lead", nil))
 	if w.Code != http.StatusOK {
 		t.Fatalf("GET the role page: %d\n%s", w.Code, w.Body)
 	}
@@ -105,7 +105,7 @@ func TestRolePage_ToolsAsCheckboxesByServer(t *testing.T) {
 		}
 	}
 	w = httptest.NewRecorder()
-	f.routes().ServeHTTP(w, httptest.NewRequest("GET", "/users/roles/nobody", nil))
+	f.routes().ServeHTTP(w, httptest.NewRequest("GET", "/users/roles/view?name=nobody", nil))
 	if !strings.Contains(w.Body.String(), "No such role") || strings.Contains(w.Body.String(), "Grant selected") {
 		t.Errorf("an unknown role's page:\n%s", w.Body)
 	}

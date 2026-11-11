@@ -20,7 +20,7 @@ func init() {
 	})
 	register(Section{
 		Mount: func(mux *http.ServeMux, f *Front) {
-			mux.HandleFunc("GET /users/roles/{name}", f.rolePage)
+			mux.HandleFunc("GET /users/roles/view", f.rolePage)
 			mux.HandleFunc("POST /users/roles/edit", f.rolesEdit)
 			mux.HandleFunc("POST /users/roles/non-read", f.rolesNonRead)
 		},

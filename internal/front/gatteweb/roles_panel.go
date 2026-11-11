@@ -118,8 +118,10 @@ func (f *Front) rolesPanelFragment(r *http.Request) (template.HTML, error) {
 	return f.renderFragment("roles_panel", d)
 }
 
-// roleBack is a role page's path under the console base.
-func roleBack(role string) string { return "/users/roles/" + url.PathEscape(role) }
+// roleBack is a role page's path under the console base. The name is a
+// query parameter, not a path segment: a role name may hold "/" or be "..",
+// and the console's path is decoded before routing.
+func roleBack(role string) string { return "/users/roles/view?name=" + url.QueryEscape(role) }
 
 // ---- a role page
 
@@ -171,7 +173,7 @@ func (f *Front) rolePage(w http.ResponseWriter, r *http.Request) {
 	if !f.managed(w, r, true) {
 		return
 	}
-	name := r.PathValue("name")
+	name := r.URL.Query().Get("name")
 	v, err := f.readRoles(r.Context())
 	if err != nil {
 		f.render(w, r, "role", name, page{Nav: "users", Data: rolePageData{Name: name}, Error: errText(err)})
@@ -263,7 +265,7 @@ func (f *Front) rolesEdit(w http.ResponseWriter, r *http.Request) {
 		var st frontkit.SpliceStatus
 		switch {
 		case op == "revoke":
-			next, st = frontkit.RevokeTool(text, role, server, tool)
+			next, st = revokeAll(text, role, server, tool, sensitive)
 		case sensitive:
 			next, st = frontkit.GrantSensitiveTool(text, role, server, tool)
 		default:
@@ -276,10 +278,13 @@ func (f *Front) rolesEdit(w http.ResponseWriter, r *http.Request) {
 		case frontkit.SpliceChanged:
 			text = next
 			item := visible(ns)
-			// Removing the role's own entry leaves a "*" grant over the
-			// backend in place; say so rather than claim the tool is gone.
+			// A "*" grant over the backend outlives every entry a revoke can
+			// remove; say so rather than claim the tool is gone.
 			if b, _ := frontkit.FindRole(frontkit.ParseRoles(text), role); op == "revoke" && b.Cover(server, tool, sensitive).Covered {
 				item += " (still granted by *)"
+			}
+			if op == "grant" && sensitive {
+				item += " (served once the tool is approved and cleared)"
 			}
 			changed = append(changed, item)
 		case frontkit.SpliceAlready:
@@ -297,6 +302,30 @@ func (f *Front) rolesEdit(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	f.showResult(w, r, "users", title, back, f.writeEdits(r.Context(), op, text, changed, unchanged, refusals))
+}
+
+// revokeAll removes every entry of the role that reaches server.tool -- a
+// name in `tools` and an id under [role.grants] alike -- so a revoke does not
+// leave the tool reachable by the other. It stops at a "*" grant, which no
+// one-tool edit can take apart, and reports SpliceChanged if anything went.
+func revokeAll(text, role, server, tool string, sensitive bool) (string, frontkit.SpliceStatus) {
+	next, st := frontkit.RevokeTool(text, role, server, tool)
+	if st != frontkit.SpliceChanged {
+		return next, st
+	}
+	// Each pass removes one entry; a role holds at most one of each kind.
+	for range 2 {
+		b, _ := frontkit.FindRole(frontkit.ParseRoles(next), role)
+		if cov := b.Cover(server, tool, sensitive); !cov.Covered || cov.How == "wildcard" {
+			break
+		}
+		again, st2 := frontkit.RevokeTool(next, role, server, tool)
+		if st2 != frontkit.SpliceChanged {
+			break
+		}
+		next = again
+	}
+	return next, frontkit.SpliceChanged
 }
 
 // writeEdits stores the edited text once, when anything changed, and builds

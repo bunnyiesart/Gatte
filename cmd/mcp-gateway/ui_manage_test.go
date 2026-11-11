@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"html/template"
 	"io"
 	"maps"
 	"mime/multipart"
@@ -639,10 +640,10 @@ func TestUIManage_ARolePageGrantsTheSelectedToolsInOneWrite(t *testing.T) {
 	if err := os.WriteFile(m.rolesPath, []byte(text), 0o640); err != nil {
 		t.Fatal(err)
 	}
-	if page := m.get("/users"); !page.has(m.s.session+"/users/roles/ir") || page.has("/users/roles/edit") {
+	if page := m.get("/users"); !page.has(m.s.session+"/users/roles/view?name=ir\"") || page.has("/users/roles/edit") {
 		t.Fatalf("the Users tab does not list the role with a link to its page:\n%s", page.body)
 	}
-	if page := m.get("/users/roles/ir"); !page.has(m.s.session+"/users/roles/edit") || !page.has(`value="casemgmt.list_cases"`) || !page.has("Grant selected") || !page.has("Turn on") {
+	if page := m.get("/users/roles/view?name=ir"); !page.has(m.s.session+"/users/roles/edit") || !page.has(`value="casemgmt.list_cases"`) || !page.has("Grant selected") || !page.has("Turn on") {
 		t.Fatalf("the role page:\n%s", page.body)
 	}
 	got := m.post("/users/roles/edit", url.Values{"role": {"ir"}, "op": {"grant"},
@@ -700,6 +701,58 @@ func TestUIManage_ARoleEditSaysWhatStillReachesTheTool(t *testing.T) {
 	}
 }
 
+// A tool a role reaches both by name in `tools` and by id under
+// [role.grants] is revoked from both, so it is gone, not mislabeled.
+func TestUIManage_ARevokeRemovesTheNameAndTheGrant(t *testing.T) {
+	m := newManageUI(t, true, true)
+	mustObserve(t, m.e, "casemgmt", quarantine.ToolIdentity{Name: "list_cases", Description: "d", InputSchema: []byte(`{}`)})
+	m.e.cfg.Roles = []config.Role{{Name: "ir"}}
+	both := strings.Replace(uiRolesText, "tools = []", "tools = [\"casemgmt.list_cases\"]\n[role.grants]\n\"casemgmt\" = [\"list_cases\"]", 1)
+	if err := os.WriteFile(m.rolesPath, []byte(both), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	got := m.post("/users/roles/edit", url.Values{"role": {"ir"}, "op": {"revoke"}, "tool": {"casemgmt.list_cases"}})
+	if !got.has("result-icon ok") || !got.has("<h2>Revoked</h2>") || got.has("still granted") {
+		t.Fatalf("revoke a tool named and granted:\n%s", got.body)
+	}
+	b, _ := os.ReadFile(m.rolesPath)
+	if strings.Contains(string(b), "list_cases") {
+		t.Fatalf("the roles file still reaches the tool:\n%s", b)
+	}
+	if err := config.ValidateRolesText(m.cfgPath, b); err != nil {
+		t.Fatalf("the roles text does not load: %v", err)
+	}
+}
+
+// A role name may hold "/" or be "..": its page is reached by a query
+// parameter, so the name survives the console's path handling.
+func TestUIManage_ARoleNameWithASlashOrDotsHasItsPage(t *testing.T) {
+	for _, name := range []string{"ir/lead", ".."} {
+		t.Run(name, func(t *testing.T) {
+			m := newManageUI(t, true, true)
+			mustObserve(t, m.e, "casemgmt", quarantine.ToolIdentity{Name: "list_cases", Description: "d", InputSchema: []byte(`{}`)})
+			m.e.cfg.Roles = []config.Role{{Name: name}}
+			text := strings.Replace(uiRolesText, `name = "ir"`, `name = "`+name+`"`, 1)
+			text = strings.Replace(text, `"blue-ir" = "ir"`, `"blue-ir" = "`+name+`"`, 1)
+			if err := os.WriteFile(m.rolesPath, []byte(text), 0o640); err != nil {
+				t.Fatal(err)
+			}
+			link := "/users/roles/view?name=" + url.QueryEscape(name)
+			if page := m.get("/users"); !page.has(m.s.session + link + `"`) {
+				t.Fatalf("the Users tab does not link %s:\n%s", link, page.body)
+			}
+			page := m.get(link)
+			if page.code != http.StatusOK || !page.has(`value="`+template.HTMLEscapeString(name)+`"`) || !page.has("Grant selected") {
+				t.Fatalf("the role page of %q: %d\n%s", name, page.code, page.body)
+			}
+			got := m.post("/users/roles/edit", url.Values{"role": {name}, "op": {"grant"}, "tool": {"casemgmt.list_cases"}})
+			if !got.has("<h2>Granted</h2>") || !got.has(m.s.session+link+`"`) {
+				t.Fatalf("grant on %q:\n%s", name, got.body)
+			}
+		})
+	}
+}
+
 // non_read is one switch on the role page, set on its own; with it on, the
 // sensitive grant refused above goes through.
 func TestUIManage_TheNonReadSwitchThenASensitiveGrant(t *testing.T) {
@@ -715,7 +768,7 @@ func TestUIManage_TheNonReadSwitchThenASensitiveGrant(t *testing.T) {
 	if got := m.post("/users/roles/non-read", url.Values{"role": {"ir"}, "on": {"true"}}); !got.has("result-icon ok") || !got.has("NOT applied yet") {
 		t.Fatalf("non_read on:\n%s", got.body)
 	}
-	if page := m.get("/users/roles/ir"); !page.has("Turn off") {
+	if page := m.get("/users/roles/view?name=ir"); !page.has("Turn off") {
 		t.Fatalf("the role page after non_read on:\n%s", page.body)
 	}
 	if got := m.post("/users/roles/edit", url.Values{"role": {"ir"}, "op": {"grant"}, "tool": {"casemgmt.close_case"}}); !got.has("result-icon ok") {

@@ -39,7 +39,7 @@
     <input type="hidden" name="fingerprint" value="{{.Fingerprint}}">
     <button class="btn{{if not .Hidden}} primary{{end}}">Approve tool</button>
   </form>
-  <p class="caption">Approves this version only: sha256:{{short .Fingerprint}}.</p>
+  <p class="caption">Approves this version only (sha256:{{short .Fingerprint}}). If the backend changes it before you click, nothing is approved.</p>
   {{end}}
   {{if and .Sensitive (eq .Status "approved") (not .Cleared)}}
   {{if .CanClear}}

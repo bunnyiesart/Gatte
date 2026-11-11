@@ -13,9 +13,7 @@ package gattetui
 
 import (
 	"fmt"
-	"io"
 	"net/url"
-	"os"
 	"strings"
 	"unicode"
 
@@ -96,16 +94,15 @@ func restForm() *form {
 		title: "Add a REST API",
 		intro: []string{
 			"REST API / OpenAPI -> generates MCP tools. The gateway reads the OpenAPI document and turns each operation into a tool.",
-			fmt.Sprintf("Give the document one way: by URL (fetched once, under the gateway's egress rules) or a file on this machine (JSON or YAML, up to %d MiB).", adminapi.MaxUpstreamDocumentBytes>>20),
+			"The document is given by URL, fetched once under the gateway's egress rules. A document on disk, or one that needs a credential to read, is added in the web console or with mcp-gateway upstream register -openapi FILE.",
 			"Registering does not call the API and does not approve its configuration. Every operation becomes a tool waiting for your review; a POST, PUT, PATCH or DELETE is sensitive and also needs clearing.",
 			"The key is named by its vault name only: set its value on the backend's page or in the vault.",
 		},
 		submitKey: "S", submitLabel: "add API",
 		fields: []*field{
 			nameField(),
-			{id: "url", label: "Base URL", hint: "e.g. https://api.example.com", guard: userinfoGuard},
-			{id: "openapi_url", label: "OpenAPI document by URL", hint: "e.g. https://api.example.com/openapi.json", guard: userinfoGuard},
-			{id: "openapi_file", label: "Or a file on this machine", hint: "e.g. /home/me/openapi.yaml"},
+			{id: "url", label: "Base URL", hint: "e.g. https://api.example.com", guard: urlGuard},
+			{id: "openapi_url", label: "OpenAPI document URL", hint: "e.g. https://api.example.com/openapi.json", guard: urlGuard},
 			{id: "auth_kind", label: "Auth", choices: restAuthKinds},
 			{id: "auth_name", label: "Header or parameter name", hint: "e.g. X-API-Key", guard: headerNameGuard},
 			keyNameField(),
@@ -125,7 +122,7 @@ func remoteForm() *form {
 		submitKey: "S", submitLabel: "add remote server",
 		fields: []*field{
 			nameField(),
-			{id: "url", label: "MCP endpoint URL", hint: "e.g. https://mcp.example.com/mcp", guard: remoteURLGuard},
+			{id: "url", label: "MCP endpoint URL", hint: "e.g. https://mcp.example.com/mcp", guard: urlGuard},
 			{id: "remote_kind", label: "Transport", value: adminapi.RemoteKindStreamable, choices: []choice{{adminapi.RemoteKindStreamable, "Streamable HTTP"}}},
 			{id: "auth_kind", label: "Auth", value: "none", choices: remoteAuthKinds},
 			{id: "auth_name", label: "Header name", hint: "e.g. X-API-Key", guard: headerNameGuard},
@@ -160,16 +157,6 @@ func ociForm() *form {
 func sendREST(e env, v map[string]string) result {
 	req := adminapi.RegisterUpstreamRequest{Name: v["name"], URL: v["url"], OpenAPIURL: v["openapi_url"],
 		AuthKind: v["auth_kind"], AuthName: v["auth_name"], KeyName: v["key_name"]}
-	if path := v["openapi_file"]; path != "" {
-		if req.OpenAPIURL != "" {
-			return refused("Not registered: give the OpenAPI document one way, a URL or a file, not both.")
-		}
-		doc, err := readDocument(path)
-		if err != nil {
-			return refused("Not registered: the OpenAPI file could not be read: " + err.Error())
-		}
-		req.OpenAPIDocument = doc
-	}
 	if req.KeyName == "" && (req.AuthKind == "bearer" || req.AuthKind == "header" || req.AuthKind == "query") {
 		req.KeyName = frontkit.DefaultKeyName(req.Name)
 	}
@@ -196,26 +183,8 @@ func sendOCI(e env, v map[string]string) result {
 	return register(e, req)
 }
 
-// readDocument reads an OpenAPI file the operator names, up to the
-// ingestion's bound (one byte over says it is over).
-func readDocument(path string) (string, error) {
-	f, err := os.Open(path) // #nosec G304 -- the operator names a file of their own, as the CLI's -openapi does
-	if err != nil {
-		return "", err
-	}
-	defer func() { _ = f.Close() }()
-	b, err := io.ReadAll(io.LimitReader(f, adminapi.MaxUpstreamDocumentBytes+1))
-	if err != nil {
-		return "", err
-	}
-	if len(b) > adminapi.MaxUpstreamDocumentBytes {
-		return "", fmt.Errorf("it is over the %d-byte limit the ingestion reads", adminapi.MaxUpstreamDocumentBytes)
-	}
-	return string(b), nil
-}
-
-// register sends the request and, when it is accepted, leaves the form for
-// the registered page.
+// register sends the request and, when it is accepted, replaces the form
+// with the registered page.
 func register(e env, req adminapi.RegisterUpstreamRequest) result {
 	res, err := e.op.RegisterUpstream(ctx(), req)
 	if err != nil {
@@ -223,7 +192,7 @@ func register(e env, req adminapi.RegisterUpstreamRequest) result {
 	}
 	r := fromAction(res.ActionResult, nil, "Registered "+res.Name+". Its configuration is not approved yet.")
 	r.back = true
-	r.next = push(registeredPage(res))
+	r.open = registeredPage(res)
 	return r
 }
 
@@ -245,22 +214,16 @@ func vaultNameGuard(v string) string {
 }
 
 func headerNameGuard(v string) string {
-	if strings.ContainsFunc(v, func(c rune) bool { return c == ':' || unicode.IsSpace(c) }) {
-		return "that looks like a header line. Give the header's name only; the value comes from the vault."
+	if strings.ContainsFunc(v, func(c rune) bool { return c == ':' || c == '=' || unicode.IsSpace(c) }) {
+		return "that looks like a header and its value. Give the name only; the value comes from the vault."
 	}
 	return ""
 }
 
-func userinfoGuard(v string) string {
-	if u, err := url.Parse(v); err == nil && u.User != nil {
-		return "the URL carries a user or password. Give it without; a key comes from the vault."
-	}
-	return ""
-}
-
-// remoteURLGuard holds a remote endpoint to what the backend signs: no
-// userinfo, query or fragment, where a vendor credential is often pasted.
-func remoteURLGuard(v string) string {
+// urlGuard holds a URL to what the backend accepts: no userinfo, query or
+// fragment, where a vendor credential is often pasted. A URL that does not
+// parse cannot be checked, so it is not kept either.
+func urlGuard(v string) string {
 	u, err := url.Parse(v)
 	switch {
 	case err != nil:

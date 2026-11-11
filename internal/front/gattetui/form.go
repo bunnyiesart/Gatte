@@ -23,9 +23,11 @@ type form struct {
 	// send runs off the update loop with a copy of the values, by field id.
 	send func(e env, v map[string]string) result
 
-	// mu guards the values: a field is set on the update loop and read by
-	// the page's fill and by send, which run off it.
-	mu sync.Mutex
+	// mu guards the values and busy: a field is set on the update loop and
+	// read by the page's fill and by send, which run off it. busy is a send
+	// in flight.
+	mu   sync.Mutex
+	busy bool
 }
 
 // A field is one row of a form. With choices it is set from a menu and
@@ -49,6 +51,25 @@ func (f *form) values() map[string]string {
 		v[fl.id] = fl.value
 	}
 	return v
+}
+
+// start marks the form as sent and returns its values, unless a send is
+// still in flight.
+func (f *form) start() (map[string]string, bool) {
+	f.mu.Lock()
+	busy := f.busy
+	f.busy = true
+	f.mu.Unlock()
+	if busy {
+		return nil, false
+	}
+	return f.values(), true
+}
+
+func (f *form) done() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.busy = false
 }
 
 func (f *form) set(fl *field, v string) {
@@ -79,8 +100,14 @@ func (f *form) fill(e env) content {
 		c.rows = append(c.rows, row{text: cols([]int{28}, fl.label, f.shown(fl)), actions: []action{{key: "enter", label: "edit", run: func() tea.Cmd { return f.edit(fl) }}}})
 	}
 	c.actions = []action{{key: f.submitKey, label: f.submitLabel, run: func() tea.Cmd {
-		v := f.values()
-		return do(func() result { return f.send(e, v) })
+		v, ok := f.start()
+		if !ok {
+			return nil // already sent and not answered yet: a second press sends nothing
+		}
+		return do(func() result {
+			defer f.done()
+			return f.send(e, v)
+		})
 	}}}
 	return c
 }

@@ -57,7 +57,7 @@ func Gallery(w io.Writer, o Options) error {
 		{"Cancelled: nothing is sent", o, false, func() *page { return serverPage("logsearch") }, []string{"C", "n"}},
 		{"Add a backend: the three choices", o, false, nil, []string{"a"}},
 		{"Add a REST API: the form", o, false, func() *page { return addFormPage("rest") }, nil},
-		{"Add a REST API: the auth choices", o, false, func() *page { return addFormPage("rest") }, []string{"down", "down", "down", "down", "enter"}},
+		{"Add a REST API: the auth choices", o, false, func() *page { return addFormPage("rest") }, []string{"down", "down", "down", "enter"}},
 		{"Add a remote MCP server: the form", o, false, func() *page { return addFormPage("remote") }, nil},
 		{"Add a remote MCP server: a pasted credential is not kept", o, false, func() *page { return addFormPage("remote") },
 			[]string{"down", "down", "down", "down", "down", "enter", "VENDOR_KEY=not-a-real-key", "enter"}},

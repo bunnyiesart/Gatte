@@ -2,8 +2,6 @@ package gattetui
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -71,10 +69,6 @@ func TestAddKindsRegisterInOrder(t *testing.T) {
 // transport, lands on the registered page with the configuration not
 // approved, and only Approve configuration approves it.
 func TestAddEachKindRegistersWithoutApproving(t *testing.T) {
-	doc := filepath.Join(t.TempDir(), "openapi.yaml")
-	if err := os.WriteFile(doc, []byte("openapi: 3.0.0\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
 	for _, c := range []struct {
 		kind, name, transport string
 		fill                  func(t *testing.T, a *app)
@@ -82,7 +76,7 @@ func TestAddEachKindRegistersWithoutApproving(t *testing.T) {
 	}{
 		{"REST API", "inventory", "http", func(t *testing.T, a *app) {
 			fill(t, a, "Base URL", "https://api.example.com")
-			fill(t, a, "Or a file on this machine", doc)
+			fill(t, a, "OpenAPI document URL", "https://api.example.com/openapi.json")
 			choose(t, a, "Auth", "3")
 		}, []string{"REST API", "get_item", "key injected from vault name INVENTORY_API_KEY"}},
 		{"Remote MCP server", "vendor", "remote", func(t *testing.T, a *app) {
@@ -166,8 +160,10 @@ func TestPastedCredentialIsNeverDrawnBack(t *testing.T) {
 	for _, f := range []struct{ label, value string }{
 		{"Key's name in the vault", "VENDOR_TOKEN=" + secret},
 		{"Header name", "X-Api-Key: " + secret},
+		{"Header name", "X-Api-Key=" + secret},
 		{"MCP endpoint URL", "https://mcp.example.com/mcp?token=" + secret},
 		{"MCP endpoint URL", "https://user:" + secret + "@mcp.example.com/mcp"},
+		{"MCP endpoint URL", "https://admin:" + secret + "%zz@mcp.example.com/mcp"},
 	} {
 		fill(t, a, f.label, f.value)
 		mustShow(t, a, "Not kept:")
@@ -184,18 +180,50 @@ func TestPastedCredentialIsNeverDrawnBack(t *testing.T) {
 	fill(t, a, "Variable names (vault)", "INTEL_API_KEY="+secret)
 	mustShow(t, a, "Not kept:")
 	mustNotShow(t, a, secret)
+
+	open(a, addFormPage("rest"))
+	fill(t, a, "OpenAPI document URL", "https://api.example.com/openapi.json?api_key="+secret)
+	mustShow(t, a, "Not kept:")
+	mustNotShow(t, a, secret)
 }
 
-func TestRESTTakesTheDocumentOneWay(t *testing.T) {
-	a, c := start(t, true)
-	open(a, addFormPage("rest"))
-	fill(t, a, "Name", "inventory")
-	fill(t, a, "OpenAPI document by URL", "https://api.example.com/openapi.json")
-	fill(t, a, "Or a file on this machine", "/nonexistent/openapi.yaml")
-	press(a, "S")
-	mustShow(t, a, "Not registered: give the OpenAPI document one way")
-	if _, ok := upstream(t, c, "inventory"); ok {
-		t.Fatal("a form with two documents was sent")
+// TestSubmitIsSentOnceWhileInFlight: a second press while the first send
+// has not answered sends nothing.
+func TestSubmitIsSentOnceWhileInFlight(t *testing.T) {
+	a, _ := start(t, true)
+	open(a, addFormPage("oci"))
+	f := a.top()
+	var submit action
+	for _, act := range f.actions {
+		if act.key == "S" {
+			submit = act
+		}
+	}
+	first := submit.run()
+	if second := submit.run(); second != nil {
+		t.Fatal("a second press sent the form again while the first was in flight")
+	}
+	settle(a, first)
+	if submit.run() == nil {
+		t.Fatal("after the answer the form cannot be sent again")
+	}
+}
+
+// TestRegisteredPageOpensOnTheTabTheFormWasOn: the answer may arrive after
+// the operator switched tabs; the registered page still goes on Servers.
+func TestRegisteredPageOpensOnTheTabTheFormWasOn(t *testing.T) {
+	a, _ := start(t, true)
+	open(a, addFormPage("remote"))
+	a.origin = a.top().id
+	settle(a, a.switchTab(1))
+	settle(a, func() tea.Msg {
+		return resultMsg{result{ok: true, summary: "done", back: true, open: registeredPage(adminapi.RegisterUpstreamResult{Name: "vendor"})}}
+	})
+	if got := a.stacks[0][len(a.stacks[0])-1].title; got != "Registered vendor" {
+		t.Errorf("the Servers tab shows %q, want the registered page", got)
+	}
+	if got := a.top().title; got == "Registered vendor" {
+		t.Error("the registered page went on the Users tab")
 	}
 }
 

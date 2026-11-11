@@ -16,10 +16,15 @@
 //     port: a page another process serves on another localhost port is
 //     "same site" and gets the cookie, but never learns the path;
 //   - every POST carries the form token and, when the browser sends an
-//     Origin, it is the page's own; the body is bounded, url-encoded or
-//     multipart (a file upload) alike;
+//     Origin, it is the page's own; "null" and any other origin are
+//     refused. The body is bounded, url-encoded or multipart (a file
+//     upload) alike;
 //   - every response says Content-Security-Policy default-src 'none',
-//     X-Frame-Options DENY, nosniff, no-referrer and no-store.
+//     X-Frame-Options DENY, nosniff, Referrer-Policy same-origin and
+//     no-store. same-origin, not no-referrer: under no-referrer a browser
+//     sends Origin: null on a form POST, which the Origin check refuses;
+//     same-origin still keeps the URL, and the session id in it, from
+//     any other site.
 //
 // There is one way in: New binds, Serve serves. No handler is exported to
 // be mounted elsewhere; serving by another path is not using frontkit.
@@ -213,7 +218,7 @@ func (k *Kit) handler() http.Handler {
 		h := w.Header()
 		h.Set("Content-Security-Policy", CSP)
 		h.Set("X-Content-Type-Options", "nosniff")
-		h.Set("Referrer-Policy", "no-referrer")
+		h.Set("Referrer-Policy", "same-origin")
 		h.Set("Cache-Control", "no-store")
 		h.Set("X-Frame-Options", "DENY")
 

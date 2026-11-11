@@ -24,6 +24,7 @@ import (
 	"maps"
 	"math"
 	"net"
+	"net/url"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -804,6 +805,7 @@ func (c *Config) Validate() error {
 	if c.IdP.UsersFile != "" && !filepath.IsAbs(c.IdP.UsersFile) {
 		errs = append(errs, fmt.Errorf("idp.users_file: %q is not an absolute path", c.IdP.UsersFile))
 	}
+	errs = append(errs, c.validateWazuhCheck()...)
 	if c.Connect.ServerName == "" {
 		c.Connect.ServerName = "gatte"
 	}
@@ -1483,6 +1485,66 @@ type IdP struct {
 	// empty is what ships. Only `mcp-gateway ui -manage-users`, run as
 	// root, reads or writes it; the service account is never given access.
 	UsersFile string `toml:"users_file"`
+	// WazuhCheck, when its URL is set, has the accounts backend ask the
+	// Wazuh indexer whether a new account's username exists there, so a
+	// person's Gatte name matches the one the SIEM uses
+	// (design/adr/0063). The answer is a warning on the account check,
+	// never a refusal.
+	WazuhCheck WazuhCheck `toml:"wazuh_check"`
+}
+
+// WazuhCheck is the indexer the accounts backend asks about a username
+// (design/adr/0063). Empty URL is the off switch, and empty is what ships.
+type WazuhCheck struct {
+	// URL is the indexer's base URL, https only, e.g.
+	// "https://wazuh-indexer.example:9200". No path, query or userinfo.
+	URL string `toml:"url"`
+	// User is the indexer user the backend authenticates as. It needs
+	// read access to the security plugin's internal users.
+	User string `toml:"user"`
+	// PasswordName is the vault NAME of that user's password. The value
+	// is read from the vault on each check and never printed.
+	PasswordName string `toml:"password_name"`
+	// CAFile is a PEM CA the indexer's certificate chains to, for a
+	// private CA. Optional; absolute path. Empty uses the system roots.
+	CAFile string `toml:"ca_file"`
+}
+
+// Enabled reports whether the check is turned on.
+func (w WazuhCheck) Enabled() bool { return w.URL != "" }
+
+// wazuhVaultNameRe is the vault's name grammar: an environment variable name.
+var wazuhVaultNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,127}$`)
+
+func (c *Config) validateWazuhCheck() []error {
+	w := c.IdP.WazuhCheck
+	if !w.Enabled() {
+		if w.User != "" || w.PasswordName != "" || w.CAFile != "" {
+			return []error{errors.New("idp.wazuh_check: url is empty, so the check is off, but other keys are set -- set url to turn it on, or remove the section")}
+		}
+		return nil
+	}
+	var errs []error
+	u, err := url.Parse(w.URL)
+	switch {
+	case err != nil:
+		errs = append(errs, fmt.Errorf("idp.wazuh_check.url: %q does not parse: %v", w.URL, err))
+	case u.Scheme != "https" || u.Host == "" || u.User != nil || (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "":
+		errs = append(errs, fmt.Errorf("idp.wazuh_check.url: %q: use https://HOST[:PORT] with no path, query or userinfo -- the request carries the indexer password", w.URL))
+	}
+	if w.User == "" || strings.TrimSpace(w.User) != w.User || strings.ContainsAny(w.User, ":\r\n") {
+		errs = append(errs, fmt.Errorf("idp.wazuh_check.user: %q: required, with no ':', line break or edge whitespace", w.User))
+	}
+	if !wazuhVaultNameRe.MatchString(w.PasswordName) {
+		errs = append(errs, fmt.Errorf("idp.wazuh_check.password_name: %q: the vault NAME of the password (a letter or _ then letters, digits or _), never the value", w.PasswordName))
+	}
+	if w.CAFile != "" && !filepath.IsAbs(w.CAFile) {
+		errs = append(errs, fmt.Errorf("idp.wazuh_check.ca_file: %q is not an absolute path", w.CAFile))
+	}
+	if c.Vault.SecretsFile == "" {
+		errs = append(errs, errors.New("idp.wazuh_check: the password comes from the vault, and [vault] secrets_file is not set"))
+	}
+	return errs
 }
 
 // Admin is the management API's access (design/adr/0040 §1). The socket

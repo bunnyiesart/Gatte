@@ -50,6 +50,9 @@ func (s *Server) checkAccount(w http.ResponseWriter, r *http.Request) {
 		res.OK = false
 		res.Problems = append(res.Problems, adminapi.FieldProblem{Field: "username", Code: "taken", Message: "already in use"})
 	}
+	if u != "" {
+		res.WazuhUser = wazuhUserOf(u)
+	}
 	writeJSON(w, http.StatusOK, res)
 }
 
@@ -192,4 +195,17 @@ func suggestUsername(display string) string {
 		return "new.user"
 	}
 	return u
+}
+
+// wazuhUserOf is the fake's [idp.wazuh_check]: the seeded accounts and
+// "carla.dias" exist in Wazuh, "siem.down" shows an indexer that could not
+// be asked, and any other name is not found -- so a preview shows all three.
+func wazuhUserOf(u string) *adminapi.WazuhUserCheck {
+	switch u {
+	case "ana.lima", "bruno.sa", "carla.dias":
+		return &adminapi.WazuhUserCheck{Status: adminapi.WazuhUserFound, Message: "Found in Wazuh: " + u + "."}
+	case "siem.down":
+		return &adminapi.WazuhUserCheck{Status: adminapi.WazuhUserUnchecked, Message: "Could not check Wazuh: no answer within 5s."}
+	}
+	return &adminapi.WazuhUserCheck{Status: adminapi.WazuhUserNotFound, Message: "Not found in Wazuh: " + u + ". Use the same username the person has in the SIEM."}
 }

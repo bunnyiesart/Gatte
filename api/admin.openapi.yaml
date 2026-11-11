@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Gatte management API
-  version: 1.10.0
+  version: 1.11.0
   summary: The backend every Gatte front talks to (design/adr/0040).
   description: |
     Served by `mcp-gateway admin` over UNIX sockets only. There is no TCP
@@ -172,6 +172,11 @@ info:
     - 1.10.0: `GET /v1/people/roles` on the operator socket: the roles and
       groups of `GET /v1/people` without `seen`, so the gateway reads
       nothing from the audit trail to answer it. No new feature.
+    - 1.11.0 (design/adr/0063): `AccountCheck.wazuh_user`, what the Wazuh
+      indexer said about the username (`found`, `not_found` or
+      `unchecked`, with a line to show), present only with
+      `[idp.wazuh_check]` on. A warning: it never changes `ok`. No new
+      feature.
   license:
     name: Apache-2.0
 servers:
@@ -1404,6 +1409,16 @@ components:
           type: array
           description: The requested groups that map to a role, with the role's tools.
           items: {$ref: '#/components/schemas/AssignableGroup'}
+        wazuh_user:
+          type: object
+          description: |
+            1.11.0. What the Wazuh indexer said about `username`. Absent when
+            `[idp.wazuh_check]` is off or `username` has a problem. A
+            warning to show; it never changes `ok`.
+          required: [status, message]
+          properties:
+            status: {type: string, enum: [found, not_found, unchecked], description: "`unchecked`: the indexer could not be asked; `message` says why."}
+            message: {type: string}
     NewAccount:
       type: object
       required: [username, display_name, groups]

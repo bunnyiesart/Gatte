@@ -23,7 +23,9 @@ import (
 	"unicode"
 
 	"github.com/bunnyiesart/Gatte/internal/config"
+	"github.com/bunnyiesart/Gatte/internal/egress"
 	"github.com/bunnyiesart/Gatte/internal/registry"
+	"github.com/bunnyiesart/Gatte/internal/vault"
 	"github.com/bunnyiesart/Gatte/internal/visible"
 	"github.com/bunnyiesart/Gatte/pkg/adminapi"
 )
@@ -96,6 +98,13 @@ type ManageDeps struct {
 	Sign func(ctx context.Context, cfg *config.Config, name string) (SignOutcome, error)
 	// Vault writes the vault.
 	Vault VaultStore
+	// ResolveSecret reads one vault value, for the Wazuh username check
+	// (design/adr/0063). nil: the check answers unchecked.
+	ResolveSecret func(ctx context.Context, cfg *config.Config, name string) (vault.Secret, error)
+	// WazuhEgress is the egress guard the Wazuh check dials through. The
+	// zero value is production (system resolver, private ranges allowed,
+	// the rest of egress.RefuseAddr); a test sets Policy to reach httptest.
+	WazuhEgress egress.Guard
 	// DeclaredSecrets maps each vault name a registered entry declares to
 	// the entries declaring it. nil: the registry is not readable from
 	// this backend, and the secret list carries the vault's names only.

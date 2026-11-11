@@ -566,6 +566,19 @@ max_concurrent_calls_per_analyst = 4
 #
 # [idp]
 # users_file = "/etc/authelia/users_database.yml"
+#
+# Opcional (ADR-0063): ao adicionar uma pessoa, o backend de contas pergunta
+# ao indexer do Wazuh se o username existia la, para o nome no Gatte bater
+# com o do SIEM. E um aviso, nunca bloqueia. Liga quando `url` e definida.
+# `password_name` e o NOME da senha no cofre ([vault]), nunca o valor. O
+# usuario do indexer precisa ler os usuarios internos do plugin de seguranca.
+# `ca_file` (opcional, absoluto, do root) e a CA do certificado do indexer.
+#
+# [idp.wazuh_check]
+# url           = "https://wazuh-indexer.example:9200"
+# user          = "gatte-check"
+# password_name = "WAZUH_CHECK_PASSWORD"
+# ca_file       = "/usr/local/etc/mcp-gateway/wazuh-ca.pem"
 
 
 # ===========================================================================

@@ -163,6 +163,24 @@ The identity provider's account store, for the console's account editing
 |---|---|---|---|---|
 | `users_file` | string | `""` (account editing off) | for `admin -accounts` | Absolute path of the Authelia file-backend users database. Read and written only by `admin -accounts`, as root. The file and every directory above it must be root's, regular, not symbolic links and not writable by group or others. `serve` never reads it. |
 
+### [idp.wazuh_check]
+
+Opt-in check of a new account's username against the Wazuh indexer
+(`design/adr/0063`). On `POST /v1/account-check` the accounts backend asks
+`GET /_plugins/_security/api/internalusers/USERNAME` and answers
+`wazuh_user`: `found`, `not_found`, or `unchecked` with the reason. It is a
+warning only; it never refuses an account. One request per check, at most
+5 seconds, no redirect followed, certificate verified, through the egress
+guard with private ranges allowed (loopback and link-local stay refused).
+Off when `url` is empty; any other key set without `url` is refused.
+
+| Key | Type | Default | Required | Constraints and meaning |
+|---|---|---|---|---|
+| `url` | string | `""` (check off) | to turn it on | The indexer's base URL: `https://HOST[:PORT]`, no path, query or userinfo. |
+| `user` | string | none | with `url` | The indexer user the backend authenticates as (HTTP basic). It needs read access to the security plugin's internal users. No `:`, line break or edge whitespace. |
+| `password_name` | string | none | with `url` | The vault NAME of that user's password, read from `[vault]` on each check and never printed. A letter or `_`, then letters, digits or `_`. Needs `[vault] secrets_file`. |
+| `ca_file` | string | `""` (system roots) | no | Absolute path of a PEM CA for the indexer's certificate. Must pass the same root-ownership check as `users_file`. |
+
 ## [admin]
 
 Groups the management backend checks peers against (`design/adr/0040`).

@@ -435,6 +435,12 @@ draws only roles and groups calls `GET /v1/people/roles` (contract 1.10.0)
 instead: the same `roles` and `groups`, and no read of the trail. A
 backend older than 1.10.0 answers it `unknown_route`.
 
+With `[idp.wazuh_check]` on, `POST /v1/account-check` (contract 1.11.0)
+also answers `wazuh_user`: `status` (`found`, `not_found` or `unchecked`)
+and a `message` to show as it is. It is absent when the check is off or the
+username has a problem, and it never changes `ok`: show it as a warning
+beside the username, colored by `status`, and let the operator continue.
+
 ## Blocks that end, deleting and offboarding
 
 With the feature `block_until` (1.4.0), `POST /v1/access/block` takes

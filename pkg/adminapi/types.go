@@ -12,7 +12,7 @@ import "time"
 
 // ContractVersion is the api/admin.openapi.yaml info.version these types
 // implement.
-const ContractVersion = "1.10.0"
+const ContractVersion = "1.11.0"
 
 // Default socket paths (design/adr/0040 §1).
 const (
@@ -642,7 +642,26 @@ type AccountCheck struct {
 	Suggested bool              `json:"suggested"`
 	Problems  []FieldProblem    `json:"problems"`
 	Groups    []AssignableGroup `json:"groups"`
+	// WazuhUser is what the Wazuh indexer said about Username (1.11.0,
+	// design/adr/0063). Absent when [idp.wazuh_check] is off or the
+	// username has a problem. It never changes OK: it is a warning to
+	// show, not a refusal.
+	WazuhUser *WazuhUserCheck `json:"wazuh_user,omitempty"`
 }
+
+// WazuhUserCheck is one answer of the Wazuh username check. Status is
+// one of the WazuhUser* values; Message is a line to show as it is.
+type WazuhUserCheck struct {
+	Status  string `json:"status"`
+	Message string `json:"message"`
+}
+
+// Wazuh username check statuses. Give every status a default branch.
+const (
+	WazuhUserFound     = "found"
+	WazuhUserNotFound  = "not_found"
+	WazuhUserUnchecked = "unchecked" // the indexer could not be asked; Message says why
+)
 
 // NewAccount is the body of POST /v1/accounts.
 type NewAccount struct {

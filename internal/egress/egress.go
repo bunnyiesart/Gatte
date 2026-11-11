@@ -190,7 +190,9 @@ const (
 // Guard is a resolver and an IP policy. The zero value uses SystemLookup
 // and RefuseAddr; the fields exist so tests can point a name at a forbidden
 // address, or let httptest's loopback listener through, without a network.
-// Production code leaves them nil.
+// The backend adapters leave them nil; the accounts backend's Wazuh check
+// sets a Policy that also allows private ranges, for an indexer named by
+// root's config.toml (design/adr/0063).
 type Guard struct {
 	Lookup Lookup
 	Policy Policy

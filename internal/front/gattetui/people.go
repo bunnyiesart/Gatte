@@ -31,7 +31,7 @@ var accountCols = []int{16, 22, 24}
 func peopleSection(e env) ([]row, error) {
 	rows := []row{heading("People")}
 	if e.acc == nil {
-		return append(rows, textRow(stDim.Render("Accounts are edited through the accounts socket: start with sudo mcp-gateway tui -manage-users."))), nil
+		return append(rows, textRow(stDim.Render("Read-only: to edit, run sudo mcp-gateway tui -manage-users."))), nil
 	}
 	list, err := e.acc.ListAccounts(ctx())
 	if err != nil {

@@ -180,7 +180,7 @@ func entryRows(e env, d adminapi.UpstreamDetail) []row {
 	if d.RemoteKind != "" {
 		rows = append(rows, kv("Remote kind", vis(d.RemoteKind)))
 	}
-	rows = append(rows, kv("Config", configText(d.Signature)+stDim.Render("  an operator's approval of this entry, not a safety rating")))
+	rows = append(rows, kv("Config", configText(d.Signature)))
 	if h := d.Health; h != nil && e.has(adminapi.FeatureBackendHealth) {
 		state := stateText(h.State) + stDim.Render("  since "+showTimePtr(h.Since))
 		if h.Cause != "" {

@@ -320,7 +320,7 @@ func TestUI_PagesCarryAStrictPolicyAndNoScript(t *testing.T) {
 	mustRegister(t, e, stdioEntry("edr"))
 	mustObserve(t, e, "edr", quarantine.ToolIdentity{Name: "get_host", Description: "d", InputSchema: []byte(`{}`)})
 
-	for _, page := range []string{"/servers", "/servers/edr", "/servers/edr/tools/get_host", "/servers/edr/tools/review-set", "/users"} {
+	for _, page := range []string{"/servers", "/servers/edr", "/servers/edr/tools/get_host", "/servers/edr/tools/review-set", "/users", "/help"} {
 		w := uiDo(s, "GET", page, nil, cookie, nil)
 		if w.Code != http.StatusOK {
 			t.Errorf("GET %s: %d\n%s", page, w.Code, w.Body)
@@ -566,5 +566,46 @@ func TestUI_TheConsoleReadsNoConfigurationFile(t *testing.T) {
 	var out, errb bytes.Buffer
 	if code := run([]string{"ui", "-config", "/etc/mcp-gateway/config.toml"}, &out, &errb); code != exitCannotRun || !strings.Contains(errb.String(), "-socket") {
 		t.Fatalf("ui -config: exit %d\n%s", code, errb.String())
+	}
+}
+
+// The Help page lists every command usage() lists, so a new command cannot
+// be added to the CLI and left off the console's help.
+func TestUI_TheHelpPageListsEveryCommand(t *testing.T) {
+	_, s, cookie := newUITest(t)
+	w := uiDo(s, "GET", "/help", nil, cookie, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /help: %d", w.Code)
+	}
+	page := w.Body.String()
+	if home := uiDo(s, "GET", "/servers", nil, cookie, nil).Body.String(); !strings.Contains(home, s.session+"/help") {
+		t.Error("the header does not link the Help page")
+	}
+	var b strings.Builder
+	usage(&b)
+	_, list, _ := strings.Cut(b.String(), "Commands:\n")
+	list, _, _ = strings.Cut(list, "\n\n")
+	n := 0
+	for _, line := range strings.Split(list, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		n++
+		if !strings.Contains(page, "mcp-gateway "+fields[0]+"<") {
+			t.Errorf("the Help page does not list mcp-gateway %s", fields[0])
+		}
+	}
+	if n < 10 {
+		t.Fatalf("read %d commands from usage(); its format changed", n)
+	}
+	for _, doc := range []string{"docs/command-guide.md", "docs/how-to/change-roles-and-quota.md", "docs/how-to/add-and-remove-people.md",
+		"docs/how-to/review-and-approve-tools.md", "docs/explanation/quarantine-and-signing.md"} {
+		if !strings.Contains(page, doc) {
+			t.Errorf("the Help page does not name %s", doc)
+		}
+		if _, err := os.Stat("../../" + doc); err != nil {
+			t.Errorf("the Help page names %s, which does not exist", doc)
+		}
 	}
 }

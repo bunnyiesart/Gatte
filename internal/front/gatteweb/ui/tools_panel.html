@@ -1,7 +1,6 @@
 {{$base := .Base}}{{$csrf := .CSRF}}
 <section>
   <h2>Tool security</h2>
-  <p class="caption">A tool is served only after you approve it, at the exact version you reviewed. Approving the configuration approves no tool. A sensitive tool (one that can act) also needs clearing.</p>
 
   {{if and .ReviewSet (gt .Review 1)}}
   <div class="notice" role="note">{{template "dot"}}<p>{{.Review}} tools wait for review. <a href="{{$base}}{{.ServerPath}}/tools/review-set">Review them on one page</a>, every definition in full, and approve them together.</p></div>
@@ -33,7 +32,6 @@
       </tbody>
     </table>
   </div>
-  {{if .Sensitive}}<p class="caption">A sensitive tool shown as <span class="badge">Not served</span> is approved but not yet cleared: approval alone does not make it callable.</p>{{end}}
   {{else}}
   <div class="group empty-state"><p><b>No tools yet.</b> They appear once the gateway connects to this backend and reads its tools; each one is pending until you approve it.</p></div>
   {{end}}

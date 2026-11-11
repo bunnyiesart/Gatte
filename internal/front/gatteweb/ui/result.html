@@ -37,6 +37,12 @@
     <span class="secret-note">Shown only here, stored only as a hash. Hand it over privately.</span>
   </div>
   {{end}}
+  {{range .Lists}}
+  <section class="left">
+    <h2>{{.Title}}</h2>
+    <ul class="steps">{{range .Items}}<li class="mono">{{vis .}}</li>{{end}}</ul>
+  </section>
+  {{end}}
   {{if .Remaining}}
   <section class="left">
     <h2>Still to do by hand</h2>

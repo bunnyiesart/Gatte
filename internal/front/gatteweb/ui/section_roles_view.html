@@ -1,6 +1,5 @@
 <section>
   <div class="section-head"><h2>Roles</h2></div>
-  <p class="sub">Each person's groups decide their role. Changing roles needs the managing console with the accounts socket.</p>
   {{if .Error}}
   <div class="notice error" role="alert">{{template "warn"}}<pre>{{vistext .Error}}</pre></div>
   {{else if .Roles}}

@@ -1,7 +1,6 @@
 {{$base := .Base}}
 <section>
   <div class="section-head"><h2>People</h2>{{if .Manage}}<a class="btn primary small" href="{{$base}}/people/new">Add person</a>{{end}}</div>
-  <p class="sub">People sign in at your identity provider; their groups decide their role here. Disabling an account stops new sign-ins; to cut off a session already open, {{if .Offboard}}offboard them from their page{{else}}block their gateway ID with <code>mcp-gateway access block</code>{{end}}.</p>
   {{if .Manage}}
     {{if .Error}}<div class="notice error" role="alert">{{template "warn"}}<pre>{{vistext .Error}}</pre></div>{{end}}
     {{if .Accounts}}

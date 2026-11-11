@@ -1,7 +1,9 @@
 package gatteweb
 
 import (
+	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -59,11 +61,10 @@ func TestRolesSections_MakeNoAuditRead(t *testing.T) {
 	}
 }
 
-// TestRolesPanel_RendersTheMatrixFromTheSeededFake renders the Roles section
-// against the fake's seeded roles, tools and people, and checks the structured
-// view is there: both roles, the non_read badge, the safe/sensitive columns,
-// and the grant form.
-func TestRolesPanel_RendersTheMatrixFromTheSeededFake(t *testing.T) {
+// TestRolesPanel_ListsTheRoles renders the Roles section against the fake's
+// seeded roles: one row per role, linking to its page, with its non_read
+// state and groups. The edit form lives on the role page, not the list.
+func TestRolesPanel_ListsTheRoles(t *testing.T) {
 	f := testFront(t)
 	html, err := f.rolesPanelFragment(httptest.NewRequest("GET", "/users", nil))
 	if err != nil {
@@ -71,16 +72,42 @@ func TestRolesPanel_RendersTheMatrixFromTheSeededFake(t *testing.T) {
 	}
 	s := string(html)
 	for _, want := range []string{
-		"tier1-analyst", "ir-lead", // roles down the axis
-		"close_case", "get_case", // tools across
-		"sensitive",         // the class marker on a column
-		"non_read",          // the marking shown and the toggle
-		"/users/roles/edit", // the grant/revoke action
-		"Grant", "Revoke",
+		"/users/roles/tier1-analyst", "/users/roles/ir-lead",
+		"soc-tier1", "soc-ir", "non_read", ">On<", ">Off<",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("rendered Roles section is missing %q", want)
 		}
+	}
+	if strings.Contains(s, "/users/roles/edit") {
+		t.Error("the role list carries the edit form; it belongs on the role page")
+	}
+}
+
+// TestRolePage_ToolsAsCheckboxesByServer: a role's page lists every tool
+// under its backend, as a checkbox, sensitive ones marked, with one form
+// that grants or revokes the selection and the non_read switch.
+func TestRolePage_ToolsAsCheckboxesByServer(t *testing.T) {
+	f := testFront(t)
+	w := httptest.NewRecorder()
+	f.routes().ServeHTTP(w, httptest.NewRequest("GET", "/users/roles/ir-lead", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET the role page: %d\n%s", w.Code, w.Body)
+	}
+	s := w.Body.String()
+	for _, want := range []string{
+		"<h2>casemgmt</h2>", `type="checkbox" name="tool" value="casemgmt.close_case"`, "Sensitive",
+		"/users/roles/edit", `value="grant"`, "Grant selected", `value="revoke"`, "Revoke selected",
+		"/users/roles/non-read", "Turn off",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("the role page is missing %q", want)
+		}
+	}
+	w = httptest.NewRecorder()
+	f.routes().ServeHTTP(w, httptest.NewRequest("GET", "/users/roles/nobody", nil))
+	if !strings.Contains(w.Body.String(), "No such role") || strings.Contains(w.Body.String(), "Grant selected") {
+		t.Errorf("an unknown role's page:\n%s", w.Body)
 	}
 }
 
@@ -105,5 +132,32 @@ func TestRolesPanel_SelfRegistersAtSlotTwenty(t *testing.T) {
 	}
 	if !found.Show(Capabilities{Manages: true, Root: true}) {
 		t.Error("roles section should show with Manages and Root")
+	}
+}
+
+// TestRolesEdit_AWildcardGrantIsNoChangeAndRefusesARevoke: a tool a "*" grant
+// already reaches needs no grant, and cannot be revoked one tool at a time;
+// both are listed on the result page, the rest of the selection still goes.
+func TestRolesEdit_AWildcardGrantIsNoChangeAndRefusesARevoke(t *testing.T) {
+	f := testFront(t)
+	post := func(op string, tools ...string) string {
+		form := url.Values{"role": {"tier1-analyst"}, "op": {op}, "tool": tools}
+		r := httptest.NewRequest("POST", "/users/roles/edit", strings.NewReader(form.Encode()))
+		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		if err := r.ParseForm(); err != nil {
+			t.Fatal(err)
+		}
+		w := httptest.NewRecorder()
+		f.routes().ServeHTTP(w, r)
+		return w.Body.String()
+	}
+	got := post("grant", "logsearch.search_relative", "threatintel.lookup_ip")
+	if !strings.Contains(got, "<h2>No change</h2>") || !strings.Contains(got, "logsearch.search_relative (granted by *)") ||
+		!strings.Contains(got, "<h2>Granted</h2>") || strings.Contains(got, "<h2>Refused</h2>") {
+		t.Errorf("a grant over a wildcard:\n%s", got)
+	}
+	got = post("revoke", "logsearch.search_relative")
+	if !strings.Contains(got, "<h2>Refused</h2>") || !strings.Contains(got, "Nothing written.") {
+		t.Errorf("a revoke under a wildcard:\n%s", got)
 	}
 }

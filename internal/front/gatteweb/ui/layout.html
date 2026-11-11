@@ -16,6 +16,7 @@
       {{end}}
     </nav>
     {{if .Operator}}<span class="whoami">Operating as <b>{{vis .Operator}}</b></span>{{end}}
+    <a class="btn small help-link" href="{{$.Base}}/help" {{if eq .Nav "help"}}aria-current="page"{{end}}>Help</a>
   </div>
 </header>
 <main>

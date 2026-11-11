@@ -291,7 +291,7 @@ func TestUIManage_RootScreensDoNotExistWithoutManageUsers(t *testing.T) {
 	}
 	// Registering without root works, and says how to approve the configuration.
 	got = m.post("/servers", url.Values{"name": {"ioc"}, "url": {"https://ioc.example.net"}, "openapi_text": {restSpecJSON}, "key_name": {"IOC_KEY"}})
-	if got.code != http.StatusOK || !got.has("not approved yet") || !got.has("sudo mcp-gateway sign ioc") {
+	if got.code != http.StatusOK || !got.has("Config not approved") || !got.has("sudo mcp-gateway sign ioc") {
 		t.Fatalf("register without -manage-users:\n%s", got.body)
 	}
 	detail := m.get("/servers/ioc")
@@ -302,8 +302,8 @@ func TestUIManage_RootScreensDoNotExistWithoutManageUsers(t *testing.T) {
 
 func TestUIManage_RegisterWritesTheKeyAndShowsTheReport(t *testing.T) {
 	m := newManageUI(t, true, true)
-	if list := m.get("/servers"); !list.has(`href="`+m.s.session+`/servers/new">Add a backend`) || !list.has("a remote MCP server") || !list.has("register a stdio backend in the terminal") {
-		t.Errorf("the servers list does not link the add page with what it adds:\n%s", list.body)
+	if list := m.get("/servers"); !list.has(`href="` + m.s.session + `/servers/new">Add a backend`) {
+		t.Errorf("the servers list does not link the add page:\n%s", list.body)
 	}
 	page := m.get("/servers/new")
 	for _, want := range []string{"Add a REST API", `enctype="multipart/form-data"`, `type="password" name="key_value"`} {
@@ -316,8 +316,8 @@ func TestUIManage_RegisterWritesTheKeyAndShowsTheReport(t *testing.T) {
 	if got.code != http.StatusOK {
 		t.Fatalf("register: %d\n%s", got.code, got.body)
 	}
-	for _, want := range []string{"Registered as a REST API", "1 safe · 1 sensitive", "report", "Sensitive", "Safe", "derived from the document",
-		"X-API-Key", "IOC_KEY", "not approved yet", "Approve the configuration of ioc", "Approve configuration", "nothing about the tools", m.s.session + "/servers/ioc"} {
+	for _, want := range []string{"REST API ·", "1 safe · 1 sensitive", "report", "Sensitive", "Safe", "derived from the document",
+		"X-API-Key", "IOC_KEY", "Config not approved", "Approve the configuration of ioc", "Approve configuration", m.s.session + "/servers/ioc"} {
 		if !got.has(want) {
 			t.Errorf("the register report lacks %q", want)
 		}
@@ -379,7 +379,7 @@ func TestUIManage_UploadingTheDocumentWorksAndStillNeedsTheFormToken(t *testing.
 	}
 	fields["csrf"] = m.s.csrf
 	got := m.postMultipart(t, "/servers", fields, "openapi.json", restSpecJSON)
-	if got.code != http.StatusOK || !got.has("Registered as a REST API") || !got.has("report") {
+	if got.code != http.StatusOK || !got.has("REST API ·") || !got.has("report") {
 		t.Fatalf("a multipart register with the file: %d\n%s", got.code, got.body)
 	}
 	if _, err := m.e.upstreams().Get(context.Background(), "ioc"); err != nil {
@@ -404,8 +404,8 @@ func TestUIManage_TheServerPageSignsRedialsAndRemovesOnlyWithTheNameTyped(t *tes
 	// The approval state names the configuration, and the tools panel is
 	// the separate tool-security gate (ADR-0060, 0061).
 	for _, want := range []string{"ioc", "REST API", "https://ioc.example.net/api/v2", "POST", "/report", "Sensitive", "Safe", "Remove this backend", `name="confirm"`, "/servers/ioc/sign",
-		"Config not approved", "It is not served until the configuration is approved", "Approve configuration", ">Reconnect<",
-		"Tool security", "Approving the configuration approves no tool"} {
+		"Config not approved", "Approve configuration", ">Reconnect<",
+		"Tool security"} {
 		if !page.has(want) {
 			t.Errorf("the server page lacks %q", want)
 		}
@@ -622,28 +622,36 @@ func TestUIManage_SecretsAreSetAndDeletedAndTheValueNeverShows(t *testing.T) {
 	}
 }
 
-// The Users tab's Roles section edits the roles file in place (design/adr/0054):
-// a grant is one surgical change validated before it is written, the file's
-// comments survive, and a role that does not exist changes nothing.
-func TestUIManage_TheRolesSectionGrantsOneToolAndKeepsTheFile(t *testing.T) {
+// The Users tab lists the roles; a role's page grants or revokes the tools
+// selected on it, in one validated write of the roles file (design/adr/0054).
+// The file's comments survive, a sensitive tool on a role that is not
+// non_read is refused and listed while the rest is written, and a role that
+// does not exist changes nothing.
+func TestUIManage_ARolePageGrantsTheSelectedToolsInOneWrite(t *testing.T) {
 	m := newManageUI(t, true, true)
 	mustObserve(t, m.e, "casemgmt", quarantine.ToolIdentity{Name: "list_cases", Description: "d", InputSchema: []byte(`{}`)})
-	// The matrix's rows are the roles the running configuration holds; the
+	mustObserve(t, m.e, "casemgmt", quarantine.ToolIdentity{Name: "get_case", Description: "d", InputSchema: []byte(`{}`)})
+	mustObserveSensitive(t, m.e, "casemgmt", quarantine.ToolIdentity{Name: "close_case", Description: "d", InputSchema: []byte(`{}`)})
+	// The list's rows are the roles the running configuration holds; the
 	// edits are to the file.
 	m.e.cfg.Roles = []config.Role{{Name: "ir"}}
 	text := "# reviewed by the SOC lead\n" + uiRolesText
 	if err := os.WriteFile(m.rolesPath, []byte(text), 0o640); err != nil {
 		t.Fatal(err)
 	}
-	if page := m.get("/users"); !page.has(m.s.session+"/users/roles/edit") || !page.has("ir") {
-		t.Fatalf("the Users tab has no editable Roles section:\n%s", page.body)
+	if page := m.get("/users"); !page.has(m.s.session+"/users/roles/ir") || page.has("/users/roles/edit") {
+		t.Fatalf("the Users tab does not list the role with a link to its page:\n%s", page.body)
 	}
-	got := m.post("/users/roles/edit", url.Values{"role": {"ir"}, "tool": {"casemgmt.list_cases"}, "op": {"grant"}})
-	if !got.has("result-icon ok") || !got.has("NOT applied yet") {
-		t.Fatalf("grant:\n%s", got.body)
+	if page := m.get("/users/roles/ir"); !page.has(m.s.session+"/users/roles/edit") || !page.has(`value="casemgmt.list_cases"`) || !page.has("Grant selected") || !page.has("Turn on") {
+		t.Fatalf("the role page:\n%s", page.body)
+	}
+	got := m.post("/users/roles/edit", url.Values{"role": {"ir"}, "op": {"grant"},
+		"tool": {"casemgmt.list_cases", "casemgmt.close_case", "casemgmt.get_case"}})
+	if !got.has("result-icon ok") || !got.has("NOT applied yet") || !got.has("Granted") || !got.has("Refused") || !got.has("casemgmt.close_case: sensitive") {
+		t.Fatalf("a grant with one sensitive tool on a role that is not non_read:\n%s", got.body)
 	}
 	b, _ := os.ReadFile(m.rolesPath)
-	if !strings.HasPrefix(string(b), "# reviewed by the SOC lead\n") || !strings.Contains(string(b), "list_cases") {
+	if !strings.HasPrefix(string(b), "# reviewed by the SOC lead\n") || !strings.Contains(string(b), "list_cases") || !strings.Contains(string(b), "get_case") || strings.Contains(string(b), "close_case") {
 		t.Fatalf("the roles file after the grant:\n%s", b)
 	}
 	if err := config.ValidateRolesText(m.cfgPath, b); err != nil {
@@ -652,12 +660,73 @@ func TestUIManage_TheRolesSectionGrantsOneToolAndKeepsTheFile(t *testing.T) {
 	if again := m.post("/users/roles/edit", url.Values{"role": {"ir"}, "tool": {"casemgmt.list_cases"}, "op": {"grant"}}); !again.has("No change") {
 		t.Fatalf("the same grant again:\n%s", again.body)
 	}
+	if got := m.post("/users/roles/edit", url.Values{"role": {"ir"}, "op": {"revoke"}, "tool": {"casemgmt.list_cases", "casemgmt.get_case"}}); !got.has("result-icon ok") || !got.has("Revoked") {
+		t.Fatalf("revoke both:\n%s", got.body)
+	}
+	if b, _ := os.ReadFile(m.rolesPath); strings.Contains(string(b), "list_cases") || strings.Contains(string(b), "get_case") {
+		t.Fatalf("the roles file after the revoke:\n%s", b)
+	}
 	before, _ := os.ReadFile(m.rolesPath)
 	if got := m.post("/users/roles/edit", url.Values{"role": {"nobody"}, "tool": {"casemgmt.list_cases"}, "op": {"grant"}}); !got.has("no [[role]] named nobody") {
 		t.Fatalf("an unknown role:\n%s", got.body)
 	}
+	if got := m.post("/users/roles/edit", url.Values{"role": {"ir"}, "op": {"grant"}}); !got.has("no tool selected") {
+		t.Fatalf("nothing selected:\n%s", got.body)
+	}
 	if after, _ := os.ReadFile(m.rolesPath); string(after) != string(before) {
-		t.Fatal("an unknown role changed the roles file")
+		t.Fatal("an unknown role or an empty selection changed the roles file")
+	}
+}
+
+// A tool selected twice is edited once, and a revoke that leaves the tool
+// reached through a "*" grant says so instead of claiming it is gone.
+func TestUIManage_ARoleEditSaysWhatStillReachesTheTool(t *testing.T) {
+	m := newManageUI(t, true, true)
+	mustObserve(t, m.e, "casemgmt", quarantine.ToolIdentity{Name: "list_cases", Description: "d", InputSchema: []byte(`{}`)})
+	mustObserve(t, m.e, "casemgmt", quarantine.ToolIdentity{Name: "get_case", Description: "d", InputSchema: []byte(`{}`)})
+	m.e.cfg.Roles = []config.Role{{Name: "ir"}}
+	if err := os.WriteFile(m.rolesPath, []byte(uiRolesText), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if got := m.post("/users/roles/edit", url.Values{"role": {"ir"}, "op": {"grant"}, "tool": {"casemgmt.get_case", "casemgmt.get_case"}}); !got.has("<h2>Granted</h2>") || got.has("<h2>No change</h2>") {
+		t.Fatalf("one tool selected twice:\n%s", got.body)
+	}
+	both := strings.Replace(uiRolesText, "tools = []", "tools = [\"casemgmt.list_cases\"]\n[role.grants]\n\"casemgmt\" = [\"*\"]", 1)
+	if err := os.WriteFile(m.rolesPath, []byte(both), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if got := m.post("/users/roles/edit", url.Values{"role": {"ir"}, "op": {"revoke"}, "tool": {"casemgmt.list_cases"}}); !got.has("casemgmt.list_cases (still granted by *)") {
+		t.Fatalf("a revoke under a wildcard:\n%s", got.body)
+	}
+}
+
+// non_read is one switch on the role page, set on its own; with it on, the
+// sensitive grant refused above goes through.
+func TestUIManage_TheNonReadSwitchThenASensitiveGrant(t *testing.T) {
+	m := newManageUI(t, true, true)
+	mustObserve(t, m.e, "casemgmt", quarantine.ToolIdentity{Name: "list_cases", Description: "d", InputSchema: []byte(`{}`)})
+	mustObserveSensitive(t, m.e, "casemgmt", quarantine.ToolIdentity{Name: "close_case", Description: "d", InputSchema: []byte(`{}`)})
+	m.e.cfg.Roles = []config.Role{{Name: "ir"}}
+	// non_read marks names in `tools`, so a role with none cannot carry it.
+	withTool := strings.Replace(uiRolesText, "tools = []", `tools = ["casemgmt.list_cases"]`, 1)
+	if err := os.WriteFile(m.rolesPath, []byte(withTool), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if got := m.post("/users/roles/non-read", url.Values{"role": {"ir"}, "on": {"true"}}); !got.has("result-icon ok") || !got.has("NOT applied yet") {
+		t.Fatalf("non_read on:\n%s", got.body)
+	}
+	if page := m.get("/users/roles/ir"); !page.has("Turn off") {
+		t.Fatalf("the role page after non_read on:\n%s", page.body)
+	}
+	if got := m.post("/users/roles/edit", url.Values{"role": {"ir"}, "op": {"grant"}, "tool": {"casemgmt.close_case"}}); !got.has("result-icon ok") {
+		t.Fatalf("a sensitive grant on a non_read role:\n%s", got.body)
+	}
+	b, _ := os.ReadFile(m.rolesPath)
+	if !strings.Contains(string(b), "non_read = true") || !strings.Contains(string(b), "casemgmt.close_case") {
+		t.Fatalf("the roles file:\n%s", b)
+	}
+	if err := config.ValidateRolesText(m.cfgPath, b); err != nil {
+		t.Fatalf("the roles text does not load: %v", err)
 	}
 }
 
@@ -754,7 +823,7 @@ func TestUIManage_TheContainerFormRegistersAndDoesNotSign(t *testing.T) {
 	if got.code != http.StatusOK {
 		t.Fatalf("register: %d\n%s", got.code, got.body)
 	}
-	for _, want := range []string{"Registered as a container (oci)", ociTestImage, "slirp4netns", "INTEL_KEY", "OTHER_KEY", "not approved yet", "Approve the configuration of intel", "Approve configuration", "the image digest, the network and the variable names"} {
+	for _, want := range []string{"Container ·", ociTestImage, "slirp4netns", "INTEL_KEY", "OTHER_KEY", "Config not approved", "Approve the configuration of intel", "Approve configuration"} {
 		if !got.has(want) {
 			t.Errorf("the register result lacks %q", want)
 		}
@@ -830,8 +899,8 @@ func TestUIManage_TheRemoteFormRegistersAndDoesNotSign(t *testing.T) {
 	if got.code != http.StatusOK {
 		t.Fatalf("register: %d\n%s", got.code, got.body)
 	}
-	for _, want := range []string{"Registered as a remote MCP server", "https://mcp.vendor.example/mcp", "streamable", "X-Api-Key", "VENDOR_TOKEN",
-		"not approved yet", "Approve the configuration of vendor", "Approve configuration", "the URL, the auth and its secret name, and the transport"} {
+	for _, want := range []string{"Remote MCP ·", "https://mcp.vendor.example/mcp", "streamable", "X-Api-Key", "VENDOR_TOKEN",
+		"Config not approved", "Approve the configuration of vendor", "Approve configuration"} {
 		if !got.has(want) {
 			t.Errorf("the register result lacks %q", want)
 		}

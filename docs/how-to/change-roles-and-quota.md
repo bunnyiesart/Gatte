@@ -119,8 +119,9 @@ preset's tools as `[role.grants]`, the groups are added to
 in the steps above.
 
 A preset never lets a role act. A sensitive tool in a preset is skipped,
-and the screen lists it. To grant it, mark the role able to act and add the
-tool, each as its own step.
+and the screen lists it. To grant it, make one explicit change that marks
+the role able to act together with that tool. If every tool of a preset is
+sensitive, no role is created.
 
 Presets themselves grant nothing: editing one needs no `reload`.
 

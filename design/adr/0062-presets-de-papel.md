@@ -18,19 +18,29 @@ from preset".
    (nomes `BACKEND.TOOL`) mora no arquivo que guarda os papéis — com
    `roles_file`, só nele. A carga valida (nome único e sem espaço nas
    pontas, lista não vazia, nomes com namespace, sem curinga, sem repetição),
+   e cada tool, partida no primeiro `.`, precisa ser um grant válido pelas
+   mesmas regras de `[role.grants]` — um preset que carrega nunca escreve um
+   papel que a carga recusa),
    mas o `serve` não lê preset: ele não concede nada, e mudar um preset não
    pede `reload` nem restart (fica fora do diff "NOT applied until a
    restart").
 2. **Criar a partir do preset escreve grants.** `frontkit.NewRoleFromPreset`
-   acrescenta um `[[role]]` novo depois do último papel, com as tools do
-   preset em `[role.grants]`, e mapeia os grupos pedidos em
-   `[group_to_role]`. Nada mais do arquivo muda (`0054`). O texto passa pelo
+   acrescenta um `[[role]]` novo depois do último papel — depois também dos
+   comentários finais dele, que são dele (`0009`), e antes dos comentários
+   colados no cabeçalho seguinte —, com as tools do preset em
+   `[role.grants]`, e mapeia os grupos pedidos em `[group_to_role]`. Nada
+   mais do arquivo muda (`0054`). O leitor é por linhas: um arquivo que
+   escreve papéis, presets ou grupos numa forma TOML que ele não segue
+   (`[ group_to_role ]`, tabela inline, chave pontilhada) é recusado
+   (`SpliceUnsupported`) em vez de ganhar uma segunda tabela. O texto passa pelo
    `PUT /v1/roles`, que valida como a carga.
 3. **Preset nunca torna um papel capaz de agir.** O papel criado não recebe
    `non_read`, e um grant nunca alcança tool sensível (`0048`). Então a tool
    que o front classifica como sensível é pulada — em vez de virar um grant
    que não alcança nada — e devolvida para a tela listar. Concedê-la continua
-   sendo dois atos explícitos: marcar `non_read` e nomear a tool em `tools`.
+   sendo um ato explícito à parte: uma escrita que liga `non_read` junto com
+   as tools sensíveis em `tools`. Um preset só de tools sensíveis não cria
+   papel (`SpliceNothingSafe`), em vez de criar um papel vazio calado.
 4. **Papel vazio também.** `frontkit.NewRole` cria o papel sem tools, com os
    grupos, para quem não quer partir de um preset.
 

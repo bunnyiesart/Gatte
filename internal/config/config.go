@@ -1911,7 +1911,11 @@ func validatePresets(presets []Preset) []error {
 			errs = append(errs, fmt.Errorf("preset %q: tools is empty -- a role created from it would grant nothing", p.Name))
 		}
 		listed := map[string]bool{}
+		grants := map[string][]string{}
 		for _, tool := range p.Tools {
+			if server, id, ok := strings.Cut(tool, gateway.NameSeparator); ok {
+				grants[server] = append(grants[server], id)
+			}
 			_, toolID, ok := gateway.SplitNamespaced(tool)
 			switch {
 			case !ok || strings.TrimSpace(tool) != tool:
@@ -1923,6 +1927,14 @@ func validatePresets(presets []Preset) []error {
 				errs = append(errs, fmt.Errorf("preset %q: tool %q is listed more than once", p.Name, tool))
 			}
 			listed[tool] = true
+		}
+		// A role created from the preset gets these tools as [role.grants],
+		// split at the first separator (frontkit.NewRoleFromPreset). Hold
+		// those grants to the rules a role's grants are held to, so a preset
+		// that loads never writes a role the load then refuses (a tool id
+		// with a separator in it, a "*" backend).
+		if err := access.ValidateRole(access.Role{Name: p.Name, Grants: grants}); err != nil && strings.TrimSpace(p.Name) == p.Name {
+			errs = append(errs, fmt.Errorf("preset %q: the role it would create is refused: %w", p.Name, err))
 		}
 	}
 	return errs

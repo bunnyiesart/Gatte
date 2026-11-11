@@ -46,6 +46,8 @@ func TestPresets_MalformedAreRefused(t *testing.T) {
 		"not namespaced":  {`name = "p"` + "\ntools = [\"list_cases\"]", "not a namespaced name"},
 		"wildcard":        {`name = "p"` + "\ntools = [\"casemgmt.*\"]", "no wildcard"},
 		"repeated tool":   {`name = "p"` + "\ntools = [\"a.b\", \"a.b\"]", "listed more than once"},
+		"dotted tool id":  {`name = "p"` + "\ntools = [\"casemgmt.search.v2\"]", "the role it would create is refused"},
+		"star backend":    {`name = "p"` + "\ntools = [\"*.get_case\"]", "the role it would create is refused"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := Load(writeRolesPair(t, minimalConfig, rolesText+"\n[[preset]]\n"+tc.preset+"\n"))

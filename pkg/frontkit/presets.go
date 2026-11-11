@@ -65,9 +65,10 @@ func NewRole(text, name string, groups []string) (string, SpliceStatus) {
 // and a grant never reaches a sensitive tool (design/adr/0048). So each tool
 // sensitive reports true for is left out rather than written as a grant that
 // would silently reach nothing, and is returned in skipped for the front to
-// show; granting it is a separate, deliberate act (SetNonRead, then
-// GrantSensitiveTool). A nil sensitive treats every tool as safe. A preset
-// entry that is not "server.tool" is skipped too.
+// show. Granting one is a separate, explicit write: turning non_read on
+// together with the sensitive tools in `tools`. A nil sensitive treats every
+// tool as safe; a preset entry that is not "server.tool" is skipped too.
+// When nothing is left to grant, no role is written (SpliceNothingSafe).
 func NewRoleFromPreset(text, roleName, presetName string, groups []string, sensitive func(server, tool string) bool) (out string, skipped []string, st SpliceStatus) {
 	var preset *Preset
 	for _, p := range Presets(text) {
@@ -92,6 +93,9 @@ func NewRoleFromPreset(text, roleName, presetName string, groups []string, sensi
 		}
 		grants[server] = append(grants[server], tool)
 	}
+	if len(order) == 0 {
+		return text, skipped, SpliceNothingSafe
+	}
 	var grantLines []string
 	for _, server := range order {
 		quoted := make([]string, len(grants[server]))
@@ -113,6 +117,9 @@ func addRole(text, name string, groups, grantLines []string) (string, SpliceStat
 	if !plainName(name) {
 		return text, SpliceBadName
 	}
+	if unsupportedLayout(text) {
+		return text, SpliceUnsupported
+	}
 	if _, exists := FindRole(ParseRoles(text), name); exists {
 		return text, SpliceRoleExists
 	}
@@ -132,10 +139,8 @@ func addRole(text, name string, groups, grantLines []string) (string, SpliceStat
 		block = append(block, grantLines...)
 	}
 	lines := strings.Split(text, "\n")
-	if blocks := ParseRoles(text); len(blocks) > 0 {
-		last := blocks[len(blocks)-1]
-		at := lastMeaningful(lines, last.start, last.end) + 1
-		text = joinAfter(splice(lines, at, nil, append([]string{""}, block...)))
+	if blocks := ParseRoles(text); len(blocks) > 0 && blocks[len(blocks)-1].end < len(lines) {
+		text = joinAfter(insertBefore(lines, roleTail(lines, blocks[len(blocks)-1]), block))
 	} else {
 		text = appendBlock(text, block)
 	}
@@ -154,6 +159,75 @@ func addRole(text, name string, groups, grantLines []string) (string, SpliceStat
 	}
 	at := lastMeaningful(lines, hdr, end) + 1
 	return joinAfter(splice(lines, at, nil, entries)), SpliceChanged
+}
+
+// roleTail is where a block following role b goes: after every line of b,
+// its trailing comments included (they are b's, design/adr/0009), but
+// before a run of comment lines that sits directly on the next header,
+// which belongs to that header.
+func roleTail(lines []string, b RoleBlock) int {
+	last := lastMeaningful(lines, b.start, b.end)
+	at := b.end
+	for at-1 > last && strings.HasPrefix(strings.TrimSpace(lines[at-1]), "#") {
+		at--
+	}
+	return at
+}
+
+// insertBefore splices block in at index at, with one blank line on each
+// side where the neighbouring line is not already blank.
+func insertBefore(lines []string, at int, block []string) []string {
+	ins := block
+	if at > 0 && strings.TrimSpace(lines[at-1]) != "" {
+		ins = append([]string{""}, ins...)
+	}
+	if at < len(lines) && strings.TrimSpace(lines[at]) != "" {
+		ins = append(ins, "")
+	}
+	return splice(lines, at, nil, ins)
+}
+
+// unsupportedLayout reports whether text writes a role, a preset or the
+// group table in a form the line reader here does not follow: a header
+// with spaces or quotes inside the brackets ("[ group_to_role ]"), an
+// inline or dotted top-level key ("group_to_role = {...}",
+// "group_to_role.g = ..."), or an unquoted dotted key inside the group
+// table. TOML reads all of these; this editor would misplace a new entry
+// or append a second table the load refuses. The front refuses and says
+// to edit the file by hand.
+func unsupportedLayout(text string) bool {
+	canonical := map[string]string{
+		"[[role]]": "[[role]]", "[role.grants]": "[role.grants]",
+		"[[preset]]": "[[preset]]", "[group_to_role]": "[group_to_role]",
+	}
+	inHeaderless, inGroups := true, false
+	for _, l := range strings.Split(text, "\n") {
+		t := stripComment(strings.TrimSpace(l))
+		if strings.HasPrefix(t, "[") {
+			inHeaderless = false
+			norm := strings.NewReplacer(" ", "", "\t", "", `"`, "", "'", "").Replace(t)
+			if want, known := canonical[norm]; known && t != want {
+				return true
+			}
+			inGroups = t == "[group_to_role]"
+			continue
+		}
+		raw, _, isKey := strings.Cut(t, "=")
+		if !isKey || t == "" {
+			continue
+		}
+		raw = strings.TrimSpace(raw)
+		if inHeaderless {
+			bare := strings.Trim(strings.SplitN(raw, ".", 2)[0], `"' `)
+			if bare == "group_to_role" || bare == "role" || bare == "preset" {
+				return true
+			}
+		}
+		if inGroups && !strings.HasPrefix(raw, `"`) && !strings.HasPrefix(raw, "'") && strings.Contains(raw, ".") {
+			return true
+		}
+	}
+	return false
 }
 
 // appendBlock adds block at the end of text, after one blank line.

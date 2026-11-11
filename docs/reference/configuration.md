@@ -247,12 +247,21 @@ reads it, it grants nothing, and changing it needs no `reload` or restart.
 | Key | Type | Default | Required | Constraints and meaning |
 |---|---|---|---|---|
 | `name` | string | none | yes | Unique among presets; not empty; no leading or trailing whitespace. |
-| `tools` | list of strings | none | yes | Namespaced names, `BACKEND.TOOL`, as in a role's `tools`. Not empty; no wildcard (`.*`); no repeated name. |
+| `tools` | list of strings | none | yes | Namespaced names, `BACKEND.TOOL`, as in a role's `tools`. Not empty; no wildcard (`.*`); no repeated name. Split at the first `.`, each must also be a valid grant (`BACKEND = ["TOOL"]`): a tool id containing `.` or a `*` backend is refused. |
 
 Creating a role from a preset writes a new `[[role]]` whose `[role.grants]`
 holds the preset's tools. A preset never sets `non_read`, so a sensitive tool
 it names is skipped and reported when the role is created; grant it afterwards
-as its own act (mark the role `non_read`, then add the tool to `tools`).
+in one explicit change that turns `non_read` on with the tool in `tools`. A
+preset whose tools are all sensitive creates no role.
+
+The console and the TUI add a role by inserting lines, never by rewriting the
+file. They read headers written exactly as `[[role]]`, `[role.grants]`,
+`[[preset]]` and `[group_to_role]`, and group keys that are bare or quoted
+words. A file that writes these another way TOML allows (spaces or quotes
+inside the brackets, `group_to_role = { ... }`, a dotted key such as
+`group_to_role.g = "r"`) loads, but the console refuses to add a role to it;
+edit that file by hand.
 
 ## [[quota.provider]]
 

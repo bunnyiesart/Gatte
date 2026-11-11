@@ -10,6 +10,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/bunnyiesart/Gatte/internal/adminapitest"
 	"github.com/bunnyiesart/Gatte/pkg/adminapi"
@@ -93,7 +94,7 @@ func TestRegistriesHoldTheTwoTabsAndTheirParts(t *testing.T) {
 	}{
 		{ids(len(s), func(i int) string { return s[i].ID }), []string{"servers", "users"}},
 		{ids(len(d), func(i int) string { return d[i].ID }), []string{"tools", "secrets", "maintenance"}},
-		{ids(len(u), func(i int) string { return u[i].ID }), []string{"people", "roles", "blocklist"}},
+		{ids(len(u), func(i int) string { return u[i].ID }), []string{"people", "roles"}},
 	} {
 		if !slices.Equal(c.got, c.want) {
 			t.Errorf("registry order %v, want %v", c.got, c.want)
@@ -108,32 +109,135 @@ func TestEveryCallCarriesTheTUIFrontTag(t *testing.T) {
 	}
 }
 
-func TestServersListShowsHealthAndWhatNeedsReview(t *testing.T) {
+func mustNotShow(t *testing.T, a *app, absent ...string) {
+	t.Helper()
+	v := a.View()
+	for _, s := range absent {
+		if strings.Contains(v, s) {
+			t.Errorf("the screen shows %q:\n%s", s, v)
+		}
+	}
+}
+
+func TestServersListShowsHealthAndConfigApprovalButNoReviewMarker(t *testing.T) {
 	a, _ := start(t, true)
-	mustShow(t, a, "MCP Servers / APIs", "threatintel", "Down", "In maintenance", "Tool waits for review", "R reload config", "V vault")
+	mustShow(t, a, "MCP Servers / APIs", "threatintel", "Down", "In maintenance", "CONFIG", "Config approved", "[ R Reload config ]", "[ V Vault ]")
+	// Pending tools are shown in each backend's tools panel, not on the list.
+	mustNotShow(t, a, "NEEDS REVIEW", "Tool waits for review", "Tool definition changed")
+}
+
+// TestServersListFlagsOnlyAChangedTool: a backend with a tool changed since
+// approval is flagged on the list; one with pending tools only is not.
+func TestServersListFlagsOnlyAChangedTool(t *testing.T) {
+	a, _ := start(t, false)
+	row := func(name string) string {
+		for _, r := range a.top().rows {
+			if strings.HasPrefix(r.text, name+" ") {
+				return r.text
+			}
+		}
+		t.Fatalf("no row for %s:\n%s", name, a.View())
+		return ""
+	}
+	if !strings.Contains(row("docsearch"), "tool changed since approved") {
+		t.Errorf("docsearch has a changed tool and is not flagged: %q", row("docsearch"))
+	}
+	for _, pendingOnly := range []string{"logsearch", "threatintel", "casemgmt"} {
+		if strings.Contains(row(pendingOnly), "changed") {
+			t.Errorf("%s has no changed tool and is flagged: %q", pendingOnly, row(pendingOnly))
+		}
+	}
+}
+
+func TestConfigTextUsesTheApprovalWords(t *testing.T) {
+	for sig, want := range map[string]string{"yes": "Config approved", "INVALID": "Changed since approved", "no": "Config not approved", "": "Config not approved"} {
+		if got := configText(sig); got != want {
+			t.Errorf("configText(%q) = %q, want %q", sig, got, want)
+		}
+	}
 }
 
 func TestApproveSendsTheFingerprintShownAndNoMeansNothing(t *testing.T) {
 	a, c := start(t, false)
 	open(a, toolPage("logsearch", "search_absolute"))
-	mustShow(t, a, "sha256:logsearch-search_absolute", "a approve")
+	mustShow(t, a, "sha256:logsearch-search_absolute", "[ enter Actions ]")
 
+	press(a, "enter")
+	mustShow(t, a, "a  Approve tool")
 	press(a, "a", "n")
 	mustShow(t, a, "Cancelled. Nothing was sent.")
 	if got := toolStatus(t, c, "logsearch", "search_absolute"); got != adminapi.StatusPending {
 		t.Fatalf("after answering no the tool is %q, want pending", got)
 	}
 
-	press(a, "a")
-	mustShow(t, a, "at fingerprint sha256:logsearch-search_absolute?")
+	press(a, "enter", "a")
+	mustShow(t, a, "Approve tool logsearch.search_absolute at fingerprint sha256:logsearch-search_absolute?")
 	press(a, "y")
 	if got := toolStatus(t, c, "logsearch", "search_absolute"); got != adminapi.StatusApproved {
 		t.Fatalf("after approving the tool is %q, want approved", got)
 	}
-	mustShow(t, a, "Approved logsearch.search_absolute.", "v revoke")
+	mustShow(t, a, "Approved logsearch.search_absolute.")
+	press(a, "enter")
+	mustShow(t, a, "v  Revoke")
+	mustNotShow(t, a, "Approve tool")
 }
 
-func TestDeregisterForwardsTheTypedNameAndTheBackendDecides(t *testing.T) {
+// TestToolMenuFromThePanel: a tool's actions open as one menu on its row;
+// approving is not in it (the definition is not on screen), and esc closes
+// it without sending anything.
+func TestToolMenuFromThePanel(t *testing.T) {
+	a, c := start(t, false)
+	open(a, serverPage("casemgmt"))
+	cursorTo(t, a, "get_case")
+	press(a, "enter")
+	mustShow(t, a, "casemgmt.get_case", "r  Review", "v  Revoke", "[ esc Cancel ]")
+	mustNotShow(t, a, "Approve tool")
+
+	press(a, "esc")
+	if a.menu != nil {
+		t.Fatal("esc left the menu open")
+	}
+	if got := toolStatus(t, c, "casemgmt", "get_case"); got != adminapi.StatusApproved {
+		t.Fatalf("closing the menu changed the tool: %q", got)
+	}
+
+	press(a, "enter", "down", "enter")
+	mustShow(t, a, "Revoke casemgmt.get_case?")
+	press(a, "y")
+	if got := toolStatus(t, c, "casemgmt", "get_case"); got != adminapi.StatusPending {
+		t.Fatalf("after revoking from the menu the tool is %q, want pending", got)
+	}
+
+	cursorTo(t, a, "get_case")
+	press(a, "enter", "r")
+	if got := a.top().title; got != "get_case" {
+		t.Fatalf("Review opened %q, want the tool's review page", got)
+	}
+}
+
+// TestReviewPageMenuWithoutADefinitionOffersNoApproval: a review page that
+// could not draw the definition offers neither approval nor a review of
+// itself.
+func TestReviewPageMenuWithoutADefinitionOffersNoApproval(t *testing.T) {
+	a, _ := start(t, false)
+	pending := adminapi.Tool{Server: "logsearch", Tool: "x", Status: adminapi.StatusPending, ObservedHash: "sha256:x"}
+	if items := toolActions(a.env, pending, true, false); len(items) != 0 {
+		t.Fatalf("a review page without the definition offers %+v", items)
+	}
+	if items := toolActions(a.env, pending, true, true); len(items) != 1 || items[0].label != "Approve tool" {
+		t.Fatalf("a review page with the definition offers %+v, want Approve tool", items)
+	}
+}
+
+func TestHeaderStaysOneLineOnANarrowTerminal(t *testing.T) {
+	a, _ := start(t, true)
+	a.width = 30
+	if h := a.header(); strings.Contains(h, "\n") || lipgloss.Width(h) != 30 {
+		t.Fatalf("the header is %d wide or wraps: %q", lipgloss.Width(h), h)
+	}
+}
+
+func TestRemoveForwardsTheTypedNameAndTheBackendDecides(t *testing.T) {
 	a, c := start(t, false)
 	open(a, serverPage("casemgmt"))
 	press(a, "X", "casemgm", "enter")
@@ -148,8 +252,9 @@ func TestDeregisterForwardsTheTypedNameAndTheBackendDecides(t *testing.T) {
 		t.Fatal("casemgmt is still registered after the name was typed")
 	}
 	if a.top().title != "MCP Servers / APIs" {
-		t.Errorf("after deregistering the page is %q, want the list", a.top().title)
+		t.Errorf("after removing the page is %q, want the list", a.top().title)
 	}
+	mustShow(t, a, "Removed casemgmt.")
 }
 
 func TestSecretValueIsNeverDrawn(t *testing.T) {
@@ -165,7 +270,7 @@ func TestSecretValueIsNeverDrawn(t *testing.T) {
 	if v := a.View(); strings.Contains(v, value) {
 		t.Fatalf("the value is on screen after it was sent:\n%s", v)
 	}
-	mustShow(t, a, "Wrote SHODAN_KEY to the vault.", "redialled")
+	mustShow(t, a, "Wrote SHODAN_KEY to the vault.", "until it reconnects")
 	list, _ := c.Accounts.ListSecrets(context.Background())
 	if i := slices.IndexFunc(list.Secrets, func(s adminapi.Secret) bool { return s.Name == "SHODAN_KEY" }); i < 0 || !list.Secrets[i].InVault {
 		t.Fatal("SHODAN_KEY is not in the vault after it was set")
@@ -241,29 +346,39 @@ func TestSensitiveGrantNeedsNonReadAndWritesNothing(t *testing.T) {
 func TestWithoutTheAccountsSocketRootActionsAreAbsent(t *testing.T) {
 	a, _ := start(t, false)
 	open(a, serverPage("casemgmt"))
-	v := a.View()
-	for _, absent := range []string{"S sign", "S re-sign", "Secrets  names only"} {
-		if strings.Contains(v, absent) {
-			t.Errorf("without -manage-users the detail page offers %q:\n%s", absent, v)
-		}
-	}
-	mustShow(t, a, "D redial", "X deregister", "Maintenance")
+	mustNotShow(t, a, "Approve configuration", "Secrets  names only")
+	mustShow(t, a, "[ C Reconnect ]", "[ X Remove ]", "Maintenance")
 	settle(a, a.switchTab(1))
-	mustShow(t, a, "Read-only: editing needs console_manages", "sudo mcp-gateway tui -manage-users", "+ Block a subject")
+	mustShow(t, a, "Read-only: editing needs console_manages", "sudo mcp-gateway tui -manage-users")
+}
+
+// TestUsersShowsOnlyPeopleAndRoles: no blocklist and no view of the audit
+// trail on the Users tab (design/adr/0061 §3, §4), even when the gateway
+// has seen and blocked subjects.
+func TestUsersShowsOnlyPeopleAndRoles(t *testing.T) {
+	for _, root := range []bool{true, false} {
+		a, c := start(t, root)
+		if _, err := c.Operator.BlockSubject(context.Background(), adminapi.BlockRequest{Subject: "sub-eve", Reason: "phished"}); err != nil {
+			t.Fatal(err)
+		}
+		settle(a, a.switchTab(1))
+		mustShow(t, a, "People", "Roles")
+		mustNotShow(t, a, "Blocklist", "Block", "block", "sub-eve", "Seen by the gateway", "calls, last")
+	}
 }
 
 func TestUntrustedTextCannotDriveTheTerminal(t *testing.T) {
 	a, c := start(t, false)
-	hostile := "evil\x1b[2J\u202eburied"
-	if _, err := c.Operator.BlockSubject(context.Background(), adminapi.BlockRequest{Subject: hostile, Reason: "x\x07"}); err != nil {
+	hostile := "evil\x1b[2J\u202eburied\x07"
+	if _, err := c.Operator.StartMaintenance(context.Background(), adminapi.MaintenanceRequest{Scope: adminapi.ScopeUpstream, Upstream: "casemgmt", Message: hostile}); err != nil {
 		t.Fatal(err)
 	}
-	settle(a, a.switchTab(1))
+	open(a, serverPage("casemgmt"))
 	v := a.View()
 	if strings.Contains(v, "\x1b[2J") || strings.Contains(v, "\u202e") || strings.Contains(v, "\x07") {
 		t.Fatalf("a control sequence from the API reached the screen:\n%q", v)
 	}
-	mustShow(t, a, `evil\u{001B}[2J`, `x\u{0007}`)
+	mustShow(t, a, `evil\u{001B}[2J`, `buried\u{0007}`)
 }
 
 func TestMaintenanceStartsAndEnds(t *testing.T) {
@@ -281,24 +396,6 @@ func TestMaintenanceStartsAndEnds(t *testing.T) {
 	l, _ = c.Operator.ListMaintenance(context.Background())
 	if slices.ContainsFunc(l.Upstreams, func(u adminapi.UpstreamMaintenance) bool { return u.Upstream == "casemgmt" }) {
 		t.Fatal("casemgmt is still in maintenance after it was ended")
-	}
-}
-
-func TestBlockThenUnblock(t *testing.T) {
-	a, c := start(t, false)
-	settle(a, a.switchTab(1))
-	cursorTo(t, a, "+ Block a subject")
-	press(a, "enter", "sub-eve", "enter", "phished", "enter", "8h", "enter", "y")
-	l, _ := c.Operator.ListBlocks(context.Background())
-	i := slices.IndexFunc(l.Blocks, func(b adminapi.Block) bool { return b.Subject == "sub-eve" })
-	if i < 0 || l.Blocks[i].Until == nil {
-		t.Fatalf("blocks after block: %+v", l.Blocks)
-	}
-	cursorTo(t, a, "sub-eve")
-	press(a, "u", "y")
-	l, _ = c.Operator.ListBlocks(context.Background())
-	if slices.ContainsFunc(l.Blocks, func(b adminapi.Block) bool { return b.Subject == "sub-eve" }) {
-		t.Fatal("sub-eve is still blocked after unblock")
 	}
 }
 
@@ -337,13 +434,21 @@ func TestGalleryDrawsEveryState(t *testing.T) {
 	if n := strings.Count(b.String(), "\n==== "); n < 20 {
 		t.Fatalf("the gallery drew %d states:\n%s", n, b.String())
 	}
-	for _, want := range []string{"fake-otp-reset-ana.lima", "Reload the configuration now", "no backend \"no-such-backend\"", "**************"} {
+	for _, want := range []string{"fake-otp-reset-ana.lima", "Reload the configuration now", "no backend \"no-such-backend\"", "**************", "tool changed since approved"} {
 		if !strings.Contains(b.String(), want) {
 			t.Errorf("the gallery lacks %q", want)
 		}
 	}
 	if strings.Contains(b.String(), "not-a-real-key") {
 		t.Error("the gallery drew a secret value typed into the hidden prompt")
+	}
+	// The old labels and the removed views are gone from every screen
+	// (design/adr/0061 §2-§4).
+	for _, old := range []string{"Redial", "redial", "Deregister", "deregister", "Signed", "Not signed", "Signature invalid",
+		"ttest", "Tool safety", "Blocklist", "Seen by", "NEEDS REVIEW", "Tool waits for review"} {
+		if strings.Contains(b.String(), old) {
+			t.Errorf("the gallery still shows %q", old)
+		}
 	}
 }
 

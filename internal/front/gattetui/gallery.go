@@ -12,7 +12,7 @@ import (
 // (make preview-tui ARGS=-gallery). It drives the same model the program
 // runs, with each API call made synchronously.
 //
-// It performs the actions it shows (a redial, a revoke, a password reset),
+// It performs the actions it shows (a reconnect, a password reset),
 // so point it only at the in-memory fake.
 func Gallery(w io.Writer, o Options) error {
 	if o.Operator == nil {
@@ -26,19 +26,22 @@ func Gallery(w io.Writer, o Options) error {
 		page  func() *page
 		keys  []string
 	}{
-		{"Servers: list with health and what needs review", o, false, nil, nil},
+		{"Servers: list with health, config approval and changed tools", o, false, nil, nil},
 		{"Server detail: up, with tools, secrets and maintenance", o, false, func() *page { return serverPage("casemgmt") }, nil},
 		{"Server detail: down, with a secret missing from the vault", o, false, func() *page { return serverPage("threatintel") }, nil},
 		{"Server detail: in maintenance", o, false, func() *page { return serverPage("docsearch") }, nil},
+		{"Tools panel: one tool's actions in a menu", o, false, func() *page { return serverPage("casemgmt") }, []string{"enter"}},
 		{"Tool review: sensitive, approved and not cleared", o, false, func() *page { return toolPage("casemgmt", "create_case") }, nil},
+		{"Tool review: its actions in a menu", o, false, func() *page { return toolPage("casemgmt", "create_case") }, []string{"enter"}},
 		{"Tool review: changed since approval, with its diff", o, false, func() *page { return toolPage("docsearch", "find_document") }, nil},
-		{"Tool review: approving asks about the fingerprint shown", o, false, func() *page { return toolPage("logsearch", "search_absolute") }, []string{"a"}},
+		{"Tool review: approving asks about the fingerprint shown", o, false, func() *page { return toolPage("logsearch", "search_absolute") }, []string{"enter", "a"}},
 		{"Review set: every waiting tool of one backend", o, false, func() *page { return reviewSetPage("logsearch") }, nil},
-		{"Deregister: the name must be typed again", o, false, func() *page { return serverPage("casemgmt") }, []string{"X", "casemgmt"}},
-		{"Redial: the gateway's answer", o, false, func() *page { return serverPage("logsearch") }, []string{"D", "y"}},
+		{"Approve configuration: what it approves", o, false, func() *page { return serverPage("threatintel") }, []string{"A"}},
+		{"Remove: the name must be typed again", o, false, func() *page { return serverPage("casemgmt") }, []string{"X", "casemgmt"}},
+		{"Reconnect: the gateway's answer", o, false, func() *page { return serverPage("logsearch") }, []string{"C", "y"}},
 		{"Secret value: typed hidden", o, false, func() *page { return serverPage("threatintel") }, []string{"down", "down", "s", "not-a-real-key"}},
 		{"Vault: every name, never a value", o, false, vaultPage, nil},
-		{"Users: people, roles and blocklist", o, true, nil, nil},
+		{"Users: people and roles", o, true, nil, nil},
 		{"Account", o, true, func() *page { return accountPage("ana.lima") }, nil},
 		{"Account: a one-time password, shown once", o, true, func() *page { return accountPage("ana.lima") }, []string{"p", "y"}},
 		{"Role: what it reaches, tool by tool", o, true, func() *page { return rolePage("tier1-analyst") }, nil},
@@ -47,7 +50,7 @@ func Gallery(w io.Writer, o Options) error {
 		{"Read-only: Users without the accounts socket", readOnly, true, nil, nil},
 		{"Read-only: server detail without the accounts socket", readOnly, false, func() *page { return serverPage("casemgmt") }, nil},
 		{"Error: a backend that does not exist", o, false, func() *page { return serverPage("no-such-backend") }, nil},
-		{"Cancelled: nothing is sent", o, false, func() *page { return serverPage("logsearch") }, []string{"D", "n"}},
+		{"Cancelled: nothing is sent", o, false, func() *page { return serverPage("logsearch") }, []string{"C", "n"}},
 	}
 	for _, s := range shots {
 		m, err := New(s.o)

@@ -27,6 +27,11 @@ and `hash`, so the Wazuh copy holds the chain the same way Graylog does
 from Graylog, so keep the Graylog path running until that check reads from
 Wazuh.
 
+Wazuh's JSON decoder drops keys whose value is an empty string, so `src`
+of a gateway row and `prev_hash` of a chain's first line are missing from
+`data`. The line is kept whole in `full_log`. Recompute a hash from
+`full_log`, not from `data`.
+
 **Every line is kept, heartbeats included.** Every v5 line ends on a rule of
 level 3 or more, so Wazuh indexes it in `wazuh-alerts-*`. A walk over the
 chain needs every record line, and the absence alert needs every heartbeat.
@@ -59,7 +64,8 @@ On the manager:
 2. Check it before restarting. `/var/ossec/bin/wazuh-logtest` reads one line
    at a time; paste each line of `gatte-audit-wazuh-samples.jsonl`. Each
    must decode as `json` and end on the rule in the table below.
-3. `systemctl restart wazuh-manager`.
+3. Restart the manager: `service wazuh-manager restart` on FreeBSD,
+   `systemctl restart wazuh-manager` on Linux.
 
 | Sample line | Rule | Level |
 |---|---|---|
@@ -79,6 +85,33 @@ On the manager:
 
 110722 fires on top of 110720 when one caller has 10 denied calls in 5
 minutes; a single paste does not show it.
+
+## FreeBSD
+
+Checked with the FreeBSD packages of Wazuh 4.14.9: `wazuh-manager`,
+`wazuh-indexer` and `wazuh-dashboard` in one jail, `wazuh-agent` on the
+host. Follow each package's `pkg-message`. Where it differs from the Linux
+guide:
+
+- Services are rc scripts: `service wazuh-manager`, `service wazuh-agent`,
+  `service opensearch`, `service opensearch-dashboards`.
+- A manager in a jail needs procfs and its own host UUID. Set
+  `mount.procfs` and `host.hostuuid` on the jail.
+- `wazuh-logtest -q` prints no result. Run it without `-q`.
+- The agent's `wazuh-logcollector` runs as root and reads the `0600` sink
+  inside the jail as it is.
+- No Filebeat comes with these packages, so nothing copies `alerts.json`
+  into `wazuh-alerts-*`, and the absence monitor fires forever. Add a
+  forwarder on the manager. Before the first alert arrives, load Wazuh's
+  index template (`extensions/elasticsearch/7.x/wazuh-template.json` at the
+  manager's version tag). Without it, `data.chain` is a text field and the
+  monitor's `term` query never matches. fluent-bit works:
+  - `tail` on `/var/ossec/logs/alerts/alerts.json` with `Parser json` and
+    `Inotify_Watcher false` (the inotify watcher fails on FreeBSD);
+  - `opensearch` output with `Logstash_Format On`,
+    `Logstash_Prefix wazuh-alerts-4.x` and `Suppress_Type_Name On`;
+  - `fluent_bit_user=wazuh` in `rc.conf`. The rc script runs it as
+    `nobody`, which cannot read `alerts.json`.
 
 ## What the rules alert on
 

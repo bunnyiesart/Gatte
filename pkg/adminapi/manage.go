@@ -25,12 +25,19 @@ const FeatureConsoleManages = "console_manages"
 // details.requires "podman".
 const FeatureOCIRegister = "oci_register"
 
-// The transports RegisterUpstreamRequest.Transport takes (1.7.0). Empty is
-// http. stdio is registered in the terminal only (design/adr/0059 §5).
+// The transports RegisterUpstreamRequest.Transport takes (1.7.0; remote
+// since 1.9.0). Empty is http. stdio is registered in the terminal only
+// (design/adr/0059 §5).
 const (
-	UpstreamTransportHTTP = "http"
-	UpstreamTransportOCI  = "oci"
+	UpstreamTransportHTTP   = "http"
+	UpstreamTransportOCI    = "oci"
+	UpstreamTransportRemote = "remote"
 )
+
+// RemoteKindStreamable is the MCP client transport a remote entry is
+// reached over when RegisterUpstreamRequest.RemoteKind is left empty: the
+// one this build dials (design/adr/0058 §3).
+const RemoteKindStreamable = "streamable"
 
 // CodeFeatureDisabled: the operation exists and the configuration does not
 // turn it on. details.key names the key: "admin.console_manages" for every
@@ -105,8 +112,14 @@ type UpstreamDetail struct {
 // oci (1.7.0, FeatureOCIRegister): Image pinned by digest
 // (NAME@sha256:<64 hex>), Args the podman flags the entry signs (only
 // --network=VALUE and restatements of the wrapper), EnvVarNames the vault
-// NAMES the container receives. A field of the other transport is refused
-// by name.
+// NAMES the container receives.
+//
+// remote (1.9.0): URL the MCP endpoint, signed whole. AuthKind is "none"
+// (or empty: keyless), "bearer" or "header"; AuthName the header for
+// "header"; KeyName the vault NAME of the one secret a keyed entry sends.
+// RemoteKind empty is RemoteKindStreamable.
+//
+// A field of another transport is refused by name.
 type RegisterUpstreamRequest struct {
 	Name            string   `json:"name"`
 	Transport       string   `json:"transport,omitempty"`
@@ -116,6 +129,7 @@ type RegisterUpstreamRequest struct {
 	AuthKind        string   `json:"auth_kind,omitempty"`
 	AuthName        string   `json:"auth_name,omitempty"`
 	KeyName         string   `json:"key_name,omitempty"`
+	RemoteKind      string   `json:"remote_kind,omitempty"`
 	Image           string   `json:"image,omitempty"`
 	Args            []string `json:"args,omitempty"`
 	EnvVarNames     []string `json:"env_var_names,omitempty"`
@@ -125,7 +139,9 @@ type RegisterUpstreamRequest struct {
 // entry's (1.7.0). For oci, Image, Network (resolved from the signed Args,
 // as the dial resolves it) and EnvVarNames are the entry as registered;
 // the http fields are empty, Auth is "none", and Tools is empty: the
-// container lists its tools once it is dialled. For http, the ingestion's
+// container lists its tools once it is dialled. For remote (1.9.0), URL,
+// Auth and RemoteKind are what the signature covers, and Tools is empty:
+// the server lists its tools once it is connected. For http, the ingestion's
 // report: Tools are the operations the document produced, each with its
 // class; Skipped and IngestWarnings quote the document (escaped); Auth is
 // the effective descriptor, and AuthDerived says it came from the
@@ -138,6 +154,7 @@ type RegisterUpstreamResult struct {
 	Transport      string              `json:"transport"`
 	URL            string              `json:"url"`
 	Image          string              `json:"image,omitempty"`
+	RemoteKind     string              `json:"remote_kind,omitempty"`
 	Network        string              `json:"network,omitempty"`
 	EnvVarNames    []string            `json:"env_var_names,omitempty"`
 	Source         string              `json:"source"`

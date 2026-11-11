@@ -132,6 +132,10 @@ func newManageHarness(t *testing.T) *manageHarness {
 				}
 				h.registered[req.Name] = true
 				h.entries = append(h.entries, req)
+				if req.Transport == adminapi.UpstreamTransportRemote {
+					return adminapi.RegisterUpstreamResult{Name: req.Name, Transport: req.Transport, URL: req.URL, RemoteKind: adminapi.RemoteKindStreamable,
+						Auth: adminapi.UpstreamAuth{Kind: req.AuthKind, Name: req.AuthName, Secret: req.KeyName}, Signature: "no"}, nil
+				}
 				return adminapi.RegisterUpstreamResult{Name: req.Name, Transport: req.Transport, Image: req.Image, Network: "none",
 					EnvVarNames: req.EnvVarNames, Auth: adminapi.UpstreamAuth{Kind: "none"}, Signature: "no"}, nil
 			},
@@ -284,7 +288,8 @@ func TestManage_RegisterOCIGoesToRegisterEntryAndRefusesWhatIsNotOCI(t *testing.
 		{"NAME=value", "env_var_names", func(r *adminapi.RegisterUpstreamRequest) { r.EnvVarNames = []string{"INTEL_KEY=hunter2"} }},
 		{"bad env name", "env_var_names", func(r *adminapi.RegisterUpstreamRequest) { r.EnvVarNames = []string{"1BAD"} }},
 		{"stdio", "transport", func(r *adminapi.RegisterUpstreamRequest) { r.Transport = "stdio" }},
-		{"unknown transport", "transport", func(r *adminapi.RegisterUpstreamRequest) { r.Transport = "remote" }},
+		{"a remote kind", "remote_kind", func(r *adminapi.RegisterUpstreamRequest) { r.RemoteKind = "streamable" }},
+		{"unknown transport", "transport", func(r *adminapi.RegisterUpstreamRequest) { r.Transport = "sse" }},
 	} {
 		req := base
 		tc.edit(&req)
@@ -336,6 +341,66 @@ func TestManage_RegisterOCIGoesToRegisterEntryAndRefusesWhatIsNotOCI(t *testing.
 	if h.svc.OCIRegister() {
 		t.Error("OCIRegister with console_manages off")
 	}
+}
+
+// A remote register goes to RegisterEntry, needs no podman, and refuses a
+// field of another transport by name before the port sees it.
+func TestManage_RegisterRemoteGoesToRegisterEntryAndRefusesWhatIsNotRemote(t *testing.T) {
+	h := newManageHarness(t)
+	ctx := context.Background()
+	base := adminapi.RegisterUpstreamRequest{Name: "vendor", Transport: adminapi.UpstreamTransportRemote, URL: "https://mcp.vendor.example/mcp",
+		AuthKind: "header", AuthName: "X-Api-Key", KeyName: "VENDOR_TOKEN"}
+	for _, tc := range []struct {
+		name, field string
+		edit        func(*adminapi.RegisterUpstreamRequest)
+	}{
+		{"no url", "url", func(r *adminapi.RegisterUpstreamRequest) { r.URL = " " }},
+		{"an openapi document", "openapi_document", func(r *adminapi.RegisterUpstreamRequest) { r.OpenAPIDocument = "{}" }},
+		{"an openapi url", "openapi_url", func(r *adminapi.RegisterUpstreamRequest) { r.OpenAPIURL = "https://x/o.json" }},
+		{"an image", "image", func(r *adminapi.RegisterUpstreamRequest) { r.Image = "x@sha256:0" }},
+		{"args", "args", func(r *adminapi.RegisterUpstreamRequest) { r.Args = []string{"--network=pasta"} }},
+		{"env var names", "env_var_names", func(r *adminapi.RegisterUpstreamRequest) { r.EnvVarNames = []string{"A"} }},
+		{"NAME=value", "key_name", func(r *adminapi.RegisterUpstreamRequest) { r.KeyName = "VENDOR_TOKEN=hunter2" }},
+		{"bad key name", "key_name", func(r *adminapi.RegisterUpstreamRequest) { r.KeyName = "1BAD" }},
+		{"a header line", "auth_name", func(r *adminapi.RegisterUpstreamRequest) { r.AuthName = "Authorization: Bearer hunter2" }},
+		{"a name with a space", "auth_name", func(r *adminapi.RegisterUpstreamRequest) { r.AuthName = "X-Api-Key hunter2" }},
+	} {
+		req := base
+		tc.edit(&req)
+		_, err := h.svc.RegisterUpstream(ctx, bob, req)
+		requireManageCode(t, err, adminapi.CodeInvalidArgument, tc.name)
+		var ae *adminapi.Error
+		if !errors.As(err, &ae) || ae.Details["field"] != tc.field {
+			t.Errorf("%s: field %v, want %s", tc.name, err, tc.field)
+		}
+		if strings.Contains(fmt.Sprint(err), "hunter2") {
+			t.Errorf("%s: the value after = is repeated: %v", tc.name, err)
+		}
+	}
+	// A remote kind on an http register is refused by name too.
+	_, err := h.svc.RegisterUpstream(ctx, bob, adminapi.RegisterUpstreamRequest{Name: "x", URL: "https://x", OpenAPIDocument: "{}", RemoteKind: "streamable"})
+	requireManageCode(t, err, adminapi.CodeInvalidArgument, "remote_kind on http")
+	if len(h.entries) != 0 || len(h.rows) != 0 {
+		t.Fatalf("a refused register reached the port: %v, rows %v", h.entries, h.rows)
+	}
+
+	// No podman is no obstacle: a remote entry runs nothing on this host.
+	h.podman = errors.New("podman is not on PATH")
+	res, err := h.svc.RegisterUpstream(ctx, bob, base)
+	if err != nil || !res.Changed || !res.Recorded || res.Tools == nil || res.Skipped == nil || res.IngestWarnings == nil {
+		t.Fatalf("register = %+v, %v", res, err)
+	}
+	if len(h.entries) != 1 || h.entries[0].URL != base.URL || h.entries[0].KeyName != "VENDOR_TOKEN" {
+		t.Fatalf("port got %+v", h.entries)
+	}
+	if len(h.rows) != 1 || !strings.HasPrefix(h.rows[0].Reason, `upstream "vendor" registered: remote https://mcp.vendor.example/mcp, kind streamable, auth header X-Api-Key <VENDOR_TOKEN> [ui]`) {
+		t.Fatalf("row = %+v", h.rows)
+	}
+	if !strings.Contains(strings.Join(res.Messages, "\n"), "remote MCP server https://mcp.vendor.example/mcp (streamable)") {
+		t.Fatalf("messages = %v", res.Messages)
+	}
+	_, err = h.svc.RegisterUpstream(ctx, bob, base)
+	requireManageCode(t, err, adminapi.CodeUpstreamExists, "a second register")
 }
 
 func TestManage_DeregisterNeedsTheNameRepeated(t *testing.T) {

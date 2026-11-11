@@ -143,6 +143,95 @@ func TestManage_RemoteEntryDetailShowsWhatItsSignatureCovers(t *testing.T) {
 	}
 }
 
+// A remote entry registered through the API is the entry `upstream register
+// -transport remote` writes: the same signed bytes (streamable by default),
+// the registry's refusals, and not signed (design/adr/0058 §4, 0059 §6).
+func TestManage_RegisterRemoteThroughTheAPIIsTheCLIsEntry(t *testing.T) {
+	e, svc := manageEnv(t)
+	ctx := context.Background()
+	req := adminapi.RegisterUpstreamRequest{Name: "vendor", Transport: adminapi.UpstreamTransportRemote, URL: "https://mcp.vendor.example/mcp",
+		AuthKind: "header", AuthName: "X-Api-Key", KeyName: "VENDOR_TOKEN"}
+	res, err := svc.RegisterUpstream(ctx, carol, req)
+	if err != nil {
+		t.Fatalf("RegisterUpstream: %v", err)
+	}
+	if res.Transport != "remote" || res.URL != req.URL || res.RemoteKind != "streamable" || res.Signature != "no" || len(res.Tools) != 0 ||
+		res.Auth != (adminapi.UpstreamAuth{Kind: "header", Name: "X-Api-Key", Secret: "VENDOR_TOKEN"}) || res.Network != "" {
+		t.Fatalf("result = %+v", res)
+	}
+	stored, err := e.upstreams().Get(ctx, "vendor")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The CLI's entry, built by the CLI's own flag handling.
+	cli := newOpTestEnv(t)
+	want := registry.UpstreamServer{Name: "vendor", Transport: registry.TransportRemote, URL: req.URL, EnvVarNames: []string{"VENDOR_TOKEN"}}
+	if msg := remoteFlags(&want, "", "header", "X-Api-Key", ""); msg != "" {
+		t.Fatal(msg)
+	}
+	requireExit(t, runUpstreamRegister(cli.opEnv, want), exitOK, "CLI register")
+	cliEntry, err := cli.upstreams().Get(ctx, "vendor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(signer.Canonical(stored), signer.Canonical(cliEntry)) {
+		t.Fatalf("the API's entry signs differently from the CLI's:\n%s\n%s", signer.Canonical(stored), signer.Canonical(cliEntry))
+	}
+
+	keyless, err := svc.RegisterUpstream(ctx, carol, adminapi.RegisterUpstreamRequest{Name: "open", Transport: adminapi.UpstreamTransportRemote,
+		URL: "https://mcp.open.example/mcp", AuthKind: "none"})
+	if err != nil || keyless.Auth.Kind != "none" || len(keyless.EnvVarNames) != 0 {
+		t.Fatalf("keyless = %+v, %v", keyless, err)
+	}
+
+	for name, edit := range map[string]func(*adminapi.RegisterUpstreamRequest){
+		"a query auth":          func(r *adminapi.RegisterUpstreamRequest) { r.AuthKind = "query" },
+		"bearer with a name":    func(r *adminapi.RegisterUpstreamRequest) { r.AuthKind = "bearer" },
+		"a keyed auth, no key":  func(r *adminapi.RegisterUpstreamRequest) { r.KeyName = "" },
+		"a key, keyless":        func(r *adminapi.RegisterUpstreamRequest) { r.AuthKind, r.AuthName = "none", "" },
+		"a credential in url":   func(r *adminapi.RegisterUpstreamRequest) { r.URL = "https://u:p@mcp.vendor.example/mcp" },
+		"a query in url":        func(r *adminapi.RegisterUpstreamRequest) { r.URL = "https://mcp.vendor.example/mcp?key=x" },
+		"not http":              func(r *adminapi.RegisterUpstreamRequest) { r.URL = "file:///etc/passwd" },
+		"the deferred sse kind": func(r *adminapi.RegisterUpstreamRequest) { r.RemoteKind = "sse" },
+		"a transport header":    func(r *adminapi.RegisterUpstreamRequest) { r.AuthName = "Mcp-Session-Id" },
+	} {
+		bad := req
+		bad.Name = "vendor2"
+		edit(&bad)
+		if _, err := svc.RegisterUpstream(ctx, carol, bad); !adminapi.IsCode(err, adminapi.CodeInvalidArgument) {
+			t.Errorf("%s: %v", name, err)
+		}
+		if _, err := e.upstreams().Get(ctx, "vendor2"); !errors.Is(err, registry.ErrNotFound) {
+			t.Fatalf("%s: a refused register left an entry: %v", name, err)
+		}
+	}
+
+	// The API error never repeats a credential pasted into the URL or the
+	// header's name, whichever check fires first.
+	for name, edit := range map[string]func(*adminapi.RegisterUpstreamRequest){
+		"userinfo, bad scheme": func(r *adminapi.RegisterUpstreamRequest) {
+			r.URL = "ftp://u:" + uiSecretMarker + "@mcp.vendor.example/"
+		},
+		"userinfo, no host": func(r *adminapi.RegisterUpstreamRequest) { r.URL = "http://u:" + uiSecretMarker + "@/mcp" },
+		"userinfo, bad port": func(r *adminapi.RegisterUpstreamRequest) {
+			r.URL = "https://u:" + uiSecretMarker + "@mcp.vendor.example:bad/"
+		},
+		"a query key": func(r *adminapi.RegisterUpstreamRequest) {
+			r.URL = "https://mcp.vendor.example/mcp?api_key=" + uiSecretMarker
+		},
+		"a header line": func(r *adminapi.RegisterUpstreamRequest) { r.AuthName = "Authorization: Bearer " + uiSecretMarker },
+	} {
+		bad := req
+		bad.Name = "vendor3"
+		edit(&bad)
+		_, err := svc.RegisterUpstream(ctx, carol, bad)
+		if !adminapi.IsCode(err, adminapi.CodeInvalidArgument) || strings.Contains(err.Error(), uiSecretMarker) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
+
 // An oci entry registered through the API is the entry `upstream register
 // -transport oci` writes: the same signed bytes, the same refusals (a tag,
 // a wrapper flag), and not signed (design/adr/0059 §4, §6).

@@ -416,15 +416,15 @@ func validateHTTP(s UpstreamServer) error {
 	if strings.TrimSpace(s.URL) == "" {
 		return fmt.Errorf("%w: url must not be empty for http transport", ErrInvalid)
 	}
-	u, err := url.Parse(s.URL)
+	u, err := parseURL(s.URL)
 	if err != nil {
-		return fmt.Errorf("%w: url %q is not a valid URL: %v", ErrInvalid, s.URL, err)
+		return err
 	}
 	if u.Scheme != "http" && u.Scheme != "https" {
-		return fmt.Errorf("%w: url %q must use scheme http or https, not %q", ErrInvalid, s.URL, u.Scheme)
+		return fmt.Errorf("%w: url %q must use scheme http or https, not %q", ErrInvalid, u.Redacted(), u.Scheme)
 	}
 	if u.Host == "" {
-		return fmt.Errorf("%w: url %q has no host", ErrInvalid, s.URL)
+		return fmt.Errorf("%w: url %q has no host", ErrInvalid, u.Redacted())
 	}
 
 	if !s.AuthKind.Valid() {
@@ -494,19 +494,21 @@ func validateRemote(s UpstreamServer) error {
 	if strings.TrimSpace(s.URL) == "" {
 		return fmt.Errorf("%w: url must not be empty for remote transport", ErrInvalid)
 	}
-	u, err := url.Parse(s.URL)
+	u, err := parseURL(s.URL)
 	if err != nil {
-		return fmt.Errorf("%w: url %q is not a valid URL: %v", ErrInvalid, s.URL, err)
+		return err
 	}
+	// Userinfo first: a URL that carries a credential and also fails a later
+	// check must be refused without being quoted.
 	switch {
-	case u.Scheme != "http" && u.Scheme != "https":
-		return fmt.Errorf("%w: url %q must use scheme http or https, not %q", ErrInvalid, s.URL, u.Scheme)
-	case u.Opaque != "" || u.Host == "" || u.Hostname() == "":
-		return fmt.Errorf("%w: url %q has no host", ErrInvalid, s.URL)
 	case u.User != nil:
 		// A credential in the URL would be stored, signed and printed; it
 		// comes from the vault instead.
 		return fmt.Errorf("%w: url carries userinfo; a credential is injected from the vault, never written into the url", ErrInvalid)
+	case u.Scheme != "http" && u.Scheme != "https":
+		return fmt.Errorf("%w: url must use scheme http or https, not %q", ErrInvalid, u.Scheme)
+	case u.Opaque != "" || u.Host == "" || u.Hostname() == "":
+		return fmt.Errorf("%w: url has no host", ErrInvalid)
 	case u.RawQuery != "" || u.ForceQuery:
 		return fmt.Errorf("%w: url carries a query; a query is where a vendor puts a key, and a key belongs in the vault (-auth-kind header)", ErrInvalid)
 	case u.Fragment != "" || u.RawFragment != "":
@@ -551,6 +553,16 @@ func validateRemote(s UpstreamServer) error {
 		return fmt.Errorf("%w: remote kind %q is not %q (or the deferred %q)", ErrInvalid, s.RemoteKind, RemoteStreamable, RemoteSSE)
 	}
 	return nil
+}
+
+// parseURL parses an entry's url. The refusal names neither the url nor the
+// parser's error: net/url quotes the raw string, userinfo included.
+func parseURL(raw string) (*url.URL, error) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return nil, fmt.Errorf("%w: url is not a valid URL (it is not repeated here, in case it carries a credential)", ErrInvalid)
+	}
+	return u, nil
 }
 
 // isMCPTransportHeader reports the headers the MCP Streamable HTTP client

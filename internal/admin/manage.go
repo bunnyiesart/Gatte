@@ -20,6 +20,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"unicode"
 
 	"github.com/bunnyiesart/Gatte/internal/config"
 	"github.com/bunnyiesart/Gatte/internal/registry"
@@ -79,8 +80,8 @@ type ManageDeps struct {
 	// `upstream register -transport http` does; its refusals are
 	// *adminapi.Error. The ActionResult part is the service's to fill.
 	RegisterHTTP func(ctx context.Context, cfg *config.Config, req adminapi.RegisterUpstreamRequest) (adminapi.RegisterUpstreamResult, error)
-	// RegisterEntry registers an entry that needs no ingestion (oci,
-	// design/adr/0059 §2) the way `upstream register` does: the entry as
+	// RegisterEntry registers an entry that needs no ingestion (oci and
+	// remote, design/adr/0059 §2) the way `upstream register` does: the entry as
 	// the request gives it, the registry's and the dialer's rules, then
 	// Register. Its refusals are *adminapi.Error; the ActionResult part is
 	// the service's to fill.
@@ -214,8 +215,9 @@ func (s *Service) GetUpstream(ctx context.Context, name string) (adminapi.Upstre
 // names: http from its OpenAPI document (design/adr/0050 §2), with the
 // same ingestion, refusals and report as `upstream register -transport
 // http`; oci from its pinned image (design/adr/0059 §2), as `upstream
-// register -transport oci`. stdio stays in the terminal (design/adr/0059
-// §5). Registering never signs.
+// register -transport oci`; remote by its URL (design/adr/0058, 0059 §1),
+// as `upstream register -transport remote`. stdio stays in the terminal
+// (design/adr/0059 §5). Registering never signs.
 //
 // Not under the service's lock: a document URL is fetched, which may take
 // the request's whole deadline, and the registry's insert is atomic on
@@ -237,14 +239,61 @@ func (s *Service) RegisterUpstream(ctx context.Context, a Actor, req adminapi.Re
 		return s.registerHTTP(ctx, a, cfg, req, res)
 	case adminapi.UpstreamTransportOCI:
 		return s.registerOCI(ctx, a, cfg, req, res)
+	case adminapi.UpstreamTransportRemote:
+		return s.registerRemote(ctx, a, cfg, req, res)
 	case "stdio":
 		return res, adminapi.NewError(adminapi.CodeInvalidArgument,
 			"a stdio backend is registered in the terminal only, with mcp-gateway upstream register: it runs as the gateway's own user, beside the vault (design/adr/0059 §5)").
 			With("field", "transport")
 	default:
-		return res, adminapi.NewError(adminapi.CodeInvalidArgument, "transport %s is not one this operation registers: use %q or %q",
-			visible.Escape(fmt.Sprintf("%q", req.Transport)), adminapi.UpstreamTransportHTTP, adminapi.UpstreamTransportOCI).With("field", "transport")
+		return res, adminapi.NewError(adminapi.CodeInvalidArgument, "transport %s is not one this operation registers: use %q, %q or %q",
+			visible.Escape(fmt.Sprintf("%q", req.Transport)), adminapi.UpstreamTransportHTTP, adminapi.UpstreamTransportOCI, adminapi.UpstreamTransportRemote).With("field", "transport")
 	}
+}
+
+// registerRemote is the remote half of RegisterUpstream. Nothing is
+// ingested: a native MCP server announces its own tools. The port builds
+// the entry the CLI's flags build and runs the CLI's rules, so the URL,
+// auth and remote-kind refusals are the registry's (design/adr/0058 §4).
+func (s *Service) registerRemote(ctx context.Context, a Actor, cfg *config.Config, req adminapi.RegisterUpstreamRequest, res adminapi.RegisterUpstreamResult) (adminapi.RegisterUpstreamResult, error) {
+	if err := foreignField(adminapi.UpstreamTransportRemote, map[string]bool{
+		"openapi_url": req.OpenAPIURL != "", "openapi_document": req.OpenAPIDocument != "",
+		"image": req.Image != "", "args": len(req.Args) > 0, "env_var_names": len(req.EnvVarNames) > 0,
+	}); err != nil {
+		return res, err
+	}
+	if strings.TrimSpace(req.URL) == "" {
+		return res, adminapi.NewError(adminapi.CodeInvalidArgument, "a remote backend needs url, the MCP endpoint the gateway connects to").With("field", "url")
+	}
+	if req.KeyName != "" {
+		// Before the port: the registry's refusal would quote the name, and a
+		// NAME=value pasted here is a secret.
+		if err := envNames("key_name", []string{req.KeyName}); err != nil {
+			return res, err
+		}
+	}
+	if strings.ContainsFunc(req.AuthName, func(r rune) bool { return r == ':' || unicode.IsSpace(r) }) {
+		// Before the port, as for key_name: the registry's refusal would quote
+		// the name, and "Authorization: Bearer ..." pasted here is a secret.
+		return res, adminapi.NewError(adminapi.CodeInvalidArgument, "auth_name looks like a header line (the value is not repeated here): it takes the header's name only, such as X-Api-Key; the value goes in the vault").With("field", "auth_name")
+	}
+	if err := need(s.d.RegisterEntry != nil, "upstream registry"); err != nil {
+		return res, err
+	}
+	out, err := s.d.RegisterEntry(ctx, cfg, req)
+	if err != nil {
+		return res, s.storeErr("registering "+visible.Escape(req.Name), err)
+	}
+	out.ActionResult = res.ActionResult
+	normaliseRegister(&out)
+	out.Changed = true
+	// Escaped: the URL is text a client chose, read in a terminal.
+	endpoint := visible.Escape(out.URL)
+	out.Messages = append(out.Messages, fmt.Sprintf("Registered %q: remote MCP server %s (%s), auth %s. Its tools are listed once the gateway connects, and each waits in the quarantine until it is approved; the entry is served once it is signed (POST /v1/upstreams/%s/sign on the accounts socket).",
+		out.Name, endpoint, out.RemoteKind, authWords(out.Auth), out.Name))
+	reason := fmt.Sprintf("upstream %q registered: remote %s, kind %s, auth %s", out.Name, endpoint, out.RemoteKind, authWords(out.Auth))
+	s.record(ctx, cfg, &out.ActionResult, s.operatorRow(a, UpstreamRegister, reason+" "+a.Tag(), s.d.Now().UTC()))
+	return out, nil
 }
 
 // foreignField refuses the first of fields the request gives, by its
@@ -287,6 +336,7 @@ func (s *Service) registerOCI(ctx context.Context, a Actor, cfg *config.Config, 
 	if err := foreignField(adminapi.UpstreamTransportOCI, map[string]bool{
 		"url": req.URL != "", "openapi_url": req.OpenAPIURL != "", "openapi_document": req.OpenAPIDocument != "",
 		"auth_kind": req.AuthKind != "", "auth_name": req.AuthName != "", "key_name": req.KeyName != "",
+		"remote_kind": req.RemoteKind != "",
 	}); err != nil {
 		return res, err
 	}
@@ -330,6 +380,7 @@ func (s *Service) registerOCI(ctx context.Context, a Actor, cfg *config.Config, 
 func (s *Service) registerHTTP(ctx context.Context, a Actor, cfg *config.Config, req adminapi.RegisterUpstreamRequest, res adminapi.RegisterUpstreamResult) (adminapi.RegisterUpstreamResult, error) {
 	if err := foreignField(adminapi.UpstreamTransportHTTP, map[string]bool{
 		"image": req.Image != "", "args": len(req.Args) > 0, "env_var_names": len(req.EnvVarNames) > 0,
+		"remote_kind": req.RemoteKind != "",
 	}); err != nil {
 		return res, err
 	}

@@ -1,7 +1,9 @@
 package adminapitest
 
 import (
+	"cmp"
 	"net/http"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -48,8 +50,16 @@ func (s *Server) registerUpstream(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, adminapi.NewError(adminapi.CodeUpstreamExists, "a backend named %q is already registered", req.Name))
 		return
 	}
-	if req.Transport == adminapi.UpstreamTransportOCI {
+	if req.Transport != adminapi.UpstreamTransportRemote && req.RemoteKind != "" {
+		writeErr(w, adminapi.NewError(adminapi.CodeInvalidArgument, "remote_kind is not a field of a %s backend", cmp.Or(req.Transport, "http")).With("field", "remote_kind"))
+		return
+	}
+	switch req.Transport {
+	case adminapi.UpstreamTransportOCI:
 		s.registerOCI(w, req)
+		return
+	case adminapi.UpstreamTransportRemote:
+		s.registerRemote(w, req)
 		return
 	}
 	auth := adminapi.UpstreamAuth{Kind: req.AuthKind, Name: req.AuthName, Secret: req.KeyName}
@@ -109,6 +119,102 @@ func (s *Server) registerOCI(w http.ResponseWriter, req adminapi.RegisterUpstrea
 	res.Changed, res.Recorded, res.Messages = true, true, []string{"registered " + req.Name}
 	res.Audit = s.row(rowUpstreamUpdate, "register "+req.Name)
 	writeJSON(w, http.StatusOK, res)
+}
+
+// registerRemote is the fake's remote register. It refuses, by field, what
+// the backend refuses from the console's form, so a front tested here sees
+// the refusals it will see in production; no message repeats a value.
+// Called with s.mu held.
+func (s *Server) registerRemote(w http.ResponseWriter, req adminapi.RegisterUpstreamRequest) {
+	if err := remoteRefusal(req); err != nil {
+		writeErr(w, err)
+		return
+	}
+	auth := adminapi.UpstreamAuth{Kind: req.AuthKind, Name: req.AuthName, Secret: req.KeyName}
+	env := []string{}
+	if auth.Kind == "" || auth.Kind == "none" {
+		auth = adminapi.UpstreamAuth{Kind: "none"}
+	} else {
+		env = append(env, req.KeyName)
+	}
+	kind := req.RemoteKind
+	if kind == "" {
+		kind = adminapi.RemoteKindStreamable
+	}
+	now := base.Add(72 * time.Hour)
+	s.upstreams = append(s.upstreams, &adminapi.UpstreamDetail{
+		Upstream: adminapi.Upstream{Name: req.Name, Transport: "remote", URL: req.URL, RemoteKind: kind, Network: "host",
+			EnvVarNames: env, Signature: "no", CreatedAt: now, UpdatedAt: now,
+			Health: &adminapi.BackendHealth{Name: req.Name, State: adminapi.BackendUnknown}},
+		Auth: &auth,
+	})
+	res := adminapi.RegisterUpstreamResult{Name: req.Name, Transport: "remote", URL: req.URL, RemoteKind: kind, EnvVarNames: env,
+		Auth: auth, Tools: []adminapi.UpstreamOperation{}, Skipped: []string{}, IngestWarnings: []string{}, Signature: "no"}
+	res.Changed, res.Recorded, res.Messages = true, true, []string{"registered " + req.Name}
+	res.Audit = s.row(rowUpstreamUpdate, "register "+req.Name)
+	writeJSON(w, http.StatusOK, res)
+}
+
+// remoteRefusal mirrors the backend's remote register rules the console can
+// reach: foreign fields, the URL, the auth descriptor and the remote kind.
+func remoteRefusal(req adminapi.RegisterUpstreamRequest) *adminapi.Error {
+	invalid := func(field, msg string) *adminapi.Error {
+		return adminapi.NewError(adminapi.CodeInvalidArgument, "%s", msg).With("field", field)
+	}
+	for _, f := range []struct {
+		field string
+		set   bool
+	}{{"args", len(req.Args) > 0}, {"env_var_names", len(req.EnvVarNames) > 0}, {"image", req.Image != ""},
+		{"openapi_document", req.OpenAPIDocument != ""}, {"openapi_url", req.OpenAPIURL != ""}} {
+		if f.set {
+			return invalid(f.field, f.field+" is not a field of a remote backend")
+		}
+	}
+	u, err := url.Parse(req.URL)
+	switch {
+	case strings.TrimSpace(req.URL) == "":
+		return invalid("url", "a remote backend needs url")
+	case err != nil:
+		return invalid("url", "url is not a valid URL")
+	case u.User != nil:
+		return invalid("url", "url carries userinfo")
+	case u.Scheme != "http" && u.Scheme != "https":
+		return invalid("url", "url must use scheme http or https")
+	case u.Host == "":
+		return invalid("url", "url has no host")
+	case u.RawQuery != "" || u.ForceQuery:
+		return invalid("url", "url carries a query")
+	case u.Fragment != "" || u.RawFragment != "":
+		return invalid("url", "url carries a fragment")
+	}
+	switch req.AuthKind {
+	case "", "none":
+		if req.KeyName != "" {
+			return invalid("key_name", "auth kind is keyless but key_name is set")
+		}
+		if req.AuthName != "" {
+			return invalid("auth_name", "auth kind is keyless but auth_name is set")
+		}
+	case "bearer", "header":
+		if req.KeyName == "" {
+			return invalid("key_name", "a keyed auth kind needs key_name")
+		}
+		if req.AuthKind == "bearer" && req.AuthName != "" {
+			return invalid("auth_name", "auth kind bearer takes no auth_name")
+		}
+		if req.AuthKind == "header" && req.AuthName == "" {
+			return invalid("auth_name", "auth kind header needs auth_name")
+		}
+	default:
+		return invalid("auth_kind", "auth kind is not none, bearer or header")
+	}
+	if strings.ContainsAny(req.AuthName, ": \t\r\n") {
+		return invalid("auth_name", "auth_name looks like a header line")
+	}
+	if req.RemoteKind != "" && req.RemoteKind != adminapi.RemoteKindStreamable {
+		return invalid("remote_kind", "remote kind is not streamable")
+	}
+	return nil
 }
 
 func (s *Server) deregisterUpstream(w http.ResponseWriter, r *http.Request) {

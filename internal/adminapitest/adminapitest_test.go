@@ -124,6 +124,64 @@ func TestAccountLifecycleIsLive(t *testing.T) {
 	}
 }
 
+// TestRegisterRemoteIsLive: a remote register lists the entry with its URL
+// and remote kind (streamable by default), and the fake refuses a keyed
+// descriptor with no key, as the backend does.
+func TestRegisterRemoteIsLive(t *testing.T) {
+	c := adminapitest.Start(t)
+	ctx := context.Background()
+	res, err := c.Operator.RegisterUpstream(ctx, adminapi.RegisterUpstreamRequest{Name: "vendor", Transport: adminapi.UpstreamTransportRemote,
+		URL: "https://mcp.vendor.example/mcp", AuthKind: "bearer", KeyName: "VENDOR_TOKEN"})
+	if err != nil || res.Transport != "remote" || res.RemoteKind != adminapi.RemoteKindStreamable || res.Auth.Secret != "VENDOR_TOKEN" {
+		t.Fatalf("register = %+v, %v", res, err)
+	}
+	d, err := c.Operator.GetUpstream(ctx, "vendor")
+	if err != nil || d.Transport != "remote" || d.URL != "https://mcp.vendor.example/mcp" || d.Auth == nil || d.Auth.Kind != "bearer" {
+		t.Fatalf("detail = %+v, %v", d, err)
+	}
+	_, err = c.Operator.RegisterUpstream(ctx, adminapi.RegisterUpstreamRequest{Name: "nokey", Transport: adminapi.UpstreamTransportRemote,
+		URL: "https://mcp.vendor.example/mcp", AuthKind: "header", AuthName: "X-Api-Key"})
+	if !adminapi.IsCode(err, adminapi.CodeInvalidArgument) {
+		t.Fatalf("a keyed descriptor with no key: %v", err)
+	}
+
+	// What the backend refuses, the fake refuses, by field.
+	ok := adminapi.RegisterUpstreamRequest{Name: "bad", Transport: adminapi.UpstreamTransportRemote, URL: "https://mcp.vendor.example/mcp",
+		AuthKind: "header", AuthName: "X-Api-Key", KeyName: "VENDOR_TOKEN"}
+	for _, tc := range []struct {
+		what, field string
+		edit        func(*adminapi.RegisterUpstreamRequest)
+	}{
+		{"a key on a keyless entry", "key_name", func(r *adminapi.RegisterUpstreamRequest) { r.AuthKind, r.AuthName = "none", "" }},
+		{"a key, no auth kind", "key_name", func(r *adminapi.RegisterUpstreamRequest) { r.AuthKind, r.AuthName = "", "" }},
+		{"query auth", "auth_kind", func(r *adminapi.RegisterUpstreamRequest) { r.AuthKind = "query" }},
+		{"bearer with a name", "auth_name", func(r *adminapi.RegisterUpstreamRequest) { r.AuthKind = "bearer" }},
+		{"header with no name", "auth_name", func(r *adminapi.RegisterUpstreamRequest) { r.AuthName = "" }},
+		{"a header line", "auth_name", func(r *adminapi.RegisterUpstreamRequest) { r.AuthName = "Authorization: Bearer x" }},
+		{"sse", "remote_kind", func(r *adminapi.RegisterUpstreamRequest) { r.RemoteKind = "sse" }},
+		{"userinfo", "url", func(r *adminapi.RegisterUpstreamRequest) { r.URL = "https://u:p@mcp.vendor.example/mcp" }},
+		{"a query", "url", func(r *adminapi.RegisterUpstreamRequest) { r.URL = "https://mcp.vendor.example/mcp?k=v" }},
+		{"a fragment", "url", func(r *adminapi.RegisterUpstreamRequest) { r.URL = "https://mcp.vendor.example/mcp#x" }},
+		{"an image", "image", func(r *adminapi.RegisterUpstreamRequest) { r.Image = "x@sha256:0" }},
+	} {
+		req := ok
+		tc.edit(&req)
+		_, err := c.Operator.RegisterUpstream(ctx, req)
+		var ae *adminapi.Error
+		if !errors.As(err, &ae) || ae.Code != adminapi.CodeInvalidArgument || ae.Details["field"] != tc.field {
+			t.Errorf("%s: %v, want invalid_argument on %s", tc.what, err, tc.field)
+		}
+	}
+	if _, err := c.Operator.GetUpstream(ctx, "bad"); !adminapi.IsCode(err, adminapi.CodeNotFound) {
+		t.Fatalf("a refused register left an entry: %v", err)
+	}
+	open, err := c.Operator.RegisterUpstream(ctx, adminapi.RegisterUpstreamRequest{Name: "open", Transport: adminapi.UpstreamTransportRemote,
+		URL: "https://mcp.open.example/mcp", AuthKind: "none"})
+	if err != nil || open.Auth != (adminapi.UpstreamAuth{Kind: "none"}) || len(open.EnvVarNames) != 0 {
+		t.Fatalf("keyless = %+v, %v", open, err)
+	}
+}
+
 func first[T any](v T, err error) error { return err }
 
 func containsTool(ts []adminapi.Tool, tool string) bool {

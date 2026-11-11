@@ -88,6 +88,20 @@ type Config struct {
 	// mapping is ignored, not an error -- an IdP carries groups that have
 	// nothing to do with this gateway.
 	GroupToRole map[string]string `toml:"group_to_role"`
+
+	// Presets are named tool lists a front offers when it creates a role
+	// (design/adr/0062). They live beside the roles, in the file that holds
+	// them, and are templates only: serve never reads them, so a preset
+	// grants nothing until a role is written from it.
+	Presets []Preset `toml:"preset"`
+}
+
+// Preset is one [[preset]]: a name and the namespaced tools a role created
+// from it is granted (design/adr/0062). It carries no non_read: a preset
+// never makes a role able to act.
+type Preset struct {
+	Name  string   `toml:"name"`
+	Tools []string `toml:"tools"`
 }
 
 // OIDC identifies the self-hosted provider this gateway trusts
@@ -1380,6 +1394,8 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	errs = append(errs, validatePresets(c.Presets)...)
+
 	errs = append(errs, c.OCI.validate()...)
 
 	if len(errs) == 0 {
@@ -1869,4 +1885,57 @@ func isScopeToken(s string) bool {
 		}
 	}
 	return true
+}
+
+// validatePresets holds a [[preset]] to the shape a role's `tools` is held
+// to, since a front writes a role straight from it: a unique, trimmed name,
+// and a non-empty list of namespaced names with no wildcard and no repeat.
+// An empty preset is refused because it would create a role that grants
+// nothing while reading as though it granted the preset.
+func validatePresets(presets []Preset) []error {
+	var errs []error
+	seen := map[string]bool{}
+	for i, p := range presets {
+		if strings.TrimSpace(p.Name) == "" {
+			errs = append(errs, fmt.Errorf("preset[%d]: name is empty", i))
+			continue
+		}
+		if strings.TrimSpace(p.Name) != p.Name {
+			errs = append(errs, fmt.Errorf("preset %q: name has leading or trailing whitespace", p.Name))
+		}
+		if seen[p.Name] {
+			errs = append(errs, fmt.Errorf("preset %q: defined more than once", p.Name))
+		}
+		seen[p.Name] = true
+		if len(p.Tools) == 0 {
+			errs = append(errs, fmt.Errorf("preset %q: tools is empty -- a role created from it would grant nothing", p.Name))
+		}
+		listed := map[string]bool{}
+		grants := map[string][]string{}
+		for _, tool := range p.Tools {
+			if server, id, ok := strings.Cut(tool, gateway.NameSeparator); ok {
+				grants[server] = append(grants[server], id)
+			}
+			_, toolID, ok := gateway.SplitNamespaced(tool)
+			switch {
+			case !ok || strings.TrimSpace(tool) != tool:
+				errs = append(errs, fmt.Errorf("preset %q: tool %q is not a namespaced name -- write UPSTREAM%sTOOL (e.g. %q)",
+					p.Name, tool, gateway.NameSeparator, "casemgmt"+gateway.NameSeparator+"list_cases"))
+			case toolID == access.GrantAll:
+				errs = append(errs, fmt.Errorf("preset %q: tool %q is not allowed -- a preset names tools one by one, with no wildcard", p.Name, tool))
+			case listed[tool]:
+				errs = append(errs, fmt.Errorf("preset %q: tool %q is listed more than once", p.Name, tool))
+			}
+			listed[tool] = true
+		}
+		// A role created from the preset gets these tools as [role.grants],
+		// split at the first separator (frontkit.NewRoleFromPreset). Hold
+		// those grants to the rules a role's grants are held to, so a preset
+		// that loads never writes a role the load then refuses (a tool id
+		// with a separator in it, a "*" backend).
+		if err := access.ValidateRole(access.Role{Name: p.Name, Grants: grants}); err != nil && strings.TrimSpace(p.Name) == p.Name {
+			errs = append(errs, fmt.Errorf("preset %q: the role it would create is refused: %w", p.Name, err))
+		}
+	}
+	return errs
 }

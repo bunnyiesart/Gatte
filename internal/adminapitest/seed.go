@@ -134,7 +134,9 @@ func (s *Server) seedSecrets() {
 func (s *Server) seedRolesAndPeople() {
 	// A coherent roles file: the comments are load-bearing (design/adr/0009),
 	// and the grants match the People view below so the Roles matrix shows a
-	// wildcard, an explicit grant, and a non_read sensitive grant.
+	// wildcard, an explicit grant, and a non_read sensitive grant. The two
+	// presets feed "New role from preset"; the second names a sensitive tool
+	// so the preview shows it skipped.
 	s.roles = adminapi.RolesText{
 		Path:   "/etc/mcp-gateway/roles.toml",
 		SHA256: "sha256:roles-seed",
@@ -150,7 +152,14 @@ func (s *Server) seedRolesAndPeople() {
 			"tools = [\"casemgmt.close_case\", \"casemgmt.create_case\"]\n\n" +
 			"[group_to_role]\n" +
 			"\"soc-tier1\" = \"tier1-analyst\"\n" +
-			"\"soc-ir\"    = \"ir-lead\"\n",
+			"\"soc-ir\"    = \"ir-lead\"\n" +
+			"\n# Templates for \"New role from preset\" (design/adr/0062). Not roles: they grant nothing.\n" +
+			"[[preset]]\n" +
+			"name  = \"Blue team analyst\"\n" +
+			"tools = [\"logsearch.search_relative\", \"logsearch.search_absolute\", \"casemgmt.get_case\", \"threatintel.lookup_ip\"]\n\n" +
+			"[[preset]]\n" +
+			"name  = \"Red team analyst\"\n" +
+			"tools = [\"threatintel.lookup_ip\", \"docsearch.find_document\", \"casemgmt.create_case\"]  # create_case is sensitive: skipped\n",
 	}
 	s.people = adminapi.People{
 		Roles: []adminapi.Role{

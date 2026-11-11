@@ -141,6 +141,30 @@ file
 - Every write is **not applied** until a reload: **Reload configuration**
   on the Servers tab, or `mcp-gateway reload` as above.
 
+## Create a role from a preset
+
+A preset is a named starting list of tools kept in the roles file
+(`[[preset]]`, see the [configuration reference](../reference/configuration.md#preset)):
+
+```toml
+[[preset]]
+name  = "Blue team analyst"
+tools = ["siem.search_events", "siem.get_event", "cases.get_case"]
+```
+
+Creating a role from a preset takes a role name, the groups that get it,
+and the preset. The new `[[role]]` is written to the roles file with the
+preset's tools as `[role.grants]`, the groups are added to
+`[group_to_role]`, and nothing else in the file changes. Then `reload` as
+in the steps above.
+
+A preset never lets a role act. A sensitive tool in a preset is skipped,
+and the screen lists it. To grant it, make one explicit change that marks
+the role able to act together with that tool. If every tool of a preset is
+sensitive, no role is created.
+
+Presets themselves grant nothing: editing one needs no `reload`.
+
 ## If it is refused
 
 - **The file does not load.** `reload` validates it first and prints the

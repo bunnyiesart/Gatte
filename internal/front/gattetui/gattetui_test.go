@@ -414,7 +414,8 @@ func TestNonReadGoesOnWithTheSelectedSensitiveTools(t *testing.T) {
 	press(a, "y")
 	mustShow(t, a, "non_read is on for tier1-analyst; gave it casemgmt.close_case.")
 	after, _ := c.Accounts.GetRoles(context.Background())
-	if !strings.Contains(after.Text, "non_read = true") || !strings.Contains(after.Text, `"casemgmt.close_case"`) || strings.Contains(after.Text, "find_document") {
+	roles, _, _ := strings.Cut(after.Text, "[[preset]]") // presets may name any tool
+	if !strings.Contains(roles, "non_read = true") || !strings.Contains(roles, `"casemgmt.close_case"`) || strings.Contains(roles, "find_document") {
 		t.Fatalf("roles file after non_read on:\n%s", after.Text)
 	}
 	press(a, "n") // no reload

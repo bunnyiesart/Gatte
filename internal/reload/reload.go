@@ -272,9 +272,10 @@ func quotaChanges(old, next []config.QuotaProvider) []QuotaChange {
 
 // NotServe are the keys serve never reads: the commands that use them read
 // the file on every run (sign reads signer.key_file; the management backend
-// reads [idp], [connect] and [admin] per request), so a difference in them
-// needs no restart and is not reported as one.
-var NotServe = []string{"signer.key_file", "idp", "connect", "admin"}
+// reads [idp], [connect] and [admin] per request; [[preset]] is read only
+// by the fronts, design/adr/0062), so a difference in them needs no restart
+// and is not reported as one.
+var NotServe = []string{"signer.key_file", "idp", "connect", "admin", "preset"}
 
 func notServe(key string) bool {
 	for _, k := range NotServe {

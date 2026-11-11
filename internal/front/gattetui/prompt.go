@@ -63,7 +63,8 @@ func (p *prompt) view() string {
 // what the backend said under it. secret is a one-time password, shown on
 // this result only and wiped by the next key. back pops the page (the thing
 // it showed is gone); next runs right after it is shown (a follow-up
-// question, such as reloading after a roles write).
+// question, such as reloading after a roles write). open is a page pushed on
+// the tab the action started from, such as what a register made.
 type result struct {
 	ok      bool
 	summary string
@@ -72,6 +73,7 @@ type result struct {
 	label   string
 	back    bool
 	next    tea.Cmd
+	open    *page
 }
 
 func (r *result) lines() []string {

@@ -7,8 +7,8 @@ package gattetui
 // order; the Tools, Secrets and Maintenance panels register from their own
 // files.
 //
-// Adding a backend stays in the CLI and the web console: this front lists,
-// reviews and acts on what is registered.
+// Adding a backend is the "Add a backend" page (servers_add.go); stdio stays
+// in the CLI.
 
 import (
 	"fmt"
@@ -55,9 +55,14 @@ func fillServers(e env) content {
 		}
 	}
 	health := e.has(adminapi.FeatureBackendHealth)
+	caps := e.caps()
 	c.rows = append(c.rows, textRow(stDim.Render(cols(serverCols, "MCP SERVER / API", "STATE", "CONFIG", "KIND"))))
 	if err == nil && len(list.Upstreams) == 0 {
-		c.rows = append(c.rows, textRow(stDim.Render("No backend is registered. Register one with mcp-gateway upstream register.")))
+		empty := "No backend is registered. Register one with mcp-gateway upstream register."
+		if caps.Manages {
+			empty = "No backend is registered. Press a to add one."
+		}
+		c.rows = append(c.rows, textRow(stDim.Render(empty)))
 	}
 	for _, u := range list.Upstreams {
 		state := "-"
@@ -74,7 +79,9 @@ func fillServers(e env) content {
 			actions: []action{{key: "enter", label: "open", run: func() tea.Cmd { return push(serverPage(name)) }}},
 		})
 	}
-	caps := e.caps()
+	if caps.Manages {
+		c.actions = append(c.actions, action{key: "a", label: "add a backend", run: func() tea.Cmd { return push(addPage()) }})
+	}
 	if caps.Manages && e.has(adminapi.FeatureServeControl) {
 		c.actions = append(c.actions, action{key: "R", label: "reload config", run: func() tea.Cmd {
 			return confirm("Re-read the configuration file and apply its roles, groups and quota?", func() tea.Cmd {
@@ -228,18 +235,7 @@ func serverActions(e env, d adminapi.UpstreamDetail) []action {
 		}})
 	}
 	if managesAndRoot(caps) {
-		label := "approve configuration"
-		if d.Signature == "yes" {
-			label = "approve configuration again"
-		}
-		out = append(out, action{key: "A", label: label, run: func() tea.Cmd {
-			// Approving signs the entry shown above: its URL or command,
-			// where its key goes and its operations (design/adr/0050 §5,
-			// 0060). It does not say the backend or its tools are safe.
-			return confirm("Approve the configuration of "+vis(name)+" shown above, signing it with the root key?", func() tea.Cmd {
-				return do(func() result { res, err := e.acc.SignUpstream(ctx(), name); return signResult(res, err) })
-			})
-		}})
+		out = append(out, approveConfigAction(e, name, d.Signature))
 	}
 	if caps.Manages {
 		out = append(out, action{key: "X", label: "remove", run: func() tea.Cmd {
@@ -261,6 +257,21 @@ func serverActions(e env, d adminapi.UpstreamDetail) []action {
 		}})
 	}
 	return out
+}
+
+// approveConfigAction signs the entry shown on the page: its URL or command,
+// where its key goes and its operations (design/adr/0050 §5, 0060). It does
+// not say the backend or its tools are safe.
+func approveConfigAction(e env, name, signature string) action {
+	label := "approve configuration"
+	if signature == "yes" {
+		label = "approve configuration again"
+	}
+	return action{key: "A", label: label, run: func() tea.Cmd {
+		return confirm("Approve the configuration of "+vis(name)+" shown above, signing it with the root key?", func() tea.Cmd {
+			return do(func() result { res, err := e.acc.SignUpstream(ctx(), name); return signResult(res, err) })
+		})
+	}}
 }
 
 func signResult(res adminapi.SignResult, err error) result {

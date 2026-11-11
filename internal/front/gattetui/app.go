@@ -232,8 +232,16 @@ func (a *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		r := m.r
 		a.result = &r
 		cmds := []tea.Cmd{r.next}
+		tab := a.tabOf(a.origin)
 		if r.back {
 			cmds = append(cmds, a.leave(a.origin))
+		}
+		if r.open != nil && tab >= 0 {
+			p := a.adopt(r.open)
+			a.stacks[tab] = append(a.stacks[tab], p)
+			if tab != a.active {
+				cmds = append(cmds, a.load(p))
+			}
 		}
 		// What is shown after an action is what the backend now says.
 		return a, tea.Batch(append(cmds, a.load(a.top()))...)
@@ -255,6 +263,18 @@ func (a *app) leave(id int) tea.Cmd {
 		}
 	}
 	return nil
+}
+
+// tabOf is the tab whose stack holds page id, or -1.
+func (a *app) tabOf(id int) int {
+	for i, s := range a.stacks {
+		for _, p := range s {
+			if p.id == id {
+				return i
+			}
+		}
+	}
+	return -1
 }
 
 func (a *app) pop() {

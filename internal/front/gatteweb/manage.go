@@ -67,25 +67,6 @@ var authKinds = []struct{ Value, Label string }{
 	{"query", "Query parameter"},
 }
 
-// defaultKeyName is the vault name a keyed API gets when the form leaves it
-// empty: the backend name in capitals, then _API_KEY, as an environment
-// variable name.
-func defaultKeyName(name string) string {
-	var b strings.Builder
-	for _, c := range strings.ToUpper(strings.TrimSpace(name)) {
-		if c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_' {
-			b.WriteRune(c)
-		} else {
-			b.WriteByte('_')
-		}
-	}
-	s := b.String()
-	if s == "" || s[0] >= '0' && s[0] <= '9' {
-		s = "_" + s
-	}
-	return s + "_API_KEY"
-}
-
 // documentFile reads the uploaded OpenAPI file, if one was sent, up to the
 // ingestion's bound (one byte over says it is over).
 func documentFile(r *http.Request) (string, bool, error) {

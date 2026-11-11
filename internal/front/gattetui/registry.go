@@ -10,13 +10,14 @@ import (
 
 // The terminal front has the web console's three registries
 // (design/frontend-crud-surface.md, "Self-registration"): the tabs, the
-// panels of the server-detail page, and the sections of the Users tab. Each
-// surface appends to one of them from its own file's init(), so adding a
-// surface touches only that surface's file, never a shared menu or switch.
+// panels of the server-detail page, and the sections of the Users tab, plus
+// the kinds of backend the servers screen can add. Each surface appends to
+// one of them from its own file's init(), so adding a surface touches only
+// that surface's file, never a shared menu or switch.
 //
 // Order uses gaps of ten, as in the console: tabs Servers 10, Users 20;
 // detail panels Tools 20, Secrets 30, Maintenance 40; Users sections People
-// 10, Roles 20.
+// 10, Roles 20; add kinds REST API 10, Remote MCP 20, Container 30.
 
 // A Screen is one tab. Root builds the tab's first page.
 type Screen struct {
@@ -44,15 +45,31 @@ type UsersSection struct {
 	Rows  func(e env) ([]row, error)
 }
 
+// An AddKind is one choice of the "Add a backend" page (design/adr/0059 §1).
+// Form builds a fresh form each time the kind is chosen. A nil Show means
+// the kind is always offered; when Show says no, the choice is not drawn and
+// Unavailable says why, so the page never offers a path that would refuse.
+type AddKind struct {
+	ID          string
+	Order       int
+	Title       string
+	Blurb       string
+	Show        func(env) bool
+	Unavailable string
+	Form        func() *form
+}
+
 var (
 	screens      []Screen
 	detailPanels []DetailPanel
 	usersGroups  []UsersSection
+	addKinds     []AddKind
 )
 
 func registerScreen(s Screen)             { screens = append(screens, s) }
 func registerDetailPanel(p DetailPanel)   { detailPanels = append(detailPanels, p) }
 func registerUsersSection(s UsersSection) { usersGroups = append(usersGroups, s) }
+func registerAddKind(k AddKind)           { addKinds = append(addKinds, k) }
 
 // ordered returns a sorted copy of a registry, by order then ID, so callers
 // may range over it without disturbing it.
@@ -79,6 +96,10 @@ func orderedDetailPanels() []DetailPanel {
 
 func orderedUsersSections() []UsersSection {
 	return ordered(usersGroups, func(s UsersSection) (int, string) { return s.Order, s.ID })
+}
+
+func orderedAddKinds() []AddKind {
+	return ordered(addKinds, func(k AddKind) (int, string) { return k.Order, k.ID })
 }
 
 // Caps are the console powers that decide what is offered, as in the web

@@ -3,8 +3,11 @@ package gattetui
 import (
 	"fmt"
 	"io"
+	"slices"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/bunnyiesart/Gatte/pkg/adminapi"
 )
 
 // Gallery draws every screen and state of the front, one after another, as
@@ -12,7 +15,8 @@ import (
 // (make preview-tui ARGS=-gallery). It drives the same model the program
 // runs, with each API call made synchronously.
 //
-// It performs the actions it shows (a reconnect, a password reset),
+// It performs the actions it shows (a reconnect, a password reset, a
+// register),
 // so point it only at the in-memory fake.
 func Gallery(w io.Writer, o Options) error {
 	if o.Operator == nil {
@@ -51,29 +55,61 @@ func Gallery(w io.Writer, o Options) error {
 		{"Read-only: server detail without the accounts socket", readOnly, false, func() *page { return serverPage("casemgmt") }, nil},
 		{"Error: a backend that does not exist", o, false, func() *page { return serverPage("no-such-backend") }, nil},
 		{"Cancelled: nothing is sent", o, false, func() *page { return serverPage("logsearch") }, []string{"C", "n"}},
+		{"Add a backend: the three choices", o, false, nil, []string{"a"}},
+		{"Add a REST API: the form", o, false, func() *page { return addFormPage("rest") }, nil},
+		{"Add a REST API: the auth choices", o, false, func() *page { return addFormPage("rest") }, []string{"down", "down", "down", "enter"}},
+		{"Add a remote MCP server: the form", o, false, func() *page { return addFormPage("remote") }, nil},
+		{"Add a remote MCP server: a pasted credential is not kept", o, false, func() *page { return addFormPage("remote") },
+			[]string{"down", "down", "down", "down", "down", "enter", "VENDOR_KEY=not-a-real-key", "enter"}},
+		{"Add a container (oci): the form", o, false, func() *page { return addFormPage("oci") }, nil},
+		{"Add a container (oci): refused by the API", o, false, func() *page { return addFormPage("oci") },
+			[]string{"enter", "intel", "enter", "down", "enter", "ghcr.io/example/intel-mcp:latest", "enter", "S"}},
+		{"Registered: a remote MCP server, configuration not approved yet", o, false, func() *page { return addFormPage("remote") },
+			[]string{"enter", "vendor", "enter", "down", "enter", "https://mcp.example.com/mcp", "enter", "S"}},
+		{"Registered: a REST API, its operations pending review", o, false, func() *page { return addFormPage("rest") },
+			[]string{"enter", "inventory", "enter", "down", "enter", "https://api.example.com", "enter", "down", "enter", "https://api.example.com/openapi.json", "enter", "S"}},
+		{"Registered: read-only, approving needs root", readOnly, false, func() *page { return addFormPage("oci") },
+			[]string{"enter", "intel", "enter", "down", "enter", "ghcr.io/example/intel-mcp@sha256:0123", "enter", "S"}},
 	}
-	for _, s := range shots {
-		m, err := New(s.o)
+	draw := func(name string, o Options, users bool, pg func() *page, keys []string, noOCI bool) error {
+		m, err := New(o)
 		if err != nil {
 			return err
 		}
 		a := m.(*app)
 		a.width, a.height = 110, 200
 		settle(a, a.Init())
-		if s.users {
+		if noOCI {
+			a.env.me.Features = slices.DeleteFunc(slices.Clone(a.env.me.Features), func(f string) bool { return f == adminapi.FeatureOCIRegister })
+		}
+		if users {
 			settle(a, a.switchTab(1))
 		}
-		if s.page != nil {
-			settle(a, push(s.page()))
+		if pg != nil {
+			settle(a, push(pg()))
 		}
-		for _, k := range s.keys {
+		for _, k := range keys {
 			settle(a, func() tea.Msg { return keyMsg(k) })
 		}
-		if _, err := fmt.Fprintf(w, "\n==== %s ====\n%s", s.name, a.View()); err != nil {
+		_, err = fmt.Fprintf(w, "\n==== %s ====\n%s", name, a.View())
+		return err
+	}
+	for _, s := range shots {
+		if err := draw(s.name, s.o, s.users, s.page, s.keys, false); err != nil {
 			return err
 		}
 	}
-	return nil
+	return draw("Add a backend: no podman, so no Container", o, false, nil, []string{"a"}, true)
+}
+
+// addFormPage is the form of one registered add kind.
+func addFormPage(id string) *page {
+	for _, k := range orderedAddKinds() {
+		if k.ID == id {
+			return formPage(k.Form())
+		}
+	}
+	return newPage("No such kind", func(env) content { return content{} })
 }
 
 // settle runs cmd and everything it leads to, feeding each message back

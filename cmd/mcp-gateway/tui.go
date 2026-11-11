@@ -95,7 +95,7 @@ of [admin] account_group when that socket is delegated. It refuses an
 accounts socket not served by root.
 
 Keys: 1 and 2 (or tab) switch tabs, the arrows move, enter opens, esc goes
-back, r re-reads, q quits. Each screen lists its own action keys at the
+back, r re-reads, ? shows help, q quits. Each screen lists its own action keys at the
 bottom; a destructive one asks first.
 
 Default sockets:

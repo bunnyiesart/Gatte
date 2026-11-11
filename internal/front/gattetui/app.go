@@ -23,9 +23,11 @@ type action struct {
 }
 
 // A row is one drawn line. Only a row with actions can hold the cursor.
+// check, when set, draws a checkbox before the text that an action toggles.
 type row struct {
 	text    string
 	actions []action
+	check   *bool
 }
 
 func textRow(s string) row { return row{text: s} }
@@ -299,6 +301,9 @@ func (a *app) key(m tea.KeyMsg) tea.Cmd {
 		return a.promptKey(m)
 	}
 	a.result = nil
+	if k == " " {
+		k = "space"
+	}
 	if a.menu != nil {
 		return a.menuKey(k)
 	}
@@ -317,6 +322,11 @@ func (a *app) key(m tea.KeyMsg) tea.Cmd {
 		return a.load(a.top())
 	case "r":
 		return a.whoami()
+	case "?":
+		if p.title == helpTitle {
+			return nil
+		}
+		return push(helpPage())
 	case "up", "k":
 		p.move(-1)
 		return nil
@@ -471,6 +481,13 @@ func (a *app) View() string {
 	p.offset = max(0, min(p.offset, len(p.rows)-1))
 	for i := p.offset; i < len(p.rows) && i < p.offset+room; i++ {
 		line := p.rows[i].text
+		if c := p.rows[i].check; c != nil {
+			box := "[ ] "
+			if *c {
+				box = "[x] "
+			}
+			line = box + line
+		}
 		if i == p.cursor && p.selectable(i) {
 			line = stCursor.Render("> ") + line
 		} else {
@@ -554,5 +571,5 @@ func (a *app) help(p *page) []string {
 	if line != "" {
 		lines = append(lines, line)
 	}
-	return append(lines, stDim.Render("tab switch  r refresh  esc back  q quit"))
+	return append(lines, stDim.Render("tab switch  r refresh  ? help  esc back  q quit"))
 }

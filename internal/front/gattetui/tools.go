@@ -147,7 +147,7 @@ func fillTool(e env, server, tool string) content {
 		kv("Fingerprint", vis(t.ObservedHash)),
 		kv("Approved", vis(dash(t.ApprovedHash))))
 	if sensitive {
-		state := stWarn.Render("no: approval alone does not serve a sensitive tool")
+		state := stWarn.Render("no")
 		if cleared {
 			state = stOK.Render("yes, at the approved fingerprint")
 		}
@@ -181,7 +181,7 @@ func callableRows(cov []adminapi.RoleCoverage, sensitive bool) []row {
 	if len(cov) == 0 {
 		msg := "No role could call it once approved."
 		if sensitive {
-			msg = "No role could call it once cleared: only a role marked non_read that names it can."
+			msg = "No role could call it once cleared."
 		}
 		return []row{textRow(cols([]int{14}, stDim.Render("Callable by"), stWarn.Render(msg)))}
 	}

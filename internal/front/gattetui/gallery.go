@@ -45,11 +45,16 @@ func Gallery(w io.Writer, o Options) error {
 		{"Reconnect: the gateway's answer", o, false, func() *page { return serverPage("logsearch") }, []string{"C", "y"}},
 		{"Secret value: typed hidden", o, false, func() *page { return serverPage("threatintel") }, []string{"down", "down", "s", "not-a-real-key"}},
 		{"Vault: every name, never a value", o, false, vaultPage, nil},
+		{"Help: commands, words, keys and guides", o, false, nil, []string{"?"}},
 		{"Users: people and roles", o, true, nil, nil},
 		{"Account", o, true, func() *page { return accountPage("ana.lima") }, nil},
 		{"Account: a one-time password, shown once", o, true, func() *page { return accountPage("ana.lima") }, []string{"p", "y"}},
 		{"Role: what it reaches, tool by tool", o, true, func() *page { return rolePage("tier1-analyst") }, nil},
-		{"Role: a surgical write, then the reload question", o, true, func() *page { return rolePage("tier1-analyst") }, []string{"enter", "y"}},
+		{"Role: two tools selected", o, true, func() *page { return rolePage("tier1-analyst") }, []string{"space", "down", "space"}},
+		{"Role: grant the selected tools, one write, then the reload question", o, true, func() *page { return rolePage("tier1-analyst") },
+			[]string{"down", "space", "down", "space", "down", "down", "down", "space", "g", "y"}},
+		{"Role: revoke the tool under the cursor", o, true, func() *page { return rolePage("tier1-analyst") }, []string{"v", "y"}},
+		{"Role: turn non_read on", o, true, func() *page { return rolePage("tier1-analyst") }, []string{"n"}},
 		{"Add a person: the first question", o, true, nil, []string{"enter"}},
 		{"Read-only: Users without the accounts socket", readOnly, true, nil, nil},
 		{"Read-only: server detail without the accounts socket", readOnly, false, func() *page { return serverPage("casemgmt") }, nil},
@@ -148,6 +153,8 @@ func keyMsg(k string) tea.KeyMsg {
 		return tea.KeyMsg{Type: tea.KeyUp}
 	case "down":
 		return tea.KeyMsg{Type: tea.KeyDown}
+	case "space":
+		return tea.KeyMsg{Type: tea.KeySpace, Runes: []rune{' '}}
 	case "backspace":
 		return tea.KeyMsg{Type: tea.KeyBackspace}
 	}

@@ -187,6 +187,33 @@ func TestPost_BodyIsBounded(t *testing.T) {
 	}
 }
 
+// TestPost_OriginOfTheRealBind: a browser posting a form from the console
+// sends the page's own origin, which is accepted; "null" (what a browser
+// sends under Referrer-Policy no-referrer) and a foreign origin are not.
+func TestPost_OriginOfTheRealBind(t *testing.T) {
+	k, ran := testKit(t)
+	cookie := login(t, k)
+	host := k.Addr().String()
+	for _, c := range []struct {
+		origin string
+		want   int
+	}{
+		{"http://" + host, http.StatusOK},
+		{"null", http.StatusForbidden},
+		{"https://attacker.example", http.StatusForbidden},
+		{"http://localhost:1", http.StatusForbidden},
+	} {
+		*ran = false
+		w := do(k, "POST", k.Base()+"/x", url.Values{"csrf": {k.CSRFToken()}}, cookie, func(r *http.Request) {
+			r.Host = host
+			r.Header.Set("Origin", c.origin)
+		})
+		if w.Code != c.want || *ran != (c.want == http.StatusOK) {
+			t.Errorf("Origin %q: %d ran=%v, want %d", c.origin, w.Code, *ran, c.want)
+		}
+	}
+}
+
 // multipartBody is a multipart/form-data body with fields and one file.
 func multipartBody(t *testing.T, fields map[string]string, file string) (io.Reader, string) {
 	t.Helper()
@@ -256,7 +283,7 @@ func TestPost_AMultipartFormIsHeldToTheSameChecks(t *testing.T) {
 }
 
 // TestHeaders_OnEveryResponse: a strict policy, no framing, no sniffing,
-// no referrer, and no-store on every page including the refusals.
+// no referrer to another site, and no-store on every page including the refusals.
 func TestHeaders_OnEveryResponse(t *testing.T) {
 	k, _ := testKit(t)
 	cookie := login(t, k)
@@ -269,7 +296,7 @@ func TestHeaders_OnEveryResponse(t *testing.T) {
 		if csp := h.Get("Content-Security-Policy"); !strings.Contains(csp, "default-src 'none'") || !strings.Contains(csp, "frame-ancestors 'none'") || strings.Contains(csp, "unsafe") {
 			t.Errorf("%s: CSP %q", name, csp)
 		}
-		for k, v := range map[string]string{"X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer", "Cache-Control": "no-store", "X-Frame-Options": "DENY"} {
+		for k, v := range map[string]string{"X-Content-Type-Options": "nosniff", "Referrer-Policy": "same-origin", "Cache-Control": "no-store", "X-Frame-Options": "DENY"} {
 			if h.Get(k) != v {
 				t.Errorf("%s: %s = %q, want %q", name, k, h.Get(k), v)
 			}

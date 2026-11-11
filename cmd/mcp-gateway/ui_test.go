@@ -330,7 +330,7 @@ func TestUI_PagesCarryAStrictPolicyAndNoScript(t *testing.T) {
 		if csp := h.Get("Content-Security-Policy"); !strings.Contains(csp, "default-src 'none'") || !strings.Contains(csp, "frame-ancestors 'none'") || strings.Contains(csp, "unsafe") {
 			t.Errorf("GET %s: Content-Security-Policy %q", page, csp)
 		}
-		for k, v := range map[string]string{"X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer", "Cache-Control": "no-store"} {
+		for k, v := range map[string]string{"X-Content-Type-Options": "nosniff", "Referrer-Policy": "same-origin", "Cache-Control": "no-store"} {
 			if h.Get(k) != v {
 				t.Errorf("GET %s: %s = %q, want %q", page, k, h.Get(k), v)
 			}

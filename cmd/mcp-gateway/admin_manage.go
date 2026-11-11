@@ -38,6 +38,7 @@ import (
 	gwrest "github.com/bunnyiesart/Gatte/internal/gateway/resthttp"
 	"github.com/bunnyiesart/Gatte/internal/registry"
 	"github.com/bunnyiesart/Gatte/internal/signer"
+	"github.com/bunnyiesart/Gatte/internal/vault"
 	"github.com/bunnyiesart/Gatte/internal/vault/sopsage"
 	"github.com/bunnyiesart/Gatte/pkg/adminapi"
 )
@@ -309,6 +310,9 @@ func accountsManageDeps(configPath string, serviceUID, serviceGID uint32) admin.
 	return admin.ManageDeps{
 		Sign:  spawnSign(configPath),
 		Vault: sopsVault{},
+		ResolveSecret: func(ctx context.Context, cfg *config.Config, name string) (vault.Secret, error) {
+			return sopsVault{}.store(cfg).Resolve(ctx, name)
+		},
 		DeclaredSecrets: func(ctx context.Context, _ *config.Config) (map[string][]string, error) {
 			out, err := runAdminChild(ctx, configPath, "-registry-reader", serviceUID, serviceGID, nil)
 			if err != nil {

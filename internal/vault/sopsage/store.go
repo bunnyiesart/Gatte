@@ -32,6 +32,7 @@ import (
 	"strings"
 
 	"github.com/bunnyiesart/Gatte/internal/atomicfile"
+	"github.com/bunnyiesart/Gatte/internal/vault"
 )
 
 // Store writes the sops-encrypted vault named by its two files. Its
@@ -67,6 +68,23 @@ func (s *Store) Names(ctx context.Context) ([]string, error) {
 	}
 	defer wipe(plain)
 	return slices.Sorted(maps.Keys(plain)), nil
+}
+
+// Resolve returns the value under name, read once from a fresh decrypt;
+// vault.ErrNotFound when there is none. For a root process that needs one
+// value (the accounts backend's Wazuh check, design/adr/0063) without
+// keeping the vault open.
+func (s *Store) Resolve(ctx context.Context, name string) (vault.Secret, error) {
+	plain, _, err := s.open(ctx)
+	if err != nil {
+		return vault.Secret{}, err
+	}
+	defer wipe(plain)
+	v, ok := plain[name]
+	if !ok {
+		return vault.Secret{}, fmt.Errorf("%w: %s", vault.ErrNotFound, name)
+	}
+	return vault.NewSecret(v), nil
 }
 
 // Set writes value under name. existed says a value was there before.

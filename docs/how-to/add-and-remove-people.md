@@ -13,6 +13,10 @@ You need:
   ([Run the management API and the web console](run-the-management-api-and-console.md));
 - `[connect] client_id` and `callback_port` set, so the console can hand out
   connect scripts ([Connect Claude Code](connect-claude-code.md#before-you-start-the-operator-once));
+- optional: `[idp.wazuh_check]` set, to check each new username against
+  Wazuh ([Configuration reference](../reference/configuration.md#idpwazuh_check)).
+  The indexer account it uses holds security REST API rights (there is no
+  read-only grant), so make it a dedicated account;
 - an identity provider that re-reads its users file when it changes
   (Authelia: `watch: true` in its configuration, or a restart). Every
   account change below reaches the IdP only when it reloads that file.
@@ -44,7 +48,11 @@ without `sudo` (see [Let a group manage accounts](#let-a-group-manage-accounts-w
    **Person**, **Access**, **Review** and **Connect**.
 2. **Person**: type the full name. Leave **Username** empty to use the
    suggested one (`Ana Souza` becomes `ana.souza`). **Email** is optional.
-   Choose **Continue**.
+   Use the same username the person has in the SIEM, so their Gatte calls
+   and their SIEM activity carry one name. With `[idp.wazuh_check]` on, the
+   step says whether Wazuh knows the username: **Found in Wazuh**, **Not
+   found in Wazuh**, or **Could not check Wazuh** with the reason. It is a
+   warning; you can continue either way. Choose **Continue**.
 3. **Access**: tick the groups the person gets. The page lists only groups
    that map to a role in `[group_to_role]`, each with its role's tools. A
    person with no group can sign in and sees no tool. Choose **Continue**.

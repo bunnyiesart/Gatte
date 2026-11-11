@@ -179,6 +179,9 @@ func (s *Service) CheckAccount(ctx context.Context, d adminapi.AccountDraft) (ad
 	if existing, err := findAccount(dir, a.Username); err == nil {
 		problem("username", adminapi.CodeAccountExists, fmt.Sprintf("%s is already taken by %s", existing.Username, existing.DisplayName))
 	}
+	if !hasProblem(out.Problems, "username") {
+		out.WazuhUser = s.wazuhUser(ctx, cfg, out.Username)
+	}
 	all := AssignableGroupsOf(cfg)
 	for _, g := range d.Groups {
 		found := false
@@ -194,6 +197,15 @@ func (s *Service) CheckAccount(ctx context.Context, d adminapi.AccountDraft) (ad
 	}
 	out.OK = len(out.Problems) == 0
 	return out, nil
+}
+
+func hasProblem(ps []adminapi.FieldProblem, field string) bool {
+	for _, p := range ps {
+		if p.Field == field {
+			return true
+		}
+	}
+	return false
 }
 
 // accountChange runs one account change under the lock and records it.

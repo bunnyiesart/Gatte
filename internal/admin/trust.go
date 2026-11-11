@@ -146,8 +146,8 @@ func unavailable(path, problem, why string) error {
 
 // RootConfig is the accounts backend's configuration loader: before every
 // request it checks config.toml and its directories, loads it, then checks
-// [idp] users_file and its directories, and roles_file and its
-// directories when one is set. Nothing is written when a check fails.
+// [idp] users_file and its directories, idp.wazuh_check.ca_file, and
+// roles_file and its directories when one is set. Nothing is written when a check fails.
 func RootConfig(path string, trusted func(uint32) bool, load func(string) (*config.Config, error)) func() (*config.Config, error) {
 	return func() (*config.Config, error) {
 		if err := CheckOwnedChain([]string{path}, trusted); err != nil {
@@ -160,6 +160,13 @@ func RootConfig(path string, trusted func(uint32) bool, load func(string) (*conf
 		}
 		if cfg.IdP.UsersFile != "" {
 			if err := CheckOwnedChain([]string{cfg.IdP.UsersFile}, trusted); err != nil {
+				return nil, err
+			}
+		}
+		// The Wazuh check's CA decides whom this root process sends the
+		// indexer password to (design/adr/0063).
+		if ca := cfg.IdP.WazuhCheck.CAFile; ca != "" {
+			if err := CheckOwnedChain([]string{ca}, trusted); err != nil {
 				return nil, err
 			}
 		}

@@ -58,6 +58,7 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /v1/quota", s.quotaHandler)
 
 	m.HandleFunc("GET /v1/people", s.peopleHandler)
+	m.HandleFunc("GET /v1/people/roles", s.peopleRoles)
 	m.HandleFunc("GET /v1/connect", s.connect)
 	m.HandleFunc("GET /v1/connect/script", s.connectScript)
 	m.HandleFunc("GET /v1/groups", s.assignableGroups)
@@ -467,7 +468,14 @@ func (s *Server) quotaHandler(w http.ResponseWriter, r *http.Request) {
 func (s *Server) peopleHandler(w http.ResponseWriter, _ *http.Request) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.peopleReads++
 	writeJSON(w, http.StatusOK, s.people)
+}
+
+func (s *Server) peopleRoles(w http.ResponseWriter, _ *http.Request) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	writeJSON(w, http.StatusOK, adminapi.PeopleRoles{Roles: s.people.Roles, Groups: s.people.Groups})
 }
 
 func (s *Server) connect(w http.ResponseWriter, r *http.Request) {

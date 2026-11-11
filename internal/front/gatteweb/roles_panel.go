@@ -95,7 +95,7 @@ func (f *Front) rolesPanelFragment(r *http.Request) (template.HTML, error) {
 	}
 	d.Servers = columnsFrom(tools.Tools)
 
-	people, perr := f.op.People(ctx)
+	people, perr := f.op.PeopleRoles(ctx)
 	if perr != nil {
 		d.Problem = errText(perr)
 		return f.renderFragment("roles_panel", d)

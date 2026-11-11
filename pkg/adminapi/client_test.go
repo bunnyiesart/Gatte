@@ -277,6 +277,8 @@ func TestClient_CoversEveryOperationOfTheContractAgainstTheRealBackend(t *testin
 	do("quotaUsage", err)
 	_, err = op.People(ctx)
 	do("people", err)
+	_, err = op.PeopleRoles(ctx)
+	do("peopleRoles", err)
 	_, err = op.Connect(ctx, "ana")
 	do("connect", err)
 	script, name, err := op.ConnectScript(ctx, adminapi.OSLinux, "ana")

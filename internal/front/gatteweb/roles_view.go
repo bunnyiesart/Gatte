@@ -1,7 +1,8 @@
 package gatteweb
 
 // The read-only Roles view of the Users tab: each role, the groups that map to
-// it and the tools it reaches, as the operator socket reports them (People).
+// it and the tools it reaches, as the operator socket reports them (PeopleRoles,
+// which reads nothing from the audit trail: design/adr/0061 §3).
 // It fills the Roles slot whenever the editable role×tool matrix
 // (roles_panel.go) does not show — that one needs the managing console and the
 // accounts socket (design/adr/0054) — so an operator without them still sees
@@ -23,7 +24,7 @@ type rolesViewData struct {
 
 func (f *Front) rolesViewSection(r *http.Request) (template.HTML, error) {
 	var d rolesViewData
-	if p, err := f.op.People(r.Context()); err != nil {
+	if p, err := f.op.PeopleRoles(r.Context()); err != nil {
 		d.Error = errText(err)
 	} else {
 		d.Roles = p.Roles

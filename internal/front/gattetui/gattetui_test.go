@@ -364,6 +364,10 @@ func TestUsersShowsOnlyPeopleAndRoles(t *testing.T) {
 		settle(a, a.switchTab(1))
 		mustShow(t, a, "People", "Roles")
 		mustNotShow(t, a, "Blocklist", "Block", "block", "sub-eve", "Seen by the gateway", "calls, last")
+		mustShow(t, a, "tier1-analyst", "soc-tier1", "ir-lead", "soc-ir")
+		if n := c.Server.PeopleReads(); n != 0 {
+			t.Errorf("root=%v: the Users tab called GET /v1/people %d times; it reads the audit trail", root, n)
+		}
 	}
 }
 

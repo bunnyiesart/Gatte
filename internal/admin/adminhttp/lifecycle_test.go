@@ -80,7 +80,7 @@ func TestAudit_UntilIsParsedLikeSince(t *testing.T) {
 	}
 	// 1.9.0 since design/adr/0059 (remote registered from the console); the
 	// whoami features of 1.4.0 through 1.6.0 are still listed above.
-	if me.ContractVersion != "1.9.0" {
+	if me.ContractVersion != "1.10.0" {
 		t.Errorf("contract version %s", me.ContractVersion)
 	}
 }

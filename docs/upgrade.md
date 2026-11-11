@@ -57,6 +57,10 @@ sudo install -d -m 0700 -o mcpgw -g mcpgw /var/backups/mcp-gateway
 sudo -u mcpgw mcp-gateway backup -config "$CFG" -out /var/backups/mcp-gateway
 ```
 
+On FreeBSD `/var/backups` is `root:wheel 0750`, so the service account
+cannot reach a directory inside it. Use one it can, such as
+`/var/db/mcp-gateway-backups`, here and in the rollback below.
+
 The first time you upgrade to a binary that has `backup`, the installed one
 does not: run the new binary from where you unpacked it
 (`sudo -u mcpgw ./mcp-gateway.new backup ...`). `backup` never migrates or

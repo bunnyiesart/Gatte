@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"os"
 	"path/filepath"
@@ -279,8 +280,15 @@ func runBackup(e *opEnv, out string, keep int, asJSON bool, now time.Time) int {
 // backupDestination resolves -out: a directory gets a timestamped name,
 // anything else must not exist yet.
 func backupDestination(out string, now time.Time) (dest string, intoDir bool, err error) {
-	if fi, err := os.Stat(out); err == nil && fi.IsDir() {
+	fi, err := os.Stat(out)
+	if err == nil && fi.IsDir() {
 		return filepath.Join(out, "mcp-gateway-"+now.UTC().Format(backupNameLayout)+".db"), true, nil
+	}
+	// A path this user cannot reach is not a missing one. Taken as a new
+	// file name, the copy would be staged in its parent and the error would
+	// name that parent, not the path the operator gave.
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return "", false, fmt.Errorf("cannot reach %s as this user: %w", out, err)
 	}
 	if _, err := os.Lstat(out); err == nil {
 		return "", false, fmt.Errorf("%s exists; backup never overwrites a file", out)

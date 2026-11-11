@@ -139,6 +139,29 @@ func TestBackup_NeverOverwrites(t *testing.T) {
 	}
 }
 
+// A backup directory under a parent the service account cannot traverse
+// (FreeBSD's /var/backups is root:wheel 0750) must be reported as
+// unreachable, not taken for a new file name in that parent.
+func TestBackupDestination_UnreachableDirIsNotANewFile(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root traverses any directory")
+	}
+	parent := filepath.Join(t.TempDir(), "backups")
+	out := filepath.Join(parent, "mcp-gateway")
+	if err := os.MkdirAll(out, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(parent, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(parent, 0o700) })
+
+	_, _, err := backupDestination(out, time.Now())
+	if err == nil || !strings.Contains(err.Error(), "cannot reach "+out) {
+		t.Fatalf("backupDestination(%s) error = %v, want one naming %s as unreachable", out, err, out)
+	}
+}
+
 func TestBackup_KeepPrunesOnlyItsOwnNames(t *testing.T) {
 	e := newFileEnv(t)
 	dir := t.TempDir()

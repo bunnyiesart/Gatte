@@ -86,7 +86,9 @@ database = "/var/db/mcp-gateway/mcp-gateway.db"
 # resolvido contra o diretorio deste arquivo. `reload` rele os dois. E o
 # arquivo que o console escreve com [admin] console_manages = true, depois
 # de valida-lo; continua revisavel e versionavel (ADR-0009). Chave de topo:
-# fica aqui, antes de qualquer tabela.
+# fica aqui, antes de qualquer tabela. Os [[preset]] (modelos para "New role
+# from preset", ADR-0062) moram junto dos papeis; exemplo em
+# examples/blue-team-roles.toml.
 #
 # roles_file = "roles.toml"
 

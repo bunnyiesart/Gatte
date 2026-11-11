@@ -3,7 +3,7 @@ package gatteweb
 // The read-only Roles view of the Users tab: each role, the groups that map to
 // it and the tools it reaches, as the operator socket reports them (PeopleRoles,
 // which reads nothing from the audit trail: design/adr/0061 §3).
-// It fills the Roles slot whenever the editable role×tool matrix
+// It fills the Roles slot whenever the editable role list
 // (roles_panel.go) does not show — that one needs the managing console and the
 // accounts socket (design/adr/0054) — so an operator without them still sees
 // who gets what, and can change nothing from here.

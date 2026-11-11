@@ -1,7 +1,7 @@
 package gatteweb
 
 // The read-only Roles view takes the Roles slot (Order 20) exactly when the
-// editable matrix of reg_roles_panel.go does not, so the Users tab shows one
+// editable role list of reg_roles_panel.go does not, so the Users tab shows one
 // Roles section either way: editable with the managing console and the
 // accounts socket, read-only otherwise.
 func init() {

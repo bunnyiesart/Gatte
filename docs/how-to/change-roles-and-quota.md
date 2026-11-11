@@ -101,6 +101,70 @@ purpose: it is the anchor against whoever can write the database
    - `NOT applied until a restart`, if anything else in the file differs.
      Restart `serve` for those, or put the file back.
 
+## In the web console
+
+With `[admin] console_manages = true`, `roles_file` set and the console
+started with `-manage-users`, the **Users** tab edits roles in the roles
+file
+([Run the management API and the web console](run-the-management-api-and-console.md)).
+
+- **Roles** lists each role with its `non_read` state, its groups and how
+  many tools it is granted. Open a role to edit it.
+- A role's page lists every tool, grouped by backend, each with a
+  checkbox. A sensitive tool is marked **Sensitive**; a tool the role
+  already reaches is marked **Granted**, or **Granted by \*** when a `"*"`
+  grant over its backend reaches it.
+- Select tools and choose **Grant selected** or **Revoke selected**. Each
+  edit is applied in order to the roles text, which is validated and
+  written once, keeping its comments. A safe tool is granted under the
+  role's `[role.grants]`; a sensitive tool is named in its `tools` list.
+- Some tools can be refused while the rest is written. The result page
+  lists what was granted or revoked, what was already so, and what was
+  refused and why:
+  - a sensitive tool on a role without `non_read`: tick it and turn
+    `non_read` on instead;
+  - a tool reached through a `"*"` grant: it cannot be revoked one tool at
+    a time. Change the whole-backend grant in the roles file.
+  The edits are then validated together: if the result would not load,
+  nothing is written and the page says why. For example, revoking every
+  tool named by a `non_read` role is refused while `non_read` is on; turn
+  it off first.
+- **non_read** is one switch on the role's page. It is never turned on by a
+  grant: making a role able to act is a decision of its own. The file
+  refuses `non_read` on a role whose `tools` list is empty, because the
+  marking only applies to names in that list. So tick the sensitive tools
+  the role should get, then **Turn on**: one confirm page names them, and
+  one write sets `non_read = true` and adds them to `tools`. With none
+  ticked on a role whose `tools` is empty, it is refused.
+- A sensitive tool also needs to be cleared before it is served
+  ([Review and approve tools](review-and-approve-tools.md)).
+- Every write is **not applied** until a reload: **Reload configuration**
+  on the Servers tab, or `mcp-gateway reload` as above.
+
+## Create a role from a preset
+
+A preset is a named starting list of tools kept in the roles file
+(`[[preset]]`, see the [configuration reference](../reference/configuration.md#preset)):
+
+```toml
+[[preset]]
+name  = "Blue team analyst"
+tools = ["siem.search_events", "siem.get_event", "cases.get_case"]
+```
+
+Creating a role from a preset takes a role name, the groups that get it,
+and the preset. The new `[[role]]` is written to the roles file with the
+preset's tools as `[role.grants]`, the groups are added to
+`[group_to_role]`, and nothing else in the file changes. Then `reload` as
+in the steps above.
+
+A preset never lets a role act. A sensitive tool in a preset is skipped,
+and the screen lists it. To grant it, make one explicit change that marks
+the role able to act together with that tool. If every tool of a preset is
+sensitive, no role is created.
+
+Presets themselves grant nothing: editing one needs no `reload`.
+
 ## If it is refused
 
 - **The file does not load.** `reload` validates it first and prints the

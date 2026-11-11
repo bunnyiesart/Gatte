@@ -290,7 +290,6 @@ func fillRegistered(e env, res adminapi.RegisterUpstreamResult) content {
 
 	if len(res.Tools) > 0 {
 		c.rows = append(c.rows, blank(), heading("Operations  each is one MCP tool, pending review"),
-			textRow(stDim.Render("A POST, PUT, PATCH or DELETE is sensitive: it needs clearing and a non_read role before it is served.")),
 			textRow(stDim.Render(cols(opCols, "TOOL", "METHOD", "PATH", "CLASS"))))
 		for _, t := range res.Tools {
 			c.rows = append(c.rows, textRow(cols(opCols, vis(t.Name), vis(t.Method), vis(t.Path), classText(t.Class))))

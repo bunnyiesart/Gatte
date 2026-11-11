@@ -33,7 +33,7 @@ func TestNavFor_ExactlyTheTwoTabs(t *testing.T) {
 }
 
 // The Users tab shows exactly one Roles section for every console: the editable
-// matrix with the managing console and the accounts socket (design/adr/0054),
+// role list with the managing console and the accounts socket (design/adr/0054),
 // the read-only view otherwise, so an operator without them still sees roles.
 func TestRolesSlot_EditableOrReadOnlyNeverBoth(t *testing.T) {
 	for _, caps := range []Capabilities{{}, {Manages: true}, {Root: true}, {Manages: true, Root: true}} {

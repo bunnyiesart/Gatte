@@ -50,12 +50,13 @@ func ValidateRolesText(cfgPath string, text []byte) error {
 	return err
 }
 
-// rolesDoc is the whole of a roles file: [[role]] and [group_to_role],
-// and nothing else -- any other key is refused as unknown, like in the
+// rolesDoc is the whole of a roles file: [[role]], [group_to_role] and
+// [[preset]] (design/adr/0062), and nothing else -- any other key is refused as unknown, like in the
 // main file.
 type rolesDoc struct {
 	Roles       []Role            `toml:"role"`
 	GroupToRole map[string]string `toml:"group_to_role"`
+	Presets     []Preset          `toml:"preset"`
 }
 
 // load is Load, with rolesText, when not nil, read in place of the file
@@ -116,6 +117,9 @@ func loadRolesFile(path string, md toml.MetaData, c *Config, rolesText []byte) (
 	if md.IsDefined("group_to_role") {
 		both = append(both, "[group_to_role]")
 	}
+	if md.IsDefined("preset") {
+		both = append(both, "[[preset]]")
+	}
 	if len(both) > 0 {
 		return "", fmt.Errorf("%w: %s: roles_file is set, and this file also has %s -- with roles_file the roles and the group mapping live in that file only (design/adr/0050 §3). Move them there, or remove roles_file",
 			ErrInvalid, path, strings.Join(both, " and "))
@@ -144,7 +148,7 @@ func loadRolesFile(path string, md toml.MetaData, c *Config, rolesText []byte) (
 	if err := rejectUnknownKeys(rolesPath, rmd); err != nil {
 		return "", err
 	}
-	c.Roles, c.GroupToRole = doc.Roles, doc.GroupToRole
+	c.Roles, c.GroupToRole, c.Presets = doc.Roles, doc.GroupToRole, doc.Presets
 	if err := rejectCollapsedMapKeys(rolesPath, rmd, &Config{Roles: doc.Roles}); err != nil {
 		return "", err
 	}

@@ -43,7 +43,7 @@ func TestTemplates_UseTheSimplerTerms(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	retired := []string{"attest", "Attest", "Redial<", ">Redial", "Deregister", "Tool safety", "Seen on the gateway", "Blocklist", "/access/block", "/access/unblock", "Waiting on you"}
+	retired := []string{"attest", "Attest", "Redial<", ">Redial", "Deregister", "Tool safety", "Seen on the gateway", "Blocklist", "/access/block", "/access/unblock", "Waiting on you", "Mark non_read", "Unmark non_read", "class=\"matrix", "Who may act"}
 	for _, e := range entries {
 		b, err := assets.ReadFile("ui/" + e.Name())
 		if err != nil {

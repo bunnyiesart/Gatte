@@ -94,3 +94,30 @@ tools = []
 "blue-vuln"       = "vuln-analyst"
 "blue-cloud"      = "cloud-security"
 "blue-onboarding" = "onboarding"
+
+# ---------------------------------------------------------------------------
+# Presets -- templates the console and the TUI offer under "New role from
+# preset". A preset is not a role: it grants nothing and serve ignores it.
+# Creating a role from one writes the preset's tools as [role.grants] of a
+# new [[role]]. A preset never marks a role non_read, so a sensitive tool
+# named here is skipped (and reported) when the role is created; grant it
+# afterwards as its own act.
+# ---------------------------------------------------------------------------
+[[preset]]
+name  = "Blue team analyst"
+tools = [
+  "siem.search_events",
+  "siem.get_event",
+  "cases.list_cases",
+  "cases.get_case",
+  "intel.lookup_hash",
+]
+
+[[preset]]
+name  = "Red team analyst"
+tools = [
+  "intel.lookup_hash",
+  "vulnscan.list_findings",
+  "vulnscan.get_finding",
+  "vulnscan.get_asset",
+]

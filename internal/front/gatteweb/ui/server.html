@@ -5,9 +5,6 @@
 <div class="head">
   <h1 class="mono-title">{{vis .Name}}</h1>
   <p class="sub">{{if eq .Transport "oci"}}Container{{else if eq .Transport "http"}}REST API{{else if eq .Transport "remote"}}Remote MCP{{else}}Process{{end}} · {{template "approval" .Signature}}{{with .Health}} · <span class="badge {{if eq .State "up"}}ok{{else if or (eq .State "reconnecting") (eq .State "down")}}danger{{end}}">{{state .State}}</span>{{end}}</p>
-  {{if eq .Signature "yes"}}<p class="caption">An operator approved this server's configuration — its URL or command, its arguments, and the names of its secrets — by signing it with the gateway key. It is not a statement that the server or its tools are safe: tool security is the separate approve and clear step below.</p>
-  {{else if eq .Signature "INVALID"}}<p class="caption">The configuration changed since it was approved, or the key that approved it is not trusted. It is not served until the configuration is approved again.</p>
-  {{else}}<p class="caption">No operator has approved this server's configuration. It is not served until the configuration is approved.</p>{{end}}
 </div>
 
 <section>

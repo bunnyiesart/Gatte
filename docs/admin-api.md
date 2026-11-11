@@ -218,7 +218,7 @@ The backend does not know what you render or who is at your screen.
    err = kit.Serve(myMux)
    // loopback Host check, /login?token= once -> /s/ID/ + HttpOnly SameSite=Strict
    // cookie, CSRF token + same Origin on every POST, CSP default-src 'none',
-   // X-Frame-Options DENY, nosniff, no-referrer, no-store, body limit
+   // X-Frame-Options DENY, nosniff, Referrer-Policy same-origin, no-store, body limit
    ```
 
    `kit.Serve` is the only way `frontkit` serves; there is no handler to

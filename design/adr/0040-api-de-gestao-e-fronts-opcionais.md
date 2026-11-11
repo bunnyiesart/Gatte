@@ -273,7 +273,7 @@ socket, o systemd, uid 0; em primeiro plano é o próprio backend.
   login de uso único que abre uma sessão presa ao caminho (`/s/ID/`) e a um
   cookie `HttpOnly` `SameSite=Strict`, token de formulário e `Origin` em
   todo POST, cabeçalhos (CSP `default-src 'none'`, `DENY`, `nosniff`,
-  `no-referrer`, `no-store` sempre), limite de corpo, e o desenho dos
+  `Referrer-Policy: same-origin`, `no-store` sempre), limite de corpo, e o desenho dos
   segmentos que o backend manda (§3), além do escape visível para texto que
   o próprio front tenha.
 

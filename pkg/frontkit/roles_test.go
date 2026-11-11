@@ -395,3 +395,200 @@ func TestMultiLineArrayEdit(t *testing.T) {
 		t.Errorf("ir-lead tools after add+revoke = %q", got)
 	}
 }
+
+const withPresets = sample + `
+# Templates for "New role from preset".
+[[preset]]
+name  = "Blue team analyst"
+tools = [
+  "siem.get_event",   # triage
+  "cases.get_case",
+  "cases.close_case", # sensitive: never granted by a preset
+]
+
+[[preset]]
+name  = "Red team analyst"
+tools = ["intel.lookup_ip"]
+`
+
+func TestPresetsAreRead(t *testing.T) {
+	ps := Presets(withPresets)
+	if len(ps) != 2 || ps[0].Name != "Blue team analyst" || ps[1].Name != "Red team analyst" {
+		t.Fatalf("presets = %+v", ps)
+	}
+	if got := strings.Join(ps[0].Tools, ","); got != "siem.get_event,cases.get_case,cases.close_case" {
+		t.Errorf("tools = %q", got)
+	}
+	if len(ParseRoles(withPresets)) != 2 {
+		t.Error("a [[preset]] was read as part of a role")
+	}
+}
+
+func TestNewRoleAddsAnEmptyRoleAndItsGroups(t *testing.T) {
+	out, st := NewRole(sample, "hunt", []string{"blue-hunt", "blue-hunt-nb"})
+	if st != SpliceChanged {
+		t.Fatalf("status = %v", st)
+	}
+	mustKeepComments(t, out)
+	b := roleByName(t, out, "hunt")
+	if b.NonRead || len(b.Tools) != 0 || len(b.Grants) != 0 {
+		t.Errorf("new role is not empty: %+v", b)
+	}
+	if g := groupKeys(out); !g["blue-hunt"] || !g["blue-hunt-nb"] || !g["blue-tier1"] {
+		t.Errorf("groups = %v\n%s", g, out)
+	}
+	if !strings.Contains(out, `"blue-hunt" = "hunt"`) {
+		t.Errorf("mapping not written:\n%s", out)
+	}
+	// The other roles are untouched.
+	if roleByName(t, out, "ir-lead").NonRead != true {
+		t.Error("ir-lead changed")
+	}
+}
+
+func TestNewRoleWithoutGroupTableOrRoles(t *testing.T) {
+	out, st := NewRole("# empty\n", "hunt", []string{"g"})
+	if st != SpliceChanged {
+		t.Fatalf("status = %v", st)
+	}
+	want := "# empty\n\n[[role]]\nname = \"hunt\"\n\n[group_to_role]\n\"g\" = \"hunt\"\n"
+	if out != want {
+		t.Errorf("got:\n%q\nwant:\n%q", out, want)
+	}
+}
+
+func TestNewRoleRefusals(t *testing.T) {
+	for name, tc := range map[string]struct {
+		role   string
+		groups []string
+		want   SpliceStatus
+	}{
+		"exists":          {"tier1", nil, SpliceRoleExists},
+		"empty":           {"", nil, SpliceBadName},
+		"edge whitespace": {"hunt ", nil, SpliceBadName},
+		"quote":           {`hu"nt`, nil, SpliceBadName},
+		"group mapped":    {"hunt", []string{"blue-ir"}, SpliceGroupTaken},
+		"group twice":     {"hunt", []string{"g", "g"}, SpliceGroupTaken},
+		"bad group":       {"hunt", []string{"g\n"}, SpliceBadName},
+	} {
+		t.Run(name, func(t *testing.T) {
+			out, st := NewRole(sample, tc.role, tc.groups)
+			if st != tc.want || out != sample {
+				t.Errorf("status = %v, want %v; text changed: %v", st, tc.want, out != sample)
+			}
+		})
+	}
+}
+
+func TestNewRoleFromPresetGrantsSafeToolsAndSkipsSensitive(t *testing.T) {
+	sensitive := func(server, tool string) bool { return server == "cases" && tool == "close_case" }
+	out, skipped, st := NewRoleFromPreset(withPresets, "analyst", "Blue team analyst", []string{"blue-analyst"}, sensitive)
+	if st != SpliceChanged {
+		t.Fatalf("status = %v", st)
+	}
+	if strings.Join(skipped, ",") != "cases.close_case" {
+		t.Errorf("skipped = %v", skipped)
+	}
+	mustKeepComments(t, out)
+	b := roleByName(t, out, "analyst")
+	if b.NonRead {
+		t.Error("a preset marked the role non_read")
+	}
+	if !b.Cover("siem", "get_event", false).Covered || !b.Cover("cases", "get_case", false).Covered {
+		t.Errorf("safe tools not granted: %+v\n%s", b.Grants, out)
+	}
+	if b.Cover("cases", "close_case", true).Covered || strings.Contains(strings.Join(b.Grants["cases"], ","), "close_case") {
+		t.Errorf("sensitive tool was written: %+v", b.Grants)
+	}
+	// The new role sits after the last role, before the group table, and the
+	// presets are still there for the next role.
+	if strings.Index(out, `name = "analyst"`) > strings.Index(out, "[group_to_role]") {
+		t.Errorf("role written after [group_to_role]:\n%s", out)
+	}
+	if len(Presets(out)) != 2 {
+		t.Error("presets lost")
+	}
+}
+
+func TestNewRoleFromPresetUnknownPreset(t *testing.T) {
+	out, skipped, st := NewRoleFromPreset(withPresets, "x", "Purple team", nil, nil)
+	if st != SpliceNoPreset || out != withPresets || skipped != nil {
+		t.Errorf("status = %v, skipped %v", st, skipped)
+	}
+	if _, _, st := NewRoleFromPreset(withPresets, "tier1", "Red team analyst", nil, nil); st != SpliceRoleExists {
+		t.Errorf("existing role: status = %v", st)
+	}
+}
+
+// A new role goes after the previous role's trailing comments (they are
+// that role's) and before the comments sitting on the next header.
+func TestNewRoleKeepsCommentsWithTheirOwners(t *testing.T) {
+	text := `[[role]]
+name = "a"
+tools = ["siem.get_event"]
+# a: reviewed 2026-10 by alice
+
+# Groups: left is the claim value.
+[group_to_role]
+"g-a" = "a"
+`
+	out, st := NewRole(text, "b", nil)
+	if st != SpliceChanged {
+		t.Fatalf("status = %v", st)
+	}
+	want := `[[role]]
+name = "a"
+tools = ["siem.get_event"]
+# a: reviewed 2026-10 by alice
+
+[[role]]
+name = "b"
+
+# Groups: left is the claim value.
+[group_to_role]
+"g-a" = "a"
+`
+	if out != want {
+		t.Errorf("got:\n%s\nwant:\n%s", out, want)
+	}
+}
+
+func TestNewRoleAtTheEndKeepsTrailingComments(t *testing.T) {
+	text := "[[role]]\nname = \"a\"\n# a: reviewed\n"
+	out, st := NewRole(text, "b", nil)
+	if st != SpliceChanged || out != "[[role]]\nname = \"a\"\n# a: reviewed\n\n[[role]]\nname = \"b\"\n" {
+		t.Errorf("status %v, got:\n%q", st, out)
+	}
+}
+
+func TestNewRoleFromPresetWithNothingSafeWritesNothing(t *testing.T) {
+	all := func(string, string) bool { return true }
+	out, skipped, st := NewRoleFromPreset(withPresets, "x", "Red team analyst", nil, all)
+	if st != SpliceNothingSafe || out != withPresets || strings.Join(skipped, ",") != "intel.lookup_ip" {
+		t.Errorf("status %v, skipped %v, changed %v", st, skipped, out != withPresets)
+	}
+}
+
+// Forms TOML reads but this editor does not follow are refused, not edited.
+func TestNewRoleRefusesLayoutsItCannotFollow(t *testing.T) {
+	role := "[[role]]\nname = \"a\"\n"
+	for name, text := range map[string]string{
+		"spaced group header":  role + "[ group_to_role ]\n\"g\" = \"a\"\n",
+		"quoted group header":  role + "[\"group_to_role\"]\n\"g\" = \"a\"\n",
+		"inline group table":   "group_to_role = { \"g\" = \"a\" }\n" + role,
+		"dotted top-level key": "group_to_role.g = \"a\"\n" + role,
+		"spaced preset header": role + "[[ preset ]]\nname = \"p\"\ntools = [\"a.b\"]\n",
+		"spaced role header":   "[[ role ]]\nname = \"a\"\n",
+		"dotted group key":     role + "[group_to_role]\nsoc.g = \"a\"\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if out, st := NewRole(text, "b", []string{"g2"}); st != SpliceUnsupported || out != text {
+				t.Errorf("status = %v, text changed: %v", st, out != text)
+			}
+		})
+	}
+	// Quoted keys inside the table are read fine.
+	if _, st := NewRole(role+"[group_to_role]\n\"soc.g\" = \"a\"\n'x' = \"a\"\n", "b", []string{"g2"}); st != SpliceChanged {
+		t.Errorf("quoted group keys: status = %v", st)
+	}
+}

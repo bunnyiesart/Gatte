@@ -7,7 +7,7 @@ package gatteweb
 //
 // It reads the role x tool matrix from GetRoles (the file), ListTools (the
 // tools and their safe/sensitive class) and People (the roles and their
-// groups). It writes by splicing one entry into the roles text (roles_toml.go)
+// groups). It writes by splicing one entry into the roles text (pkg/frontkit)
 // and storing it through PutRoles, which validates before it keeps it. Writing
 // does NOT apply: a reload on the Servers tab does (design/adr/0054 §3), so an
 // edit here prompts for that reload rather than doing it per toggle.
@@ -100,9 +100,9 @@ func (f *Front) rolesPanelFragment(r *http.Request) (template.HTML, error) {
 		d.Problem = errText(perr)
 		return f.renderFragment("roles_panel", d)
 	}
-	blocks := parseRoleBlocks(roles.Text)
+	blocks := frontkit.ParseRoles(roles.Text)
 	for _, role := range people.Roles {
-		b, has := findRole(blocks, role.Name)
+		b, has := frontkit.FindRole(blocks, role.Name)
 		row := matrixRow{Name: role.Name, Groups: role.Groups, HasBlock: has, NonRead: b.NonRead}
 		for _, s := range d.Servers {
 			for _, tl := range s.Tools {
@@ -136,8 +136,8 @@ func columnsFrom(tools []adminapi.Tool) []matrixServer {
 }
 
 // cellFor draws one role x tool cell from the role's parsed block.
-func cellFor(b roleBlock, tl matrixTool) matrixCell {
-	cov := b.cover(tl.Server, tl.Tool, tl.Sensitive)
+func cellFor(b frontkit.RoleBlock, tl matrixTool) matrixCell {
+	cov := b.Cover(tl.Server, tl.Tool, tl.Sensitive)
 	c := matrixCell{Covered: cov.Covered, Sensitive: tl.Sensitive}
 	switch cov.How {
 	case "explicit":
@@ -191,16 +191,16 @@ func (f *Front) rolesEdit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var text string
-	var st spliceStatus
+	var st frontkit.SpliceStatus
 	switch op {
 	case "grant":
 		if sensitive {
-			text, st = grantSensitiveTool(cur.Text, role, server, tool)
+			text, st = frontkit.GrantSensitiveTool(cur.Text, role, server, tool)
 		} else {
-			text, st = grantSafeTool(cur.Text, role, server, tool)
+			text, st = frontkit.GrantSafeTool(cur.Text, role, server, tool)
 		}
 	case "revoke":
-		text, st = revokeTool(cur.Text, role, server, tool)
+		text, st = frontkit.RevokeTool(cur.Text, role, server, tool)
 	}
 	f.finishSplice(w, r, title, role, server, tool, op, sensitive, text, st)
 }
@@ -228,7 +228,7 @@ func (f *Front) rolesNonRead(w http.ResponseWriter, r *http.Request) {
 		f.showResult(w, r, "users", title, "/users", refused("The roles file could not be read: "+firstLine(errText(err))))
 		return
 	}
-	text, st := setNonRead(cur.Text, role, on)
+	text, st := frontkit.SetNonRead(cur.Text, role, on)
 	var done string
 	if on {
 		done = "Role " + role + " is now marked non_read in the roles file: it may hold sensitive tools you name on it explicitly."
@@ -242,7 +242,7 @@ func (f *Front) rolesNonRead(w http.ResponseWriter, r *http.Request) {
 }
 
 // finishSplice turns a grant/revoke splice status into a result page.
-func (f *Front) finishSplice(w http.ResponseWriter, r *http.Request, title, role, server, tool, op string, sensitive bool, text string, st spliceStatus) {
+func (f *Front) finishSplice(w http.ResponseWriter, r *http.Request, title, role, server, tool, op string, sensitive bool, text string, st frontkit.SpliceStatus) {
 	ns := server + "." + tool
 	var done string
 	switch op {
@@ -271,16 +271,16 @@ type spliceMessages struct {
 }
 
 // spliceResult stores a changed text through PutRoles and builds the result
-// page; a status other than spliceChanged is a message, with nothing written.
-func (f *Front) spliceResult(ctx context.Context, st spliceStatus, text, done string, m spliceMessages) result {
+// page; a status other than frontkit.SpliceChanged is a message, with nothing written.
+func (f *Front) spliceResult(ctx context.Context, st frontkit.SpliceStatus, text, done string, m spliceMessages) result {
 	switch st {
-	case spliceNoRole:
+	case frontkit.SpliceNoRole:
 		return refused(m.noRole)
-	case spliceAlready:
+	case frontkit.SpliceAlready:
 		return result{OK: true, Summary: m.already, Output: m.already}
-	case spliceWildcard:
+	case frontkit.SpliceWildcard:
 		return refused(m.wildcard)
-	case spliceNeedNonRead:
+	case frontkit.SpliceNeedNonRead:
 		return refused(m.needNonRead)
 	}
 	res, err := f.acc.PutRoles(ctx, text)

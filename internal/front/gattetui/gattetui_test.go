@@ -326,7 +326,7 @@ func TestRoleWriteIsSurgicalThenAsksToReload(t *testing.T) {
 	if before.Text == after.Text {
 		t.Fatal("nothing was written")
 	}
-	mustShow(t, a, "NOT applied yet", "Reload the configuration now to apply it?")
+	mustShow(t, a, "Revoked 1 for tier1-analyst.", "NOT applied yet", "Reload the configuration now to apply it?")
 	press(a, "y")
 	mustShow(t, a, "The reload (request 1) was applied.")
 }
@@ -339,6 +339,8 @@ func TestSensitiveGrantNeedsNonReadAndWritesNothing(t *testing.T) {
 	cursorTo(t, a, "casemgmt.close_case")
 	press(a, "g", "y")
 	mustShow(t, a, "Not granted: casemgmt.close_case is sensitive; switch non_read on first (n).")
+	mustShow(t, a, "Refused 1 for tier1-analyst.")
+	mustNotShow(t, a, "Granted", "already set")
 	if after, _ := c.Accounts.GetRoles(context.Background()); after.Text != before.Text {
 		t.Fatalf("a refused grant changed the roles file:\n%s", after.Text)
 	}
@@ -362,7 +364,7 @@ func TestRoleGrantsTheSelectedToolsInOneWrite(t *testing.T) {
 	press(a, "g")
 	mustShow(t, a, "Grant 3 tool(s) for tier1-analyst?")
 	press(a, "y")
-	mustShow(t, a, "Granted 2 for tier1-analyst, 1 not changed.",
+	mustShow(t, a, "Granted 2, refused 1 for tier1-analyst.",
 		"Granted: docsearch.find_document, threatintel.lookup_ip", "Not granted: casemgmt.close_case is sensitive")
 	want, _ := frontkit.GrantSafeTool(before.Text, "tier1-analyst", "docsearch", "find_document")
 	want, _ = frontkit.GrantSafeTool(want, "tier1-analyst", "threatintel", "lookup_ip")
@@ -372,6 +374,23 @@ func TestRoleGrantsTheSelectedToolsInOneWrite(t *testing.T) {
 	mustShow(t, a, "Reload the configuration now to apply it?")
 	press(a, "n")
 	mustNotShow(t, a, "[x]")
+}
+
+// TestRoleGrantCountsANoOpApartFromARefusal: a tool already granted is
+// "already set", not refused, and nothing is written.
+func TestRoleGrantCountsANoOpApartFromARefusal(t *testing.T) {
+	a, c := start(t, true)
+	settle(a, a.switchTab(1))
+	before, _ := c.Accounts.GetRoles(context.Background())
+	open(a, rolePage("tier1-analyst"))
+	cursorTo(t, a, "casemgmt.get_case")
+	press(a, "space")
+	cursorTo(t, a, "casemgmt.close_case")
+	press(a, "space", "g", "y")
+	mustShow(t, a, "Already set 1, refused 1 for tier1-analyst.", "Already granted: casemgmt.get_case")
+	if after, _ := c.Accounts.GetRoles(context.Background()); after.Text != before.Text {
+		t.Fatalf("a grant with nothing to change wrote the roles file:\n%s", after.Text)
+	}
 }
 
 func TestNonReadIsItsOwnToggle(t *testing.T) {

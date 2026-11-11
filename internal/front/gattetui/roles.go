@@ -242,17 +242,22 @@ func editGrants(e env, role string, picked []string, op string) result {
 		out = append(out, map[string]string{"grant": "Already granted: ", "revoke": "Already not granted: "}[op]+strings.Join(already, ", "))
 	}
 	out = append(out, notes...)
-	if len(done) == 0 {
-		r := result{ok: len(notes) == 0, summary: "Nothing changed."}
-		if len(out) == 1 {
-			r.summary, out = out[0], nil
-		}
-		r.output = out
-		return r
+	// The counts keep a refusal apart from a no-op: a refused tool is one
+	// the operator still has to act on.
+	var counts []string
+	if len(done) > 0 {
+		counts = append(counts, fmt.Sprintf("%s %d", strings.ToLower(verb), len(done)))
 	}
-	summary := fmt.Sprintf("%s %d for %s.", verb, len(done), role)
+	if len(already) > 0 {
+		counts = append(counts, fmt.Sprintf("already set %d", len(already)))
+	}
 	if len(notes) > 0 {
-		summary = fmt.Sprintf("%s %d for %s, %d not changed.", verb, len(done), role, len(notes))
+		counts = append(counts, fmt.Sprintf("refused %d", len(notes)))
+	}
+	summary := strings.Join(counts, ", ") + " for " + role + "."
+	summary = strings.ToUpper(summary[:1]) + summary[1:]
+	if len(done) == 0 {
+		return result{ok: len(notes) == 0, summary: summary, output: out}
 	}
 	r := putRoles(e, text, summary)
 	r.output = append(out, r.output...)

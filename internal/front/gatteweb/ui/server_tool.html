@@ -12,7 +12,6 @@
 
 <section>
   <h2>Reachable by</h2>
-  {{if .Sensitive}}<p class="caption">A sensitive tool is served only through a role marked <code>non_read</code> that names it, and only once it is cleared. Approval alone does not make it callable.</p>{{end}}
   {{if .Callable}}
   <div class="group">
     <table class="list">
@@ -40,7 +39,7 @@
     <input type="hidden" name="fingerprint" value="{{.Fingerprint}}">
     <button class="btn{{if not .Hidden}} primary{{end}}">Approve tool</button>
   </form>
-  <p class="caption">Approves exactly what's shown here (sha256:{{short .Fingerprint}}). If the backend changes it before you click, nothing is approved. Then the next tool of this backend waiting for review opens.</p>
+  <p class="caption">Approves this version only (sha256:{{short .Fingerprint}}). If the backend changes it before you click, nothing is approved.</p>
   {{end}}
   {{if and .Sensitive (eq .Status "approved") (not .Cleared)}}
   {{if .CanClear}}
@@ -48,9 +47,9 @@
     <input type="hidden" name="csrf" value="{{$csrf}}">
     <button class="btn primary">Clear for serving</button>
   </form>
-  <p class="caption">This tool can act, so approving it was not enough: clearing serves it at the approved version, and only to a role marked non_read that names it in its tools. If no role does, nothing is cleared and the result says why.</p>
+  <p class="caption">Approved, not served until cleared.</p>
   {{else}}
-  <p class="caption">This tool can act: it's approved and not served until it's cleared, with <code>mcp-gateway tool clear {{vis .Server}} {{vis .Tool}}</code>.</p>
+  <p class="caption">Clear it with <code>mcp-gateway tool clear {{vis .Server}} {{vis .Tool}}</code>.</p>
   {{end}}
   {{end}}
   {{if eq .Status "approved"}}

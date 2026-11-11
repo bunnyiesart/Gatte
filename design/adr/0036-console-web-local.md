@@ -97,8 +97,10 @@ Na ordem em que a requisição as encontra:
    recebe 405.
 5. **Cabeçalhos**: `Content-Security-Policy: default-src 'none';
    style-src 'self'; form-action 'self'; frame-ancestors 'none';
-   base-uri 'none'`, `X-Frame-Options: DENY`, `nosniff`, `no-referrer`
-   (a URL carrega o id da sessão), `no-store`.
+   base-uri 'none'`, `X-Frame-Options: DENY`, `nosniff`,
+   `Referrer-Policy: same-origin` (a URL carrega o id da sessão, que não
+   sai para outro site; `no-referrer` faria o navegador mandar
+   `Origin: null` no POST de formulário, que o item 4 recusa), `no-store`.
 6. **Texto não confiável escapado duas vezes**: pelo `html/template`, contra
    HTML, e pelo `internal/visible`, para que um code point invisível
    apareça como `\u{XXXX}`, como no CLI. Isso vale também para o que um

@@ -1,0 +1,58 @@
+{{template "top" .}}
+<div class="head">
+  <h1>Help</h1>
+</div>
+
+<section>
+  <h2>Commands</h2>
+  <div class="group">
+    <table class="list">
+      <tbody>
+        <tr><td class="mono t-title">mcp-gateway serve</td><td class="t-sub">Run the gateway.</td></tr>
+        <tr><td class="mono t-title">mcp-gateway upstream</td><td class="t-sub">Register, list, update or deregister a backend.</td></tr>
+        <tr><td class="mono t-title">mcp-gateway tool</td><td class="t-sub">List, review, approve, revoke or clear tools.</td></tr>
+        <tr><td class="mono t-title">mcp-gateway sign</td><td class="t-sub">Approve a backend's configuration.</td></tr>
+        <tr><td class="mono t-title">mcp-gateway audit</td><td class="t-sub">Read or verify the audit trail.</td></tr>
+        <tr><td class="mono t-title">mcp-gateway quota</td><td class="t-sub">Show the limits and what each analyst has spent.</td></tr>
+        <tr><td class="mono t-title">mcp-gateway access</td><td class="t-sub">Block or unblock one analyst, or list who is blocked.</td></tr>
+        <tr><td class="mono t-title">mcp-gateway maintenance</td><td class="t-sub">Announce maintenance of the whole gateway, or list it.</td></tr>
+        <tr><td class="mono t-title">mcp-gateway reload</td><td class="t-sub">Apply roles, groups and quota to the running gateway.</td></tr>
+        <tr><td class="mono t-title">mcp-gateway admin</td><td class="t-sub">Serve the management API for the consoles.</td></tr>
+        <tr><td class="mono t-title">mcp-gateway ui</td><td class="t-sub">This console. Add -manage-users (as root) to edit people and roles.</td></tr>
+        <tr><td class="mono t-title">mcp-gateway tui</td><td class="t-sub">The same console in a terminal. Press ? there for its keys.</td></tr>
+        <tr><td class="mono t-title">mcp-gateway check</td><td class="t-sub">Check the configuration and files offline.</td></tr>
+        <tr><td class="mono t-title">mcp-gateway backup</td><td class="t-sub">Copy the database while serve runs.</td></tr>
+        <tr><td class="mono t-title">mcp-gateway restore</td><td class="t-sub">Replace the database with a backup, serve stopped.</td></tr>
+        <tr><td class="mono t-title">mcp-gateway version</td><td class="t-sub">Print the build version.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section>
+  <h2>Words</h2>
+  <dl class="group facts pad">
+    <div><dt>Config approved</dt><dd>An operator signed the backend's configuration. Says nothing about its tools.</dd></div>
+    <div><dt>Changed since approved</dt><dd>The configuration changed after it was signed, or the signing key is no longer trusted. Not served until approved again.</dd></div>
+    <div><dt>Tool changed</dt><dd>A tool's definition changed after approval. Not served until reviewed again.</dd></div>
+    <div><dt>Safe tool</dt><dd>Only reads. Served once approved, to roles that grant it.</dd></div>
+    <div><dt>Sensitive tool</dt><dd>Can act. Served once approved and cleared, to a non_read role that names it.</dd></div>
+    <div><dt>non_read</dt><dd>A role that may hold sensitive tools. Turned on by itself, never by a grant.</dd></div>
+    <div><dt>Clear</dt><dd>Serves an approved sensitive tool. Approval alone does not.</dd></div>
+    <div><dt>Disable</dt><dd>Stops new sign-ins. A session already open goes on: offboard to cut it off.</dd></div>
+    <div><dt>Roles file</dt><dd>Where role edits are written. Not applied until you reload.</dd></div>
+    <div><dt>Reload</dt><dd>Applies the roles file: Reload configuration on the Servers tab, or mcp-gateway reload.</dd></div>
+  </dl>
+</section>
+
+<section>
+  <h2>Docs</h2>
+  <ul class="group steps">
+    <li class="mono">docs/command-guide.md</li>
+    <li class="mono">docs/how-to/change-roles-and-quota.md</li>
+    <li class="mono">docs/how-to/add-and-remove-people.md</li>
+    <li class="mono">docs/how-to/review-and-approve-tools.md</li>
+    <li class="mono">docs/explanation/quarantine-and-signing.md</li>
+  </ul>
+</section>
+{{template "bottom" .}}

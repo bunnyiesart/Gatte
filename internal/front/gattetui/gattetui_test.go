@@ -14,6 +14,7 @@ import (
 
 	"github.com/bunnyiesart/Gatte/internal/adminapitest"
 	"github.com/bunnyiesart/Gatte/pkg/adminapi"
+	"github.com/bunnyiesart/Gatte/pkg/frontkit"
 )
 
 // start runs the fake and returns the front's model on it, with the
@@ -312,7 +313,7 @@ func TestRoleWriteIsSurgicalThenAsksToReload(t *testing.T) {
 	before, _ := c.Accounts.GetRoles(context.Background())
 	open(a, rolePage("tier1-analyst"))
 	cursorTo(t, a, "casemgmt.get_case")
-	press(a, "enter", "y")
+	press(a, "v", "y")
 	after, _ := c.Accounts.GetRoles(context.Background())
 	if strings.Contains(after.Text, `"get_case"`) {
 		t.Fatalf("get_case is still granted:\n%s", after.Text)
@@ -325,7 +326,7 @@ func TestRoleWriteIsSurgicalThenAsksToReload(t *testing.T) {
 	if before.Text == after.Text {
 		t.Fatal("nothing was written")
 	}
-	mustShow(t, a, "NOT applied yet", "Reload the configuration now to apply it?")
+	mustShow(t, a, "Revoked 1 for tier1-analyst.", "NOT applied yet", "Reload the configuration now to apply it?")
 	press(a, "y")
 	mustShow(t, a, "The reload (request 1) was applied.")
 }
@@ -336,10 +337,119 @@ func TestSensitiveGrantNeedsNonReadAndWritesNothing(t *testing.T) {
 	before, _ := c.Accounts.GetRoles(context.Background())
 	open(a, rolePage("tier1-analyst"))
 	cursorTo(t, a, "casemgmt.close_case")
-	press(a, "enter", "y")
-	mustShow(t, a, "Not granted: casemgmt.close_case is a sensitive tool")
+	press(a, "g", "y")
+	mustShow(t, a, "Not granted: casemgmt.close_case is sensitive; select it, then n to turn non_read on with it.")
+	mustShow(t, a, "Refused 1 for tier1-analyst.")
+	mustNotShow(t, a, "Granted", "already set")
 	if after, _ := c.Accounts.GetRoles(context.Background()); after.Text != before.Text {
 		t.Fatalf("a refused grant changed the roles file:\n%s", after.Text)
+	}
+}
+
+// TestRoleGrantsTheSelectedToolsInOneWrite: the safe tools are granted on
+// one copy of the file, the sensitive one is refused, and non_read is left
+// alone.
+func TestRoleGrantsTheSelectedToolsInOneWrite(t *testing.T) {
+	a, c := start(t, true)
+	settle(a, a.switchTab(1))
+	open(a, rolePage("tier1-analyst"))
+	cursorTo(t, a, "docsearch.find_document")
+	press(a, "space")
+	cursorTo(t, a, "threatintel.lookup_ip")
+	press(a, "space")
+	cursorTo(t, a, "casemgmt.close_case")
+	press(a, "space")
+	mustShow(t, a, "[x] casemgmt.close_case", "[x] docsearch.find_document", "[ ] casemgmt.get_case")
+	before, _ := c.Accounts.GetRoles(context.Background())
+	press(a, "g")
+	mustShow(t, a, "Grant 3 tool(s) for tier1-analyst?")
+	press(a, "y")
+	mustShow(t, a, "Granted 2, refused 1 for tier1-analyst.",
+		"Granted: docsearch.find_document, threatintel.lookup_ip", "Not granted: casemgmt.close_case is sensitive")
+	want, _ := frontkit.GrantSafeTool(before.Text, "tier1-analyst", "docsearch", "find_document")
+	want, _ = frontkit.GrantSafeTool(want, "tier1-analyst", "threatintel", "lookup_ip")
+	if after, _ := c.Accounts.GetRoles(context.Background()); after.Text != want {
+		t.Fatalf("roles file after the grant:\n%s\nwant:\n%s", after.Text, want)
+	}
+	mustShow(t, a, "Reload the configuration now to apply it?")
+	press(a, "n")
+	mustNotShow(t, a, "[x]")
+}
+
+// TestRoleGrantCountsANoOpApartFromARefusal: a tool already granted is
+// "already set", not refused, and nothing is written.
+func TestRoleGrantCountsANoOpApartFromARefusal(t *testing.T) {
+	a, c := start(t, true)
+	settle(a, a.switchTab(1))
+	before, _ := c.Accounts.GetRoles(context.Background())
+	open(a, rolePage("tier1-analyst"))
+	cursorTo(t, a, "casemgmt.get_case")
+	press(a, "space")
+	cursorTo(t, a, "casemgmt.close_case")
+	press(a, "space", "g", "y")
+	mustShow(t, a, "Already set 1, refused 1 for tier1-analyst.", "Already granted: casemgmt.get_case")
+	if after, _ := c.Accounts.GetRoles(context.Background()); after.Text != before.Text {
+		t.Fatalf("a grant with nothing to change wrote the roles file:\n%s", after.Text)
+	}
+}
+
+// TestNonReadGoesOnWithTheSelectedSensitiveTools: the backend refuses
+// non_read on a role with no tools, so it goes on with the selected
+// sensitive tools in one write, and without one it is refused locally.
+func TestNonReadGoesOnWithTheSelectedSensitiveTools(t *testing.T) {
+	a, c := start(t, true)
+	settle(a, a.switchTab(1))
+	before, _ := c.Accounts.GetRoles(context.Background())
+	open(a, rolePage("tier1-analyst"))
+	press(a, "n")
+	mustShow(t, a, "non_read needs at least one sensitive tool: select it, then n.")
+	if after, _ := c.Accounts.GetRoles(context.Background()); after.Text != before.Text {
+		t.Fatalf("a refused non_read changed the roles file:\n%s", after.Text)
+	}
+	cursorTo(t, a, "casemgmt.close_case")
+	press(a, "space")
+	cursorTo(t, a, "docsearch.find_document")
+	press(a, "space", "n")
+	mustShow(t, a, "Turn non_read on for tier1-analyst and give it: casemgmt.close_case?")
+	press(a, "y")
+	mustShow(t, a, "non_read is on for tier1-analyst; gave it casemgmt.close_case.")
+	after, _ := c.Accounts.GetRoles(context.Background())
+	roles, _, _ := strings.Cut(after.Text, "[[preset]]") // presets may name any tool
+	if !strings.Contains(roles, "non_read = true") || !strings.Contains(roles, `"casemgmt.close_case"`) || strings.Contains(roles, "find_document") {
+		t.Fatalf("roles file after non_read on:\n%s", after.Text)
+	}
+	press(a, "n") // no reload
+	mustShow(t, a, "[ n Turn non_read off ]")
+	mustNotShow(t, a, "[x]")
+	press(a, "n", "y")
+	mustShow(t, a, "non_read is off for tier1-analyst.")
+}
+
+// TestSelectionSurvivesACancelAndARefusal: only a write empties it.
+func TestSelectionSurvivesACancelAndARefusal(t *testing.T) {
+	a, _ := start(t, true)
+	settle(a, a.switchTab(1))
+	open(a, rolePage("tier1-analyst"))
+	cursorTo(t, a, "casemgmt.close_case")
+	press(a, "space", "g", "n")
+	mustShow(t, a, "Cancelled.", "[x] casemgmt.close_case")
+	press(a, "g", "y")
+	mustShow(t, a, "Refused 1 for tier1-analyst.", "[x] casemgmt.close_case")
+}
+
+func TestHelpOpensOnQuestionMarkAndEscCloses(t *testing.T) {
+	a, _ := start(t, true)
+	open(a, serverPage("casemgmt"))
+	press(a, "?")
+	mustShow(t, a, "mcp-gateway reload", "Config approved", "non_read", "docs/how-to/change-roles-and-quota.md")
+	press(a, "?")
+	if n := len(a.stacks[a.active]); n != 3 {
+		t.Fatalf("? on the help screen stacked another: %d pages", n)
+	}
+	press(a, "esc")
+	mustNotShow(t, a, "docs/command-guide.md")
+	if a.top().help {
+		t.Fatal("esc did not close the help screen")
 	}
 }
 
@@ -438,7 +548,7 @@ func TestGalleryDrawsEveryState(t *testing.T) {
 	if n := strings.Count(b.String(), "\n==== "); n < 20 {
 		t.Fatalf("the gallery drew %d states:\n%s", n, b.String())
 	}
-	for _, want := range []string{"fake-otp-reset-ana.lima", "Reload the configuration now", "no backend \"no-such-backend\"", "**************", "tool changed since approved",
+	for _, want := range []string{"fake-otp-reset-ana.lima", "Reload the configuration now", "[x] casemgmt.get_case", "mcp-gateway tui", "docs/command-guide.md", "no backend \"no-such-backend\"", "**************", "tool changed since approved",
 		"What kind of backend?", "Not kept:", "Not registered: image", "Registered vendor", "need podman on the gateway's host"} {
 		if !strings.Contains(b.String(), want) {
 			t.Errorf("the gallery lacks %q", want)

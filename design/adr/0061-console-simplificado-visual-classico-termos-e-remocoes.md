@@ -105,6 +105,11 @@ item do menu continua sendo a ação de mesmo nome da API, com CSRF e
 confirmação como hoje (`0040`). No TUI, as mesmas ações ficam agrupadas num
 menu por tool.
 
+> **Anotação (11 nov 2026, M6.1).** Os itens do menu que se ligam ao que o
+> operador viu — aprovar (a definição e o fingerprint) e clear (os papéis
+> `non_read` que passam a alcançar a tool) — abrem a página de revisão da
+> tool, onde a ação acontece. Só o revogar é enviado direto do menu.
+
 ### Restrições que não se cruzam
 
 - Loopback + túnel SSH, link de uso único, sessão, CSRF e `Origin` (`0036` §3,

@@ -216,7 +216,7 @@ func (f *Front) rolesNonRead(w http.ResponseWriter, r *http.Request) {
 	on := r.PostForm.Get("on") == "true"
 	verb := "Mark non_read on"
 	if !on {
-		verb = "Clear non_read on"
+		verb = "Unmark non_read on"
 	}
 	title := verb + " " + visible(role)
 	if role == "" {

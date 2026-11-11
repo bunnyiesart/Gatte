@@ -34,7 +34,7 @@ func TestUI_TheReviewSetPageShowsEveryDefinitionAndApprovesOnlyThatSet(t *testin
 	if w.Code != http.StatusOK {
 		t.Fatalf("GET the review set: %d\n%s", w.Code, body)
 	}
-	for _, want := range []string{"list_cases", "close_case", "What changed", "List CASEMGMT cases.", `\u{202E}`, "&lt;b&gt;Mail&lt;/b&gt;", "Approve these 2"} {
+	for _, want := range []string{"list_cases", "close_case", "What changed", "List CASEMGMT cases.", `\u{202E}`, "&lt;b&gt;Mail&lt;/b&gt;", "Approve these 2 tools"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the review-set page lacks %q", want)
 		}
@@ -61,7 +61,7 @@ func TestUI_TheReviewSetPageShowsEveryDefinitionAndApprovesOnlyThatSet(t *testin
 
 	w = uiDo(s, "GET", "/servers/casemgmt/tools/review-set", nil, cookie, nil)
 	m = manifestField.FindStringSubmatch(w.Body.String())
-	if m == nil || !strings.Contains(w.Body.String(), "Approve these 3") {
+	if m == nil || !strings.Contains(w.Body.String(), "Approve these 3 tools") {
 		t.Fatalf("the redrawn page\n%s", w.Body)
 	}
 	w = uiDo(s, "POST", "/servers/casemgmt/tools/approve-set", url.Values{"manifest": {m[1]}, "csrf": {s.csrf}}, cookie, samePost)

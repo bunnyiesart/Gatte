@@ -453,9 +453,11 @@ One ADR, applied to both fronts. No contract, CLI or signing change.
   `[ OK ]`-style buttons. Zero-JS stays.
 - **Labels:** the table in "Look and labels" above.
 - **Removed:** "Seen on the gateway" (Users + account page), the needs-review
-  marker on the servers list, and the Blocklist section. Audit is read in
-  Wazuh; blocking stays in the CLI.
+  marker on the servers list (pending only; a changed tool stays flagged, see
+  above), and the Blocklist section. Audit is read in Wazuh; blocking stays
+  in the CLI.
 - **Tools panel:** per-tool actions in a `<details>`/`<summary>` menu.
+  Approve and Clear open the tool's review page; Revoke posts from the menu.
 
 | Slice | Front | Depends on |
 |---|---|---|

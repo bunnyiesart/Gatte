@@ -27,7 +27,7 @@ import (
 // toolsPanelView is the per-server Tools panel: the backend's own tools, how
 // many wait for review, and whether this console can offer the one-page review
 // of the set (FeatureToolReviewSet). CanClear is whether the per-tool menu
-// offers Clear (FeatureConsoleManages and FeatureToolClear).
+// links to Clear (FeatureConsoleManages and FeatureToolClear).
 type toolsPanelView struct {
 	Base       string
 	CSRF       string
@@ -54,8 +54,10 @@ type toolRow struct {
 // toolsPanel renders the Tools panel for one backend. It reads the backend's
 // tools from the detail the shell already fetched (UpstreamDetail.Tools), so
 // the panel costs no extra call. Each row's actions sit in a <details> menu
-// (design/adr/0061 §5); Approve opens the review page, because an approval
-// binds to the definition the operator was shown (design/adr/0040 §3).
+// (design/adr/0061 §5). Approve and Clear only open the review page: an
+// approval binds to the definition the operator was shown (design/adr/0040
+// §3), and a clear should be made seeing which non_read roles gain the tool.
+// Revoke is the one action the menu posts itself.
 func (f *Front) toolsPanel(r *http.Request, d adminapi.UpstreamDetail) (template.HTML, error) {
 	me, _ := f.op.WhoAmI(r.Context())
 	has := func(name string) bool { return slices.Contains(me.Features, name) }

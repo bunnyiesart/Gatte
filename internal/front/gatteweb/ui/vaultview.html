@@ -8,7 +8,7 @@
 </div>
 
 {{if .Missing}}
-<div class="notice danger" role="alert">{{template "warn"}}<p><b>{{.Missing}} {{if eq .Missing 1}}name a backend declares is{{else}}names backends declare are{{end}} missing from the vault.</b> A backend fails to dial without its key: set {{if eq .Missing 1}}it{{else}}them{{end}} below.</p></div>
+<div class="notice danger" role="alert">{{template "warn"}}<p><b>{{.Missing}} {{if eq .Missing 1}}name a backend declares is{{else}}names backends declare are{{end}} missing from the vault.</b> A backend fails to connect without its key: set {{if eq .Missing 1}}it{{else}}them{{end}} below.</p></div>
 {{end}}
 {{if or .Shared .Orphan}}
 <p class="caption">{{if .Shared}}{{.Shared}} shared across more than one backend.{{end}}{{if and .Shared .Orphan}} {{end}}{{if .Orphan}}{{.Orphan}} in the vault but declared by no backend (orphan).{{end}}</p>

@@ -18,6 +18,7 @@ colors:
   on-select: "#ffffff"
   ok: "#005c00"
   danger: "#800000"
+  danger-text: "#800000"
   on-danger: "#ffffff"
   mark: "#000000"
   on-mark: "#ffff00"
@@ -35,6 +36,7 @@ colors:
   select-dark: "#2c46a8"
   ok-dark: "#8fdc8f"
   danger-dark: "#b03030"
+  danger-text-dark: "#ff9a9a"
   mark-dark: "#ffff00"
   on-mark-dark: "#000000"
   diff-add-dark: "#20402a"
@@ -100,8 +102,9 @@ redefines the same tokens and nothing else.
 - **Title bar / select** (`--title`, `--select`): the navy title bar, a
   hovered menu item or list row, the current step.
 - **Ok** (`--ok`): green text on approved and up labels.
-- **Danger** (`--danger`): white-on-maroon labels and notices for changed,
-  down, refused and sensitive; maroon text on destructive buttons.
+- **Danger** (`--danger`, `--danger-text`): white-on-maroon labels and
+  notices for changed, down, refused and sensitive; `--danger-text` for the
+  label of a destructive button or menu item (lighter in dark mode).
 - **Mark** (`--mark`, `--on-mark`): a hidden code point in a tool's text.
 
 ## Typography
@@ -126,9 +129,9 @@ Labels and buttons are sentence case. No letter-spacing, no uppercase.
 - **Tabs (`.segmented`, the top nav):** raised face tabs; the current one is
   bold (sunken white for a segmented choice).
 - **Per-tool menu (`details.menu`):** an **Actions** button opening a raised
-  menu panel with a 1px drop edge. Items are links or one-button POST forms
-  carrying the CSRF token; a hovered item is navy with white text; a
-  separator is an etched line. Revoke sits last, below a separator.
+  menu panel with a 1px drop edge. Review, Approve and Clear are links to the
+  tool's review page; Revoke, last below an etched separator, is a one-button
+  POST form carrying the CSRF token. A hovered item is navy with white text.
 - **Notices:** a raised face panel with a leading glyph; danger is white on
   maroon.
 - **Disclosures:** a raised face summary row with a chevron that turns when

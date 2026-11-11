@@ -1,8 +1,7 @@
 {{$base := .Base}}{{$csrf := .CSRF}}
 <section>
   <h2>Tool security</h2>
-  <p class="caption">Approving the configuration does not approve any tool. Each tool is reviewed and approved here, by its fingerprint; a sensitive tool also needs Clear. Each tool's actions are in its Actions menu.</p>
-  <p class="caption">A tool is served only after you approve it, and only at the exact version you reviewed. A sensitive tool (one that can act) needs clearing on top of approval before it is served.</p>
+  <p class="caption">A tool is served only after you approve it, at the exact version you reviewed. Approving the configuration approves no tool. A sensitive tool (one that can act) also needs clearing.</p>
 
   {{if and .ReviewSet (gt .Review 1)}}
   <div class="notice" role="note">{{template "dot"}}<p>{{.Review}} tools wait for review. <a href="{{$base}}{{.ServerPath}}/tools/review-set">Review them on one page</a>, every definition in full, and approve them together.</p></div>
@@ -16,7 +15,7 @@
       {{range .Tools}}
         <tr>
           <td class="t-title" data-label="Tool"><a class="cell-link mono" href="{{$base}}{{.Path}}">{{vis .Name}}</a></td>
-          <td class="t-badge" data-label="Class">{{if .Sensitive}}<span class="badge danger">Sensitive</span>{{else}}<span class="badge ok">Safe</span>{{end}}</td>
+          <td class="t-sub" data-label="Class">{{if .Sensitive}}<span class="badge danger">Sensitive</span>{{else}}<span class="badge ok">Safe</span>{{end}}</td>
           <td class="t-badge" data-label="Status">{{template "toolstatus" .Status}}{{if .NotServed}} <span class="badge">Not served</span>{{end}}</td>
           <td class="muted num t-hide" data-label="Updated">{{time .UpdatedAt}}</td>
           <td class="end t-menu">
@@ -24,7 +23,7 @@
               <summary class="btn small">Actions <span class="menu-arrow" aria-hidden="true"></span></summary>
               <ul class="menu-list">
                 <li><a href="{{$base}}{{.Path}}">{{if eq .Status "approved"}}Review{{else}}Review and approve tool...{{end}}</a></li>
-                {{if and .NotServed $.CanClear}}<li><form method="post" action="{{$base}}{{.Path}}/clear"><input type="hidden" name="csrf" value="{{$csrf}}"><button>Clear for serving</button></form></li>{{end}}
+                {{if and .NotServed $.CanClear}}<li><a href="{{$base}}{{.Path}}">Clear for serving...</a></li>{{end}}
                 {{if eq .Status "approved"}}<li class="sep"><form method="post" action="{{$base}}{{.Path}}/revoke"><input type="hidden" name="csrf" value="{{$csrf}}"><button class="danger">Revoke approval</button></form></li>{{end}}
               </ul>
             </details>

@@ -257,7 +257,7 @@ func TestUIManage_NothingNewExistsWithTheKeyOff(t *testing.T) {
 		t.Fatal("the roles file was written with console_manages off")
 	}
 	body := m.get("/servers").body
-	for _, a := range []string{"/servers/reload", "Reload configuration", "Add a REST API", "/servers/new"} {
+	for _, a := range []string{"/servers/reload", "Reload configuration", "Add a backend", "/servers/new"} {
 		if strings.Contains(body, a) {
 			t.Errorf("GET /servers with console_manages off shows %q", a)
 		}
@@ -302,8 +302,8 @@ func TestUIManage_RootScreensDoNotExistWithoutManageUsers(t *testing.T) {
 
 func TestUIManage_RegisterWritesTheKeyAndShowsTheReport(t *testing.T) {
 	m := newManageUI(t, true, true)
-	if list := m.get("/servers"); !list.has(`href="` + m.s.session + `/servers/new"`) {
-		t.Error("the servers list does not link the add page")
+	if list := m.get("/servers"); !list.has(`href="`+m.s.session+`/servers/new">Add a backend`) || !list.has("a remote MCP server") || !list.has("register a stdio backend in the terminal") {
+		t.Errorf("the servers list does not link the add page with what it adds:\n%s", list.body)
 	}
 	page := m.get("/servers/new")
 	for _, want := range []string{"Add a REST API", `enctype="multipart/form-data"`, `type="password" name="key_value"`} {
@@ -405,7 +405,7 @@ func TestUIManage_TheServerPageSignsRedialsAndRemovesOnlyWithTheNameTyped(t *tes
 	// the separate tool-security gate (ADR-0060, 0061).
 	for _, want := range []string{"ioc", "REST API", "https://ioc.example.net/api/v2", "POST", "/report", "Sensitive", "Safe", "Remove this backend", `name="confirm"`, "/servers/ioc/sign",
 		"Config not approved", "It is not served until the configuration is approved", "Approve configuration", ">Reconnect<",
-		"Tool security", "Approving the configuration does not approve any tool"} {
+		"Tool security", "Approving the configuration approves no tool"} {
 		if !page.has(want) {
 			t.Errorf("the server page lacks %q", want)
 		}
@@ -478,10 +478,9 @@ func TestUIManage_ReloadAndRedialShowAPendingRequestWithARefresh(t *testing.T) {
 	}
 }
 
-// Each tool's actions sit in its own <details> menu (design/adr/0061 §5):
-// each item is a link or a CSRF-carrying POST form, never a GET that acts,
-// and approving goes through the review page, where the fingerprint shown is
-// the one approved.
+// Each tool's actions sit in its own <details> menu (design/adr/0061 §5).
+// Approve and Clear bind to what the operator was shown, so the menu only
+// links them to the review page; Revoke is its one POST, carrying CSRF.
 func TestUIManage_EachToolsActionsAreInItsMenu(t *testing.T) {
 	m := newManageUI(t, true, false)
 	mustRegister(t, m.e, stdioEntry("reporting"))
@@ -494,7 +493,7 @@ func TestUIManage_EachToolsActionsAreInItsMenu(t *testing.T) {
 		t.Fatalf("%d tool menus, want one per tool:\n%s", n, page.body)
 	}
 	for _, want := range []string{
-		`action="` + m.s.session + `/servers/reporting/tools/submit_report/clear"`,
+		`href="` + m.s.session + `/servers/reporting/tools/submit_report">Clear for serving...`,
 		`action="` + m.s.session + `/servers/reporting/tools/submit_report/revoke"`,
 		`href="` + m.s.session + `/servers/reporting/tools/list_reports">Review and approve tool...`,
 		`name="csrf" value="` + m.s.csrf + `"`,
@@ -503,16 +502,40 @@ func TestUIManage_EachToolsActionsAreInItsMenu(t *testing.T) {
 			t.Errorf("the tools panel lacks %q", want)
 		}
 	}
-	if page.has("/servers/reporting/tools/list_reports/approve") || page.has("/servers/reporting/tools/list_reports/revoke") {
-		t.Error("a pending tool's menu approves or revokes without its review page")
+	for _, never := range []string{"/approve\"", "/clear\""} {
+		if page.has(never) {
+			t.Errorf("a tool menu posts %s instead of opening the review page", never)
+		}
 	}
 	menu := page.body[strings.Index(page.body, `<details class="menu">`):]
 	menu = menu[:strings.Index(menu, "</details>")]
 	if strings.Count(menu, `method="post"`) != strings.Count(menu, `name="csrf"`) {
 		t.Errorf("a menu form carries no CSRF token:\n%s", menu)
 	}
+
+	// Once cleared, the menu no longer offers Clear.
+	m.e.cfg.Roles = []config.Role{{Name: "ir-act", Tools: []string{"reporting.submit_report"}, NonRead: true}}
+	if got := m.post("/servers/reporting/tools/submit_report/clear", nil); !got.has("result-icon ok") {
+		t.Fatalf("clear:\n%s", got.body)
+	}
+	if m.get("/servers/reporting").has("Clear for serving") {
+		t.Error("the menu offers Clear for a tool already cleared")
+	}
 	if got := m.post("/servers/reporting/tools/submit_report/revoke", nil); !got.has("result-icon ok") {
 		t.Fatalf("revoke from the menu:\n%s", got.body)
+	}
+}
+
+// A console that cannot clear (console_manages off) offers no Clear in the
+// menu.
+func TestUIManage_TheMenuHidesClearWhenTheConsoleCannotClear(t *testing.T) {
+	m := newManageUI(t, false, false)
+	mustRegister(t, m.e, stdioEntry("reporting"))
+	mustObserveSensitive(t, m.e, "reporting", submitReport)
+	mustApprove(t, m.e, "reporting", "submit_report")
+	page := m.get("/servers/reporting")
+	if !page.has(`<details class="menu">`) || page.has("Clear for serving") {
+		t.Fatalf("the menu of a console that cannot clear:\n%s", page.body)
 	}
 }
 
@@ -521,7 +544,7 @@ func TestUIManage_ASensitiveToolIsClearedFromItsPage(t *testing.T) {
 	mustObserveSensitive(t, m.e, "reporting", submitReport)
 	mustApprove(t, m.e, "reporting", "submit_report")
 	page := m.get("/servers/reporting/tools/submit_report")
-	if !page.has("Sensitive") || !page.has("Not cleared") || !page.has("/servers/reporting/tools/submit_report/clear") || page.has("Approve this version") {
+	if !page.has("Sensitive") || !page.has("Not cleared") || !page.has("/servers/reporting/tools/submit_report/clear") || page.has(">Approve tool</button>") {
 		t.Fatalf("the tool page of an approved, uncleared sensitive tool:\n%s", page.body)
 	}
 	// No role reaches it: the backend refuses, and says why.

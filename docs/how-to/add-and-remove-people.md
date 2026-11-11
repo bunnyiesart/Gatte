@@ -120,8 +120,8 @@ block`, or use **Offboard**, which does both. **Enable** undoes it. The trail re
 their account, in one call.
 
 1. Open the person's page.
-2. Under **Offboard**, type **Their subject** exactly as their audit rows
-   show it in the SIEM. Nothing is pre-filled: the console shows no audit
+2. Under **Offboard**, type **Their gateway ID** (their subject, the `sub`)
+   exactly as their audit rows show it in the SIEM. Nothing is pre-filled: the console shows no audit
    data (`design/adr/0061`). Leave it empty only if the person never used
    the gateway; then no block is placed.
 3. In **Reason**, write who is acting and why. It goes in the trail.

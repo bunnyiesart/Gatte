@@ -49,11 +49,11 @@
   <form class="group form" method="post" action="{{$base}}/people/offboard">
     <input type="hidden" name="csrf" value="{{$csrf}}">
     <input type="hidden" name="username" value="{{.Username}}">
-    <label class="field wide"><span>Their subject</span><input name="subject" autocomplete="off" spellcheck="false" class="mono" placeholder="The sub claim of their token"></label>
+    <label class="field wide"><span>Their gateway ID (the sub your SIEM shows)</span><input name="subject" autocomplete="off" spellcheck="false" class="mono"></label>
     <label class="field wide"><span>Reason</span><input name="reason" autocomplete="off" placeholder="Who is acting, and why"></label>
     <div class="form-end"><button class="btn destructive">Offboard</button></div>
   </form>
-  <p class="caption">Blocks the subject in the gateway, which refuses their next request whatever token they hold, then disables the account. Type the subject yourself, as your SIEM shows it; leave it empty if they never used the gateway, and nothing is blocked. Revoking their sessions at the identity provider stays a step by hand; the result page lists it.</p>
+  <p class="caption">Blocks their gateway ID, so the gateway refuses their next request whatever token they hold, then disables the account. Type the ID yourself, as your SIEM shows it; leave it empty if they never used the gateway, and nothing is blocked. Revoking their sessions at the identity provider stays a step by hand; the result page lists it.</p>
 </section>
 {{end}}
 

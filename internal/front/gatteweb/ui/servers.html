@@ -3,7 +3,7 @@
 {{with .Data}}
 <div class="head">
   <h1>MCP Servers / APIs</h1>
-  <p class="sub">Each row is a backend served as MCP tools. {{if .Manages}}Add a REST API, or register a stdio or container backend in the terminal.{{else}}Register backends and approve their configuration in the terminal.{{end}} A backend whose configuration is not approved isn't served.</p>
+  <p class="sub">Each row is a backend served as MCP tools. {{if .Manages}}Add a REST API, a remote MCP server{{if .OCI}} or a container{{end}} here; register a stdio backend in the terminal.{{else}}Register backends and approve their configuration in the terminal.{{end}} A backend whose configuration is not approved isn't served.</p>
 </div>
 {{range .Gateway}}
 {{if eq .Kind "gateway_maintenance"}}<div class="notice" role="status">{{else}}<div class="notice danger" role="alert">{{end}}{{template "warn"}}<p><b>{{vis .Title}}</b>{{if .Detail}}: {{vis .Detail}}{{end}}{{if eq .Kind "gateway_maintenance"}} End it in the terminal with <code>mcp-gateway maintenance off</code>.{{end}}</p></div>
@@ -14,7 +14,7 @@
     <h2>Registered</h2>
     <div class="actions-inline">
       {{if .Reload}}<form method="post" action="{{$base}}/servers/reload"><input type="hidden" name="csrf" value="{{$csrf}}"><button class="btn small">Reload configuration</button></form>{{end}}
-      {{if .Manages}}<a class="btn primary small" href="{{$base}}/servers/new">Add a REST API</a>{{end}}
+      {{if .Manages}}<a class="btn primary small" href="{{$base}}/servers/new">Add a backend</a>{{end}}
     </div>
   </div>
   {{if .Servers}}
@@ -37,7 +37,7 @@
   <p class="caption legend"><span class="k">Config approved</span>: an operator signed this server's configuration — its URL or command, its arguments, and the names of its secrets — with the gateway key. It is not a statement that the server or its tools are safe: tool security is the separate approve and clear step on each server's page.</p>
   {{if .Changed}}<p class="caption legend"><span class="k">Tool changed</span>: a tool's definition changed after it was approved. It is not served until you review it again on the server's page.</p>{{end}}
   {{else if not $.Error}}
-  <div class="group empty-state"><p><b>No backends yet.</b> {{if .Manages}}Add a REST API, or register{{else}}Register{{end}} one with <code>mcp-gateway upstream register</code>, then approve its configuration.</p></div>
+  <div class="group empty-state"><p><b>No backends yet.</b> {{if .Manages}}Add one with <b>Add a backend</b>, or register{{else}}Register{{end}} one with <code>mcp-gateway upstream register</code>, then approve its configuration.</p></div>
   {{end}}
 </section>
 {{end}}

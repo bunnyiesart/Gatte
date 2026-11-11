@@ -218,7 +218,7 @@ maintenance stays in the terminal (`design/adr/0055`).
 
 With `[admin] console_manages = true` (`design/adr/0050`) it also:
 
-- **Adds a REST API** from **Add a REST API** on the list, from its OpenAPI
+- **Adds a REST API** from **Add a backend** on the list, from its OpenAPI
   document by URL, pasted or uploaded as a file (up to 4 MiB), with the auth
   kind (derived from the document, none, bearer, header or query), the
   header or parameter name and the key's vault name (`NAME_API_KEY` when
@@ -227,7 +227,7 @@ With `[admin] console_manages = true` (`design/adr/0050`) it also:
   to the backend's page. Registering does not call the API.
 - **Shows each backend's operations** on its page, with method, path and
   class, and the signature they are covered by.
-- **Redials** a backend from its page and **reloads** the configuration
+- **Reconnects** a backend from its page and **reloads** the configuration
   from the list; a request `serve` has not answered yet shows a Refresh
   link.
 - **Removes** a backend once you type its name; its signature and every

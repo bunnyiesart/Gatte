@@ -5,6 +5,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"net/http"
 	"net/url"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bunnyiesart/Gatte/internal/admin"
 	"github.com/bunnyiesart/Gatte/internal/quarantine"
 )
 
@@ -359,14 +361,12 @@ func TestUI_TablesEscapeUntrustedStrings(t *testing.T) {
 	// paths must show a hidden code point, not carry it.
 	mustRegister(t, e, stdioEntry("edr"))
 	mustObserve(t, e, "edr", quarantine.ToolIdentity{Name: "get\u202ehost", Description: "d", InputSchema: []byte(`{}`)})
-	for _, page := range []string{"/servers/edr"} {
-		body := uiDo(s, "GET", page, nil, cookie, nil).Body.String()
-		if strings.ContainsRune(body, '\u202e') {
-			t.Errorf("GET %s carries the raw U+202E", page)
-		}
-		if !strings.Contains(body, `\u{202E}`) {
-			t.Errorf(`GET %s does not show the tool name's hidden code point as \u{202E}`, page)
-		}
+	body := uiDo(s, "GET", "/servers/edr", nil, cookie, nil).Body.String()
+	if strings.ContainsRune(body, '\u202e') {
+		t.Error("GET /servers/edr carries the raw U+202E")
+	}
+	if !strings.Contains(body, `\u{202E}`) {
+		t.Error(`GET /servers/edr does not show the tool name's hidden code point as \u{202E}`)
 	}
 }
 
@@ -396,6 +396,25 @@ func TestUI_TheServersListFlagsAChangedToolButNotAPendingOne(t *testing.T) {
 	row = row[:strings.Index(row, "</tr>")]
 	if !strings.Contains(row, "Tool changed") {
 		t.Fatalf("the flag is not on the changed backend's row:\n%s", row)
+	}
+}
+
+// unreadableTools is a quarantine whose list read fails.
+type unreadableTools struct{ quarantine.Store }
+
+func (unreadableTools) List(context.Context, string) ([]quarantine.Tool, error) {
+	return nil, errors.New("quarantine table unreadable")
+}
+
+// The changed-tool flag does not fail open: when the tool state cannot be
+// read, the servers list says so instead of showing no flag.
+func TestUI_TheServersListSaysWhenToolStateCannotBeRead(t *testing.T) {
+	e := newOpTestEnv(t)
+	mustRegister(t, e, stdioEntry("edr"))
+	s := newUIFrontWith(t, e, false, []func(*admin.Deps){func(d *admin.Deps) { d.Tools = unreadableTools{d.Tools} }}, nil)
+	body := uiDo(s, "GET", "/servers", nil, uiLogin(t, s), nil).Body.String()
+	if !strings.Contains(body, "tool state could not be read") || !strings.Contains(body, `class="notice error"`) {
+		t.Fatalf("the servers list hides a failed tool-state read:\n%s", body)
 	}
 }
 

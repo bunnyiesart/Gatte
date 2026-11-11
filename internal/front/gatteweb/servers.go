@@ -44,8 +44,9 @@ type serversData struct {
 	Servers []adminapi.Upstream
 	// Health is FeatureBackendHealth: the list shows a per-backend state.
 	Health bool
-	// Manages is FeatureConsoleManages: the Add button.
-	Manages bool
+	// Manages is FeatureConsoleManages: the Add button. OCI is
+	// FeatureOCIRegister: the add page also offers a container.
+	Manages, OCI bool
 	// Reload offers the serve-control reload (FeatureConsoleManages and
 	// FeatureServeControl).
 	Reload bool
@@ -66,6 +67,7 @@ func (f *Front) serversPage(w http.ResponseWriter, r *http.Request) {
 	d := serversData{
 		Health:  has(adminapi.FeatureBackendHealth),
 		Manages: has(adminapi.FeatureConsoleManages),
+		OCI:     has(adminapi.FeatureOCIRegister),
 		Reload:  has(adminapi.FeatureConsoleManages) && has(adminapi.FeatureServeControl),
 	}
 
@@ -76,6 +78,17 @@ func (f *Front) serversPage(w http.ResponseWriter, r *http.Request) {
 	ov, overr := f.op.Overview(r.Context())
 	if overr != nil {
 		errs = append(errs, "gateway state: "+errText(overr))
+	}
+	// The changed-tool flag and the gateway notices come from these reads:
+	// when one fails, say so, so a missing flag is never read as "nothing
+	// changed". The overview's other parts are not shown on this page.
+	for _, p := range ov.Problems {
+		switch p.Part {
+		case "tools":
+			errs = append(errs, "tool state could not be read: "+p.Message)
+		case "health":
+			errs = append(errs, "backend health could not be read: "+p.Message)
+		}
 	}
 	d.Changed = map[string]int{}
 	for _, a := range ov.Attention {

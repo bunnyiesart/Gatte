@@ -180,7 +180,7 @@ func offboardRemaining(subject string) []string {
 		"Revoke their sessions and tokens at the identity provider. Disabling stops new sign-ins; a session already open there, and a token already issued, last until they expire, and every other application behind the same identity provider still accepts them.",
 	}
 	if subject == "" {
-		out = append(out, "No gateway block was placed: no subject was given. A token they already hold keeps working here until it expires. Find their subject in the audit trail and block it in Access.")
+		out = append(out, "No gateway block was placed: no subject was given. A token they already hold keeps working here until it expires. Find their gateway ID in the SIEM and block it with `mcp-gateway access block SUBJECT`.")
 	} else {
 		out = append(out, fmt.Sprintf("The gateway block is on the subject %s only. If this person also used another account, block that subject too.", subject))
 	}

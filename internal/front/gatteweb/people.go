@@ -26,8 +26,11 @@ import (
 // peopleSectionData is the People section of the Users page: the accounts the
 // identity provider holds, drawn only with the accounts socket (Manage).
 type peopleSectionData struct {
-	Base     string
-	Manage   bool
+	Base   string
+	Manage bool
+	// Offboard is whether the accounts socket serves offboard; without it
+	// the section points at the CLI's block instead.
+	Offboard bool
 	Accounts []adminapi.Account
 	// Error is a failed read of the accounts, shown inline. The Add-person
 	// button still renders, so adding someone stays possible through a
@@ -46,6 +49,9 @@ func (f *Front) peopleSection(r *http.Request) (template.HTML, error) {
 			d.Error = errText(err)
 		} else {
 			d.Accounts = list.Accounts
+		}
+		if me, err := f.acc.WhoAmI(r.Context()); err == nil {
+			d.Offboard = slices.Contains(me.Features, adminapi.FeatureOffboard)
 		}
 	}
 	return f.renderFragment("section_people.html", d)

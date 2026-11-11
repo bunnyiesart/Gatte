@@ -266,6 +266,11 @@ func TestUpstreamRegister_InvalidEntryIsRejected(t *testing.T) {
 			want: "is not pinned by digest",
 		},
 		{
+			name: "oci with a control character in the image",
+			args: []string{"register", "-name", "casemgmt", "-transport", "oci", "-image", "localhost/casemgmt\x1b[2K@sha256:" + strings.Repeat("ab", 32)},
+			want: "contains 1 hidden character(s)",
+		},
+		{
 			name: "oci with a command",
 			args: []string{"register", "-name", "casemgmt", "-transport", "oci", "-image", ociTestImage, "-command", "docker"},
 			want: "command must be empty for oci transport",

@@ -19,6 +19,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/bunnyiesart/Gatte/internal/visible"
 )
 
 // Sentinel errors returned by Repository implementations. Callers should
@@ -386,12 +388,40 @@ type ImageUpdater interface {
 // attest a name instead of the code that runs.
 var digestPinned = regexp.MustCompile(`^[^@\s]+@sha256:[0-9a-f]{64}$`)
 
+// ociReference is the OCI reference grammar of distribution/reference,
+// pinned by digest: [HOST[:PORT]/]PATH[:TAG]@sha256:<64 hex>. The grammar
+// is pure ASCII, so allowing only it also refuses what visible.Hides cannot
+// know about: code points a font draws as blank (U+2800), lookalike letters
+// (a Cyrillic 'о' in "localhost"), combining marks and a typed backslash.
+var ociReference = func() *regexp.Regexp {
+	const (
+		hostPart = `(?:[A-Za-z0-9]|[A-Za-z0-9][A-Za-z0-9-]*[A-Za-z0-9])`
+		host     = hostPart + `(?:\.` + hostPart + `)*(?::[0-9]+)?`
+		pathPart = `[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*`
+		tag      = `[\w][\w.-]{0,127}`
+	)
+	return regexp.MustCompile(`^(?:` + host + `/)?` + pathPart + `(?:/` + pathPart + `)*(?::` + tag + `)?@sha256:[0-9a-f]{64}$`)
+}()
+
 func validateImage(image string) error {
 	if strings.TrimSpace(image) == "" {
 		return fmt.Errorf("%w: image must not be empty for oci transport; pin it by digest, as in \"mcp-casemgmt@sha256:<64 hex chars>\"", ErrInvalid)
 	}
+	// Refused, not escaped: the image is a signed field and is printed in
+	// `upstream list`, the audit trail and the console, so a code point a
+	// terminal does not draw would put bytes under the signature that the
+	// operator approving it never saw. visible.Hides is the one definition
+	// of "does not draw" the Operator Console already escapes by.
+	if n := visible.Hidden(image); n > 0 {
+		return fmt.Errorf("%w: image \"%s\" contains %d hidden character(s) (control, format or other invisible code points, shown as \\u{XXXX}); an image reference is plain printable text", ErrInvalid, visible.Escape(image), n)
+	}
 	if !digestPinned.MatchString(image) {
 		return fmt.Errorf("%w: image %q is not pinned by digest; a tag can be repointed at other bytes without changing this entry, so the signature would attest a name instead of the code that runs. Use \"NAME@sha256:<64 hex chars>\" -- podman inspect --format '{{index .RepoDigests 0}}' NAME:TAG prints the digest", ErrInvalid, image)
+	}
+	// %+q prints every non-ASCII code point as \uXXXX, so a lookalike or
+	// blank glyph is visible in the message as the reason for the refusal.
+	if !ociReference.MatchString(image) {
+		return fmt.Errorf("%w: image %+q is not a valid OCI image reference; it must be ASCII in the form [HOST[:PORT]/]PATH[:TAG]@sha256:<64 hex chars>, with PATH in lowercase letters and digits separated by '/', '.', '_' or '-'", ErrInvalid, image)
 	}
 	return nil
 }

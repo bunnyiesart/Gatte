@@ -6,6 +6,11 @@ e anota as partes de **navegação/IA** das ADRs `0036` e `0050`; não muda
 nenhuma garantia de segurança delas. As ADRs `0052`–`0057` detalham cada
 superfície citada aqui.
 
+*Revisto por `0061`:* a aba Users ficou com duas seções, People e Roles — a
+Blocklist saiu da tela e fica no CLI (`access block|unblock|list`). Nenhuma
+visão da trilha fica na UI: saíram "Seen on the gateway" e o marcador de
+pendência na lista de servidores. "Redial" aparece na tela como "Reconnect".
+
 ## Contexto
 
 O console (`0036`, estendido por `0040` e `0050`) cresceu para oito páginas de

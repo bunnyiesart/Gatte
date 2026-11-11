@@ -5,6 +5,9 @@
 (o "texto do arquivo de papéis" editado em bloco). Os portões — validar antes de
 gravar, gravar não aplica, `reload` aplica — e `0009` ficam como estão.
 
+*Revisto por `0061`:* a aba Users ficou só com People e Roles (sem Blocklist e
+sem "Seen on the gateway"). A seção Roles decidida aqui não muda.
+
 ## Contexto
 
 Os papéis vivem num arquivo TOML revisável e versionado (`0009`), e a decisão de

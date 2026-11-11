@@ -27,8 +27,9 @@ that runs locally; real builds and tests run in CI or on the server.
 ## The 2-tab IA (ADR-0051)
 
 The console is **two tabs and nothing else in the menu**. The operator's
-identity sits in the shared header (not a page); items that "need review" show
-inside the Servers tab.
+identity sits in the shared header (not a page). Since ADR-0061 no page shows
+audit data: pending tools show in each server's Tools panel, with no marker on
+the servers list.
 
 ```
 Header: identity · [ MCP Servers / APIs ] [ Users ]
@@ -37,7 +38,7 @@ Tab 1  /servers                 list of "MCP server / API" + per-backend health
        /servers/new             add a REST API / OpenAPI -> generates MCP tools
        /servers/{name}          server detail (panels below)
 
-Tab 2  /users                   People/accounts + Roles + Blocklist (sections)
+Tab 2  /users                   People/accounts + Roles (sections)
 ```
 
 ### Tab 1 — MCP Servers / APIs
@@ -49,10 +50,12 @@ Secrets, and Backends/maintenance tabs, as panels.
 
 ### Tab 2 — Users
 
-One tab, three sections, each with its own socket gate (ADR-0040 §1):
-People/accounts (accounts socket, root), Roles (accounts socket), Blocklist
-(operator socket). People and Blocklist stay distinct: **disabling an account is
-not blocking a subject** (ADR-0038) — both actions exist, separately.
+One tab, two sections, each with its own socket gate (ADR-0040 §1):
+People/accounts (accounts socket, root) and Roles (accounts socket). The
+Blocklist is not in the UI (ADR-0061): blocking stays in the CLI
+(`mcp-gateway access block|unblock|list`) as the incident safety net, because
+**disabling an account is not blocking a subject** (ADR-0031/0038) — a disable
+does not cut off a token already issued; a block does.
 
 ### Removed from the UI
 
@@ -65,11 +68,33 @@ not blocking a subject** (ADR-0038) — both actions exist, separately.
 | Audit | the SIEM; integrity verify stays CLI + scheduled | 0056 |
 | Quota | CLI / `gatte.status`; the control stays active server-side | 0057 |
 | Gateway-wide maintenance + the notice appended to every result | removed; per-backend maintenance stays (/v2) | 0055 |
+| "Seen on the gateway" (Users + account page), the needs-review marker on the servers list | Wazuh, the primary SIEM; the gateway still records every call | 0061 |
+| Blocklist (Users section) | CLI `mcp-gateway access block\|unblock\|list` | 0061 |
+
+### Look and labels (ADR-0061)
+
+Both fronts use a **classic system UI** look: grey panels, bevelled 1px
+borders, plain system font, square buttons (the TUI: grey panels, line borders,
+`[ OK ]`-style buttons). Zero-JS stays. UI copy only — API fields, CLI commands
+and signing do not change:
+
+| Old label | UI label |
+|---|---|
+| Attest this configuration | Approve configuration |
+| Config attested / Config not attested | Config approved / Config not approved |
+| Attestation invalid | Changed since approved |
+| Redial | Reconnect |
+| Deregister | Remove |
+| Tool safety | Tool security |
+
+Tools keep **Approve tool**, so the two gates keep distinct names.
 
 The `pkg/adminapi` client still wraps the removed operations (it is frozen and
-complete — see Coverage); the console simply does not surface them. `ListAudit`/
+complete — see Coverage); the fronts simply do not surface them. `ListAudit`/
 `VerifyAudit` are reached from the CLI and the scheduled chain-head check, not
-the console; `QuotaUsage` from the CLI.
+the console; `QuotaUsage` from the CLI; `ListBlocks`/`BlockSubject`/
+`UnblockSubject` from the CLI (`access block|unblock|list`). The fronts do not
+call `People` for its `Seen` list.
 
 ## How to read this
 
@@ -98,14 +123,16 @@ The list page, the `/servers/new` add page, and the server-detail **container**
 
 Health comes with each `Upstream` and from `Overview` (ADR-0041). Add (ADR-0052):
 `/servers/new` takes an OpenAPI by URL, pasted text, or upload — the http path of
-ADR-0050 §2; stdio/oci stay CLI-only. **Signing is a separate attesting click on
-the result page, never sign-on-register** (ADR-0050 §5). Deregister asks the
-operator to type the name, because it drops approvals (ADR-0050 §2).
+ADR-0050 §2; stdio/oci stay CLI-only. **Signing is a separate "Approve
+configuration" click on the result page, never sign-on-register** (ADR-0050 §5,
+labels from ADR-0061). Remove (the deregister op) asks the operator to type the
+name, because it drops approvals (ADR-0050 §2). Reconnect is the redial op.
 
 > **M5 extends Add to a 3-way choice** (REST API / Remote MCP server (URL) /
 > Container (oci); ADR-0059) and relabels the signed/unsigned state to "Config
-> attested" (ADR-0060). That work (M5.4, M5.5) touches these M1.1-owned Servers
-> files and must be coordinated with M1.1 — see "M5 · Remote + oci Add" below.
+> attested" (ADR-0060), since relabelled "Config approved" (ADR-0061). That
+> work (M5.4, M5.5) touches these M1.1-owned Servers files and must be
+> coordinated with M1.1 — see "M5 · Remote + oci Add" below.
 
 - **Console:** owns `reg_servers.go`, the list/add/detail handlers, the detail
   **container** template, `ui/servers.html`, `ui/server_new.html`,
@@ -134,10 +161,17 @@ the **reviewed fingerprint** (segments drawn, never re-escaped). A **sensitive**
 (non-GET) tool needs `clear` **and** a `non_read` role that names it (ADR-0048
 §5); the console does not bypass this gate.
 
+The panel is headed **Tool security** (ADR-0061). Each tool's actions —
+approve, revoke, clear, review — sit in a **click-to-open menu per tool**, built
+with `<details>`/`<summary>` (no JS); each menu item is the API action of the
+same name, with CSRF and confirmation as before. Tools keep the label
+**Approve tool**, distinct from **Approve configuration** on the server.
+
 - **Console:** owns `reg_tools.go`, the tools panel handlers,
   `ui/panel_tools.html`, `ui/tool.html`, `ui/reviewset.html`. Registers a
   `DetailPanel` (Order 20).
-- **TUI:** the per-server tools section with the same review and actions.
+- **TUI:** the per-server tools section with the same review, and the actions
+  grouped in one menu per tool.
 
 ## Tab 1 · Secrets panel + global vault view (slice M1.3)
 
@@ -202,7 +236,9 @@ that it is /v2, not the signature.
 | connectScript | GET /v1/connect/script | `ConnectScript` | op |
 
 **Disable is not block** (ADR-0038): disabling an account is a People action;
-blocking a subject is the Blocklist section — both stay.
+blocking a subject is the CLI's `access block` (ADR-0061) — both stay. The
+section and the account page show no "Seen on the gateway" list (ADR-0061):
+the offboard takes a typed subject, nothing pre-selected (ADR-0046).
 
 - **Console:** owns `reg_people.go`, the People section + account detail + add +
   connect, `ui/section_people.html`, `ui/account.html`, `ui/newperson.html`,
@@ -228,17 +264,14 @@ Writing **validates and stores; it does not apply**. A reload (Servers tab,
   `ui/section_roles.html`. Registers a `UsersSection` (Order 20).
 - **TUI:** the role×tool matrix with grant/revoke, then a prompt to reload.
 
-## Tab 2 · Blocklist (slice M1.4b)
+## Blocklist — CLI only (ADR-0061)
 
-| Op | Method / path | Client | Socket |
-|---|---|---|---|
-| listBlocks | GET /v1/access/blocks | `ListBlocks` | op |
-| blockSubject | POST /v1/access/block | `BlockSubject` | op (expiry: `block_until`) |
-| unblockSubject | POST /v1/access/unblock | `UnblockSubject` | op |
-
-- **Console:** owns `reg_access.go`, the Blocklist section, `ui/section_access.html`.
-  Registers a `UsersSection` (Order 30).
-- **TUI:** the blocklist with block (optional expiry) and unblock.
+Not surfaced in either front. Blocking is the incident safety net and lives in
+the CLI: `mcp-gateway access block|unblock|list`. A disable does not cut off a
+token already issued; a block does (ADR-0031/0038). The API operations
+(`listBlocks`, `blockSubject`, `unblockSubject`) and the client methods stay.
+M6.1/M6.2 remove the Blocklist section (console `reg_access.go`, `access.go`,
+`ui/section_access.html`; TUI `blocklist.go`) and its `UsersSection` (Order 30).
 
 ---
 
@@ -262,7 +295,7 @@ existing route registry.
    server-detail container ranges over registered panels in order. Tools (20),
    Secrets (30), Maintenance (40).
 4. **`UsersSection` registry** for `/users`: each Tab-2 slice appends a section
-   the same way. People (10), Roles (20), Blocklist (30).
+   the same way. People (10), Roles (20).
 
 ```go
 // Route mount (unchanged shape), from reg_tools.go init():
@@ -378,6 +411,11 @@ broken button. oci keeps full ADR-0034 hardening + digest pin, unchanged.
 
 ### Attestation relabel (ADR-0060) — slice M5.5
 
+> **Superseded copy:** the labels below are replaced by ADR-0061 ("Approve
+> configuration", "Config approved", "Config not approved", "Changed since
+> approved", "Tool security"). The meaning is unchanged. See "M6 · Console
+> simplification" below.
+
 Rename the backend state labels: `Signed` -> `Config attested`, `Unsigned` ->
 `Config not attested`; the register-result button `Sign` -> `Attest this
 configuration`. "Attested" means an operator signed the config (URL/command/args
@@ -399,3 +437,27 @@ template + text only, no new logic.
 - M5.4 and M5.5 touch files **owned by M1.1** (Servers list/add/detail) and, for
   M5.5, by M1.2 (tools panel). They are not independent slices: they extend
   frozen shared files and must be sequenced with the M1.1/M1.2 owners.
+
+---
+
+## M6 · Console simplification (ADR-0061)
+
+One ADR, applied to both fronts. No contract, CLI or signing change.
+
+- **Look:** classic system UI — grey panels, bevelled 1px borders, plain
+  system font, square buttons; the TUI uses grey panels, line borders and
+  `[ OK ]`-style buttons. Zero-JS stays.
+- **Labels:** the table in "Look and labels" above.
+- **Removed:** "Seen on the gateway" (Users + account page), the needs-review
+  marker on the servers list, and the Blocklist section. Audit is read in
+  Wazuh; blocking stays in the CLI.
+- **Tools panel:** per-tool actions in a `<details>`/`<summary>` menu.
+
+| Slice | Front | Depends on |
+|---|---|---|
+| M6.0 | ADR-0061 + this map | — |
+| M6.1 | console (`internal/front/gatteweb`) | M6.0 |
+| M6.2 | TUI (`internal/front/gattetui`) | M6.0 |
+
+M6.1 and M6.2 edit files owned by M1.1 (Servers), M1.2 (tools panel), M1.4a
+(People) and M1.4b (Blocklist, removed); sequence them with those owners.

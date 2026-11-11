@@ -5,6 +5,12 @@
 `0010`): muda só as palavras que a tela usa para ela, para que o operador não
 leia "assinado" como "seguro".
 
+*Revisto por `0061`:* a cópia de §1/§2 passou a usar "approve" no lugar de
+"attest" — `Approve configuration`, `Config approved`, `Config not approved`,
+`Changed since approved` — e o cabeçalho do painel de tools passou a ser
+`Tool security`. O significado decidido aqui não muda: é a assinatura de um
+operador sobre a config, não uma afirmação de segurança da tool.
+
 ## Contexto
 
 A tela marca cada backend como **"Signed"** ou **"Unsigned"**. Um operador com

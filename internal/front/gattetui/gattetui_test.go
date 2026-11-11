@@ -434,7 +434,8 @@ func TestGalleryDrawsEveryState(t *testing.T) {
 	if n := strings.Count(b.String(), "\n==== "); n < 20 {
 		t.Fatalf("the gallery drew %d states:\n%s", n, b.String())
 	}
-	for _, want := range []string{"fake-otp-reset-ana.lima", "Reload the configuration now", "no backend \"no-such-backend\"", "**************", "tool changed since approved"} {
+	for _, want := range []string{"fake-otp-reset-ana.lima", "Reload the configuration now", "no backend \"no-such-backend\"", "**************", "tool changed since approved",
+		"What kind of backend?", "Not kept:", "Not registered: image", "Registered vendor", "need podman on the gateway's host"} {
 		if !strings.Contains(b.String(), want) {
 			t.Errorf("the gallery lacks %q", want)
 		}

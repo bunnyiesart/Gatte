@@ -389,7 +389,7 @@ func (f *Front) serverRegister(w http.ResponseWriter, r *http.Request) {
 	}
 	keyed := form.AuthKind == "bearer" || form.AuthKind == "header" || form.AuthKind == "query"
 	if form.KeyName == "" && (keyed || (form.AuthKind == "" && value != "")) {
-		form.KeyName = defaultKeyName(form.Name)
+		form.KeyName = frontkit.DefaultKeyName(form.Name)
 	}
 	if value != "" && form.KeyName == "" {
 		refuse("Nothing was registered: a key's value was given for an API registered without a key. Choose an auth kind, or leave the value empty.")
@@ -447,7 +447,7 @@ func (f *Front) serverRegisterRemote(w http.ResponseWriter, r *http.Request) {
 	req := adminapi.RegisterUpstreamRequest{Name: form.Name, Transport: adminapi.UpstreamTransportRemote, URL: form.URL,
 		AuthKind: form.AuthKind, AuthName: form.AuthName, KeyName: form.KeyName, RemoteKind: form.RemoteKind}
 	if req.KeyName == "" && (req.AuthKind == "bearer" || req.AuthKind == "header") {
-		req.KeyName = defaultKeyName(form.Name)
+		req.KeyName = frontkit.DefaultKeyName(form.Name)
 	}
 	res, err := f.op.RegisterUpstream(r.Context(), req)
 	if err != nil {

@@ -41,8 +41,10 @@ var helpKeys = [][2]string{
 	{"tab, 1-9", "switch tab"},
 	{"up/down, enter", "move, open"},
 	{"space, g, v", "select, grant, revoke on a role page"},
-	{"esc", "back"},
+	{"n", "turn non_read on or off on a role page"},
+	{"esc, h, left, backspace", "back"},
 	{"r", "refresh"},
+	{"?", "this help"},
 	{"q", "quit"},
 }
 
@@ -54,10 +56,8 @@ var helpDocs = []string{
 	"docs/explanation/quarantine-and-signing.md",
 }
 
-const helpTitle = "Help"
-
 func helpPage() *page {
-	return newPage(helpTitle, func(env) content {
+	p := newPage("Help", func(env) content {
 		rows := []row{heading("Commands")}
 		for _, c := range Commands {
 			rows = append(rows, textRow(cols([]int{24}, "mcp-gateway "+c.Name, stDim.Render(c.Does))))
@@ -76,4 +76,6 @@ func helpPage() *page {
 		}
 		return content{rows: rows}
 	})
+	p.help = true
+	return p
 }

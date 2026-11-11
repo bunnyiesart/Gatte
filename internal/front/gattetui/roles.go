@@ -14,6 +14,7 @@ package gattetui
 import (
 	"fmt"
 	"strings"
+	"sync"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -85,17 +86,52 @@ func nonReadText(on bool) string {
 // to grant or revoke several at once
 
 func rolePage(role string) *page {
-	return newPage(vis(role), func(e env) content { return fillRole(e, role) })
+	sel := &selection{on: map[string]bool{}}
+	return newPage(vis(role), func(e env) content { return fillRole(e, role, sel) })
 }
 
-// toolCheck is one tool's checkbox on a role page. A read of the page makes
-// new ones, so a write, which re-reads it, leaves nothing selected.
-type toolCheck struct {
-	ns string
-	on *bool
+// selection is a role page's checked tools, by name. It outlives a re-read
+// of the page, so a cancel or a refusal keeps it; a write empties it. It is
+// toggled on the update loop and read by fills off it, hence the lock.
+type selection struct {
+	mu sync.Mutex
+	on map[string]bool
 }
 
-func fillRole(e env, role string) content {
+func (s *selection) toggle(ns string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.on[ns] = !s.on[ns]
+}
+
+func (s *selection) has(ns string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.on[ns]
+}
+
+func (s *selection) clear() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	clear(s.on)
+}
+
+// pick is the selected tools of list, in list order; with none selected,
+// the tool under the cursor.
+func (s *selection) pick(list []adminapi.Tool, cursor string) []string {
+	var out []string
+	for _, t := range list {
+		if ns := t.Server + "." + t.Tool; s.has(ns) {
+			out = append(out, ns)
+		}
+	}
+	if len(out) == 0 && cursor != "" {
+		out = []string{cursor}
+	}
+	return out
+}
+
+func fillRole(e env, role string, sel *selection) content {
 	var c content
 	rt, err := e.acc.GetRoles(ctx())
 	if err != nil {
@@ -113,25 +149,15 @@ func fillRole(e env, role string) content {
 	}
 	c.rows = append(c.rows, heading(vis(role)), textRow(cols([]int{14}, stDim.Render("non_read"), nonReadText(b.NonRead))), blank(),
 		textRow(stDim.Render(cols([]int{40, 12}, "    TOOL", "CLASS", "REACHED"))))
-	// apply is bound to a row so that, with nothing selected, it acts on
-	// the tool under the cursor.
-	var checks []toolCheck
-	apply := func(op, ns string) tea.Cmd {
-		var picked []string
-		for _, c := range checks {
-			if *c.on {
-				picked = append(picked, c.ns)
-			}
-		}
-		if len(picked) == 0 {
-			picked = []string{ns}
-		}
-		q := fmt.Sprintf("%s %d tool(s) for %s?", strings.ToUpper(op[:1])+op[1:], len(picked), vis(role))
+	apply := func(op, cursor string) tea.Cmd {
+		picked := sel.pick(tools.Tools, cursor)
+		verb := strings.ToUpper(op[:1]) + op[1:]
+		q := fmt.Sprintf("%s %d tool(s) for %s?", verb, len(picked), vis(role))
 		if len(picked) == 1 {
-			q = fmt.Sprintf("%s %s for %s?", strings.ToUpper(op[:1])+op[1:], vis(picked[0]), vis(role))
+			q = fmt.Sprintf("%s %s for %s?", verb, vis(picked[0]), vis(role))
 		}
 		return confirm(q, func() tea.Cmd {
-			return do(func() result { return editGrants(e, role, picked, op) })
+			return do(func() result { return editGrants(e, role, picked, op, sel) })
 		})
 	}
 	for _, t := range tools.Tools {
@@ -144,50 +170,91 @@ func fillRole(e env, role string) content {
 			reach = stOK.Render("yes") + stDim.Render(`  "*" over `+vis(t.Server))
 		}
 		ns := t.Server + "." + t.Tool
-		check := new(bool)
-		checks = append(checks, toolCheck{ns, check})
 		c.rows = append(c.rows, row{
-			text:  cols([]int{36, 12}, vis(ns), classText(t.Class), reach),
-			check: check,
+			text:    cols([]int{36, 12}, vis(ns), classText(t.Class), reach),
+			checked: func() bool { return sel.has(ns) },
 			actions: []action{
-				{key: "space", label: "select", run: func() tea.Cmd { *check = !*check; return nil }},
+				{key: "space", label: "select", run: func() tea.Cmd { sel.toggle(ns); return nil }},
 				{key: "g", label: "grant", run: func() tea.Cmd { return apply("grant", ns) }},
 				{key: "v", label: "revoke", run: func() tea.Cmd { return apply("revoke", ns) }},
 			},
 		})
 	}
-	state, on := "on", true
 	if b.NonRead {
-		state, on = "off", false
-	}
-	c.actions = append(c.actions, action{key: "n", label: "turn non_read " + state, run: func() tea.Cmd {
-		// non_read is a security boundary (design/adr/0048): it is set on
-		// its own, never as a side effect of a grant.
-		return confirm("Turn non_read "+state+" for "+vis(role)+"?", func() tea.Cmd {
-			return do(func() result {
-				cur, err := e.acc.GetRoles(ctx())
-				if err != nil {
-					return refused("The roles file could not be read: " + firstLine(errText(err)))
-				}
-				text, st := frontkit.SetNonRead(cur.Text, role, on)
-				switch st {
-				case frontkit.SpliceNoRole:
-					return refused("Nothing changed: no [[role]] named " + role + ".")
-				case frontkit.SpliceAlready:
-					return result{ok: true, summary: "non_read is already " + state + " for " + role + "."}
-				}
-				return putRoles(e, text, "non_read is "+state+" for "+role+".")
+		c.actions = append(c.actions, action{key: "n", label: "turn non_read off", run: func() tea.Cmd {
+			return confirm("Turn non_read off for "+vis(role)+"?", func() tea.Cmd {
+				return do(func() result { return setNonRead(e, role, false, nil, sel) })
 			})
+		}})
+		return c
+	}
+	c.actions = append(c.actions, action{key: "n", label: "turn non_read on", run: func() tea.Cmd {
+		// non_read is a security boundary (design/adr/0048): it is turned
+		// on only here, never by a grant. The backend refuses it on a role
+		// whose tools list is empty, so it goes on together with the
+		// sensitive tools the operator selected, in one write.
+		var give []string
+		for _, t := range tools.Tools {
+			if ns := t.Server + "." + t.Tool; t.Class == adminapi.ClassSensitive && sel.has(ns) {
+				give = append(give, ns)
+			}
+		}
+		if len(give) == 0 && len(b.Tools) == 0 {
+			return do(func() result { return refused(needSensitive) })
+		}
+		q := "Turn non_read on for " + vis(role) + "?"
+		if len(give) > 0 {
+			q = "Turn non_read on for " + vis(role) + " and give it: " + vis(strings.Join(give, ", ")) + "?"
+		}
+		return confirm(q, func() tea.Cmd {
+			return do(func() result { return setNonRead(e, role, true, give, sel) })
 		})
 	}})
 	return c
+}
+
+const needSensitive = "non_read needs at least one sensitive tool: select it, then n."
+
+// setNonRead turns non_read on or off for role; turning it on also names
+// the sensitive tools in give, so the role is valid in the same write.
+func setNonRead(e env, role string, on bool, give []string, sel *selection) result {
+	cur, err := e.acc.GetRoles(ctx())
+	if err != nil {
+		return refused("The roles file could not be read: " + firstLine(errText(err)))
+	}
+	state := map[bool]string{true: "on", false: "off"}[on]
+	text, st := frontkit.SetNonRead(cur.Text, role, on)
+	switch st {
+	case frontkit.SpliceNoRole:
+		return refused("Nothing changed: no [[role]] named " + role + ".")
+	case frontkit.SpliceAlready:
+		if len(give) == 0 {
+			return result{ok: true, summary: "non_read is already " + state + " for " + role + "."}
+		}
+	}
+	for _, ns := range give {
+		server, tool, _ := strings.Cut(ns, ".")
+		next, st := frontkit.GrantSensitiveTool(text, role, server, tool)
+		if st == frontkit.SpliceChanged {
+			text = next
+		}
+	}
+	done := "non_read is " + state + " for " + role + "."
+	if len(give) > 0 {
+		done = "non_read is on for " + role + "; gave it " + strings.Join(give, ", ") + "."
+	}
+	r := putRoles(e, text, done)
+	if r.ok {
+		sel.clear()
+	}
+	return r
 }
 
 // editGrants grants or revokes each tool for one role on one copy of the
 // roles file, then writes it once. The class is read from the live list
 // rather than from what was drawn, so a sensitive tool takes the sensitive
 // path whatever the screen showed.
-func editGrants(e env, role string, picked []string, op string) result {
+func editGrants(e env, role string, picked []string, op string, sel *selection) result {
 	list, err := e.op.ListTools(ctx(), "", "")
 	if err != nil {
 		return refused("The tools could not be read: " + firstLine(errText(err)))
@@ -230,7 +297,7 @@ func editGrants(e env, role string, picked []string, op string) result {
 		case frontkit.SpliceWildcard:
 			notes = append(notes, "Not changed: "+ns+` is reached through "*" over `+tool.Server+"; edit that grant in the roles file.")
 		case frontkit.SpliceNeedNonRead:
-			notes = append(notes, "Not granted: "+ns+" is sensitive; switch non_read on first (n).")
+			notes = append(notes, "Not granted: "+ns+" is sensitive; select it, then n to turn non_read on with it.")
 		}
 	}
 	verb := map[string]string{"grant": "Granted", "revoke": "Revoked"}[op]
@@ -261,6 +328,9 @@ func editGrants(e env, role string, picked []string, op string) result {
 	}
 	r := putRoles(e, text, summary)
 	r.output = append(out, r.output...)
+	if r.ok {
+		sel.clear()
+	}
 	return r
 }
 

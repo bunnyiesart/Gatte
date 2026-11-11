@@ -338,7 +338,7 @@ func TestSensitiveGrantNeedsNonReadAndWritesNothing(t *testing.T) {
 	open(a, rolePage("tier1-analyst"))
 	cursorTo(t, a, "casemgmt.close_case")
 	press(a, "g", "y")
-	mustShow(t, a, "Not granted: casemgmt.close_case is sensitive; switch non_read on first (n).")
+	mustShow(t, a, "Not granted: casemgmt.close_case is sensitive; select it, then n to turn non_read on with it.")
 	mustShow(t, a, "Refused 1 for tier1-analyst.")
 	mustNotShow(t, a, "Granted", "already set")
 	if after, _ := c.Accounts.GetRoles(context.Background()); after.Text != before.Text {
@@ -393,20 +393,47 @@ func TestRoleGrantCountsANoOpApartFromARefusal(t *testing.T) {
 	}
 }
 
-func TestNonReadIsItsOwnToggle(t *testing.T) {
+// TestNonReadGoesOnWithTheSelectedSensitiveTools: the backend refuses
+// non_read on a role with no tools, so it goes on with the selected
+// sensitive tools in one write, and without one it is refused locally.
+func TestNonReadGoesOnWithTheSelectedSensitiveTools(t *testing.T) {
 	a, c := start(t, true)
 	settle(a, a.switchTab(1))
+	before, _ := c.Accounts.GetRoles(context.Background())
 	open(a, rolePage("tier1-analyst"))
 	press(a, "n")
-	mustShow(t, a, "Turn non_read on for tier1-analyst?")
-	press(a, "y")
-	mustShow(t, a, "non_read is on for tier1-analyst.")
-	press(a, "n")
-	mustShow(t, a, "[ n Turn non_read off ]")
-	after, _ := c.Accounts.GetRoles(context.Background())
-	if !strings.Contains(after.Text, "non_read = true") {
-		t.Fatalf("non_read was not set:\n%s", after.Text)
+	mustShow(t, a, "non_read needs at least one sensitive tool: select it, then n.")
+	if after, _ := c.Accounts.GetRoles(context.Background()); after.Text != before.Text {
+		t.Fatalf("a refused non_read changed the roles file:\n%s", after.Text)
 	}
+	cursorTo(t, a, "casemgmt.close_case")
+	press(a, "space")
+	cursorTo(t, a, "docsearch.find_document")
+	press(a, "space", "n")
+	mustShow(t, a, "Turn non_read on for tier1-analyst and give it: casemgmt.close_case?")
+	press(a, "y")
+	mustShow(t, a, "non_read is on for tier1-analyst; gave it casemgmt.close_case.")
+	after, _ := c.Accounts.GetRoles(context.Background())
+	if !strings.Contains(after.Text, "non_read = true") || !strings.Contains(after.Text, `"casemgmt.close_case"`) || strings.Contains(after.Text, "find_document") {
+		t.Fatalf("roles file after non_read on:\n%s", after.Text)
+	}
+	press(a, "n") // no reload
+	mustShow(t, a, "[ n Turn non_read off ]")
+	mustNotShow(t, a, "[x]")
+	press(a, "n", "y")
+	mustShow(t, a, "non_read is off for tier1-analyst.")
+}
+
+// TestSelectionSurvivesACancelAndARefusal: only a write empties it.
+func TestSelectionSurvivesACancelAndARefusal(t *testing.T) {
+	a, _ := start(t, true)
+	settle(a, a.switchTab(1))
+	open(a, rolePage("tier1-analyst"))
+	cursorTo(t, a, "casemgmt.close_case")
+	press(a, "space", "g", "n")
+	mustShow(t, a, "Cancelled.", "[x] casemgmt.close_case")
+	press(a, "g", "y")
+	mustShow(t, a, "Refused 1 for tier1-analyst.", "[x] casemgmt.close_case")
 }
 
 func TestHelpOpensOnQuestionMarkAndEscCloses(t *testing.T) {
@@ -420,7 +447,7 @@ func TestHelpOpensOnQuestionMarkAndEscCloses(t *testing.T) {
 	}
 	press(a, "esc")
 	mustNotShow(t, a, "docs/command-guide.md")
-	if a.top().title == helpTitle {
+	if a.top().help {
 		t.Fatal("esc did not close the help screen")
 	}
 }

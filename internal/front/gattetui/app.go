@@ -23,11 +23,12 @@ type action struct {
 }
 
 // A row is one drawn line. Only a row with actions can hold the cursor.
-// check, when set, draws a checkbox before the text that an action toggles.
+// checked, when set, draws a checkbox before the text that an action
+// toggles.
 type row struct {
 	text    string
 	actions []action
-	check   *bool
+	checked func() bool
 }
 
 func textRow(s string) row { return row{text: s} }
@@ -43,6 +44,7 @@ type content struct {
 type page struct {
 	id    int
 	title string
+	help  bool // the help screen, which ? does not open again
 	// fill reads the page. It runs off the update loop, with a copy of env.
 	fill func(e env) content
 	content
@@ -323,7 +325,7 @@ func (a *app) key(m tea.KeyMsg) tea.Cmd {
 	case "r":
 		return a.whoami()
 	case "?":
-		if p.title == helpTitle {
+		if p.help {
 			return nil
 		}
 		return push(helpPage())
@@ -481,9 +483,9 @@ func (a *app) View() string {
 	p.offset = max(0, min(p.offset, len(p.rows)-1))
 	for i := p.offset; i < len(p.rows) && i < p.offset+room; i++ {
 		line := p.rows[i].text
-		if c := p.rows[i].check; c != nil {
+		if c := p.rows[i].checked; c != nil {
 			box := "[ ] "
-			if *c {
+			if c() {
 				box = "[x] "
 			}
 			line = box + line

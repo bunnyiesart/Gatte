@@ -2,6 +2,7 @@ package adminapitest
 
 import (
 	"cmp"
+	"fmt"
 	"net/http"
 	"net/url"
 	"slices"
@@ -9,6 +10,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/BurntSushi/toml"
+
+	"github.com/bunnyiesart/Gatte/internal/access"
+	"github.com/bunnyiesart/Gatte/internal/config"
 	"github.com/bunnyiesart/Gatte/pkg/adminapi"
 )
 
@@ -320,6 +325,10 @@ func (s *Server) putRoles(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
+	if err := validateRoles(req.Text); err != nil {
+		writeErr(w, adminapi.NewError(adminapi.CodeInvalidArgument, "the roles text would not load, so it was not written: %v", err).With("field", "text"))
+		return
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.roles.Text = req.Text
@@ -328,6 +337,29 @@ func (s *Server) putRoles(w http.ResponseWriter, r *http.Request) {
 	res.Changed, res.Recorded, res.Messages = true, true, []string{"wrote roles; reload to apply"}
 	res.Audit = s.row(rowRolesWrite, "write roles")
 	writeJSON(w, http.StatusOK, res)
+}
+
+// validateRoles applies the role rules the real backend's PutRoles applies
+// through config.ValidateRolesText, so a front cannot pass a test with an
+// edit production refuses. It has no main configuration to load, so it
+// checks the roles alone.
+func validateRoles(text string) error {
+	var doc struct {
+		Roles       []config.Role     `toml:"role"`
+		GroupToRole map[string]string `toml:"group_to_role"`
+	}
+	if _, err := toml.Decode(text, &doc); err != nil {
+		return err
+	}
+	for _, r := range doc.Roles {
+		if err := access.ValidateRole(access.Role{Name: r.Name, Tools: r.Tools, Grants: r.Grants, NonRead: r.NonRead}); err != nil {
+			return err
+		}
+		if r.NonRead && len(r.Tools) == 0 {
+			return fmt.Errorf("role %q: non_read = true but `tools` is empty", r.Name)
+		}
+	}
+	return nil
 }
 
 // --- maintenance ---

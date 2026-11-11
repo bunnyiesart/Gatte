@@ -12,16 +12,23 @@
 <div class="notice" role="note">{{template "dot"}}<p>Not in the roles file{{if .FilePath}} <span class="mono">{{vis .FilePath}}</span>{{end}}.</p></div>
 {{else}}
 <section>
+  {{if .NonRead}}
   <form class="group row" method="post" action="{{$base}}/users/roles/non-read">
     <input type="hidden" name="csrf" value="{{$csrf}}">
     <input type="hidden" name="role" value="{{.Name}}">
     <span class="row-text"><span class="row-title">non_read</span></span>
-    {{if .NonRead}}<span class="badge danger">On</span><input type="hidden" name="on" value="false"><button class="btn small">Turn off</button>
-    {{else}}<span class="badge">Off</span><input type="hidden" name="on" value="true"><button class="btn small">Turn on</button>{{end}}
+    <span class="badge danger">On</span><input type="hidden" name="on" value="false"><button class="btn small">Turn off</button>
   </form>
+  {{else}}
+  {{/* Turning non_read on carries the sensitive tools ticked below. */}}
+  <div class="group row">
+    <span class="row-text"><span class="row-title">non_read</span></span>
+    <span class="badge">Off</span><button class="btn small" form="role-tools" formaction="{{$base}}/users/roles/non-read" name="on" value="true">Turn on</button>
+  </div>
+  {{end}}
 </section>
 
-<form method="post" action="{{$base}}/users/roles/edit">
+<form id="role-tools" method="post" action="{{$base}}/users/roles/edit">
   <input type="hidden" name="csrf" value="{{$csrf}}">
   <input type="hidden" name="role" value="{{.Name}}">
   {{range .Servers}}

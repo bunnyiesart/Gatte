@@ -753,33 +753,45 @@ func TestUIManage_ARoleNameWithASlashOrDotsHasItsPage(t *testing.T) {
 	}
 }
 
-// non_read is one switch on the role page, set on its own; with it on, the
-// sensitive grant refused above goes through.
-func TestUIManage_TheNonReadSwitchThenASensitiveGrant(t *testing.T) {
+// non_read is turned on by itself, never by a grant. The roles file refuses
+// it on a role with nothing in `tools`, so turning it on takes the sensitive
+// tools ticked with it: refused with none, then one confirm page naming
+// them, then one write of both.
+func TestUIManage_TurningNonReadOnGivesTheTickedSensitiveTools(t *testing.T) {
 	m := newManageUI(t, true, true)
 	mustObserve(t, m.e, "casemgmt", quarantine.ToolIdentity{Name: "list_cases", Description: "d", InputSchema: []byte(`{}`)})
 	mustObserveSensitive(t, m.e, "casemgmt", quarantine.ToolIdentity{Name: "close_case", Description: "d", InputSchema: []byte(`{}`)})
 	m.e.cfg.Roles = []config.Role{{Name: "ir"}}
-	// non_read marks names in `tools`, so a role with none cannot carry it.
-	withTool := strings.Replace(uiRolesText, "tools = []", `tools = ["casemgmt.list_cases"]`, 1)
-	if err := os.WriteFile(m.rolesPath, []byte(withTool), 0o640); err != nil {
+	if err := os.WriteFile(m.rolesPath, []byte(uiRolesText), 0o640); err != nil {
 		t.Fatal(err)
 	}
-	if got := m.post("/users/roles/non-read", url.Values{"role": {"ir"}, "on": {"true"}}); !got.has("result-icon ok") || !got.has("NOT applied yet") {
-		t.Fatalf("non_read on:\n%s", got.body)
+	if page := m.get("/users/roles/view?name=ir"); !page.has(`form="role-tools"`) || !page.has(m.s.session+"/users/roles/non-read") {
+		t.Fatalf("the role page's non_read switch does not carry the ticked tools:\n%s", page.body)
 	}
-	if page := m.get("/users/roles/view?name=ir"); !page.has("Turn off") {
-		t.Fatalf("the role page after non_read on:\n%s", page.body)
+	before, _ := os.ReadFile(m.rolesPath)
+	if got := m.post("/users/roles/non-read", url.Values{"role": {"ir"}, "on": {"true"}, "tool": {"casemgmt.list_cases"}}); !got.has("non_read needs at least one sensitive tool") {
+		t.Fatalf("non_read on with no sensitive tool ticked:\n%s", got.body)
 	}
-	if got := m.post("/users/roles/edit", url.Values{"role": {"ir"}, "op": {"grant"}, "tool": {"casemgmt.close_case"}}); !got.has("result-icon ok") {
-		t.Fatalf("a sensitive grant on a non_read role:\n%s", got.body)
+	confirm := m.post("/users/roles/non-read", url.Values{"role": {"ir"}, "on": {"true"}, "tool": {"casemgmt.close_case", "casemgmt.list_cases"}})
+	if !confirm.has("Turn non_read on for ir and give it:") || !confirm.has("casemgmt.close_case") || !confirm.has(`name="confirm" value="yes"`) || !confirm.has("use Grant selected") {
+		t.Fatalf("the confirm page:\n%s", confirm.body)
+	}
+	if after, _ := os.ReadFile(m.rolesPath); string(after) != string(before) {
+		t.Fatal("the roles file changed before the confirmation")
+	}
+	got := m.post("/users/roles/non-read", url.Values{"role": {"ir"}, "on": {"true"}, "confirm": {"yes"}, "tool": {"casemgmt.close_case"}})
+	if !got.has("result-icon ok") || !got.has("NOT applied yet") || !got.has("served once the tool is approved and cleared") {
+		t.Fatalf("non_read on with a sensitive tool:\n%s", got.body)
 	}
 	b, _ := os.ReadFile(m.rolesPath)
-	if !strings.Contains(string(b), "non_read = true") || !strings.Contains(string(b), "casemgmt.close_case") {
+	if !strings.Contains(string(b), "non_read = true") || !strings.Contains(string(b), "casemgmt.close_case") || strings.Contains(string(b), "list_cases") {
 		t.Fatalf("the roles file:\n%s", b)
 	}
 	if err := config.ValidateRolesText(m.cfgPath, b); err != nil {
 		t.Fatalf("the roles text does not load: %v", err)
+	}
+	if page := m.get("/users/roles/view?name=ir"); !page.has("Turn off") {
+		t.Fatalf("the role page after non_read on:\n%s", page.body)
 	}
 }
 

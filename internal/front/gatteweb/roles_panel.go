@@ -298,7 +298,7 @@ func (f *Front) rolesEdit(w http.ResponseWriter, r *http.Request) {
 				refusals = append(refusals, visible(ns)+": granted by a \"*\" grant over "+visible(server)+"; edit that grant in the roles file")
 			}
 		case frontkit.SpliceNeedNonRead:
-			refusals = append(refusals, visible(ns)+": sensitive; turn non_read on for "+visible(role)+" first")
+			refusals = append(refusals, visible(ns)+": sensitive; tick it and turn non_read on for "+visible(role))
 		}
 	}
 	f.showResult(w, r, "users", title, back, f.writeEdits(r.Context(), op, text, changed, unchanged, refusals))
@@ -371,7 +371,9 @@ const notApplied = "Written to the roles file, NOT applied yet. Reload the confi
 
 // rolesNonRead turns non_read on or off for a role. non_read is a security
 // boundary (design/adr/0048): it is set on its own, never as a side effect of
-// a grant.
+// a grant. The roles file refuses it on a role whose `tools` is empty, so
+// turning it on takes the sensitive tools ticked on the role page with it,
+// after one confirm page naming them, in one write.
 func (f *Front) rolesNonRead(w http.ResponseWriter, r *http.Request) {
 	if !f.managed(w, r, true) {
 		return
@@ -392,25 +394,93 @@ func (f *Front) rolesNonRead(w http.ResponseWriter, r *http.Request) {
 		f.showResult(w, r, "users", title, back, refused("The roles file could not be read: "+firstLine(errText(err))))
 		return
 	}
-	text, st := frontkit.SetNonRead(cur.Text, role, on)
-	switch st {
-	case frontkit.SpliceNoRole:
-		f.showResult(w, r, "users", title, back, refused("Nothing changed: no [[role]] named "+visible(role)+" in the roles file."))
+	b, found := frontkit.FindRole(frontkit.ParseRoles(cur.Text), role)
+	if !found {
+		f.showResult(w, r, "users", title, "/users", refused("Nothing changed: no [[role]] named "+visible(role)+" in the roles file."))
 		return
-	case frontkit.SpliceAlready:
+	}
+	if b.NonRead == on {
 		f.showResult(w, r, "users", title, back, result{OK: true, Summary: "No change.", Output: "No change."})
 		return
+	}
+
+	text, _ := frontkit.SetNonRead(cur.Text, role, on)
+	var given []string
+	if on {
+		sens, safe, err := f.splitSelection(r.Context(), r.PostForm["tool"])
+		if err != nil {
+			f.showResult(w, r, "users", title, back, refused("The tools could not be read: "+firstLine(errText(err))))
+			return
+		}
+		if len(b.Tools) == 0 && len(sens) == 0 {
+			f.showResult(w, r, "users", title, back, refused("non_read needs at least one sensitive tool: tick it, then turn non_read on."))
+			return
+		}
+		if r.PostForm.Get("confirm") != "yes" {
+			f.render(w, r, "role_nonread", title, page{Nav: "users", Data: nonReadConfirm{Role: role, Back: back, Give: sens, Safe: safe}})
+			return
+		}
+		for _, t := range sens {
+			server, tool, _ := strings.Cut(t, ".")
+			if next, st := frontkit.GrantSensitiveTool(text, role, server, tool); st == frontkit.SpliceChanged {
+				text = next
+				given = append(given, visible(t)+" (served once the tool is approved and cleared)")
+			}
+		}
 	}
 	put, err := f.acc.PutRoles(r.Context(), text)
 	if err != nil {
 		f.showResult(w, r, "users", title, back, refused("Not written: "+firstLine(errText(err))))
 		return
 	}
-	out := title + "\n"
+	res := result{OK: true, Summary: notApplied, Output: title + "\n"}
 	if put.SHA256 != "" {
-		out += "sha256:" + put.SHA256 + "\n"
+		res.Output += "sha256:" + put.SHA256 + "\n"
 	}
-	f.showResult(w, r, "users", title, back, result{OK: true, Summary: notApplied, Output: out + notApplied})
+	if len(given) > 0 {
+		res.Lists = []resultList{{Title: "Given", Items: given}}
+		res.Output += "Given: " + strings.Join(given, "; ") + "\n"
+	}
+	res.Output += notApplied
+	f.showResult(w, r, "users", title, back, res)
+}
+
+// nonReadConfirm is the one page between "Turn on" and the write: the role,
+// and the sensitive tools it is about to be given.
+type nonReadConfirm struct {
+	Role, Back string
+	Give, Safe []string
+}
+
+// splitSelection sorts the ticked tools into sensitive and safe by the live
+// tool list, dropping duplicates and names no tool has.
+func (f *Front) splitSelection(ctx context.Context, selected []string) (sens, safe []string, err error) {
+	if len(selected) == 0 {
+		return nil, nil, nil
+	}
+	list, err := f.op.ListTools(ctx, "", "")
+	if err != nil {
+		return nil, nil, err
+	}
+	class := map[string]bool{}
+	for _, t := range list.Tools {
+		class[t.Server+"."+t.Tool] = t.Class == adminapi.ClassSensitive
+	}
+	seen := map[string]bool{}
+	for _, ns := range selected {
+		ns = strings.TrimSpace(ns)
+		isSens, known := class[ns]
+		if !known || seen[ns] {
+			continue
+		}
+		seen[ns] = true
+		if isSens {
+			sens = append(sens, ns)
+		} else {
+			safe = append(safe, ns)
+		}
+	}
+	return sens, safe, nil
 }
 
 func refused(msg string) result { return result{Summary: msg, Output: msg} }

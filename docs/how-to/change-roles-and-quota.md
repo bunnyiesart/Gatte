@@ -121,8 +121,8 @@ file
 - Some tools can be refused while the rest is written. The result page
   lists what was granted or revoked, what was already so, and what was
   refused and why:
-  - a sensitive tool on a role without `non_read`: turn `non_read` on
-    first;
+  - a sensitive tool on a role without `non_read`: tick it and turn
+    `non_read` on instead;
   - a tool reached through a `"*"` grant: it cannot be revoked one tool at
     a time. Change the whole-backend grant in the roles file.
   The edits are then validated together: if the result would not load,
@@ -132,7 +132,10 @@ file
 - **non_read** is one switch on the role's page. It is never turned on by a
   grant: making a role able to act is a decision of its own. The file
   refuses `non_read` on a role whose `tools` list is empty, because the
-  marking only applies to names in that list.
+  marking only applies to names in that list. So tick the sensitive tools
+  the role should get, then **Turn on**: one confirm page names them, and
+  one write sets `non_read = true` and adds them to `tools`. With none
+  ticked on a role whose `tools` is empty, it is refused.
 - A sensitive tool also needs to be cleared before it is served
   ([Review and approve tools](review-and-approve-tools.md)).
 - Every write is **not applied** until a reload: **Reload configuration**

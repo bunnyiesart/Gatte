@@ -181,8 +181,10 @@ container (`stdio`, `oci`), which the image does not serve.
 - **A TLS-terminating reverse proxy** on the same host. Gatte listens on
   loopback only, terminates no TLS, and refuses to start on any other
   address. `deploy/gateway-jail/nginx.conf` is a working nginx example.
-- **Rootless podman**, only if you want container backends
-  (`-transport oci`).
+- **Rootless podman** for the service account, with cgroup v2 delegation
+  ([Container backends](#container-backends)): backends that take
+  credentials run as containers (`-transport oci`, step 4). A host without
+  it uses step 4's stdio fallback.
 
 ### Who owns what
 
@@ -239,9 +241,22 @@ sudo chmod 0640  /usr/local/etc/mcp-gateway/secrets.enc.json
 #    database it writes; sign runs as root, because only root reads the key.
 #    It reads the key as root and then becomes the database directory's owner
 #    before opening the database, so it leaves no root-owned file there.
-sudo -u mcpgw mcp-gateway upstream register -config "$CFG" -name edr -transport stdio \
-  -command /usr/local/bin/your-edr-mcp -env EDR_CLIENT_ID -env EDR_CLIENT_SECRET
+#    A backend with credentials runs as a digest-pinned container: rootless
+#    podman in mcpgw's own store, with cgroup v2 delegation (Container backends).
+sudo -u mcpgw podman pull ghcr.io/example/edr-mcp:1.4
+sudo -u mcpgw podman inspect --format '{{index .RepoDigests 0}}' ghcr.io/example/edr-mcp:1.4
+sudo -u mcpgw mcp-gateway upstream register -config "$CFG" -name edr -transport oci \
+  -image ghcr.io/example/edr-mcp@sha256:<64 hex> -arg --network=slirp4netns \
+  -env EDR_CLIENT_ID -env EDR_CLIENT_SECRET
 sudo mcp-gateway sign -config "$CFG" edr        # or: sign -all -dry-run, then sign -all -manifest SHA256
+
+# 4, fallback for hosts without podman: a local process (-transport stdio).
+#    It runs as mcpgw and can read the whole vault, so it is refused unless
+#    $CFG sets [upstreams] allow_credentialed_stdio = true (commented out in
+#    base.toml), and every boot then logs a WARN. Use instead of the above:
+#      sudo -u mcpgw mcp-gateway upstream register -config "$CFG" -name edr -transport stdio \
+#        -command /usr/local/bin/your-edr-mcp -env EDR_CLIENT_ID -env EDR_CLIENT_SECRET
+#      sudo mcp-gateway sign -config "$CFG" edr
 
 # 5. Check the configuration and this host's files offline, then run (in
 #    the foreground here; under your service manager in production:
@@ -269,18 +284,22 @@ What each step is for:
   ([Connecting analysts](#connecting-analysts)).
 - **Step 3** is the only place a credential value is ever typed. Everything
   else -- the registry, the config, the logs -- refers to it by name.
-- **Step 4** uses a placeholder, `your-edr-mcp`. To try it with a real
-  backend today, install `examples/ioc_sweep.py` (`examples/byo-script.toml`,
-  steps 2-4), register it as `ioc-sweep` with `-env IOC_SWEEP_API_KEY`, put
-  `IOC_SWEEP_API_KEY` in `secrets.json`, sign it, and approve
+- **Step 4** uses a placeholder image, `ghcr.io/example/edr-mcp`. The
+  image is pinned by the digest `podman inspect` printed, because the
+  signature covers it and a tag can be repointed
+  ([Container backends](#container-backends)).
+- **Step 4, fallback.** A stdio backend runs as the gateway's own user, so
+  it could read the vault. Gatte therefore refuses a stdio entry that
+  declares `-env` credentials unless the config sets `[upstreams]
+  allow_credentialed_stdio = true`. `examples/base.toml` carries that line
+  commented out; uncomment it only on a host without podman, and expect a
+  WARN at every boot ([Security model](#security-model)). `upstream
+  register` also prints a note for such an entry.
+- **Trying step 4 without an image.** Install `examples/ioc_sweep.py`
+  (`examples/byo-script.toml`, steps 2-4), uncomment the opt-in, register
+  it as `ioc-sweep` with `-transport stdio` and `-env IOC_SWEEP_API_KEY`,
+  put `IOC_SWEEP_API_KEY` in `secrets.json`, sign it, and approve
   `ioc-sweep sweep_iocs` in step 6.
-- **Step 4 and credentials over stdio.** A stdio backend runs as the
-  gateway's own user, so it could read the vault. Gatte therefore refuses a
-  stdio entry that declares `-env` credentials unless the config sets
-  `[upstreams] allow_credentialed_stdio = true`. `examples/base.toml` sets
-  it so this quick start works without podman, and every boot then logs a
-  WARN. For production, prefer `-transport oci` and remove that line
-  ([Security model](#security-model)).
 - **Step 5.** `check` exits 0 when nothing failed, 1 when something did,
   2 when it could not run. It writes nothing.
 - **Step 6** is the quarantine. `tool review` and `tool show` print each

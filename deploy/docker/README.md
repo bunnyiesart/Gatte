@@ -11,14 +11,18 @@ Code can call, with the API key injected server-side. MCP servers that run
 as a process or a container (`stdio`, `oci`) are not served from this image;
 use the host install in the top-level `README.md` for those.
 
+This README is the canonical guide for installing and running the image. It
+supersedes any standalone "Gatte setup" or "Gatte VM setup" guide handed out
+separately; follow this file.
+
 ## Install
 
 You need Docker (or Podman), and DNS for two names pointing at the host:
 `gatte.example.org` and `auth.gatte.example.org`. Analysts reach both on
 443. Three steps:
 
-**1. Verify the image.** Take the digest of the release from its GitHub
-release page, and check it was built by this repository's workflow:
+**1. Verify the image.** Take the digest of the latest release from its
+GitHub release page, and check it was built by this repository's workflow:
 
 ```sh
 IMAGE=ghcr.io/bunnyiesart/gatte@sha256:DIGEST
@@ -85,32 +89,36 @@ The settings are kept in the volume: an upgrade can drop the `-e` flags.
 
 ## Backends from an MCP JSON file
 
-Gatte serves REST APIs from their OpenAPI document. If your analysts
-already list their servers in a Claude Code `.mcp.json`, hand the file to
-setup on standard input, from the host, while `gatte setup` is at its
-backends step (or before it):
+If your analysts already list their servers in a Claude Code `.mcp.json`,
+hand the file to setup on standard input, from the host, while `gatte setup`
+is at its backends step (or before it):
 
 ```sh
 docker exec -i gatte gatte setup import < .mcp.json
 ```
 
-`setup import` keeps only each server's name, its kind, the scheme, host and
+The import is a shortlist of names, not a turnkey conversion. `setup import`
+keeps only each server's name, its kind, the scheme, host and
 port of its URL (a path or query can carry a key), and the NAMES of its
 headers. No header value,
 `env` value or `args` entry is copied anywhere: not to the volume, not to the
 log, not to the screen. Setup then lists the servers and, for each one you
-pick, registers it with `gatte api add` and asks for its key with
-`gatte secret set`, which does not echo. Retype a key the file held there;
-it was not kept.
+pick, registers it and asks for its token with `gatte secret set`, which
+does not echo. Retype a token the file held there; it was not kept.
 
-What the image can and cannot serve from that file:
+What the image can and cannot register from that file:
 
-- **`"type": "http"` / `"url"` entries** are remote MCP servers. Gatte does
-  not proxy remote MCP; it calls REST APIs. Setup asks for the OpenAPI
-  document of the REST API behind the server and its base URL, and derives
-  where the key goes from the entry's one header (`Authorization` is a
-  bearer token; any other name is that header). An entry with more than one
-  header is left for you to add by hand.
+- **`"type": "http"` / `"url"` entries** are remote MCP servers. Setup
+  registers them natively with `gatte remote add`. Only the URL's origin
+  was kept, so setup asks for the full endpoint URL, offering the origin as
+  the default: type the path too (for example `https://host/mcp`). A URL
+  with no path is registered only if you confirm it, since such a server
+  is reached but serves no tools. Where the token goes comes from the
+  entry's one header (`Authorization` is a bearer token; any other name is
+  that header). An entry with no header is registered with no
+  authentication only if you confirm it; one with more than one header is
+  left for you to add by hand. A REST API is a separate backend: it is
+  not in the file, and you add it by hand with its OpenAPI document.
 - **`"command"` entries** (`docker run ...`, `npx ...`, any local process)
   are skipped with a one-line reason. This image runs no backend processes
   and no containers: it has no runtime for them, and it is never given the
@@ -139,6 +147,38 @@ ssh -L 8090:127.0.0.1:8090 you@the-host    # from your machine, then open the li
 
 The link works once. Running `gatte console` again ends the session and
 prints a new one; `gatte console stop` closes it.
+
+## Reaching the gateway and the backends
+
+Three network paths, each different on purpose.
+
+- **Analysts to the gateway.** `https://GATTE_DOMAIN` and
+  `https://auth.GATTE_DOMAIN`, both on 443 (or `GATTE_PORT`). Publish that
+  port where analysts can reach it. On a private deployment that is usually a
+  VPN or a reverse proxy already in front of the host. The connect script each
+  analyst runs targets these two names, so both must resolve and be reachable
+  from the analyst's machine.
+
+- **You to the console.** The console is never on the network: the container
+  publishes it on the host's loopback only (`-p 127.0.0.1:8090:8090`), so you
+  reach it through an SSH tunnel to the host and open the one-time link
+  `gatte console` prints (see "The web console" above). Only `docker exec`
+  prints that link.
+
+- **The gateway to the backends.** The container is the HTTP client: it calls
+  each API's base URL outbound, over the host's own routes, so a backend the
+  host can reach -- including one behind a VPN or reverse proxy the host holds --
+  the container reaches too. Two limits are Gatte's own, not the network's:
+
+  - The egress guard (`design/adr/0048`) refuses a backend whose name resolves
+    to a loopback, private (`10/8`, `172.16/12`, `192.168/16`, `fc00::/7`),
+    link-local or carrier-grade-NAT (`100.64/10`) address.
+  - The guarded client ignores `HTTPS_PROXY` by design, so backend calls
+    cannot be routed through an outbound proxy.
+
+  A backend that lives only on a private network must therefore be fronted at
+  a routable name the container can reach directly -- commonly the same VPN or
+  reverse-proxy endpoint analysts use.
 
 ## Add an API
 
@@ -269,6 +309,35 @@ its data, restore the whole volume from the copy of step 4 instead. What the tra
 recorded after the backup is gone from the database (it is still in your
 SIEM copy).
 
+## Scheduled backups
+
+The `Upgrade` step above backs up by hand. For a recurring copy, point cron or
+a systemd timer at `deploy/docker/gatte-backup.sh`. It runs `gatte mcp backup`
+inside the container -- a consistent, checked copy of the database while Gatte
+runs -- and copies it off the volume, keeping the newest few:
+
+```sh
+install -m 0755 deploy/docker/gatte-backup.sh /usr/local/sbin/gatte-backup
+# 03:30 daily; writes copies under /var/backups/gatte.
+echo '30 3 * * * /usr/local/sbin/gatte-backup' | crontab -
+```
+
+It reads three optional settings from its environment: `GATTE_CONTAINER` (the
+container name, default `gatte`), `GATTE_BACKUP_DIR` (where the off-volume
+copies land, default `/var/backups/gatte`), and `GATTE_BACKUP_KEEP` (how many
+timestamped copies to keep, default `7`; `0` keeps all). Pruning only touches
+directories named in the script's UTC stamp format (`20260101T033000Z`), so
+other directories under `GATTE_BACKUP_DIR` are left alone. Put `GATTE_BACKUP_DIR` on storage
+separate from the Docker volume for a real off-box backup.
+
+It is not a Compose sidecar on purpose: a sidecar reaching into the container
+would need the Docker socket, which is root on the host. The script needs only
+the `docker` CLI, as the host user that already runs it.
+
+This copies the **database** only -- the keys, the vault, the private CA and
+the accounts are the rest of the volume. For those, the full-volume `tar` in
+`Upgrade` step 4 is the backup, and it needs the container stopped.
+
 ## Inside the container
 
 Each process runs as its own account:
@@ -329,15 +398,11 @@ docker run -d --name gatte -p 8443:8443 -e GATTE_DOMAIN=gatte.localtest.me \
 docker exec -it gatte gatte setup
 ```
 
-## Build it yourself
-
-```sh
-docker build -f deploy/docker/Dockerfile -t gatte:local .
-```
+## Compose
 
 `deploy/docker/compose.yaml` runs the same single container, for those who
 keep their services in a compose file. It has no default image: set
-`GATTE_IMAGE` to a digest.
+`GATTE_IMAGE` to a verified release digest.
 
 ## Limits
 
@@ -348,9 +413,10 @@ keep their services in a compose file. It has no default image: set
   the host's SSH log.
 - `upstream update` does not re-read an OpenAPI document. To pick up a new
   version: `gatte api rm NAME`, then `gatte api add` again.
-- No backup timer. `gatte mcp backup` copies the database only. The keys,
-  the vault, the CA and the accounts are the rest of the volume; with the
-  container stopped,
+- No built-in backup timer, but `deploy/docker/gatte-backup.sh` is a ready
+  cron/timer job for it (`Scheduled backups` above). It copies the database
+  only. The keys, the vault, the CA and the accounts are the rest of the
+  volume; with the container stopped,
   `docker run --rm -v gatte:/gatte:ro -v "$PWD":/out "$IMAGE" tar czf /out/gatte.tgz /gatte`
   is a full backup. It holds every secret Gatte has: keep it offline.
 - No second factor yet: sign-in is a password (Authelia `one_factor`).

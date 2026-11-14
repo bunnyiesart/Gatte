@@ -464,6 +464,12 @@ func runUpstreamRegisterReport(e *opEnv, entry registry.UpstreamServer, report *
 	if !opFlushTable(tw, e.stderr) {
 		return exitProblem
 	}
+	// Reaching here with a credentialed stdio entry means the opt-in is on.
+	// That is a supported deployment (hosts without podman), so this is a
+	// pointer, not a refusal, and it leaves the exit status alone.
+	if entry.Transport == registry.TransportStdio && len(entry.EnvVarNames) > 0 {
+		fmt.Fprint(e.stdout, "\nNote: this stdio entry runs as the gateway's own user and can read the whole vault; -transport oci -image NAME@sha256:... is the isolated path (design/adr/0034).\n")
+	}
 	if report != nil && !printIngestReport(e.stdout, report, entry.Name, e.cmd) {
 		return exitProblem
 	}

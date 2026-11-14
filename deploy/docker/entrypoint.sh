@@ -77,7 +77,7 @@ internal_tls() {
 			sed -n 's/^ *commonName *= //p')" != "$cn" ] ||
 			! openssl x509 -in "$GATTE_CA/ca.crt" -noout -checkend 2592000 >/dev/null 2>&1; }; then
 		rm -f "$GATTE_CA/ca.key" "$GATTE_CA/ca.crt"
-		say "gatte: the private CA is not for $GATTE_DOMAIN or is expiring; making a new one (analysts need a new connect script)"
+		say "gatte: the private CA is not for $GATTE_DOMAIN or is expiring; making a new one (re-issue the connect scripts in one step: gatte connect -all)"
 	fi
 	if [ ! -s "$GATTE_CA/ca.key" ]; then
 		openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \

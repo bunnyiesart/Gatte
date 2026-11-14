@@ -218,8 +218,12 @@ func TestConnectScript_RunsAndRunningItTwiceIsHarmless(t *testing.T) {
 		t.Fatalf("claude was called with:\n%s", calls)
 	}
 	rc, _ := os.ReadFile(filepath.Join(home, ".zshrc"))
-	if !strings.HasPrefix(string(rc), "# mine\n") || strings.Count(string(rc), "NODE_EXTRA_CA_CERTS") != 1 {
+	if !strings.HasPrefix(string(rc), "# mine\n") || strings.Count(string(rc), "gatte/env.sh") != 1 {
 		t.Fatalf(".zshrc after two runs:\n%s", rc)
+	}
+	env, _ := os.ReadFile(filepath.Join(home, ".config", "gatte", "env.sh"))
+	if strings.Count(string(env), "NODE_EXTRA_CA_CERTS") != 1 {
+		t.Fatalf("env.sh after two runs carries the CA line other than once:\n%s", env)
 	}
 	ca, _ := os.ReadFile(filepath.Join(home, ".config", "gatte", "ca.pem"))
 	if !strings.HasPrefix(string(ca), "-----BEGIN CERTIFICATE-----") || strings.Contains(string(ca), "GATTE_CA") || strings.Contains(string(ca), "touch") {

@@ -14,6 +14,7 @@
 #
 # 2. Register and sign. The upstream name may not contain "." -- that is the
 #    separator in "cloudposture.list_findings".
+#    Where podman exists, prefer -transport oci (design/adr/0034).
 #
 #      mcp-gateway upstream register -config "$CFG" -name cloudposture -transport stdio \
 #        -command /usr/local/bin/your-cloudposture-mcp \

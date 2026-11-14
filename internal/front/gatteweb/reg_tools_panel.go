@@ -38,7 +38,9 @@ func init() {
 			mux.HandleFunc("POST /servers/{name}/tools/approve-set", f.serverToolApproveSet)
 			mux.HandleFunc("GET /servers/{name}/tools/{tool}", f.serverToolReview)
 			mux.HandleFunc("POST /servers/{name}/tools/{tool}/approve", f.serverToolApprove)
+			mux.HandleFunc("GET /servers/{name}/tools/{tool}/revoke", f.serverToolRevokeConfirm)
 			mux.HandleFunc("POST /servers/{name}/tools/{tool}/revoke", f.serverToolRevoke)
+			mux.HandleFunc("GET /servers/{name}/tools/{tool}/clear", f.serverToolClearConfirm)
 			mux.HandleFunc("POST /servers/{name}/tools/{tool}/clear", f.serverToolClear)
 		},
 	})

@@ -221,10 +221,43 @@ func (f *Front) nextServerToReview(r *http.Request, server, tool string) (admina
 	return adminapi.Tool{}, false
 }
 
+// serverToolRevokeConfirm is the pause before revoking: the one-click button on
+// the review page is a link here, and this page holds the POST.
+func (f *Front) serverToolRevokeConfirm(w http.ResponseWriter, r *http.Request) {
+	server, tool := r.PathValue("name"), r.PathValue("tool")
+	name := frontkit.VisibleText(server + "." + tool)
+	f.confirm(w, r, "servers", "Revoke "+name, confirmView{
+		Back:      f.kit.Base() + toolPath(server, tool),
+		BackLabel: name,
+		Lead:      "Revoking stops serving this tool on its next call. Approving it again is one click.",
+		Action:    f.kit.Base() + toolPath(server, tool) + "/revoke",
+		Button:    "Revoke approval",
+		Danger:    true,
+	})
+}
+
 func (f *Front) serverToolRevoke(w http.ResponseWriter, r *http.Request) {
 	server, tool := r.PathValue("name"), r.PathValue("tool")
 	res, err := f.op.RevokeTool(r.Context(), adminapi.ToolRef{Server: server, Tool: tool})
 	f.showResult(w, r, "servers", "Revoke "+frontkit.VisibleText(server+"."+tool), serverBack(server), actionResult(res.ActionResult, err))
+}
+
+// serverToolClearConfirm is the pause before clearing a sensitive tool for
+// serving. It gates on the same feature the clear itself needs, so a console
+// that cannot clear never shows the page.
+func (f *Front) serverToolClearConfirm(w http.ResponseWriter, r *http.Request) {
+	if !f.managed(w, r, false, adminapi.FeatureToolClear) {
+		return
+	}
+	server, tool := r.PathValue("name"), r.PathValue("tool")
+	name := frontkit.VisibleText(server + "." + tool)
+	f.confirm(w, r, "servers", "Clear "+name, confirmView{
+		Back:      f.kit.Base() + toolPath(server, tool),
+		BackLabel: name,
+		Lead:      "Clearing serves this approved sensitive tool to the non_read roles that name it, at its approved version. Revoking the approval reverses it.",
+		Action:    f.kit.Base() + toolPath(server, tool) + "/clear",
+		Button:    "Clear for serving",
+	})
 }
 
 // serverToolClear clears an approved sensitive tool for serving at its approved

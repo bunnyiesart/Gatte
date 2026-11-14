@@ -768,8 +768,11 @@ field() { # SERVER JQ-PATH: one field of one imported server
 }
 
 setup_import_pick() {
-	say "   In the MCP JSON file:"
+	say "   In the MCP JSON file (a shortlist of names, not a turnkey import):"
 	jq -r '.[] | "     " + (.name | gsub("[\u007f-\u009f]"; "?") | @json) + "  " + .kind + (if .url then "  " + .url else "" end)' "$IMPORT"
+	say "   Remote MCP servers register natively; you confirm each endpoint URL. A REST API"
+	say "   still needs its OpenAPI document, added by hand below. Local"
+	say "   command servers are skipped: this image runs no processes or containers."
 	have=$(mcp upstream list -json | jq -r '.[].name')
 	for n in $(jq -r '.[] | select(.ok) | .name' "$IMPORT"); do
 		if printf '%s\n' "$have" | grep -qx "$n"; then
@@ -784,23 +787,41 @@ setup_import_pick() {
 		confirm "   Add $n?" || continue
 		nh=$(field "$n" '.headers | length')
 		if [ "$nh" -gt 1 ]; then
-			say "   $n sends $nh headers; Gatte injects one credential per API. Add it by hand."
+			say "   $n sends $nh headers; Gatte injects one credential per backend. Add it by hand."
 			continue
 		fi
-		k='' h=''
+		# The import kept only the origin (setup_import), so the endpoint's
+		# path has to come from the operator: registered without it, the
+		# server is reachable but serves no tools.
+		say "   Only the scheme, host and port of $n's URL were kept, not its path."
+		ask "   Full MCP endpoint URL, with its path (e.g. https://host/mcp)" "$(field "$n" '.url // ""')"
+		u=$a
+		if [ -z "$u" ]; then
+			say "   $n: skipped. No endpoint URL given."
+			continue
+		fi
+		case "$u" in
+		http://*/* | https://*/*) ;;
+		*)
+			if ! confirm "   $u has no path. Register $n there anyway?"; then
+				say "   $n: skipped. Add it by hand below with its full endpoint URL."
+				continue
+			fi
+			;;
+		esac
+		k=none h=''
 		hn=$(field "$n" '.headers[0] // ""')
 		case "$hn" in
-		'') ;;
+		'')
+			if ! confirm "   $n sends no auth header. Register it with no authentication?"; then
+				say "   $n: skipped. Add it by hand below if it takes a token."
+				continue
+			fi
+			;;
 		[Aa]uthorization) k=bearer ;;
 		*) k=header h=$hn ;;
 		esac
-		say "   $n is a remote MCP server. Gatte serves REST APIs from their OpenAPI"
-		say "   document: give the REST API behind it. No value from the file was kept."
-		ask "   OpenAPI document URL (Enter skips $n)"
-		[ -n "$a" ] || continue
-		spec=$a
-		ask "   REST API base URL (scheme, host and base path)" "$(field "$n" '.url // ""')"
-		setup_add "$n" "$a" "$spec" "$k" "$h"
+		setup_add_remote "$n" "$u" "$k" "$h"
 	done
 }
 

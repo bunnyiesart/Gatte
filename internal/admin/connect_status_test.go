@@ -432,8 +432,8 @@ func TestConnectScripts_InstallGatteStatus(t *testing.T) {
 }
 
 // Run for real, twice, in a throwaway HOME: the command lands executable
-// in ~/.config/gatte/bin, the profile gets the PATH line once, and the
-// installed file is the rendered gatte-status.
+// in ~/.config/gatte/bin, the profile sources the managed env file once,
+// and the installed file is the rendered gatte-status.
 func TestConnectScript_InstallsGatteStatusIdempotently(t *testing.T) {
 	info := statusInfo("https://mcp.example.internal")
 	text, _, _ := admin.RenderScript(info, "macos")
@@ -472,7 +472,7 @@ func TestConnectScript_InstallsGatteStatusIdempotently(t *testing.T) {
 		t.Errorf("installed gatte-status differs from the rendered one")
 	}
 	rc, _ := os.ReadFile(filepath.Join(home, ".zshrc"))
-	if !strings.HasPrefix(string(rc), "# mine\n") || strings.Count(string(rc), "gatte/bin") != 1 {
+	if !strings.HasPrefix(string(rc), "# mine\n") || strings.Count(string(rc), "gatte/env.sh") != 1 {
 		t.Fatalf(".zshrc after two runs:\n%s", rc)
 	}
 }

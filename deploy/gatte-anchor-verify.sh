@@ -57,6 +57,38 @@ say()  { printf '\n== %s\n' "$1"; }
 ok()   { printf '   ok    %s\n' "$1"; }
 fail() { printf '   FAIL  %s\n' "$1" >&2; exit 1; }
 
+# VALIDATE THE OPERATOR VALUES BEFORE ANYTHING IS SENT. ssh joins its command
+# arguments into one string that the gateway host's shell re-parses as root,
+# so a value carrying a space, `;`, a quote or $(...) would split or add a
+# command there. Quoting cannot be relied on across that hop; an allowlist
+# can. Each pattern is the shape the real value has, and nothing more.
+refuse() {
+	fail "$1 is not $2; refusing to run with it.
+         value: '$3'"
+}
+# A login name: lowercase letter or underscore first, then [a-z0-9_-], <= 32.
+case "$GW_USER" in
+'' | [!a-z_]* | *[!a-z0-9_-]*) refuse GW_USER "an account name ([a-z_][a-z0-9_-]*)" "$GW_USER" ;;
+esac
+[ "${#GW_USER}" -le 32 ] || refuse GW_USER "an account name of at most 32 characters" "$GW_USER"
+# A jail name: alphanumeric first, then [A-Za-z0-9_-], <= 64. No dot, because
+# the name is also a path component of the sink path below, and `..` is not a
+# jail.
+case "$GW_JAIL" in
+'' | [!A-Za-z0-9]* | *[!A-Za-z0-9_-]*) refuse GW_JAIL "a jail name ([A-Za-z0-9][A-Za-z0-9_-]*)" "$GW_JAIL" ;;
+esac
+[ "${#GW_JAIL}" -le 64 ] || refuse GW_JAIL "a jail name of at most 64 characters" "$GW_JAIL"
+# An absolute path of plain path characters, with no `..` component.
+case "$GW_CONFIG" in
+[!/]* | *[!A-Za-z0-9._/-]* | */../* | */..) refuse GW_CONFIG "an absolute path ([A-Za-z0-9._/-], no ..)" "$GW_CONFIG" ;;
+esac
+# A chain identifier. It goes into the Graylog query rather than to ssh, and
+# the same allowlist keeps it from widening that query.
+case "$CHAIN" in
+'' | [!A-Za-z0-9]* | *[!A-Za-z0-9_.-]*) refuse CHAIN "a chain identifier ([A-Za-z0-9][A-Za-z0-9_.-]*)" "$CHAIN" ;;
+esac
+[ "${#CHAIN}" -le 128 ] || refuse CHAIN "a chain identifier of at most 128 characters" "$CHAIN"
+
 # ------------------------------------------------------------ the SIEM side
 say "Graylog: fetching the shipped lines for chain $CHAIN"
 # The credential goes in a -K config file, not in -u. `-u user:pass` puts it
@@ -242,18 +274,12 @@ set +e
 # its own trail. A verification tool that breaks the thing it verifies is
 # the worst shape of all, because it breaks it while reporting success.
 #
-# The operator-env values (GW_USER, GW_JAIL, GW_CONFIG, HEAD) are PASSED AS
-# POSITIONAL ARGS to a fixed helper read over stdin by `sh -s`, never spliced
-# into the command string. The command's shape is the here-doc, which carries
-# no expansions; only the data travels, and the remote shell sees it as $1..$4
-# and nothing it can re-parse as syntax. HEAD is already constrained to 64 hex
-# above; this keeps the operator values out of the command structure too, so a
-# stray space or metacharacter in one of them fails as a bad argument rather
-# than running as a second command on a root-reachable host.
-ssh -o BatchMode=yes "$GW_HOST" sh -s -- "$GW_USER" "$GW_JAIL" "$GW_CONFIG" "$HEAD" \
-	> "$WORK/verify.out" 2>&1 <<'REMOTE'
-exec jexec -U "$1" "$2" /usr/local/bin/mcp-gateway audit -verify -config "$3" -expect-head "$4"
-REMOTE
+# Every value spliced into this string was checked against an allowlist
+# above (HEAD as 64 hex, the GW_* values at the top), which is what makes the
+# remote shell's re-parse of it safe.
+ssh -o BatchMode=yes "$GW_HOST" \
+	"jexec -U $GW_USER $GW_JAIL /usr/local/bin/mcp-gateway audit -verify -config $GW_CONFIG -expect-head $HEAD" \
+	> "$WORK/verify.out" 2>&1
 RC=$?
 set -e
 sed 's/^/   /' "$WORK/verify.out"
@@ -266,6 +292,7 @@ fi
 
 # ------------------------------------------------------ telling lag from tamper
 say "MISMATCH -- and the next number decides what it means"
+SINK="/usr/local/bastille/jails/$GW_JAIL/root/var/log/mcp-gateway/audit.jsonl"
 # COUNT THE SAME POPULATION THE SIEM QUERY COUNTS. `wc -l` counts heartbeats
 # too, and the query above no longer does, so the two numbers stopped being
 # comparable the moment ADR-0021 landed -- with ~288 heartbeats a day in the
@@ -274,14 +301,10 @@ say "MISMATCH -- and the next number decides what it means"
 # A truncated database would have been reported as a lagging shipper, which is
 # the one diagnosis this script exists to rule out.
 #
-# GW_JAIL reaches the remote shell as a positional arg, same as the verify call
-# above: the sink path is built on the far side from "$1", so the jail name is
-# data, not part of the command string. grep -c exits 1 when it matches
-# nothing, which for -v means "the file is all heartbeats"; the || below turns
-# that into "?" and the branches handle it.
-SINK_N=$(ssh -o BatchMode=yes "$GW_HOST" sh -s -- "$GW_JAIL" 2>/dev/null <<'REMOTE' | tr -d ' ') || SINK_N="?"
-exec grep -vc '"type":"heartbeat"' "/usr/local/bastille/jails/$1/root/var/log/mcp-gateway/audit.jsonl"
-REMOTE
+# grep -c exits 1 when it matches nothing, which for -v means "the file is all
+# heartbeats"; the || below turns that into "?" and the branches handle it.
+# SINK holds only the validated GW_JAIL, so it is safe in the remote string.
+SINK_N=$(ssh -o BatchMode=yes "$GW_HOST" "grep -vc '\"type\":\"heartbeat\"' $SINK" 2>/dev/null | tr -d ' ') || SINK_N="?"
 printf '   audit lines in the sink on the gateway: %s  (whole file, heartbeats excluded)\n' "$SINK_N"
 printf '   distinct records in the SIEM:           %s  (last %ss only)\n' "$DISTINCT" "$RANGE"
 printf '\n'

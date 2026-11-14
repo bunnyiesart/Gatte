@@ -241,9 +241,19 @@ set +e
 # service account cannot write -- and the gateway then fails to append to
 # its own trail. A verification tool that breaks the thing it verifies is
 # the worst shape of all, because it breaks it while reporting success.
-ssh -o BatchMode=yes "$GW_HOST" \
-	"jexec -U $GW_USER $GW_JAIL /usr/local/bin/mcp-gateway audit -verify -config $GW_CONFIG -expect-head $HEAD" \
-	> "$WORK/verify.out" 2>&1
+#
+# The operator-env values (GW_USER, GW_JAIL, GW_CONFIG, HEAD) are PASSED AS
+# POSITIONAL ARGS to a fixed helper read over stdin by `sh -s`, never spliced
+# into the command string. The command's shape is the here-doc, which carries
+# no expansions; only the data travels, and the remote shell sees it as $1..$4
+# and nothing it can re-parse as syntax. HEAD is already constrained to 64 hex
+# above; this keeps the operator values out of the command structure too, so a
+# stray space or metacharacter in one of them fails as a bad argument rather
+# than running as a second command on a root-reachable host.
+ssh -o BatchMode=yes "$GW_HOST" sh -s -- "$GW_USER" "$GW_JAIL" "$GW_CONFIG" "$HEAD" \
+	> "$WORK/verify.out" 2>&1 <<'REMOTE'
+exec jexec -U "$1" "$2" /usr/local/bin/mcp-gateway audit -verify -config "$3" -expect-head "$4"
+REMOTE
 RC=$?
 set -e
 sed 's/^/   /' "$WORK/verify.out"
@@ -256,7 +266,6 @@ fi
 
 # ------------------------------------------------------ telling lag from tamper
 say "MISMATCH -- and the next number decides what it means"
-SINK="/usr/local/bastille/jails/$GW_JAIL/root/var/log/mcp-gateway/audit.jsonl"
 # COUNT THE SAME POPULATION THE SIEM QUERY COUNTS. `wc -l` counts heartbeats
 # too, and the query above no longer does, so the two numbers stopped being
 # comparable the moment ADR-0021 landed -- with ~288 heartbeats a day in the
@@ -265,9 +274,14 @@ SINK="/usr/local/bastille/jails/$GW_JAIL/root/var/log/mcp-gateway/audit.jsonl"
 # A truncated database would have been reported as a lagging shipper, which is
 # the one diagnosis this script exists to rule out.
 #
-# grep -c exits 1 when it matches nothing, which for -v means "the file is all
-# heartbeats"; the || below turns that into "?" and the branches handle it.
-SINK_N=$(ssh -o BatchMode=yes "$GW_HOST" "grep -vc '\"type\":\"heartbeat\"' $SINK" 2>/dev/null | tr -d ' ') || SINK_N="?"
+# GW_JAIL reaches the remote shell as a positional arg, same as the verify call
+# above: the sink path is built on the far side from "$1", so the jail name is
+# data, not part of the command string. grep -c exits 1 when it matches
+# nothing, which for -v means "the file is all heartbeats"; the || below turns
+# that into "?" and the branches handle it.
+SINK_N=$(ssh -o BatchMode=yes "$GW_HOST" sh -s -- "$GW_JAIL" 2>/dev/null <<'REMOTE' | tr -d ' ') || SINK_N="?"
+exec grep -vc '"type":"heartbeat"' "/usr/local/bastille/jails/$1/root/var/log/mcp-gateway/audit.jsonl"
+REMOTE
 printf '   audit lines in the sink on the gateway: %s  (whole file, heartbeats excluded)\n' "$SINK_N"
 printf '   distinct records in the SIEM:           %s  (last %ss only)\n' "$DISTINCT" "$RANGE"
 printf '\n'

@@ -63,6 +63,9 @@ People (Authelia accounts, through the root-only accounts socket)
   gatte connect USERNAME [-os macos|linux|windows]
         The script that connects that person's Claude Code; hand it over
         with the password.
+  gatte connect -all [-os macos|linux|windows] [-out DIR]
+        Re-issue the connect script for everyone at once, one file per
+        person in DIR (default .). Use after the CA was replaced.
 
 Roles (who may call what; design/adr/0009)
   gatte roles show           print roles.toml
@@ -429,7 +432,8 @@ cmd_user() {
 }
 
 cmd_connect() {
-	[ $# -ge 1 ] || die "usage: gatte connect USERNAME [-os macos|linux|windows]"
+	[ "${1:-}" = -all ] && { shift; cmd_connect_all "$@"; return; }
+	[ $# -ge 1 ] || die "usage: gatte connect USERNAME [-os macos|linux|windows]  (all at once: gatte connect -all [-os OS] [-out DIR])"
 	u=$1 os=macos
 	[ "${2:-}" = -os ] && os=${3:-macos}
 	w=$(private_dir)
@@ -437,6 +441,42 @@ cmd_connect() {
 	api_call GET "$OPERATOR_SOCKET" "/v1/connect/script?os=$os&username=$u" >"$w/r"
 	if jq -e 'has("error")' "$w/r" >/dev/null 2>&1; then api_or_die "$w/r"; fi
 	cat "$w/r"
+}
+
+# cmd_connect_all re-issues one connect script per person in a single run,
+# into a directory, so replacing the CA takes one command and not one per
+# analyst. Each script carries the certificate authority that is current now.
+cmd_connect_all() {
+	os=macos out=.
+	while [ $# -gt 0 ]; do
+		case "$1" in
+		-os) os=${2:-macos}; shift 2 ;;
+		-out) out=${2:-.}; shift 2 ;;
+		*) die "usage: gatte connect -all [-os macos|linux|windows] [-out DIR]" ;;
+		esac
+	done
+	case "$os" in
+	macos | linux) ext='sh' ;;
+	windows) ext='ps1' ;;
+	*) die "os must be macos, linux or windows" ;;
+	esac
+	mkdir -p "$out" || die "cannot create $out"
+	w=$(private_dir)
+	trap 'rm -rf "$w"' EXIT INT TERM
+	users=$(cmd_user list | cut -f1)
+	[ -n "$users" ] || die "no people yet (gatte user add)"
+	n=0
+	for u in $users; do
+		api_call GET "$OPERATOR_SOCKET" "/v1/connect/script?os=$os&username=$u" >"$w/r"
+		if jq -e 'has("error")' "$w/r" >/dev/null 2>&1; then
+			jq -r --arg u "$u" '"  " + $u + ": refused: " + (.error.message // .error.code // "unknown")' "$w/r" >&2
+			continue
+		fi
+		cp "$w/r" "$out/connect-$u.$ext"
+		n=$((n + 1))
+		say "  wrote $out/connect-$u.$ext"
+	done
+	say "Re-issued $n connect script(s) for $os in $out. Hand each person their own file."
 }
 
 # --- console -----------------------------------------------------------

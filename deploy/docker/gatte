@@ -551,9 +551,21 @@ setup_domain() {
 		if (GATTE_DOMAIN=$d GATTE_TLS=$t GATTE_ACME_EMAIL=$e && derive); then break; fi
 		say "   Try again."
 	done
+	n=0
 	for h in "$d" "auth.$d"; do
-		getent hosts "$h" >/dev/null 2>&1 || say "   warning: $h does not resolve here; analysts need DNS for it."
+		if getent hosts "$h" >/dev/null 2>&1; then
+			n=$((n + 1))
+		else
+			say "   warning: $h does not resolve here; analysts need DNS for it."
+		fi
 	done
+	if [ "$n" -eq 0 ]; then
+		say "   Neither $d nor auth.$d resolves here; both must, or no analyst can reach Gatte."
+		say "   For a one-box eval, use a name that already points at 127.0.0.1:"
+		say "   GATTE_DOMAIN=gatte.localtest.me with -e GATTE_PORT=8443."
+		confirm "   Set up now and point DNS at both names later?" ||
+			die "set DNS for $d and auth.$d, then run gatte setup again"
+	fi
 	if [ -n "$cur" ]; then
 		ask "   Type the new domain again to confirm"
 		[ "$a" = "$d" ] || die "not the same; nothing changed"

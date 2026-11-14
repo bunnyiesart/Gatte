@@ -72,6 +72,8 @@ com a assinatura ainda válida.
    um WARN. `examples/base.toml` e o template da jail a ligam. `stdio` sem
    credencial não muda.
 
+   > **Anotação (14 nov 2026).** `examples/base.toml` agora traz a chave comentada (opt-in), e o caminho documentado para backend com credencial é `-transport oci`.
+
 ## Consequências
 
 - O invólucro de `0028` §A item 1 ganha seis flags; ver a correção lá.

@@ -79,9 +79,10 @@ mcp-gateway upstream register -config "$CFG" -name edr -transport stdio \
 - `-env` is repeatable and takes **names only**. `-env EDR_CLIENT_SECRET=...`
   is refused without echoing the value. A `-transport stdio` entry with
   `-env` is refused unless the configuration sets `[upstreams]
-  allow_credentialed_stdio = true` (`base.toml` does, and every boot logs a
-  WARN for it). Where podman exists, prefer `-transport oci`
-  (`design/adr/0034`). Names whose value is code (`LD_PRELOAD`,
+  allow_credentialed_stdio = true`, and every boot then logs a WARN.
+  `base.toml` carries that line commented out: uncomment it to follow
+  these stdio examples as written. Where podman exists, register the
+  same backend as `-transport oci` instead (`design/adr/0034`). Names whose value is code (`LD_PRELOAD`,
   `NODE_OPTIONS`, `PYTHONPATH`, ...) or that choose where code comes from
   (`PATH`, `HOME`) are refused on both transports.
 

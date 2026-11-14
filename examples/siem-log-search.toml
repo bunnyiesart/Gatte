@@ -15,6 +15,7 @@
 #
 # 2. Register and sign. Non-secret settings such as the SIEM's URL go in
 #    -arg (they are covered by the signature); secrets go in -env as names.
+#    Where podman exists, prefer -transport oci (design/adr/0034).
 #
 #      mcp-gateway upstream register -config "$CFG" -name siem -transport stdio \
 #        -command /usr/local/bin/your-siem-mcp \

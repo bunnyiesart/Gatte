@@ -52,7 +52,7 @@ The identity provider this gateway trusts as an OAuth 2.0 resource server
 | Key | Type | Default | Required | Constraints and meaning |
 |---|---|---|---|---|
 | `issuer` | string | none | yes | Base URL for discovery (`ISSUER/.well-known/openid-configuration`). An absolute URI with a host, `https`, no query, no fragment; `http` only for `localhost`, `127.0.0.1` or `::1`. `serve` does not start without discovery. |
-| `audience` | string | none, never defaulted | yes | The value tokens must carry in `aud`, and the `resource` of the RFC 9728 metadata. Same URI rule as `issuer`. |
+| `audience` | string | none, never defaulted | yes | The value tokens must carry in `aud`, and the `resource` of the RFC 9728 metadata. Set it to the MCP endpoint URL clients connect to (for example `https://gw.example.org/mcp`, no trailing slash): the connect script writes this same URL. Same URI rule as `issuer`. |
 | `groups_claim` | string | `"groups"` | no | The claim carrying group membership. |
 | `authorization_servers` | list of strings | `[issuer]` | no | Advertised in the RFC 9728 metadata. Each entry follows the `issuer` URI rule. |
 | `scopes_supported` | list of strings | `[]` | no | Advertised as `scopes_supported` in the metadata and as `scope` in every 401 challenge (`design/adr/0042`). Each is an RFC 6749 scope-token: printable ASCII from `!` to `~`, without space, `"` or `\`; none may repeat. Empty advertises no scope. |

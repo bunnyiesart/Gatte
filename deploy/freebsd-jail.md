@@ -486,7 +486,7 @@ What this script does *not* set up, and what a real deployment needs:
     below and the operator note in ADR-0008. There is one to point at now:
     `deploy/authelia-jail.md` builds an Authelia provider in a second jail
     at `https://id.example.internal` (198.51.100.20), issuing JWT access tokens
-    with `aud` = `https://mcp.example.internal/` and a `groups` claim. It does
+    with `aud` = `https://mcp.example.internal/mcp` and a `groups` claim. It does
     *not* add the hosts entry to this jail -- that is a deliberate boundary,
     and `id.example.internal` will not resolve here until someone adds it.
   - **the public keys the gateway will trust for signatures.** ADR-0010

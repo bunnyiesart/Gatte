@@ -15,7 +15,7 @@ assumes both.
 | Front door | nginx, TLS on `203.0.113.10:443`, SAN `DNS:mcp.example.internal, IP:203.0.113.10` |
 | Gateway | `127.0.0.1:8080` inside that jail, loopback only |
 | Service | `service mcp_gateway start`, runs as **`mcpgw`**, not root |
-| IdP | Authelia at `https://id.example.internal`, RS256, `aud: https://mcp.example.internal/` |
+| IdP | Authelia at `https://id.example.internal`, RS256, `aud: https://mcp.example.internal/mcp` |
 | Upstreams | the four `lab/servers/*` mocks, cross-compiled `freebsd/arm64` |
 | Vault | sops + age, `/usr/local/etc/mcp-gateway/secrets.json` |
 | Trust anchor | one Ed25519 key in `signer.trusted_keys`, `require_signed = true` |
@@ -276,7 +276,7 @@ plus the four fixtures, and lost `threatintel.enrich` and
 held ten names, not twelve, and that is the union working, not a bug.
 
 **Positive.** All four called through the real path -- `POST
-https://mcp.example.internal/` from the VM host, TLS verified against the SOC
+https://mcp.example.internal/mcp` from the VM host, TLS verified against the SOC
 CA, nginx, then the gateway -- with an Authelia RS256 token for `dfirlead`:
 
 ```
@@ -395,7 +395,7 @@ run three times in a row, green each time.
    in a table. After approving the eight domain tools: 8 `approved`/usable,
    4 `pending` (the credcheck fixtures).
 
-4. **The headline.** `POST https://mcp.example.internal/` from the VM host,
+4. **The headline.** `POST https://mcp.example.internal/mcp` from the VM host,
    TLS verified against the SOC CA, through nginx, with an Authelia
    RS256 token for `analyst`:
 

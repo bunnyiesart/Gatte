@@ -289,6 +289,15 @@ docker logs -f gatte                       # until "gatte: up at ..."
 docker exec gatte gatte selftest
 ```
 
+**From an image that used the bare domain as the token audience.** The
+audience is now the MCP endpoint URL, `https://DOMAIN/mcp`, and the new image
+applies it on its first start. A Claude Code entry whose URL is already
+`https://DOMAIN/mcp` needs nothing: its next token refresh returns a token for
+the new audience. An entry on the bare domain, which connect scripts from
+earlier images wrote, stops working: re-issue the scripts
+(`gatte connect -all`), and each such analyst runs theirs once and signs in
+again from `/mcp`.
+
 **Rollback.** Keep the old digest. If the new release migrated the database,
 the old one may refuse it; put the backup from step 1 back with the old
 image, then run the old image:

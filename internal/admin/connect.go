@@ -130,41 +130,44 @@ fi
 
 GATTE_DIR="$HOME/.config/gatte"
 mkdir -p "$GATTE_DIR/bin"
-{{if .CAPEM}}
-# The gateway's certificate comes from the team's own certificate authority.
-cat > "$GATTE_DIR/ca.pem" <<'GATTE_CA'
-{{.CAPEM}}GATTE_CA
-export NODE_EXTRA_CA_CERTS="$GATTE_DIR/ca.pem"
-added=no
-for rc in "$HOME/.zshrc" "$HOME/.bashrc" "$HOME/.profile"; do
-  [ -f "$rc" ] || continue
-  if ! grep -q 'gatte/ca.pem' "$rc"; then
-    printf '\n# Gatte: trust the team certificate authority\nexport NODE_EXTRA_CA_CERTS="$HOME/.config/gatte/ca.pem"\n' >> "$rc"
-  fi
-  added=yes
-done
-if [ "$added" = no ]; then
-  printf '# Gatte: trust the team certificate authority\nexport NODE_EXTRA_CA_CERTS="$HOME/.config/gatte/ca.pem"\n' >> "$HOME/.profile"
-fi
-say "✓ Trusted the team certificate authority"
-{{end}}
+
 # gatte-status: when Claude Code cannot reach Gatte, it tells the network
 # from Gatte being down from a sign-in that expired. Rewritten on every run.
 cat > "$GATTE_DIR/bin/gatte-status" <<'GATTE_STATUS'
 {{.Status}}GATTE_STATUS
 chmod 755 "$GATTE_DIR/bin/gatte-status"
-added=no
-for rc in "$HOME/.zshrc" "$HOME/.bashrc" "$HOME/.profile"; do
-  [ -f "$rc" ] || continue
-  if ! grep -q 'gatte/bin' "$rc"; then
-    printf '\n# Gatte: the gatte-status command\nexport PATH="$HOME/.config/gatte/bin:$PATH"\n' >> "$rc"
+{{if .CAPEM}}
+# The gateway's certificate comes from the team's own certificate authority.
+cat > "$GATTE_DIR/ca.pem" <<'GATTE_CA'
+{{.CAPEM}}GATTE_CA
+{{end}}
+# env.sh is the one file this script manages, and it is written in full on
+# every run: a new certificate authority or a reissue replaces it instead of
+# leaving a second copy behind. Each shell start-up file sources it through a
+# single line, added once, so nothing is ever appended twice.
+cat > "$GATTE_DIR/env.sh" <<'GATTE_ENV'
+# Managed by Gatte; rewritten by connect-gatte on each run. Do not edit.
+case ":$PATH:" in
+  *":$HOME/.config/gatte/bin:"*) ;;
+  *) PATH="$HOME/.config/gatte/bin:$PATH" ;;
+esac
+export PATH
+GATTE_ENV
+{{if .CAPEM}}printf '%s\n' 'export NODE_EXTRA_CA_CERTS="$HOME/.config/gatte/ca.pem"' >> "$GATTE_DIR/env.sh"
+{{end}}for rc in "$HOME/.zshrc" "$HOME/.bashrc" "$HOME/.profile"; do
+  [ -e "$rc" ] || [ "$rc" = "$HOME/.profile" ] || continue
+  if ! grep -q 'gatte/env.sh' "$rc" 2>/dev/null; then
+    printf '\n# Gatte\n. "$HOME/.config/gatte/env.sh"\n' >> "$rc"
   fi
-  added=yes
 done
-if [ "$added" = no ]; then
-  printf '# Gatte: the gatte-status command\nexport PATH="$HOME/.config/gatte/bin:$PATH"\n' >> "$HOME/.profile"
-fi
+. "$GATTE_DIR/env.sh"
 say "✓ Installed gatte-status in ~/.config/gatte/bin/gatte-status (new terminals have it on the PATH)"
+{{if .CAPEM}}
+say "✓ Trusted the team certificate authority for Claude Code (NODE_EXTRA_CA_CERTS)"
+say "  Browsers keep their own trust store, which this variable does not touch."
+say "  To open the Gatte console without a warning, import this file into your"
+say "  browser (or OS keychain) as a trusted authority: $GATTE_DIR/ca.pem"
+{{end}}
 if command -v curl >/dev/null 2>&1; then
   if curl -fsS{{if .CAPEM}} --cacert "$GATTE_DIR/ca.pem"{{end}} -o /dev/null --max-time 10 '{{.MetaURL}}'; then
     say "✓ Gatte answers at $GATTE_URL"
@@ -204,7 +207,10 @@ $Ca = Join-Path $GatteDir 'ca.pem'
 {{.CAPEM}}'@ | Set-Content -Path $Ca -Encoding ascii
 [Environment]::SetEnvironmentVariable('NODE_EXTRA_CA_CERTS', $Ca, 'User')
 $env:NODE_EXTRA_CA_CERTS = $Ca
-Write-Host "Trusted the team certificate authority"
+Write-Host "Trusted the team certificate authority for Claude Code (NODE_EXTRA_CA_CERTS)"
+Write-Host "Browsers keep their own trust store, which this variable does not touch."
+Write-Host "To open the Gatte console without a warning, import $Ca into your browser"
+Write-Host "(or the Windows certificate store) as a trusted root authority."
 {{else}}
 try {
   Invoke-WebRequest -UseBasicParsing -TimeoutSec 10 -Uri '{{.MetaURL}}' | Out-Null

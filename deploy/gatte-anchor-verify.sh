@@ -57,6 +57,48 @@ say()  { printf '\n== %s\n' "$1"; }
 ok()   { printf '   ok    %s\n' "$1"; }
 fail() { printf '   FAIL  %s\n' "$1" >&2; exit 1; }
 
+# VALIDATE THE OPERATOR VALUES BEFORE ANYTHING IS SENT. ssh joins its command
+# arguments into one string that the gateway host's shell re-parses as root,
+# so a value carrying a space, `;`, a quote or $(...) would split or add a
+# command there. Quoting cannot be relied on across that hop; an allowlist
+# can. Each pattern is the shape the real value has, and nothing more.
+refuse() {
+	fail "$1 is not $2; refusing to run with it.
+         value: '$3'"
+}
+# A login name: lowercase letter or underscore first, then [a-z0-9_-], <= 32.
+case "$GW_USER" in
+'' | [!a-z_]* | *[!a-z0-9_-]*) refuse GW_USER "an account name ([a-z_][a-z0-9_-]*)" "$GW_USER" ;;
+esac
+[ "${#GW_USER}" -le 32 ] || refuse GW_USER "an account name of at most 32 characters" "$GW_USER"
+# A jail name: alphanumeric first, then [A-Za-z0-9_-], <= 64. No dot, because
+# the name is also a path component of the sink path below, and `..` is not a
+# jail.
+case "$GW_JAIL" in
+'' | [!A-Za-z0-9]* | *[!A-Za-z0-9_-]*) refuse GW_JAIL "a jail name ([A-Za-z0-9][A-Za-z0-9_-]*)" "$GW_JAIL" ;;
+esac
+[ "${#GW_JAIL}" -le 64 ] || refuse GW_JAIL "a jail name of at most 64 characters" "$GW_JAIL"
+# An absolute path of plain path characters, with no `..` component.
+case "$GW_CONFIG" in
+[!/]* | *[!A-Za-z0-9._/-]* | */../* | */..) refuse GW_CONFIG "an absolute path ([A-Za-z0-9._/-], no ..)" "$GW_CONFIG" ;;
+esac
+# A chain identifier. It goes into the Graylog query rather than to ssh, and
+# the same allowlist keeps it from widening that query.
+case "$CHAIN" in
+'' | [!A-Za-z0-9]* | *[!A-Za-z0-9_.-]*) refuse CHAIN "a chain identifier ([A-Za-z0-9][A-Za-z0-9_.-]*)" "$CHAIN" ;;
+esac
+[ "${#CHAIN}" -le 128 ] || refuse CHAIN "a chain identifier of at most 128 characters" "$CHAIN"
+# The ssh destination: [user@]host, IPv6 allowed bracketed or bare. A leading
+# `-` would make ssh read it as an option (-oProxyCommand=... runs a local
+# command), so it is refused here and `--` ends option parsing at the call.
+case "$GW_HOST" in
+'' | -* | *[!]A-Za-z0-9._:@[-]*) refuse GW_HOST "an ssh destination ([user@]host, [A-Za-z0-9._:@[]-], no leading -)" "$GW_HOST" ;;
+esac
+# The Graylog relative range in seconds; also compared numerically below.
+case "$RANGE" in
+'' | *[!0-9]*) refuse RANGE "a number of seconds ([0-9]+)" "$RANGE" ;;
+esac
+
 # ------------------------------------------------------------ the SIEM side
 say "Graylog: fetching the shipped lines for chain $CHAIN"
 # The credential goes in a -K config file, not in -u. `-u user:pass` puts it
@@ -241,7 +283,11 @@ set +e
 # service account cannot write -- and the gateway then fails to append to
 # its own trail. A verification tool that breaks the thing it verifies is
 # the worst shape of all, because it breaks it while reporting success.
-ssh -o BatchMode=yes "$GW_HOST" \
+#
+# Every value spliced into this string was checked against an allowlist
+# above (HEAD as 64 hex, the GW_* values at the top), which is what makes
+# the remote shell's re-parse of it safe.
+ssh -o BatchMode=yes -- "$GW_HOST" \
 	"jexec -U $GW_USER $GW_JAIL /usr/local/bin/mcp-gateway audit -verify -config $GW_CONFIG -expect-head $HEAD" \
 	> "$WORK/verify.out" 2>&1
 RC=$?
@@ -267,7 +313,8 @@ SINK="/usr/local/bastille/jails/$GW_JAIL/root/var/log/mcp-gateway/audit.jsonl"
 #
 # grep -c exits 1 when it matches nothing, which for -v means "the file is all
 # heartbeats"; the || below turns that into "?" and the branches handle it.
-SINK_N=$(ssh -o BatchMode=yes "$GW_HOST" "grep -vc '\"type\":\"heartbeat\"' $SINK" 2>/dev/null | tr -d ' ') || SINK_N="?"
+# SINK holds only the validated GW_JAIL, so it is safe in the remote string.
+SINK_N=$(ssh -o BatchMode=yes -- "$GW_HOST" "grep -vc '\"type\":\"heartbeat\"' $SINK" 2>/dev/null | tr -d ' ') || SINK_N="?"
 printf '   audit lines in the sink on the gateway: %s  (whole file, heartbeats excluded)\n' "$SINK_N"
 printf '   distinct records in the SIEM:           %s  (last %ss only)\n' "$DISTINCT" "$RANGE"
 printf '\n'

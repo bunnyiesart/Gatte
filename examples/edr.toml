@@ -13,6 +13,7 @@
 #      EDR_CLIENT_SECRET
 #
 # 2. Register and sign:
+#    Where podman exists, prefer -transport oci (design/adr/0034).
 #
 #      mcp-gateway upstream register -config "$CFG" -name edr -transport stdio \
 #        -command /usr/local/bin/your-edr-mcp \

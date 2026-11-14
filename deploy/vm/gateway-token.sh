@@ -31,7 +31,7 @@ CA=/usr/local/etc/soc-ca/ca.crt
 SECRETS=/usr/local/bastille/jails/authelia/root/usr/local/etc/authelia/secrets
 ISSUER=https://id.example.internal
 CLIENT_ID=mcp-gateway
-AUDIENCE='https://mcp.example.internal/'
+AUDIENCE='https://mcp.example.internal/mcp'
 REDIRECT_URI='https://mcp.example.internal/oauth2/callback'
 
 WORK=$(mktemp -d /tmp/gateway-token.XXXXXX)

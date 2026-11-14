@@ -19,7 +19,7 @@ CFG="$ETC/authelia.yml"
 USERS="$ETC/authelia/users_database.yml"
 
 CLIENT_ID=mcp-gateway
-AUDIENCE='https://mcp.example.internal/'
+AUDIENCE='https://mcp.example.internal/mcp'
 
 # ------------------------------------------------------------------ layout
 mkdir -p "$ETC/authelia" "$SECRETS" /var/db/authelia /var/log/authelia \

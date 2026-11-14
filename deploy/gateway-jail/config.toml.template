@@ -29,7 +29,7 @@ issuer = "https://id.example.internal"
 # This gateway's own resource identifier (RFC 8707). Tokens minted for any
 # other service of the same IdP are refused. Never defaulted, and it must
 # match what Authelia puts in `aud` exactly.
-audience = "https://mcp.example.internal/"
+audience = "https://mcp.example.internal/mcp"
 
 groups_claim = "groups"
 

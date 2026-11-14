@@ -52,7 +52,7 @@ NGINX_ERROR=/var/log/nginx/mcp-error.log
 DBDIR=/var/db/mcp-gateway
 
 CA=/usr/local/etc/soc-ca/ca.crt
-ENDPOINT="https://mcp.example.internal/"
+ENDPOINT="https://mcp.example.internal/mcp"
 
 WORK=$(mktemp -d /tmp/gateway-verify.XXXXXX)
 trap 'rm -rf "$WORK"' EXIT INT TERM
@@ -349,7 +349,7 @@ echo "    body: $(head -c 200 "$WORK/resp")"
 # trusts. Without this, "garbage is rejected" could just mean "the parser
 # choked", which is a much weaker statement than "the signature is checked".
 FORGED=$(printf '%s' '{"alg":"RS256","kid":"main","typ":"at+jwt"}' | openssl base64 -A | tr -d '=' | tr '+/' '-_')
-FORGED="$FORGED.$(printf '%s' '{"iss":"https://id.example.internal","aud":["https://mcp.example.internal/"],"sub":"analyst","groups":["dfir-leads"],"exp":9999999999}' | openssl base64 -A | tr -d '=' | tr '+/' '-_').ZmFrZXNpZ25hdHVyZQ"
+FORGED="$FORGED.$(printf '%s' '{"iss":"https://id.example.internal","aud":["https://mcp.example.internal/mcp"],"sub":"analyst","groups":["dfir-leads"],"exp":9999999999}' | openssl base64 -A | tr -d '=' | tr '+/' '-_').ZmFrZXNpZ25hdHVyZQ"
 STATUS=$(mcp "$FORGED" "$TOOLS_LIST")
 [ "$STATUS" = 401 ] || fail "a well-formed but unsigned JWT claiming dfir-leads got HTTP $STATUS, expected 401"
 ok "HTTP 401 for a well-formed JWT with a bogus signature claiming dfir-leads"

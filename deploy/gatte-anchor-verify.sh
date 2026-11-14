@@ -88,6 +88,16 @@ case "$CHAIN" in
 '' | [!A-Za-z0-9]* | *[!A-Za-z0-9_.-]*) refuse CHAIN "a chain identifier ([A-Za-z0-9][A-Za-z0-9_.-]*)" "$CHAIN" ;;
 esac
 [ "${#CHAIN}" -le 128 ] || refuse CHAIN "a chain identifier of at most 128 characters" "$CHAIN"
+# The ssh destination: [user@]host, IPv6 allowed bracketed or bare. A leading
+# `-` would make ssh read it as an option (-oProxyCommand=... runs a local
+# command), so it is refused here and `--` ends option parsing at the call.
+case "$GW_HOST" in
+'' | -* | *[!]A-Za-z0-9._:@[-]*) refuse GW_HOST "an ssh destination ([user@]host, [A-Za-z0-9._:@[]-], no leading -)" "$GW_HOST" ;;
+esac
+# The Graylog relative range in seconds; also compared numerically below.
+case "$RANGE" in
+'' | *[!0-9]*) refuse RANGE "a number of seconds ([0-9]+)" "$RANGE" ;;
+esac
 
 # ------------------------------------------------------------ the SIEM side
 say "Graylog: fetching the shipped lines for chain $CHAIN"
@@ -275,9 +285,9 @@ set +e
 # the worst shape of all, because it breaks it while reporting success.
 #
 # Every value spliced into this string was checked against an allowlist
-# above (HEAD as 64 hex, the GW_* values at the top), which is what makes the
-# remote shell's re-parse of it safe.
-ssh -o BatchMode=yes "$GW_HOST" \
+# above (HEAD as 64 hex, the GW_* values at the top), which is what makes
+# the remote shell's re-parse of it safe.
+ssh -o BatchMode=yes -- "$GW_HOST" \
 	"jexec -U $GW_USER $GW_JAIL /usr/local/bin/mcp-gateway audit -verify -config $GW_CONFIG -expect-head $HEAD" \
 	> "$WORK/verify.out" 2>&1
 RC=$?
@@ -304,7 +314,7 @@ SINK="/usr/local/bastille/jails/$GW_JAIL/root/var/log/mcp-gateway/audit.jsonl"
 # grep -c exits 1 when it matches nothing, which for -v means "the file is all
 # heartbeats"; the || below turns that into "?" and the branches handle it.
 # SINK holds only the validated GW_JAIL, so it is safe in the remote string.
-SINK_N=$(ssh -o BatchMode=yes "$GW_HOST" "grep -vc '\"type\":\"heartbeat\"' $SINK" 2>/dev/null | tr -d ' ') || SINK_N="?"
+SINK_N=$(ssh -o BatchMode=yes -- "$GW_HOST" "grep -vc '\"type\":\"heartbeat\"' $SINK" 2>/dev/null | tr -d ' ') || SINK_N="?"
 printf '   audit lines in the sink on the gateway: %s  (whole file, heartbeats excluded)\n' "$SINK_N"
 printf '   distinct records in the SIEM:           %s  (last %ss only)\n' "$DISTINCT" "$RANGE"
 printf '\n'

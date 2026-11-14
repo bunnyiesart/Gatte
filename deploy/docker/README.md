@@ -105,11 +105,15 @@ does not echo. Retype a token the file held there; it was not kept.
 What the image can and cannot register from that file:
 
 - **`"type": "http"` / `"url"` entries** are remote MCP servers. Setup
-  registers them natively with `gatte remote add`, using the kept endpoint
-  URL and deriving where the token goes from the entry's one header
-  (`Authorization` is a bearer token; any other name is that header). An
-  entry with no header is registered keyless; one with more than one header
-  is left for you to add by hand. A REST API is a separate backend: it is
+  registers them natively with `gatte remote add`. Only the URL's origin
+  was kept, so setup asks for the full endpoint URL, offering the origin as
+  the default: type the path too (for example `https://host/mcp`). A URL
+  with no path is registered only if you confirm it, since such a server
+  is reached but serves no tools. Where the token goes comes from the
+  entry's one header (`Authorization` is a bearer token; any other name is
+  that header). An entry with no header is registered with no
+  authentication only if you confirm it; one with more than one header is
+  left for you to add by hand. A REST API is a separate backend: it is
   not in the file, and you add it by hand with its OpenAPI document.
 - **`"command"` entries** (`docker run ...`, `npx ...`, any local process)
   are skipped with a one-line reason. This image runs no backend processes

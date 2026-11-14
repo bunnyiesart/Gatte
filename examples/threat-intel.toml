@@ -11,6 +11,7 @@
 #      INTEL_SOURCE_B_KEY
 #
 # 2. Register and sign:
+#    Where podman exists, prefer -transport oci (design/adr/0034).
 #
 #      mcp-gateway upstream register -config "$CFG" -name intel -transport stdio \
 #        -command /usr/local/bin/your-intel-mcp \

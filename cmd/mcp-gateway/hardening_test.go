@@ -109,6 +109,39 @@ func TestUpstreamRegister_RefusesACredentialedStdioEntryWithoutTheOptIn(t *testi
 	requireExit(t, code, exitOK, "register with the opt-in\n"+stderr)
 }
 
+// A credentialed stdio entry registered under the opt-in gets a one-line
+// pointer at -transport oci; it is informational, so the exit status stays
+// exitOK. Entries without credentials, and oci entries, get no such line.
+func TestRunUpstreamRegister_CredentialedStdioPointsAtOCI(t *testing.T) {
+	const note = "-transport oci -image NAME@sha256:... is the isolated path"
+	tests := []struct {
+		name     string
+		entry    registry.UpstreamServer
+		wantNote bool
+	}{
+		{"credentialed stdio", registry.UpstreamServer{
+			Name: "casemgmt", Transport: registry.TransportStdio, Command: "/usr/local/bin/casemgmt-mcp",
+			EnvVarNames: []string{"CASEMGMT_API_KEY"},
+		}, true},
+		{"stdio without credentials", registry.UpstreamServer{
+			Name: "iocsweep", Transport: registry.TransportStdio, Command: "/usr/local/bin/ioc-sweep",
+		}, false},
+		{"credentialed oci", registry.UpstreamServer{
+			Name: "casemgmt", Transport: registry.TransportOCI, Image: ociTestImage,
+			Args: []string{"--network=none"}, EnvVarNames: []string{"CASEMGMT_API_KEY"},
+		}, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newOpTestEnv(t)
+			requireExit(t, runUpstreamRegister(e.opEnv, tc.entry), exitOK, "register\n"+e.bothText())
+			if got := strings.Contains(e.stdoutText(), note); got != tc.wantNote {
+				t.Errorf("note printed = %v, want %v:\n%s", got, tc.wantNote, e.stdoutText())
+			}
+		})
+	}
+}
+
 // TestSign_RefusesACredentialedStdioEntryWithoutTheOptIn: a row written
 // past `upstream register` (by an older binary, or directly into the
 // database) must not get a signature the serving process would refuse.

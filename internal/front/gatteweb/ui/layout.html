@@ -10,9 +10,10 @@
 <body>
 <header class="bar">
   <div class="bar-inner">
+    <span class="wctl" aria-hidden="true"><span class="dot red"></span><span class="dot amber"></span><span class="dot green"></span></span>
     <a class="wordmark" href="{{$.Base}}/servers">Gatte</a>
     <nav aria-label="Console">
-      {{range .NavItems}}<a href="{{$.Base}}{{.Path}}" {{if .Current}}aria-current="page"{{end}}>{{.Label}}</a>
+      {{range .NavItems}}<a href="{{$.Base}}{{.Path}}"{{if .AccessKey}} accesskey="{{.AccessKey}}" title="{{.Label}} — access key {{.AccessKey}}"{{end}}{{if .Current}} aria-current="page"{{end}}>{{.Label}}</a>
       {{end}}
     </nav>
     {{if .Operator}}<span class="whoami">Operating as <b>{{vis .Operator}}</b></span>{{end}}

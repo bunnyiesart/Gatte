@@ -4,6 +4,7 @@ import (
 	"html/template"
 	"net/http"
 	"sort"
+	"strconv"
 
 	"github.com/bunnyiesart/Gatte/pkg/adminapi"
 )
@@ -75,6 +76,11 @@ type navView struct {
 	Path    string
 	Label   string
 	Current bool
+	// AccessKey is the digit (1..9) this link answers to as a browser access
+	// key, assigned by position among the visible links; empty past the ninth.
+	// The layout both wires it as accesskey and shows it as the tab's badge, so
+	// the printed number and the shortcut are always the same key.
+	AccessKey string
 }
 
 // navFor builds the nav links visible for a request: the registered entities
@@ -90,7 +96,11 @@ func navFor(current string, c Capabilities) []navView {
 		if n.Show != nil && !n.Show(c) {
 			continue
 		}
-		out = append(out, navView{Path: n.Path, Label: n.Label, Current: n.ID == current})
+		v := navView{Path: n.Path, Label: n.Label, Current: n.ID == current}
+		if len(out) < 9 {
+			v.AccessKey = strconv.Itoa(len(out) + 1)
+		}
+		out = append(out, v)
 	}
 	return out
 }

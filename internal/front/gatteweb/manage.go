@@ -114,9 +114,11 @@ type registered struct {
 	Signed bool
 	// Grant is what granting the API to a role did, or that nothing was
 	// granted when no role was named; empty without the accounts socket.
-	Grant    string
-	GrantOK  bool
-	ReviewAt string
+	// GrantInfo marks the latter: neither a success nor a failure.
+	Grant     string
+	GrantOK   bool
+	GrantInfo bool
+	ReviewAt  string
 }
 
 // grantBackend puts `"BACKEND" = ["*"]` in role's [role.grants], through
@@ -145,6 +147,42 @@ func (f *Front) grantBackend(r *http.Request, role, backend string) (string, boo
 		return "Granted to " + role + " in the roles file; " + reload.Summary, false
 	}
 	return "Role " + role + " may call every safe tool of " + backend + " once you approve it.", true
+}
+
+// grantedElsewhere is the notice when the form named no role. The roles file
+// may already grant backend (a grant can name a backend before it is
+// registered, or outlive its removal), so it names those roles rather than
+// claiming nobody can call it. Unreadable roles make no claim either way.
+func (f *Front) grantedElsewhere(r *http.Request, backend string) string {
+	const none = "No role was granted here."
+	cur, err := f.acc.GetRoles(r.Context())
+	if err != nil {
+		return none
+	}
+	var by []string
+	for _, b := range frontkit.ParseRoles(cur.Text) {
+		if grantsBackend(b, backend) {
+			by = append(by, b.Name)
+		}
+	}
+	if len(by) == 0 {
+		return none + " No role grants " + backend + " yet."
+	}
+	return none + " Already granted by: " + strings.Join(by, ", ") + "."
+}
+
+// grantsBackend reports whether role b reaches any tool of backend, through
+// [role.grants] or a flat "backend.tool" entry.
+func grantsBackend(b frontkit.RoleBlock, backend string) bool {
+	if len(b.Grants[backend]) > 0 {
+		return true
+	}
+	for _, t := range b.Tools {
+		if strings.HasPrefix(t, backend+".") {
+			return true
+		}
+	}
+	return false
 }
 
 type grantStatus int

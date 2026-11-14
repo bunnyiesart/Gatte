@@ -6,6 +6,8 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+
+	"github.com/bunnyiesart/Gatte/pkg/frontkit"
 )
 
 // TestServerNewPage_NoRolePrefill: the Add API form offers the grant field
@@ -56,5 +58,22 @@ func TestServerRegister_GrantFailureGetsOwnNotice(t *testing.T) {
 	notice := strings.LastIndex(s[:i], "<div class=\"notice")
 	if notice < 0 || !strings.HasPrefix(s[notice:], `<div class="notice error"`) {
 		t.Errorf("the grant refusal is not in a notice error block:\n%s", s[max(0, i-120):i+len(msg)])
+	}
+}
+
+// TestGrantsBackend: a role reaches a backend through [role.grants] or a flat
+// "backend.tool" entry; a name that only shares a prefix does not count.
+func TestGrantsBackend(t *testing.T) {
+	text := "[[role]]\nname = \"ir\"\ntools = []\n[role.grants]\n\"misp\" = [\"*\"]\n" +
+		"[[role]]\nname = \"hunt\"\ntools = [\"misp.search\"]\n" +
+		"[[role]]\nname = \"other\"\ntools = [\"misp2.search\"]\n"
+	var by []string
+	for _, b := range frontkit.ParseRoles(text) {
+		if grantsBackend(b, "misp") {
+			by = append(by, b.Name)
+		}
+	}
+	if strings.Join(by, ",") != "ir,hunt" {
+		t.Errorf("roles granting misp = %v, want [ir hunt]", by)
 	}
 }

@@ -432,7 +432,7 @@ func (f *Front) serverRegister(w http.ResponseWriter, r *http.Request) {
 			// role) is not lost among the ingestion messages.
 			d.Grant, d.GrantOK = f.grantBackend(r, form.GrantRole, res.Name)
 		} else {
-			d.Grant, d.GrantOK = "Not granted to any role: no role may call "+res.Name+"'s tools until the roles file grants it.", true
+			d.Grant, d.GrantInfo = f.grantedElsewhere(r, res.Name), true
 		}
 	}
 	d.Output = strings.Join(out, "\n")

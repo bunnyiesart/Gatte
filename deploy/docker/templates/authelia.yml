@@ -101,16 +101,29 @@ identity_providers:
           - 'preferred_username'
     clients:
       # Claude Code on the analyst's machine: public (no secret can live
-      # there), PKCE S256, RFC 8252 loopback redirect. The audience must be
-      # the gateway's [oidc] audience exactly, trailing slash included.
+      # there), PKCE S256, RFC 8252 loopback redirect. See the audience
+      # block below for how its RFC 8707 resource is matched.
       - client_id: 'claude-code'
         client_name: 'Claude Code (analyst MCP client)'
         lifespan: 'mcp_short'
         public: true
         authorization_policy: 'one_factor'
         claims_policy: 'mcp_gateway'
+        # @AUDIENCE@ (with the trailing slash) is the gateway's [oidc]
+        # audience and the resource it publishes in its RFC 9728 metadata.
+        # The gateway's token check requires that exact value in `aud`, so it
+        # stays first and is what the authorization-code grant mints.
+        #
+        # @AUDIENCE_NOSLASH@ is the same URL without the trailing slash. The
+        # MCP client sends an RFC 8707 `resource` on the refresh_token grant;
+        # when its canonical form drops the trailing slash it no longer
+        # matches a slash-only audience and Authelia rejects the refresh as
+        # invalid_target, forcing a manual /mcp re-login. Listing both forms
+        # makes either an accepted target. This does not touch the short
+        # access-token lifespan (mcp_short), which is the stolen-token window.
         audience:
           - '@AUDIENCE@'
+          - '@AUDIENCE_NOSLASH@'
         scopes:
           - 'openid'
           - 'profile'

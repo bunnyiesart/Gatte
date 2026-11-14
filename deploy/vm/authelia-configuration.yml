@@ -151,12 +151,20 @@ identity_providers:
         claims_policy: 'mcp_gateway'
         lifespan: 'mcp_short'
 
-        # RFC 8707 resource indicator. The gateway is a Resource Server and
-        # rejects a token whose `aud` is not exactly this, so this string
-        # and the gateway's configured audience have to stay identical --
-        # trailing slash included.
+        # RFC 8707 resource indicators. The gateway is a Resource Server and
+        # requires its own audience in a token's `aud`, so the slash form
+        # stays first and has to stay identical to the gateway's configured
+        # audience -- trailing slash included -- and is what the
+        # authorization-code grant mints.
+        #
+        # The slash-less form is listed too because an MCP client sends a
+        # `resource` on the refresh_token grant whose canonical URL may drop
+        # the trailing slash; without a matching audience Authelia rejects the
+        # refresh as invalid_target. Both forms keep either accepted without
+        # changing the short access-token lifespan.
         audience:
           - 'https://mcp.example.internal/'
+          - 'https://mcp.example.internal'
 
         scopes:
           - 'openid'

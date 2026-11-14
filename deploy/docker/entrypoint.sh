@@ -35,6 +35,7 @@ mkdirs() {
 render() { # TEMPLATE DEST MODE OWNER
 	sed -e "s|@ISSUER@|$ISSUER|g" \
 		-e "s|@AUDIENCE@|$AUDIENCE|g" \
+		-e "s|@AUDIENCE_NOSLASH@|${AUDIENCE%/}|g" \
 		-e "s|@IDP_URL@|$IDP_URL|g" \
 		-e "s|@SESSION_DOMAIN@|$GATTE_DOMAIN|g" \
 		-e "s|@TRUSTED_KEY@|$(cat "$SIGNING_PUB")|g" \

@@ -11,14 +11,18 @@ Code can call, with the API key injected server-side. MCP servers that run
 as a process or a container (`stdio`, `oci`) are not served from this image;
 use the host install in the top-level `README.md` for those.
 
+This README is the canonical guide for installing and running the image. It
+supersedes any standalone "Gatte setup" or "Gatte VM setup" guide handed out
+separately; follow this file.
+
 ## Install
 
 You need Docker (or Podman), and DNS for two names pointing at the host:
 `gatte.example.org` and `auth.gatte.example.org`. Analysts reach both on
 443. Three steps:
 
-**1. Verify the image.** Take the digest of the release from its GitHub
-release page, and check it was built by this repository's workflow:
+**1. Verify the image.** Take the digest of the latest release from its
+GitHub release page, and check it was built by this repository's workflow:
 
 ```sh
 IMAGE=ghcr.io/bunnyiesart/gatte@sha256:DIGEST
@@ -139,6 +143,38 @@ ssh -L 8090:127.0.0.1:8090 you@the-host    # from your machine, then open the li
 
 The link works once. Running `gatte console` again ends the session and
 prints a new one; `gatte console stop` closes it.
+
+## Reaching the gateway and the backends
+
+Three network paths, each different on purpose.
+
+- **Analysts to the gateway.** `https://GATTE_DOMAIN` and
+  `https://auth.GATTE_DOMAIN`, both on 443 (or `GATTE_PORT`). Publish that
+  port where analysts can reach it. On a private deployment that is usually a
+  VPN or a reverse proxy already in front of the host. The connect script each
+  analyst runs targets these two names, so both must resolve and be reachable
+  from the analyst's machine.
+
+- **You to the console.** The console is never on the network: the container
+  publishes it on the host's loopback only (`-p 127.0.0.1:8090:8090`), so you
+  reach it through an SSH tunnel to the host and open the one-time link
+  `gatte console` prints (see "The web console" above). Only `docker exec`
+  prints that link.
+
+- **The gateway to the backends.** The container is the HTTP client: it calls
+  each API's base URL outbound, over the host's own routes, so a backend the
+  host can reach -- including one behind a VPN or reverse proxy the host holds --
+  the container reaches too. Two limits are Gatte's own, not the network's:
+
+  - The egress guard (`design/adr/0048`) refuses a backend whose name resolves
+    to a loopback, private (`10/8`, `172.16/12`, `192.168/16`, `fc00::/7`),
+    link-local or carrier-grade-NAT (`100.64/10`) address.
+  - The guarded client ignores `HTTPS_PROXY` by design, so backend calls
+    cannot be routed through an outbound proxy.
+
+  A backend that lives only on a private network must therefore be fronted at
+  a routable name the container can reach directly -- commonly the same VPN or
+  reverse-proxy endpoint analysts use.
 
 ## Add an API
 
@@ -329,15 +365,11 @@ docker run -d --name gatte -p 8443:8443 -e GATTE_DOMAIN=gatte.localtest.me \
 docker exec -it gatte gatte setup
 ```
 
-## Build it yourself
-
-```sh
-docker build -f deploy/docker/Dockerfile -t gatte:local .
-```
+## Compose
 
 `deploy/docker/compose.yaml` runs the same single container, for those who
 keep their services in a compose file. It has no default image: set
-`GATTE_IMAGE` to a digest.
+`GATTE_IMAGE` to a verified release digest.
 
 ## Limits
 

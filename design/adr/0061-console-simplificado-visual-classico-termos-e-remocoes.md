@@ -42,6 +42,23 @@ Mínimo, retrô, CSS simples, sem framework.
   botões quadrados no estilo `[ OK ]`.
 - Sem emoji; o estado vem da cor e do texto (regra de saída de UI).
 
+> **Anotação (14 nov 2026, M6.1).** O console web afina o visual clássico em
+> dois pontos; o TUI não muda (segue quadrado, `[ OK ]`).
+> - **Botões arredondados.** Todos os botões do console ganham cantos
+>   arredondados (`border-radius`), em vez de quadrados. Os chanfros de 1px, a
+>   fonte de sistema e o estado por cor+texto continuam.
+> - **Topo estilo terminal.** A barra superior deixa de ser a faixa navy e
+>   passa a uma faixa escura e chata no estilo de uma aba de terminal: pontos
+>   de semáforo decorativos à esquerda, abas em fonte mono com um badge
+>   numérico, e a aba atual destacada. O número de cada aba é o seu **access
+>   key** real (`accesskey` 1..9, atribuído no servidor por posição), então o
+>   número impresso e o atalho são sempre a mesma tecla.
+> - **Mais respiro.** Mais espaçamento entre seções, linhas e células para
+>   reduzir a poluição visual.
+>
+> Continua tudo dentro do §1: zero-JS (`0036`), só CSS em `ui/app.css`, sem
+> framework, sem emoji.
+
 ### 2. Termos mais simples (só cópia de UI)
 
 | Antes | Depois |

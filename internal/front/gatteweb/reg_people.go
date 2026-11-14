@@ -26,9 +26,11 @@ func init() {
 			mux.HandleFunc("GET /people/connect/script", f.connectScript)
 			mux.HandleFunc("POST /people/add", f.accountAdd)
 			mux.HandleFunc("POST /people/groups", f.accountGroups)
+			mux.HandleFunc("GET /people/disable", f.accountDisableConfirm)
 			mux.HandleFunc("POST /people/disable", f.accountDisable)
 			mux.HandleFunc("POST /people/enable", f.accountEnable)
 			mux.HandleFunc("POST /people/reset", f.accountReset)
+			mux.HandleFunc("GET /people/offboard", f.accountOffboardConfirm)
 			mux.HandleFunc("POST /people/offboard", f.accountOffboard)
 			mux.HandleFunc("POST /people/delete", f.accountDelete)
 		},

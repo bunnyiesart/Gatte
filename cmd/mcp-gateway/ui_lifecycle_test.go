@@ -24,13 +24,30 @@ func TestUI_OffboardBlocksDisablesAndListsWhatIsLeft(t *testing.T) {
 		t.Fatal(err)
 	}
 	page := uiDo(s, "GET", "/people/account?u=ana", nil, cookie, nil).Body.String()
-	if !strings.Contains(page, "/people/offboard") || !strings.Contains(page, `name="subject"`) || !strings.Contains(page, "/people/delete") {
+	if !strings.Contains(page, `href="`+s.session+`/people/offboard?u=ana"`) || !strings.Contains(page, "/people/delete") {
 		t.Fatalf("the account page has no offboard or delete:\n%s", page)
 	}
-	// The subject is typed: the page reads no audit data to offer one, and
+	// The account page links Offboard to its confirm page, where the subject
+	// is typed and the POST carries the form token.
+	confirm := uiDo(s, "GET", "/people/offboard?u=ana", nil, cookie, nil).Body.String()
+	for _, want := range []string{`action="` + s.session + `/people/offboard"`, `name="username" value="ana"`, `name="subject"`, `name="reason"`, `name="csrf" value="` + s.csrf + `"`} {
+		if !strings.Contains(confirm, want) {
+			t.Fatalf("the offboard confirm page lacks %q:\n%s", want, confirm)
+		}
+	}
+	// The subject is typed: neither page reads audit data to offer one, and
 	// nothing comes pre-selected (design/adr/0046, 0061).
-	if strings.Contains(page, "sub-ana") || strings.Contains(page, "<select name=\"subject\"") {
-		t.Fatalf("the offboard form offers a subject from the audit trail:\n%s", page)
+	for _, p := range []string{page, confirm} {
+		if strings.Contains(p, "sub-ana") || strings.Contains(p, "<select name=\"subject\"") {
+			t.Fatalf("the offboard flow offers a subject from the audit trail:\n%s", p)
+		}
+	}
+	// Opening the confirm page changes nothing.
+	if b, _ := e.blocks().Blocked(context.Background(), "sub-ana"); b {
+		t.Fatal("GET of the offboard confirm page blocked the subject")
+	}
+	if f, _ := os.ReadFile(path); strings.Contains(string(f), "disabled: true") {
+		t.Fatal("GET of the offboard confirm page disabled the account")
 	}
 	w := uiDo(s, "POST", "/people/offboard", url.Values{"username": {"ana"}, "subject": {"sub-ana"}, "reason": {"left"}, "csrf": {s.csrf}}, cookie, samePost)
 	body := w.Body.String()

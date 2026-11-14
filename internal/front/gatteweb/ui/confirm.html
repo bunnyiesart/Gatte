@@ -1,0 +1,21 @@
+{{template "top" .}}
+{{$csrf := .CSRF}}
+{{with .Data}}
+<a class="back" href="{{.Back}}"><svg viewBox="0 0 8 14" width="8" height="14" aria-hidden="true"><path d="M7 1L1 7l6 6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>{{vis .BackLabel}}</a>
+<div class="result">
+  <span class="result-icon {{if .Danger}}danger{{end}}">{{template "warn"}}</span>
+  <h1>{{$.Title}}</h1>
+  <p class="sub">{{.Lead}}</p>
+</div>
+{{if .Warn}}<div class="notice danger" role="alert">{{template "warn"}}<p>{{.Warn}}</p></div>{{end}}
+<form class="group form" method="post" action="{{.Action}}">
+  <input type="hidden" name="csrf" value="{{$csrf}}">
+  {{range .Hidden}}<input type="hidden" name="{{.Name}}" value="{{.Value}}">
+  {{end}}
+  {{range .Fields}}<label class="field wide"><span>{{.Label}}</span><input name="{{.Name}}" autocomplete="off" spellcheck="false"{{if .Mono}} class="mono"{{end}}{{if .Placeholder}} placeholder="{{.Placeholder}}"{{end}}></label>
+  {{end}}
+  <div class="form-end"><span class="btn-pair"><a class="btn" href="{{.Back}}">Cancel</a><button class="btn{{if .Danger}} destructive{{else}} primary{{end}}">{{.Button}}</button></span></div>
+</form>
+{{if .Caption}}<p class="caption center">{{.Caption}}</p>{{end}}
+{{end}}
+{{template "bottom" .}}

@@ -11,6 +11,7 @@ package gatteweb
 // (design/adr/0040 §1).
 
 import (
+	"context"
 	"errors"
 	"html/template"
 	"net/http"
@@ -155,6 +156,25 @@ func (f *Front) accountGroups(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// accountDisableConfirm is the pause before disabling: the account page's
+// Disable button links here, and this page holds the POST.
+func (f *Front) accountDisableConfirm(w http.ResponseWriter, r *http.Request) {
+	if f.acc == nil {
+		http.NotFound(w, r)
+		return
+	}
+	u := r.URL.Query().Get("u")
+	f.confirm(w, r, "users", "Disable "+frontkit.VisibleText(u), confirmView{
+		Back:      f.kit.Base() + "/people/account?u=" + url.QueryEscape(u),
+		BackLabel: frontkit.VisibleText(u),
+		Lead:      "Disabling stops new sign-ins for this account. It does not end a session already open; offboard the person to cut that off.",
+		Action:    f.kit.Base() + "/people/disable",
+		Hidden:    []confirmHidden{{Name: "username", Value: u}},
+		Button:    "Disable",
+		Danger:    true,
+	})
+}
+
 func (f *Front) accountDisable(w http.ResponseWriter, r *http.Request) {
 	f.accountAction(w, r, "Disable", func() (string, string, adminapi.ActionResult, error) {
 		u := r.PostForm.Get("username")
@@ -177,6 +197,43 @@ func (f *Front) accountReset(w http.ResponseWriter, r *http.Request) {
 		res, err := f.acc.ResetAccountPassword(r.Context(), u)
 		return u, res.OneTimePassword, res.ActionResult, err
 	})
+}
+
+// accountOffboardConfirm is the offboard's own page: the account page links
+// here, the subject and reason are typed here, and the page says loudly that an
+// empty subject blocks nobody. It gates on the offboard feature, so a console
+// without it never shows the page.
+func (f *Front) accountOffboardConfirm(w http.ResponseWriter, r *http.Request) {
+	if !f.accFeature(r.Context(), adminapi.FeatureOffboard) {
+		http.NotFound(w, r)
+		return
+	}
+	u := r.URL.Query().Get("u")
+	f.confirm(w, r, "users", "Offboard "+frontkit.VisibleText(u), confirmView{
+		Back:      f.kit.Base() + "/people/account?u=" + url.QueryEscape(u),
+		BackLabel: frontkit.VisibleText(u),
+		Lead:      "Offboarding blocks their gateway ID, so the gateway refuses their next request whatever token they hold, then disables the account.",
+		Warn:      "Leave the gateway ID empty and nothing is blocked: the account is only disabled, and any session already open keeps working. Type the ID yourself, exactly as your SIEM shows it.",
+		Action:    f.kit.Base() + "/people/offboard",
+		Hidden:    []confirmHidden{{Name: "username", Value: u}},
+		Fields: []confirmField{
+			{Name: "subject", Label: "Their gateway ID (the sub your SIEM shows)", Mono: true},
+			{Name: "reason", Label: "Reason", Placeholder: "Who is acting, and why"},
+		},
+		Button:  "Offboard",
+		Danger:  true,
+		Caption: "Revoking their sessions at the identity provider stays a step by hand; the result page lists it.",
+	})
+}
+
+// accFeature reports whether the accounts socket's backend lists name. Without
+// the accounts socket a console lists nothing it serves.
+func (f *Front) accFeature(ctx context.Context, name string) bool {
+	if f.acc == nil {
+		return false
+	}
+	me, err := f.acc.WhoAmI(ctx)
+	return err == nil && slices.Contains(me.Features, name)
 }
 
 // accountOffboard blocks the person in the gateway and disables their

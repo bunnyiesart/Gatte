@@ -82,7 +82,7 @@
     <label class="field"><span>Header or parameter name</span><input name="auth_name" autocomplete="off" spellcheck="false" class="mono" placeholder="X-API-Key" value="{{.AuthName}}"></label>
     <label class="field"><span>Key's name in the vault</span><input name="key_name" autocomplete="off" spellcheck="false" class="mono" placeholder="NAME_API_KEY" value="{{.KeyName}}"></label>
     {{if $.Data.Root}}<label class="field"><span>Key's value (optional)</span><input type="password" name="key_value" autocomplete="new-password" spellcheck="false"></label>{{end}}
-    {{if $.Data.Root}}<label class="field"><span>Grant its read-only tools to role</span><input name="grant_role" autocomplete="off" spellcheck="false" class="mono" value="{{if .GrantRole}}{{.GrantRole}}{{else}}analyst{{end}}"></label>{{end}}
+    {{if $.Data.Root}}<label class="field"><span>Grant its read-only tools to role</span><input name="grant_role" autocomplete="off" spellcheck="false" class="mono" placeholder="e.g. analyst" value="{{.GrantRole}}"></label>{{end}}
     <div class="form-end"><button class="btn primary">Add API</button></div>
   </form>
   {{end}}

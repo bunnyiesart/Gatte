@@ -48,9 +48,12 @@
   <div class="group empty-state"><p><b>No tools yet.</b></p></div>
   {{end}}
   {{if .Servers}}
-  <div class="actions btn-pair">
-    <button class="btn primary" name="op" value="grant">Grant selected</button>
-    <button class="btn" name="op" value="revoke">Revoke selected</button>
+  <div class="actions">
+    <div class="btn-pair">
+      <button class="btn primary" name="op" value="grant">Grant selected</button>
+      <button class="btn" name="op" value="revoke">Revoke selected</button>
+    </div>
+    <p class="caption">Grant selected takes the safe tools only. A sensitive tool is granted by ticking it and turning non_read on above, not here.</p>
   </div>
   {{end}}
 </form>

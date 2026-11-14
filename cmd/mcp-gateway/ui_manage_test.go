@@ -806,14 +806,28 @@ func TestUIManage_TurningNonReadOnGivesTheTickedSensitiveTools(t *testing.T) {
 
 // TestUIManage_RegisterGrantsTheAPIToTheRoleNamed: the Add API form grants
 // the new API's safe tools to a role, as `gatte api add` does, through the
-// validated roles write; a role that does not exist grants nothing and says
-// so, and a grant already present is not written twice.
+// validated roles write; the field has no default role, an empty field grants
+// nothing and says so, a role that does not exist grants nothing and says so,
+// and a grant already present is not written twice.
 func TestUIManage_RegisterGrantsTheAPIToTheRoleNamed(t *testing.T) {
 	m := newManageUI(t, true, true)
-	if page := m.get("/servers/new"); !page.has(`name="grant_role"`) || !page.has(`value="analyst"`) {
-		t.Fatal("the Add API form has no grant field defaulting to analyst")
+	if page := m.get("/servers/new"); !page.has(`name="grant_role"`) || page.has(`value="analyst"`) {
+		t.Fatalf("the Add API form needs a grant field with no default role:\n%s", page.body)
 	}
-	got := m.post("/servers", url.Values{"name": {"ioc"}, "url": {"https://ioc.example.net"},
+
+	// Left empty: registered, nothing written, and the page says so in a
+	// neutral notice, not the success one.
+	before, _ := os.ReadFile(m.rolesPath)
+	got := m.post("/servers", url.Values{"name": {"misp"}, "url": {"https://misp.example.net"},
+		"openapi_text": {restSpecJSON}, "key_name": {"MISP_KEY"}, "grant_role": {""}})
+	if !got.has("No role was granted here. No role grants misp yet.") || got.has(`class="notice error"`) || got.has(`class="notice done"`) {
+		t.Fatalf("an empty grant field:\n%s", got.body)
+	}
+	if after, _ := os.ReadFile(m.rolesPath); string(after) != string(before) {
+		t.Fatal("an empty grant field changed the roles file")
+	}
+
+	got = m.post("/servers", url.Values{"name": {"ioc"}, "url": {"https://ioc.example.net"},
 		"openapi_text": {restSpecJSON}, "key_name": {"IOC_KEY"}, "grant_role": {"ir"}})
 	// No serve process in this harness: the grant is written and the page
 	// says the reload did not apply it (applied end to end in the image).
@@ -837,7 +851,7 @@ func TestUIManage_RegisterGrantsTheAPIToTheRoleNamed(t *testing.T) {
 	}
 
 	// No such role: nothing written, and the page says so.
-	before, _ := os.ReadFile(m.rolesPath)
+	before, _ = os.ReadFile(m.rolesPath)
 	got = m.post("/servers", url.Values{"name": {"gn"}, "url": {"https://gn.example.net"},
 		"openapi_text": {restSpecJSON}, "key_name": {"GN_KEY"}, "grant_role": {"nobody"}})
 	if !got.has("no [[role]] named nobody") {
@@ -845,6 +859,38 @@ func TestUIManage_RegisterGrantsTheAPIToTheRoleNamed(t *testing.T) {
 	}
 	if after, _ := os.ReadFile(m.rolesPath); string(after) != string(before) {
 		t.Fatal("an unknown role changed the roles file")
+	}
+}
+
+// TestUIManage_RegisterWithNoRoleNamesExistingGrants: an empty grant field
+// writes nothing, but the roles file may already grant the name (a grant can
+// precede the registration), so the page names those roles instead of
+// claiming nobody can call the API; unreadable roles make no claim at all.
+func TestUIManage_RegisterWithNoRoleNamesExistingGrants(t *testing.T) {
+	m := newManageUI(t, true, true)
+	pre := uiRolesText[:strings.Index(uiRolesText, "[group_to_role]")] + "[role.grants]\n\"misp\" = [\"*\"]\n[group_to_role]\n\"blue-ir\" = \"ir\"\n"
+	if err := os.WriteFile(m.rolesPath, []byte(pre), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	got := m.post("/servers", url.Values{"name": {"misp"}, "url": {"https://misp.example.net"},
+		"openapi_text": {restSpecJSON}, "key_name": {"MISP_KEY"}, "grant_role": {""}})
+	if !got.has("No role was granted here. Already granted by: ir.") || got.has("No role grants") || got.has("no role may call") {
+		t.Fatalf("an empty grant field with an existing grant:\n%s", got.body)
+	}
+	if got.has(`class="notice done"`) || got.has(`class="notice error"`) {
+		t.Fatalf("the existing-grant note must be neutral:\n%s", got.body)
+	}
+	if after, _ := os.ReadFile(m.rolesPath); string(after) != pre {
+		t.Fatal("an empty grant field changed the roles file")
+	}
+
+	if err := os.Remove(m.rolesPath); err != nil {
+		t.Fatal(err)
+	}
+	got = m.post("/servers", url.Values{"name": {"vt"}, "url": {"https://vt.example.net"},
+		"openapi_text": {restSpecJSON}, "key_name": {"VT_KEY"}, "grant_role": {""}})
+	if !got.has("No role was granted here.") || got.has("No role grants") || got.has("Already granted by") || got.has(`class="notice done"`) {
+		t.Fatalf("an empty grant field with unreadable roles:\n%s", got.body)
 	}
 }
 

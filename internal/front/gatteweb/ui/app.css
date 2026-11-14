@@ -284,9 +284,9 @@ input[type="file"] { padding: 2px; }
 .caption + .notice { margin-top: 12px; }
 .notice p, .notice pre { margin: 0; }
 .notice .glyph { margin-top: 1px; }
-.notice.danger { background: var(--danger); color: var(--on-danger); }
-.notice.danger a, .notice.danger code { color: inherit; }
-.notice.danger code { background: transparent; }
+.notice.danger, .notice.error { background: var(--danger); color: var(--on-danger); }
+.notice.danger a, .notice.danger code, .notice.error a, .notice.error code { color: inherit; }
+.notice.danger code, .notice.error code { background: transparent; }
 .notice.error pre { white-space: pre-wrap; font: 400 12px/1.5 var(--mono); }
 .notice.done pre { white-space: pre-wrap; font: inherit; }
 
@@ -399,13 +399,18 @@ details summary .row-text { gap: 1px; }
 .center { text-align: center; margin: 20px 0; }
 .connect { display: flex; flex-direction: column; gap: 10px; }
 .os-tabs { align-self: flex-start; margin: 0; }
+/* The targeted panel shows; with none targeted the first one does. A tab is
+   active when its panel is the target, or -- none targeted -- when it is the
+   first tab. The per-OS :target rules track the connect-script OS set, but the
+   default active tab and panel are picked generically (:first-of-type), so
+   neither depends on which OS the fragment renders first. */
 .os-panel { display: none; margin: 0; }
 .os-panel:target { display: block; }
-.os-panels:not(:has(.os-panel:target)) .os-panel:first-child { display: block; }
+.os-panels:not(:has(.os-panel:target)) .os-panel:first-of-type { display: block; }
+.connect:not(:has(.os-panel:target)) .os-tabs a:first-of-type,
 .connect:has(#os-linux:target) .os-tabs a[href="#os-linux"],
 .connect:has(#os-windows:target) .os-tabs a[href="#os-windows"],
-.connect:has(#os-macos:target) .os-tabs a[href="#os-macos"],
-.connect:not(:has(.os-panel:target)) .os-tabs a[href="#os-macos"] {
+.connect:has(#os-macos:target) .os-tabs a[href="#os-macos"] {
   font-weight: 700; background: var(--field); border-color: var(--lo) var(--hi) var(--hi) var(--lo);
 }
 .steps { display: grid; gap: 0; margin: 0 0 10px; padding: 0; list-style: none; background: var(--face); }

@@ -49,6 +49,7 @@ func Gallery(w io.Writer, o Options) error {
 		{"Users: people and roles", o, true, nil, nil},
 		{"Account", o, true, func() *page { return accountPage("ana.lima") }, nil},
 		{"Account: a one-time password, shown once", o, true, func() *page { return accountPage("ana.lima") }, []string{"p", "y"}},
+		{"Connect a computer: script, certificate authority and steps", o, true, func() *page { return connectPage("ana.lima") }, nil},
 		{"Role: what it reaches, tool by tool", o, true, func() *page { return rolePage("tier1-analyst") }, nil},
 		{"Role: two tools selected", o, true, func() *page { return rolePage("tier1-analyst") }, []string{"space", "down", "space"}},
 		{"Role: grant the selected tools, one write, then the reload question", o, true, func() *page { return rolePage("tier1-analyst") },

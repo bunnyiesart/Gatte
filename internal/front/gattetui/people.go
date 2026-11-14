@@ -14,6 +14,9 @@ package gattetui
 import (
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -111,6 +114,7 @@ func fillAccount(e env, username string) content {
 			})
 		}})
 	}
+	c.actions = append(c.actions, action{key: "c", label: "connect", run: func() tea.Cmd { return push(connectPage(u)) }})
 	c.actions = append(c.actions, action{key: "p", label: "new password", run: func() tea.Cmd {
 		return confirm("Give "+vis(u)+" a new one-time password? The current one stops working.", func() tea.Cmd {
 			return do(func() result {
@@ -184,10 +188,106 @@ func passwordResult(e env, u string, res adminapi.PasswordResult, err error, don
 		return r
 	}
 	r.secret, r.label = res.OneTimePassword, "One-time password for "+u
-	if c, cerr := e.op.Connect(ctx(), u); cerr == nil && c.Ready && c.Command != "" {
-		r.output = append(r.output, "They connect with: "+c.Command)
+	// A one-line command is a complete setup only without a certificate
+	// authority; with one, only the script installs it. Either way the full
+	// steps are on the account's connect page.
+	if c, cerr := e.op.Connect(ctx(), u); cerr == nil && c.Ready {
+		if !c.HasCA && c.Command != "" {
+			r.output = append(r.output, "They connect with: "+c.Command)
+		}
+		r.output = append(r.output, "Open "+u+" and press c (connect) for the setup script and steps.")
 	}
 	return r
+}
+
+// ---- connect a computer
+//
+// The web's /people/connect flow, in the terminal (design/adr/0039): the
+// same op.Connect / op.ConnectScript the console reads, the per-OS Run
+// steps as rows, and a save that writes the script to a path it prints. The
+// script carries no secret; with a certificate authority it is the only
+// path that installs it, which the one-line command does not.
+
+// connectFileName accepts only a plain file name from the backend, as the
+// web download does, and falls back when it does not.
+var connectFileName = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
+
+func connectPage(username string) *page {
+	return newPage("Connect a computer", func(e env) content { return fillConnect(e, username) })
+}
+
+func fillConnect(e env, username string) content {
+	var c content
+	conn, err := e.op.Connect(ctx(), username)
+	if err != nil {
+		c.problems = append(c.problems, errText(err))
+		return c
+	}
+	who := conn.Username
+	if who == "" {
+		who = username
+	}
+	c.rows = append(c.rows, heading("Connect a computer for "+vis(dash(who))),
+		textRow(stDim.Render("Sets up Claude Code on their machine to use this gateway.")))
+	if !conn.Ready {
+		keys := conn.Missing
+		if len(keys) == 0 {
+			keys = []string{"client_id", "callback_port"}
+		}
+		c.rows = append(c.rows, blank(), textRow(stWarn.Render("Connect scripts aren't set up.")),
+			textRow("Set [connect] "+vis(strings.Join(keys, " and "))+" in the configuration file: the public OAuth client your identity provider has registered for Claude Code, and the port of its redirect URI."))
+		return c
+	}
+	for _, sc := range conn.Scripts {
+		osName := sc.OS
+		install := "It adds the Gatte entry to Claude Code"
+		if conn.HasCA {
+			install += ", installs the team's certificate authority"
+		}
+		install += " and installs the gatte-status check. It holds no secret."
+		c.rows = append(c.rows, blank(), heading(vis(dash(sc.Name))),
+			textRow("1. Send them the script. "+stDim.Render(install)),
+			row{text: "   " + button("s", "Save "+vis(dash(sc.Filename))),
+				actions: []action{{key: "s", label: "save script", run: saveConnectScript(e, osName, who)}}},
+			textRow("2. They run it:  "+vis(sc.Run)))
+		if !conn.HasCA && conn.Command != "" {
+			c.rows = append(c.rows, textRow(stDim.Render("   Or paste one line instead:  ")+vis(conn.Command)))
+		}
+		signin := "3. They sign in: run claude, type /mcp, choose " + vis(dash(conn.ServerName))
+		if who != "" {
+			signin += " and sign in as " + vis(who)
+		}
+		c.rows = append(c.rows, textRow(signin+". The browser opens your identity provider's login."))
+	}
+	if conn.HasCA {
+		c.rows = append(c.rows, blank(), textRow(stWarn.Render("This team uses its own certificate authority.")),
+			textRow("Only the saved script installs it; the one-line command does not. To hand this off in a browser, the web console offers the same per-OS download."))
+	}
+	return c
+}
+
+// saveConnectScript fetches one OS's script and writes it next to the
+// operator's temporary files, printing the path. The file carries no
+// secret, so saving it loses nothing.
+func saveConnectScript(e env, osName, username string) func() tea.Cmd {
+	return func() tea.Cmd {
+		return do(func() result {
+			text, name, err := e.op.ConnectScript(ctx(), osName, username)
+			if err != nil {
+				return refused("The script could not be fetched: " + firstLine(errText(err)))
+			}
+			if !connectFileName.MatchString(name) {
+				name = "connect-gatte.txt"
+			}
+			path := filepath.Join(os.TempDir(), name)
+			if werr := os.WriteFile(path, []byte(text), 0o600); werr != nil {
+				return refused("The script could not be written: " + vis(werr.Error()))
+			}
+			r := result{ok: true, summary: "Saved the connect script to " + vis(path) + "."}
+			r.output = append(r.output, "Send this file to "+username+"; it holds no secret.")
+			return r
+		})
+	}
 }
 
 // ---- adding a person: the backend checks the draft, then creates it

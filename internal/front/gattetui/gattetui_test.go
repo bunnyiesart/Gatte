@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -304,6 +306,34 @@ func TestAddAPersonChecksThenCreates(t *testing.T) {
 	acct, err := c.Accounts.GetAccount(context.Background(), "carla.dias")
 	if err != nil || !slices.Equal(acct.Groups, []string{"soc-tier1"}) {
 		t.Fatalf("account after add: %+v, %v", acct, err)
+	}
+}
+
+// TestConnectShowsTheStepsAndSavesTheScript: the account's connect action
+// opens on an existing account (no password reset), renders the per-OS
+// steps and the certificate-authority note, and saving writes the script to
+// the path it prints.
+func TestConnectShowsTheStepsAndSavesTheScript(t *testing.T) {
+	a, _ := start(t, true)
+	settle(a, a.switchTab(1))
+	open(a, accountPage("ana.lima"))
+	mustShow(t, a, "[ c Connect ]")
+	press(a, "c")
+	mustShow(t, a, "Connect a computer for ana.lima", "macOS", "sh connect-macos.sh",
+		"type /mcp", "soc-gateway", "certificate authority", "[ s Save connect-macos.sh ]")
+	// With a certificate authority the one-line command is not offered: only
+	// the script installs it.
+	mustNotShow(t, a, "Or paste one line")
+
+	path := filepath.Join(os.TempDir(), "connect-macos.sh")
+	_ = os.Remove(path)
+	t.Cleanup(func() { _ = os.Remove(path) })
+	cursorTo(t, a, "Save connect-macos.sh")
+	press(a, "s")
+	mustShow(t, a, "Saved the connect script to "+path+".", "holds no secret")
+	b, err := os.ReadFile(path)
+	if err != nil || !strings.Contains(string(b), "fake connect script") {
+		t.Fatalf("the saved script is wrong: %q, %v", b, err)
 	}
 }
 

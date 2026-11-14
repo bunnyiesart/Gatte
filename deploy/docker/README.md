@@ -85,32 +85,32 @@ The settings are kept in the volume: an upgrade can drop the `-e` flags.
 
 ## Backends from an MCP JSON file
 
-Gatte serves REST APIs from their OpenAPI document. If your analysts
-already list their servers in a Claude Code `.mcp.json`, hand the file to
-setup on standard input, from the host, while `gatte setup` is at its
-backends step (or before it):
+If your analysts already list their servers in a Claude Code `.mcp.json`,
+hand the file to setup on standard input, from the host, while `gatte setup`
+is at its backends step (or before it):
 
 ```sh
 docker exec -i gatte gatte setup import < .mcp.json
 ```
 
-`setup import` keeps only each server's name, its kind, the scheme, host and
+The import is a shortlist of names, not a turnkey conversion. `setup import`
+keeps only each server's name, its kind, the scheme, host and
 port of its URL (a path or query can carry a key), and the NAMES of its
 headers. No header value,
 `env` value or `args` entry is copied anywhere: not to the volume, not to the
 log, not to the screen. Setup then lists the servers and, for each one you
-pick, registers it with `gatte api add` and asks for its key with
-`gatte secret set`, which does not echo. Retype a key the file held there;
-it was not kept.
+pick, registers it and asks for its token with `gatte secret set`, which
+does not echo. Retype a token the file held there; it was not kept.
 
-What the image can and cannot serve from that file:
+What the image can and cannot register from that file:
 
-- **`"type": "http"` / `"url"` entries** are remote MCP servers. Gatte does
-  not proxy remote MCP; it calls REST APIs. Setup asks for the OpenAPI
-  document of the REST API behind the server and its base URL, and derives
-  where the key goes from the entry's one header (`Authorization` is a
-  bearer token; any other name is that header). An entry with more than one
-  header is left for you to add by hand.
+- **`"type": "http"` / `"url"` entries** are remote MCP servers. Setup
+  registers them natively with `gatte remote add`, using the kept endpoint
+  URL and deriving where the token goes from the entry's one header
+  (`Authorization` is a bearer token; any other name is that header). An
+  entry with no header is registered keyless; one with more than one header
+  is left for you to add by hand. A REST API is a separate backend: it is
+  not in the file, and you add it by hand with its OpenAPI document.
 - **`"command"` entries** (`docker run ...`, `npx ...`, any local process)
   are skipped with a one-line reason. This image runs no backend processes
   and no containers: it has no runtime for them, and it is never given the

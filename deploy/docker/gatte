@@ -768,8 +768,11 @@ field() { # SERVER JQ-PATH: one field of one imported server
 }
 
 setup_import_pick() {
-	say "   In the MCP JSON file:"
+	say "   In the MCP JSON file (a shortlist of names, not a turnkey import):"
 	jq -r '.[] | "     " + (.name | gsub("[\u007f-\u009f]"; "?") | @json) + "  " + .kind + (if .url then "  " + .url else "" end)' "$IMPORT"
+	say "   Remote MCP servers register natively from their URL. A REST API"
+	say "   still needs its OpenAPI document, added by hand below. Local"
+	say "   command servers are skipped: this image runs no processes or containers."
 	have=$(mcp upstream list -json | jq -r '.[].name')
 	for n in $(jq -r '.[] | select(.ok) | .name' "$IMPORT"); do
 		if printf '%s\n' "$have" | grep -qx "$n"; then
@@ -784,23 +787,22 @@ setup_import_pick() {
 		confirm "   Add $n?" || continue
 		nh=$(field "$n" '.headers | length')
 		if [ "$nh" -gt 1 ]; then
-			say "   $n sends $nh headers; Gatte injects one credential per API. Add it by hand."
+			say "   $n sends $nh headers; Gatte injects one credential per backend. Add it by hand."
 			continue
 		fi
-		k='' h=''
+		u=$(field "$n" '.url // ""')
+		if [ -z "$u" ]; then
+			say "   $n: skipped. The file kept no endpoint URL to register it with."
+			continue
+		fi
+		k=none h=''
 		hn=$(field "$n" '.headers[0] // ""')
 		case "$hn" in
 		'') ;;
 		[Aa]uthorization) k=bearer ;;
 		*) k=header h=$hn ;;
 		esac
-		say "   $n is a remote MCP server. Gatte serves REST APIs from their OpenAPI"
-		say "   document: give the REST API behind it. No value from the file was kept."
-		ask "   OpenAPI document URL (Enter skips $n)"
-		[ -n "$a" ] || continue
-		spec=$a
-		ask "   REST API base URL (scheme, host and base path)" "$(field "$n" '.url // ""')"
-		setup_add "$n" "$a" "$spec" "$k" "$h"
+		setup_add_remote "$n" "$u" "$k" "$h"
 	done
 }
 

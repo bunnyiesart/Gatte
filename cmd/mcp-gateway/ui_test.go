@@ -344,14 +344,41 @@ func TestUI_PagesCarryAStrictPolicyAndNoScript(t *testing.T) {
 func TestUI_GetNeverChangesState(t *testing.T) {
 	e, s, cookie := newUITest(t)
 	uiApprovedTool(t, e)
-	for _, target := range []string{"/servers/edr/tools/get_host/revoke?csrf=" + s.csrf, "/servers/edr/tools/get_host/approve", "/servers/edr/tools/get_host/clear",
+	// An action with no confirm page has no GET route at all.
+	for _, target := range []string{"/servers/edr/tools/get_host/approve",
 		"/servers/edr/maintenance/on?message=m&csrf=" + s.csrf, "/servers/edr/maintenance/off"} {
 		if w := uiDo(s, "GET", target, nil, cookie, nil); w.Code != http.StatusMethodNotAllowed {
 			t.Errorf("GET %s: %d, want 405", target, w.Code)
 		}
 	}
+
+	// Revoke's GET is its confirm page: it draws a POST form even with the
+	// form token in the query, revokes nothing, and puts the token only in
+	// that form's body, never in a link.
+	w := uiDo(s, "GET", uiRevokePath+"?csrf="+s.csrf, nil, cookie, nil)
+	body := w.Body.String()
+	if w.Code != http.StatusOK || !strings.Contains(body, `method="post" action="`+s.session+uiRevokePath+`"`) {
+		t.Fatalf("GET %s: %d, want the confirm page posting the revoke:\n%s", uiRevokePath, w.Code, body)
+	}
+	inForm := strings.Count(body, `name="csrf" value="`+s.csrf+`"`)
+	if inForm == 0 || strings.Contains(body, "csrf=") || strings.Count(body, s.csrf) != inForm {
+		t.Errorf("the revoke confirm page carries the form token outside its POST form:\n%s", body)
+	}
+
+	// Clear answers its GET exactly as its POST on a console that cannot
+	// clear (console_manages off): 404.
+	for _, method := range []string{"GET", "POST"} {
+		if w := uiDo(s, method, "/servers/edr/tools/get_host/clear", url.Values{"csrf": {s.csrf}}, cookie, samePost); w.Code != http.StatusNotFound {
+			t.Errorf("%s clear on a console that cannot clear: %d, want 404", method, w.Code)
+		}
+	}
+
+	// The token is read from a POST body only: in the query it is refused.
+	if w := uiDo(s, "POST", uiRevokePath+"?csrf="+s.csrf, url.Values{}, cookie, samePost); w.Code != http.StatusForbidden {
+		t.Errorf("POST with the form token only in the query: %d, want 403", w.Code)
+	}
 	if !uiToolUsable(e) {
-		t.Fatal("a GET revoked the tool")
+		t.Fatal("a GET, or a POST without the form token in its body, revoked the tool")
 	}
 }
 

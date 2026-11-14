@@ -112,8 +112,8 @@ type registered struct {
 	Sign   string
 	SignOK bool
 	Signed bool
-	// Grant is what granting the API to a role did, empty when no role
-	// was named.
+	// Grant is what granting the API to a role did, or that nothing was
+	// granted when no role was named; empty without the accounts socket.
 	Grant    string
 	GrantOK  bool
 	ReviewAt string

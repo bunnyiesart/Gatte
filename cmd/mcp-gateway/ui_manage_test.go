@@ -797,14 +797,27 @@ func TestUIManage_TurningNonReadOnGivesTheTickedSensitiveTools(t *testing.T) {
 
 // TestUIManage_RegisterGrantsTheAPIToTheRoleNamed: the Add API form grants
 // the new API's safe tools to a role, as `gatte api add` does, through the
-// validated roles write; a role that does not exist grants nothing and says
-// so, and a grant already present is not written twice.
+// validated roles write; the field has no default role, an empty field grants
+// nothing and says so, a role that does not exist grants nothing and says so,
+// and a grant already present is not written twice.
 func TestUIManage_RegisterGrantsTheAPIToTheRoleNamed(t *testing.T) {
 	m := newManageUI(t, true, true)
-	if page := m.get("/servers/new"); !page.has(`name="grant_role"`) || !page.has(`value="analyst"`) {
-		t.Fatal("the Add API form has no grant field defaulting to analyst")
+	if page := m.get("/servers/new"); !page.has(`name="grant_role"`) || page.has(`value="analyst"`) {
+		t.Fatalf("the Add API form needs a grant field with no default role:\n%s", page.body)
 	}
-	got := m.post("/servers", url.Values{"name": {"ioc"}, "url": {"https://ioc.example.net"},
+
+	// Left empty: registered, nothing written, and the page says so.
+	before, _ := os.ReadFile(m.rolesPath)
+	got := m.post("/servers", url.Values{"name": {"misp"}, "url": {"https://misp.example.net"},
+		"openapi_text": {restSpecJSON}, "key_name": {"MISP_KEY"}, "grant_role": {""}})
+	if !got.has("Not granted to any role") || got.has(`class="notice error"`) {
+		t.Fatalf("an empty grant field:\n%s", got.body)
+	}
+	if after, _ := os.ReadFile(m.rolesPath); string(after) != string(before) {
+		t.Fatal("an empty grant field changed the roles file")
+	}
+
+	got = m.post("/servers", url.Values{"name": {"ioc"}, "url": {"https://ioc.example.net"},
 		"openapi_text": {restSpecJSON}, "key_name": {"IOC_KEY"}, "grant_role": {"ir"}})
 	// No serve process in this harness: the grant is written and the page
 	// says the reload did not apply it (applied end to end in the image).
@@ -828,7 +841,7 @@ func TestUIManage_RegisterGrantsTheAPIToTheRoleNamed(t *testing.T) {
 	}
 
 	// No such role: nothing written, and the page says so.
-	before, _ := os.ReadFile(m.rolesPath)
+	before, _ = os.ReadFile(m.rolesPath)
 	got = m.post("/servers", url.Values{"name": {"gn"}, "url": {"https://gn.example.net"},
 		"openapi_text": {restSpecJSON}, "key_name": {"GN_KEY"}, "grant_role": {"nobody"}})
 	if !got.has("no [[role]] named nobody") {

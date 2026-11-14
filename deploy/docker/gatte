@@ -49,6 +49,20 @@ APIs (REST backends from an OpenAPI document)
         Let a SENSITIVE (POST/PUT/PATCH/DELETE) tool be served, to a
         non_read role that names it in the roles (gatte roles edit).
 
+Remote MCP servers (native MCP backends reached by URL)
+  gatte remote add NAME -url MCP-ENDPOINT-URL [options]
+        Register, sign and grant a remote MCP server. Its tools start
+        waiting for review, like any backend's.
+        options: -auth-kind bearer|header  -auth-name NAME
+                 -remote-kind streamable
+                 -key VAR      vault entry holding the token (default NAME_API_KEY, upper case)
+                 -keyless      the server takes no token
+                 -grant ROLE   role that gets NAME = ["*"] (default analyst); -no-grant to skip
+  gatte remote approve NAME [-yes]
+        Show every tool of NAME waiting for review, then approve that exact set.
+  gatte remote list
+  gatte remote rm NAME
+
 Credentials (sops+age vault; values are never printed)
   gatte secret set NAME      reads the value from your terminal (or stdin)
   gatte secret list
@@ -353,15 +367,88 @@ cmd_api() {
 	list) mcp upstream list ;;
 	rm)
 		[ $# -eq 1 ] || die "usage: gatte api rm NAME"
-		if [ -t 0 ]; then
-			printf 'Deregister %s? Its tools and approvals go with it. [y/N] ' "$1"
-			read -r a || a=
-			case "$a" in y | Y | yes | sim | s) ;; *) die "nothing removed" ;; esac
-		fi
-		mcp upstream deregister "$1"
-		say "The grant for $1 in the roles is still there: gatte roles edit."
+		upstream_rm "$1"
 		;;
 	*) die "usage: gatte api add|approve|list|rm" ;;
+	esac
+}
+
+# upstream_rm NAME deregisters a backend of any transport (the gateway's
+# deregister is transport-agnostic), after a confirmation on a terminal.
+upstream_rm() {
+	if [ -t 0 ]; then
+		printf 'Deregister %s? Its tools and approvals go with it. [y/N] ' "$1"
+		read -r a || a=
+		case "$a" in y | Y | yes | sim | s) ;; *) die "nothing removed" ;; esac
+	fi
+	mcp upstream deregister "$1"
+	say "The grant for $1 in the roles is still there: gatte roles edit."
+}
+
+# --- remote MCP servers ------------------------------------------------
+
+# cmd_remote_add mirrors cmd_api_add for a native MCP server reached by URL
+# (upstream register -transport remote): no OpenAPI document, since the
+# server announces its own tools, which start pending and need review like
+# any backend's. The one secret -key names is sent as the gateway's own
+# token (bearer or header); the analyst's token is never forwarded.
+cmd_remote_add() {
+	[ $# -ge 1 ] || die "usage: gatte remote add NAME -url MCP-ENDPOINT-URL [...]"
+	name=$1
+	shift
+	url='' kind='' aname='' rkind='' key='' keyless='' grant=analyst
+	while [ $# -gt 0 ]; do
+		case "$1" in
+		-url) url=$2; shift 2 ;;
+		-auth-kind) kind=$2; shift 2 ;;
+		-auth-name) aname=$2; shift 2 ;;
+		-remote-kind) rkind=$2; shift 2 ;;
+		-key) key=$2; shift 2 ;;
+		-keyless) keyless=1; shift ;;
+		-grant) grant=$2; shift 2 ;;
+		-no-grant) grant=; shift ;;
+		*) die "unknown option $1 (gatte help)" ;;
+		esac
+	done
+	[ -n "$url" ] || die "-url is required: the remote MCP server's endpoint URL"
+	set -- -name "$name" -transport remote -url "$url"
+	[ -n "$kind" ] && set -- "$@" -auth-kind "$kind"
+	[ -n "$aname" ] && set -- "$@" -auth-name "$aname"
+	[ -n "$rkind" ] && set -- "$@" -remote-kind "$rkind"
+	if [ -n "$keyless" ]; then
+		[ -n "$kind" ] || set -- "$@" -auth-kind none
+	else
+		[ -n "$key" ] || key=$(upper "$name")_API_KEY
+		valid_var "$key"
+		set -- "$@" -env "$key"
+	fi
+	mcp upstream register "$@"
+	mcp-gateway sign -config "$CONFIG" "$name"
+	if [ -n "$grant" ]; then
+		add_grant "$grant" "$name"
+	fi
+	say ""
+	if [ -z "$keyless" ] && ! vault_has "$key"; then
+		say "Next: store the token, then review the tools (they are observed within a minute):"
+		say "    docker exec -it gatte gatte secret set $key"
+	else
+		say "Next: review the tools (they are observed within a minute):"
+	fi
+	say "    docker exec -it gatte gatte remote approve $name"
+}
+
+cmd_remote() {
+	sub=${1:-}
+	[ $# -gt 0 ] && shift
+	case "$sub" in
+	add) cmd_remote_add "$@" ;;
+	approve) cmd_api_approve "$@" ;;
+	list) mcp upstream list ;;
+	rm)
+		[ $# -eq 1 ] || die "usage: gatte remote rm NAME"
+		upstream_rm "$1"
+		;;
+	*) die "usage: gatte remote add|approve|list|rm" ;;
 	esac
 }
 
@@ -643,6 +730,39 @@ setup_add() {
 	fi
 }
 
+# setup_add_remote NAME ENDPOINT-URL [AUTH-KIND [AUTH-NAME]] registers a
+# native MCP server through `gatte remote add`, mirroring setup_add. AUTH-KIND
+# "none" is a keyless server; "bearer"/"header" send the token gatte asks for.
+setup_add_remote() {
+	n=$1 k=${3:-} h=${4:-}
+	set -- "$1" -url "$2"
+	case "$k" in
+	'') ;;
+	none) set -- "$@" -keyless ;;
+	*) set -- "$@" -auth-kind "$k" ;;
+	esac
+	if [ -n "$h" ]; then set -- "$@" -auth-name "$h"; fi
+	o=$(private_dir)
+	if ! gatte remote add "$@" >"$o/out" 2>&1; then
+		cat "$o/out"
+		rm -rf "$o"
+		say "   $n was not added (above)."
+		return 0
+	fi
+	grep -v '^Next:\|^    docker exec' "$o/out" || true
+	key=$(sed -n 's/^    docker exec -it gatte gatte secret set \([A-Za-z0-9_]*\)$/\1/p' "$o/out")
+	rm -rf "$o"
+	if [ -n "$key" ]; then
+		say "   $n's token goes in the vault as $key."
+		gatte secret set "$key" || say "   Not stored. Later: gatte secret set $key"
+	fi
+	if confirm "   Review $n's tools and approve them now?"; then
+		gatte remote approve "$n" || true
+	else
+		say "   Later: gatte remote approve $n"
+	fi
+}
+
 field() { # SERVER JQ-PATH: one field of one imported server
 	jq -r --arg n "$1" ".[] | select(.name == \$n) | $2" "$IMPORT"
 }
@@ -685,7 +805,8 @@ setup_import_pick() {
 }
 
 setup_backends() {
-	say "4. Backends. None are bundled: Gatte serves REST APIs from their OpenAPI document."
+	say "4. Backends. None are bundled: Gatte serves REST APIs (from an OpenAPI"
+	say "   document) and remote MCP servers (reached by URL)."
 	if [ ! -s "$IMPORT" ]; then
 		say "   To pick them from an MCP JSON file, run this on the host in another terminal:"
 		say "       docker exec -i gatte gatte setup import < .mcp.json"
@@ -702,6 +823,15 @@ setup_backends() {
 		k=none
 		if confirm "   Does it take an API key?"; then k=; fi
 		setup_add "$n" "$u" "$s" "$k"
+	done
+	while confirm "   Add a remote MCP server by hand (name, endpoint URL)?"; do
+		ask "   Name (letters, digits, - and _)"
+		n=$a
+		ask "   MCP endpoint URL"
+		u=$a
+		k=none
+		if confirm "   Does it take a token (sent as a bearer)?"; then k=bearer; fi
+		setup_add_remote "$n" "$u" "$k"
 	done
 }
 
@@ -779,6 +909,7 @@ case "${1:-help}" in
 help | -h | --help) usage ;;
 setup) shift; cmd_setup "$@" ;;
 api) shift; cmd_api "$@" ;;
+remote) shift; cmd_remote "$@" ;;
 clear)
 	shift
 	[ $# -eq 2 ] || die "usage: gatte clear SERVER TOOL"

@@ -269,6 +269,35 @@ its data, restore the whole volume from the copy of step 4 instead. What the tra
 recorded after the backup is gone from the database (it is still in your
 SIEM copy).
 
+## Scheduled backups
+
+The `Upgrade` step above backs up by hand. For a recurring copy, point cron or
+a systemd timer at `deploy/docker/gatte-backup.sh`. It runs `gatte mcp backup`
+inside the container -- a consistent, checked copy of the database while Gatte
+runs -- and copies it off the volume, keeping the newest few:
+
+```sh
+install -m 0755 deploy/docker/gatte-backup.sh /usr/local/sbin/gatte-backup
+# 03:30 daily; writes copies under /var/backups/gatte.
+echo '30 3 * * * /usr/local/sbin/gatte-backup' | crontab -
+```
+
+It reads three optional settings from its environment: `GATTE_CONTAINER` (the
+container name, default `gatte`), `GATTE_BACKUP_DIR` (where the off-volume
+copies land, default `/var/backups/gatte`), and `GATTE_BACKUP_KEEP` (how many
+timestamped copies to keep, default `7`; `0` keeps all). Pruning only touches
+directories named in the script's UTC stamp format (`20260101T033000Z`), so
+other directories under `GATTE_BACKUP_DIR` are left alone. Put `GATTE_BACKUP_DIR` on storage
+separate from the Docker volume for a real off-box backup.
+
+It is not a Compose sidecar on purpose: a sidecar reaching into the container
+would need the Docker socket, which is root on the host. The script needs only
+the `docker` CLI, as the host user that already runs it.
+
+This copies the **database** only -- the keys, the vault, the private CA and
+the accounts are the rest of the volume. For those, the full-volume `tar` in
+`Upgrade` step 4 is the backup, and it needs the container stopped.
+
 ## Inside the container
 
 Each process runs as its own account:
@@ -348,9 +377,10 @@ keep their services in a compose file. It has no default image: set
   the host's SSH log.
 - `upstream update` does not re-read an OpenAPI document. To pick up a new
   version: `gatte api rm NAME`, then `gatte api add` again.
-- No backup timer. `gatte mcp backup` copies the database only. The keys,
-  the vault, the CA and the accounts are the rest of the volume; with the
-  container stopped,
+- No built-in backup timer, but `deploy/docker/gatte-backup.sh` is a ready
+  cron/timer job for it (`Scheduled backups` above). It copies the database
+  only. The keys, the vault, the CA and the accounts are the rest of the
+  volume; with the container stopped,
   `docker run --rm -v gatte:/gatte:ro -v "$PWD":/out "$IMAGE" tar czf /out/gatte.tgz /gatte`
   is a full backup. It holds every secret Gatte has: keep it offline.
 - No second factor yet: sign-in is a password (Authelia `one_factor`).

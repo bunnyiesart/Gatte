@@ -554,6 +554,15 @@ func TestUIManage_ASensitiveToolIsClearedFromItsPage(t *testing.T) {
 		t.Fatalf("clear with no role reaching it:\n%s", got.body)
 	}
 	m.e.cfg.Roles = []config.Role{{Name: "ir-act", Tools: []string{"reporting.submit_report"}, NonRead: true}}
+	// The GET is the confirm page, even with the form token in the query: it
+	// posts the clear and clears nothing itself.
+	confirm := m.get("/servers/reporting/tools/submit_report/clear?csrf=" + m.s.csrf)
+	if confirm.code != http.StatusOK || !confirm.has(`method="post" action="`+m.s.session+`/servers/reporting/tools/submit_report/clear"`) {
+		t.Fatalf("the clear confirm page: %d\n%s", confirm.code, confirm.body)
+	}
+	if after, _ := m.e.tools().Get(context.Background(), "reporting", "submit_report"); after.Usable() {
+		t.Fatal("a GET cleared the tool")
+	}
 	got = m.post("/servers/reporting/tools/submit_report/clear", nil)
 	if !got.has("result-icon ok") || !got.has("ir-act") {
 		t.Fatalf("clear:\n%s", got.body)

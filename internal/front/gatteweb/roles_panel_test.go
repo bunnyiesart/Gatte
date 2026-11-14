@@ -99,6 +99,8 @@ func TestRolePage_ToolsAsCheckboxesByServer(t *testing.T) {
 		"<h2>casemgmt</h2>", `type="checkbox" name="tool" value="casemgmt.close_case"`, "Sensitive",
 		"/users/roles/edit", `value="grant"`, "Grant selected", `value="revoke"`, "Revoke selected",
 		"/users/roles/non-read", "Turn off",
+		// The caption states the sensitive-tool path up front, before a refusal.
+		"A sensitive tool is granted by ticking it and turning non_read on",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("the role page is missing %q", want)

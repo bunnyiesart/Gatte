@@ -427,8 +427,10 @@ func (f *Front) serverRegister(w http.ResponseWriter, r *http.Request) {
 			out = append(out, d.Secret)
 		}
 		if form.GrantRole != "" {
+			// The grant outcome gets its own notice on the result page, not a
+			// line in the registration blob, so a failed grant (e.g. no such
+			// role) is not lost among the ingestion messages.
 			d.Grant, d.GrantOK = f.grantBackend(r, form.GrantRole, res.Name)
-			out = append(out, d.Grant)
 		}
 	}
 	d.Output = strings.Join(out, "\n")

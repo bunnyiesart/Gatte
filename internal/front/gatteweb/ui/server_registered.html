@@ -67,6 +67,8 @@
 
 {{if $.Data.Output}}<div class="notice" role="status">{{template "check"}}<pre>{{vistext $.Data.Output}}</pre></div>{{end}}
 
+{{if $.Data.Grant}}{{if $.Data.GrantOK}}<div class="notice done" role="status">{{template "check"}}<pre>{{vistext $.Data.Grant}}</pre></div>{{else}}<div class="notice error" role="alert">{{template "warn"}}<pre>{{vistext $.Data.Grant}}</pre></div>{{end}}{{end}}
+
 <section>
   <h2>Approve configuration</h2>
   {{if $.Data.Root}}

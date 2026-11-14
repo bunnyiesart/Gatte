@@ -25,7 +25,7 @@ CONTAINER="${GATTE_CONTAINER:-gatte}"
 # than a copy that shares the volume's fate.
 DEST="${GATTE_BACKUP_DIR:-/var/backups/gatte}"
 # How many timestamped copies to keep -- in the volume (via `backup -keep`) and
-# on the host (pruned below).
+# on the host (pruned below). 0 keeps all, as it does for `backup -keep`.
 KEEP="${GATTE_BACKUP_KEEP:-7}"
 
 case "$KEEP" in
@@ -46,9 +46,13 @@ stamp=$(date -u +%Y%m%dT%H%M%SZ)
 docker cp "$CONTAINER:/gatte/backup" "$DEST/$stamp"
 
 # 3. Bound the host copies the same way -keep bounds the volume's: keep the
-#    newest KEEP timestamped directories, drop the rest. Fed over a pipe so no
-#    unquoted word-splitting of the listing is needed.
-find "$DEST" -mindepth 1 -maxdepth 1 -type d | sort -r | {
+#    newest KEEP timestamped directories, drop the rest; 0 keeps all. Only
+#    names in this script's own stamp format are candidates, so anything else
+#    stored under DEST is never touched.
+[ "$KEEP" -eq 0 ] && exit 0
+find "$DEST" -mindepth 1 -maxdepth 1 -type d \
+	-name '[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]T[0-9][0-9][0-9][0-9][0-9][0-9]Z' |
+	sort -r | {
 	kept=0
 	while IFS= read -r dir; do
 		kept=$((kept + 1))

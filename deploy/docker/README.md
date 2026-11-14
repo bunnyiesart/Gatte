@@ -285,7 +285,9 @@ echo '30 3 * * * /usr/local/sbin/gatte-backup' | crontab -
 It reads three optional settings from its environment: `GATTE_CONTAINER` (the
 container name, default `gatte`), `GATTE_BACKUP_DIR` (where the off-volume
 copies land, default `/var/backups/gatte`), and `GATTE_BACKUP_KEEP` (how many
-timestamped copies to keep, default `7`). Put `GATTE_BACKUP_DIR` on storage
+timestamped copies to keep, default `7`; `0` keeps all). Pruning only touches
+directories named in the script's UTC stamp format (`20260101T033000Z`), so
+other directories under `GATTE_BACKUP_DIR` are left alone. Put `GATTE_BACKUP_DIR` on storage
 separate from the Docker volume for a real off-box backup.
 
 It is not a Compose sidecar on purpose: a sidecar reaching into the container

@@ -131,7 +131,7 @@ func TestRoutes_OperatorRoutesAreAbsentOnTheAccountsSocket(t *testing.T) {
 // widened by mistake (design/adr/0040 §1).
 func TestAccountsSocket_RefusesTheServiceAccount(t *testing.T) {
 	if os.Geteuid() == 0 {
-		t.Skip("as root the test's peer is root, which the accounts socket admits; the service account is never root")
+		t.Skip("as root the peer is uid 0, and the harness treats ServiceUID 0 as unset, so a root peer cannot be the service account here")
 	}
 	b := newBackend(t)
 	sock, _ := serve(t, adminhttp.Options{Socket: adminapi.SocketAccounts, Service: b.svc, ServiceUID: uint32(os.Geteuid())})

@@ -245,7 +245,8 @@ A file the gateway refuses is not applied: the previous one is put back.
 |---|---|
 | What is registered, what waits for review | `gatte status` |
 | Check everything end to end | `gatte selftest [SERVER SAFE_TOOL [SENSITIVE_TOOL [ARGS_JSON]]]` |
-| Rotate an API key | `gatte secret set NAME` (takes effect on the next call) |
+| Rotate an API key | `gatte secret set NAME`, then `gatte redial NAME` to apply it to the connected backend |
+| Re-dial one backend (rotated key, restarted backend) | `gatte redial NAME` |
 | List people / reset a password / remove one | `gatte user list` / `gatte user reset U` / `gatte user rm U` |
 | Cut a person off immediately | `gatte mcp access block U` |
 | Read the audit trail | `gatte mcp audit -limit 50` |

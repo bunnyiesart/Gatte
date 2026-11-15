@@ -94,6 +94,8 @@ Web console (design/adr/0050; reached only through an SSH tunnel)
 Running
   gatte status               backends, tools waiting for review
   gatte reload               re-read the roles without a restart
+  gatte redial NAME          drop and re-dial one backend so a rotated credential
+                             (or a restarted backend) takes effect, without a restart
   gatte selftest SERVER SAFE_TOOL [SENSITIVE_TOOL [ARGS_JSON]]
                              sign in as a throwaway analyst, call SAFE_TOOL,
                              check SENSITIVE_TOOL is refused
@@ -154,7 +156,8 @@ cmd_secret() {
 		jq --arg k "$1" --rawfile v "$w/value" '.[$k] = ($v | rtrimstr("\n") | rtrimstr("\r"))' \
 			"$w/plain.json" >"$w/new.json"
 		vault_encrypt "$w/new.json"
-		say "Stored $1 in the vault. The gateway reads it on the next call; nothing to restart."
+		say "Stored $1 in the vault. A backend reads it when it next dials; to apply it"
+		say "to one already connected, run: gatte redial NAME (or restart the gateway)."
 		;;
 	list)
 		w=$(private_dir)
@@ -218,6 +221,16 @@ add_grant() {
 cmd_reload() {
 	assemble_config
 	mcp reload -wait 1m
+}
+
+# cmd_redial drops serve's connection to one backend and dials it again with
+# the vault as it is now, so a rotated credential or a restarted backend takes
+# effect for that backend alone, without a gateway restart (design/adr/0044).
+# A rotated credential is not applied to an already-connected backend until it
+# is re-dialled; this is the command that does it.
+cmd_redial() {
+	[ $# -eq 1 ] || die "usage: gatte redial NAME"
+	mcp upstream redial "$1"
 }
 
 # apply_roles FILE sends FILE's text to the management API (PUT /v1/roles),
@@ -997,6 +1010,7 @@ status)
 	mcp tool list
 	;;
 reload) cmd_reload ;;
+redial) shift; cmd_redial "$@" ;;
 roles) shift; cmd_roles "$@" ;;
 console) shift; cmd_console "$@" ;;
 selftest) shift; exec /usr/local/share/gatte/selftest.sh "$@" ;;

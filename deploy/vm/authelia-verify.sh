@@ -8,7 +8,7 @@
 #      advertising a jwks_uri;
 #   2. serves a JWKS with at least one key;
 #   3. issues an access token that is a JWT, not an opaque string;
-#   4. that JWT carries aud == https://mcp.example.internal/, the right iss,
+#   4. that JWT carries aud == https://mcp.example.internal/mcp, the right iss,
 #      and a groups claim.
 #
 # Every request goes through nginx over TLS and verifies against the CA
@@ -24,7 +24,7 @@ ISSUER="https://$FQDN"
 CA=/usr/local/etc/soc-ca/ca.crt
 SECRETS=/usr/local/etc/authelia/secrets
 CLIENT_ID=mcp-gateway
-AUDIENCE='https://mcp.example.internal/'
+AUDIENCE='https://mcp.example.internal/mcp'
 REDIRECT_URI='https://mcp.example.internal/oauth2/callback'
 USER="${USER_UNDER_TEST:-analyst}"
 

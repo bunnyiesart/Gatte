@@ -101,8 +101,9 @@ identity_providers:
           - 'preferred_username'
     clients:
       # Claude Code on the analyst's machine: public (no secret can live
-      # there), PKCE S256, RFC 8252 loopback redirect. The audience must be
-      # the gateway's [oidc] audience exactly, trailing slash included.
+      # there), PKCE S256, RFC 8252 loopback redirect. The audience is the
+      # gateway's [oidc] audience exactly: the MCP endpoint URL, with no
+      # trailing slash.
       - client_id: 'claude-code'
         client_name: 'Claude Code (analyst MCP client)'
         lifespan: 'mcp_short'

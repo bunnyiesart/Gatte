@@ -15,7 +15,7 @@ assumes both.
 | Front door | nginx, TLS on `203.0.113.10:443`, SAN `DNS:mcp.example.internal, IP:203.0.113.10` |
 | Gateway | `127.0.0.1:8080` inside that jail, loopback only |
 | Service | `service mcp_gateway start`, runs as **`mcpgw`**, not root |
-| IdP | Authelia at `https://id.example.internal`, RS256, `aud: https://mcp.example.internal/` |
+| IdP | Authelia at `https://id.example.internal`, RS256, `aud: https://mcp.example.internal/mcp` |
 | Upstreams | the four `lab/servers/*` mocks, cross-compiled `freebsd/arm64` |
 | Vault | sops + age, `/usr/local/etc/mcp-gateway/secrets.json` |
 | Trust anchor | one Ed25519 key in `signer.trusted_keys`, `require_signed = true` |
@@ -286,6 +286,10 @@ docsearch.docsearch_credcheck  HTTP 200  {"received_expected_secret":true,"finge
 threatintel.threatintel_credcheck            HTTP 200  {"received_expected_secret":true,"fingerprint":"9ae421de"}
 ```
 
+> **Note (14 Nov 2026).** This record predates the change of the audience to
+> the MCP endpoint URL (`https://mcp.example.internal/mcp`) and shows the
+> earlier root form.
+
 `9ae421de` was then computed independently from the vault --
 `sops --decrypt | jq -j .MOCK_SECRET | openssl dgst -sha256`, first eight
 hex characters -- and matches. So the claim is not merely "the backend
@@ -416,6 +420,10 @@ run three times in a row, green each time.
    {"cases":[{"case_id":"57769","title":"IDS Enumeration Attack","status":"open","severity":"high"},
              {"case_id":"59456","title":"Suspicious Login From New Device","status":"closed","severity":"low"}]}
    ```
+
+   > **Note (14 Nov 2026).** This record predates the change of the audience to
+   > the MCP endpoint URL (`https://mcp.example.internal/mcp`) and shows the
+   > earlier root form.
 
 5. **Negatives.**
 

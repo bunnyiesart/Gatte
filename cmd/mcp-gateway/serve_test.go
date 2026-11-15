@@ -26,6 +26,7 @@ import (
 	jose "github.com/go-jose/go-jose/v4"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/bunnyiesart/Gatte/internal/admin"
 	"github.com/bunnyiesart/Gatte/internal/config"
 	"github.com/bunnyiesart/Gatte/internal/gateway"
 	"github.com/bunnyiesart/Gatte/internal/gateway/httpapi"
@@ -352,6 +353,61 @@ func TestBuildServer_MetadataIsServedUnauthenticated(t *testing.T) {
 	}
 	if len(doc.AuthorizationServers) == 0 || doc.AuthorizationServers[0] != fx.cfg.OIDC.Issuer {
 		t.Errorf("metadata authorization_servers = %v, want [%q]", doc.AuthorizationServers, fx.cfg.OIDC.Issuer)
+	}
+}
+
+// TestBuildServer_ConnectURLIsTheAdvertisedResource: the server URL the
+// connect script gives Claude Code and the `resource` the metadata
+// advertises must be one string. The client sends the first as `resource`
+// on its own token refreshes and the second on the others, and the IdP
+// narrows a refresh token to what the last refresh asked for, so any
+// difference between them ends in invalid_target.
+func TestBuildServer_ConnectURLIsTheAdvertisedResource(t *testing.T) {
+	fx := newServeFixture(t, nil)
+	fx.cfg.OIDC.Audience = "https://127.0.0.1/mcp"
+	fx.cfg.Connect.ClientID = "claude-code"
+	fx.cfg.Connect.CallbackPort = 47823
+	logger, _ := serveTestLogger()
+
+	stack, err := buildServer(context.Background(), fx.cfg, logger)
+	if err != nil {
+		t.Fatalf("buildServer: %v", err)
+	}
+	defer stack.close()
+
+	info, err := admin.ConnectInfoOf(fx.cfg, "", time.Now())
+	if err != nil || !info.Ready {
+		t.Fatalf("ConnectInfoOf: %+v, %v", info, err)
+	}
+	if info.URL != "https://127.0.0.1/mcp" {
+		t.Fatalf("connect URL = %q, want the endpoint URL exactly", info.URL)
+	}
+	if !strings.HasSuffix(admin.ConnectCommand(info), " '"+info.URL+"'") {
+		t.Errorf("connect command %q does not end with the server URL", admin.ConnectCommand(info))
+	}
+
+	rec := httptest.NewRecorder()
+	stack.server.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{}`)))
+	const wantMeta = `Bearer resource_metadata="https://127.0.0.1/.well-known/oauth-protected-resource/mcp"`
+	if got := rec.Header().Get("WWW-Authenticate"); !strings.HasPrefix(got, wantMeta) {
+		t.Errorf("WWW-Authenticate = %q, want it to start with %s", got, wantMeta)
+	}
+
+	for _, path := range []string{httpapi.MetadataPath + "/mcp", httpapi.MetadataPath} {
+		rec := httptest.NewRecorder()
+		stack.server.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s: status = %d", path, rec.Code)
+		}
+		var doc struct {
+			Resource string `json:"resource"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &doc); err != nil {
+			t.Fatalf("GET %s: not JSON: %v", path, err)
+		}
+		if doc.Resource != info.URL {
+			t.Errorf("GET %s: resource = %q, connect URL = %q; they must be identical", path, doc.Resource, info.URL)
+		}
 	}
 }
 

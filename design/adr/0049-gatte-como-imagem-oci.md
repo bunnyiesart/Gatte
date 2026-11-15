@@ -156,6 +156,21 @@ só o que falta:
 Só `GATTE_DOMAIN` é obrigatório. `GATTE_PORT` entra em todo URL quando não é
 443, porque issuer e audience são comparados como texto.
 
+> **Anotação (14 nov 2026).** A audience derivada passa de `https://DOMÍNIO/`
+> para o URL do endpoint MCP, `https://DOMÍNIO/mcp`, sem barra no fim. É o
+> mesmo texto em `[oidc] audience`, no `resource` da metadata (RFC 9728),
+> no `resource_metadata` do 401, no URL que o script de conexão grava e na
+> audience do cliente `claude-code` no Authelia. Com a raiz, o Claude Code
+> pedia ora a raiz, ora `/mcp` como `resource`; o Authelia estreita o
+> refresh token ao último pedido, e os refreshes seguintes davam
+> `invalid_target`. Imagens já instaladas passam ao valor novo no próximo
+> arranque, sem passo do operador. Uma entrada do Claude Code que já aponta
+> para `/mcp` não precisa de nada: o próximo refresh já devolve um token com
+> a audience nova. Uma entrada no domínio puro, que os scripts de conexão
+> anteriores gravavam, para de funcionar: o analista roda o script de
+> conexão reemitido (`gatte connect -all`) e entra uma vez pelo `/mcp`. Uma
+> configuração escrita à mão segue com a audience que tem.
+
 ### 3. A cada arranque: `gatte-entrypoint serve`
 
 Monta `config.toml` = `base.toml` + `config/roles.toml` (+ `config/extra.toml`),

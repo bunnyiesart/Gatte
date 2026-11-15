@@ -110,7 +110,12 @@ derive() {
 	if [ "$GATTE_PORT" = 443 ]; then sfx=; else sfx=:$GATTE_PORT; fi
 	IDP_HOST=auth.$GATTE_DOMAIN
 	GW_URL=https://$GATTE_DOMAIN$sfx
-	AUDIENCE=$GW_URL/
+	# The audience is the MCP endpoint URL analysts connect to, not the
+	# origin: the client sends that URL as `resource` on some token
+	# requests and the metadata's `resource` on others, and Authelia narrows
+	# a refresh token to whatever was last requested, so the two must be
+	# one string or refreshes start failing with invalid_target.
+	AUDIENCE=$GW_URL/mcp
 	IDP_URL=https://$IDP_HOST$sfx
 	ISSUER=$IDP_URL
 	GW_SITE=$GATTE_DOMAIN$sfx

@@ -153,10 +153,10 @@ identity_providers:
 
         # RFC 8707 resource indicator. The gateway is a Resource Server and
         # rejects a token whose `aud` is not exactly this, so this string
-        # and the gateway's configured audience have to stay identical --
-        # trailing slash included.
+        # and the gateway's configured audience have to stay identical: the
+        # MCP endpoint URL clients connect to, with no trailing slash.
         audience:
-          - 'https://mcp.example.internal/'
+          - 'https://mcp.example.internal/mcp'
 
         scopes:
           - 'openid'

@@ -17,7 +17,7 @@ conventions this follows.
 | Release | `15.1-RELEASE` |
 | Names | `id.example.internal` (this jail), `mcp.example.internal` (203.0.113.10) |
 | Issuer | `https://id.example.internal` |
-| Audience issued | `https://mcp.example.internal/` |
+| Audience issued | `https://mcp.example.internal/mcp` |
 | Packages | `authelia-4.39.20_5`, `nginx-1.30.4`, `curl`, `jq` |
 | CA | on the **VM host**, `/usr/local/etc/soc-ca` |
 
@@ -210,7 +210,7 @@ user and authorise none of them, and the failure would look like a broken
 role mapping rather than a missing claim.
 
 **`audience` plus the RFC 8707 `resource` parameter.** The client is allowed
-to request `https://mcp.example.internal/`, and the claims policy sets
+to request `https://mcp.example.internal/mcp`, and the claims policy sets
 `access_token_audience_mode: 'specification'`, meaning `aud` contains the
 granted resource indicators and *not* the client id.
 
@@ -221,6 +221,10 @@ midnight. **The audience is not automatic.** Measured, on this jail:
 |---|---|
 | with `resource=https://mcp.example.internal/` | `["https://mcp.example.internal/"]` |
 | without `resource` | `[]` (empty) |
+
+> **Note (14 Nov 2026).** This record predates the change of the audience to
+> the MCP endpoint URL (`https://mcp.example.internal/mcp`) and shows the
+> earlier root form.
 
 An empty audience is the correct, fail-closed outcome -- the gateway rejects
 it -- but a client that forgets `resource` gets a perfectly well-formed,
@@ -314,9 +318,13 @@ built to exercise. It exits non-zero on the first failed assertion.
    verifies** against the RSA public key reconstructed from that JWKS
    entry. This is the check the gateway performs, done for real, not
    inferred from the header.
-6. `aud` contains exactly `https://mcp.example.internal/`.
+6. `aud` contains exactly `https://mcp.example.internal/mcp`.
 7. `iss` is `https://id.example.internal`.
 8. `groups` is present and non-empty, and differs correctly per user.
+
+> **Note (14 Nov 2026).** This record predates the change of the audience to
+> the MCP endpoint URL (`https://mcp.example.internal/mcp`) and shows the
+> earlier root form.
 
 Decoded access token claims, user `analyst`:
 

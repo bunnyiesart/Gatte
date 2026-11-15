@@ -116,21 +116,31 @@ payload() {
 payload "$AT" | jq -e '(.groups // []) | length > 0' >/dev/null ||
 	fail "the access token has no groups claim: the groups scope or the claims policy is missing"
 ok "the access token carries the groups claim"
+has_aud() { payload "$1" | jq -e --arg a "$AUDIENCE" '.aud | (if type == "array" then . else [.] end) | index($a)' >/dev/null; }
+has_aud "$AT" || fail "the access token's aud does not contain $AUDIENCE"
+ok "the access token's aud is $AUDIENCE"
 
-# A refresh, as Claude Code does when the 10-minute access token expires;
-# the rest of the test uses the refreshed token.
+# Refreshes, as Claude Code does when the 10-minute access token expires:
+# some of its refreshes send resource and some do not, and every one must
+# keep the gateway's audience. Each refresh rotates the refresh token. The
+# rest of the test uses the last access token.
 [ -n "$RT" ] || fail "no refresh token: the offline_access scope was not granted"
 printf '%s' "$RT" >"$W/rt"
 RT=
-c=$($CURL -o "$W/token" -w '%{http_code}' -X POST "$TOKEN_EP" \
-	--data-urlencode "grant_type=refresh_token" --data-urlencode "refresh_token@$W/rt" \
-	--data-urlencode "client_id=$CLIENT_ID")
+for r in "$AUDIENCE" "" "$AUDIENCE"; do
+	c=$($CURL -o "$W/token" -w '%{http_code}' -X POST "$TOKEN_EP" \
+		--data-urlencode "grant_type=refresh_token" --data-urlencode "refresh_token@$W/rt" \
+		--data-urlencode "client_id=$CLIENT_ID" ${r:+--data-urlencode "resource=$r"})
+	[ "$c" = 200 ] || fail "token refresh (resource=${r:-none}): http $c, $(jq -r '.error // empty' "$W/token")"
+	AT=$(jq -r .access_token "$W/token")
+	jq -j '.refresh_token // empty' "$W/token" >"$W/rt.new"
+	[ -s "$W/rt.new" ] && mv "$W/rt.new" "$W/rt"
+	rm -f "$W/token" "$W/rt.new"
+	payload "$AT" | jq -e '(.groups // []) | length > 0' >/dev/null || fail "the refreshed access token has no groups claim"
+	has_aud "$AT" || fail "the access token refreshed with resource=${r:-none} lost the audience $AUDIENCE"
+	ok "token refresh (resource=${r:-none}) kept aud $AUDIENCE and the groups claim"
+done
 rm -f "$W/rt"
-[ "$c" = 200 ] || fail "token refresh: http $c"
-AT=$(jq -r .access_token "$W/token")
-rm -f "$W/token"
-payload "$AT" | jq -e '(.groups // []) | length > 0' >/dev/null || fail "the refreshed access token has no groups claim"
-ok "token refresh returned a new access token with the groups claim"
 
 # 4. MCP over streamable HTTP with that token.
 SID=

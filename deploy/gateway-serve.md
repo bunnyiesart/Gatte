@@ -276,7 +276,7 @@ plus the four fixtures, and lost `threatintel.enrich` and
 held ten names, not twelve, and that is the union working, not a bug.
 
 **Positive.** All four called through the real path -- `POST
-https://mcp.example.internal/mcp` from the VM host, TLS verified against the SOC
+https://mcp.example.internal/` from the VM host, TLS verified against the SOC
 CA, nginx, then the gateway -- with an Authelia RS256 token for `dfirlead`:
 
 ```
@@ -285,6 +285,10 @@ logsearch.logsearch_credcheck        HTTP 200  {"received_expected_secret":true,
 docsearch.docsearch_credcheck  HTTP 200  {"received_expected_secret":true,"fingerprint":"9ae421de"}
 threatintel.threatintel_credcheck            HTTP 200  {"received_expected_secret":true,"fingerprint":"9ae421de"}
 ```
+
+> **Note (14 Nov 2026).** This record predates the change of the audience to
+> the MCP endpoint URL (`https://mcp.example.internal/mcp`) and shows the
+> earlier root form.
 
 `9ae421de` was then computed independently from the vault --
 `sops --decrypt | jq -j .MOCK_SECRET | openssl dgst -sha256`, first eight
@@ -395,7 +399,7 @@ run three times in a row, green each time.
    in a table. After approving the eight domain tools: 8 `approved`/usable,
    4 `pending` (the credcheck fixtures).
 
-4. **The headline.** `POST https://mcp.example.internal/mcp` from the VM host,
+4. **The headline.** `POST https://mcp.example.internal/` from the VM host,
    TLS verified against the SOC CA, through nginx, with an Authelia
    RS256 token for `analyst`:
 
@@ -416,6 +420,10 @@ run three times in a row, green each time.
    {"cases":[{"case_id":"57769","title":"IDS Enumeration Attack","status":"open","severity":"high"},
              {"case_id":"59456","title":"Suspicious Login From New Device","status":"closed","severity":"low"}]}
    ```
+
+   > **Note (14 Nov 2026).** This record predates the change of the audience to
+   > the MCP endpoint URL (`https://mcp.example.internal/mcp`) and shows the
+   > earlier root form.
 
 5. **Negatives.**
 

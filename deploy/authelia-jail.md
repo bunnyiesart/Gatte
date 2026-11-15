@@ -219,8 +219,12 @@ midnight. **The audience is not automatic.** Measured, on this jail:
 
 | authorization + token request | resulting `aud` |
 |---|---|
-| with `resource=https://mcp.example.internal/mcp` | `["https://mcp.example.internal/mcp"]` |
+| with `resource=https://mcp.example.internal/` | `["https://mcp.example.internal/"]` |
 | without `resource` | `[]` (empty) |
+
+> **Note (14 Nov 2026).** This record predates the change of the audience to
+> the MCP endpoint URL (`https://mcp.example.internal/mcp`) and shows the
+> earlier root form.
 
 An empty audience is the correct, fail-closed outcome -- the gateway rejects
 it -- but a client that forgets `resource` gets a perfectly well-formed,
@@ -318,11 +322,15 @@ built to exercise. It exits non-zero on the first failed assertion.
 7. `iss` is `https://id.example.internal`.
 8. `groups` is present and non-empty, and differs correctly per user.
 
+> **Note (14 Nov 2026).** This record predates the change of the audience to
+> the MCP endpoint URL (`https://mcp.example.internal/mcp`) and shows the
+> earlier root form.
+
 Decoded access token claims, user `analyst`:
 
 ```json
 {
-  "aud": [ "https://mcp.example.internal/mcp" ],
+  "aud": [ "https://mcp.example.internal/" ],
   "client_id": "mcp-gateway",
   "email": "analyst@example.internal",
   "exp": 1788944566,
@@ -341,7 +349,7 @@ User `dfirlead`, same flow:
 
 ```json
 {
-  "aud": [ "https://mcp.example.internal/mcp" ],
+  "aud": [ "https://mcp.example.internal/" ],
   "client_id": "mcp-gateway",
   "email": "dfirlead@example.internal",
   "exp": 1788944521,

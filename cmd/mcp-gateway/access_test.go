@@ -23,6 +23,7 @@ import (
 	"github.com/bunnyiesart/Gatte/internal/audit"
 	auditsqlite "github.com/bunnyiesart/Gatte/internal/audit/sqlite"
 	"github.com/bunnyiesart/Gatte/internal/config"
+	"github.com/bunnyiesart/Gatte/internal/testenv"
 )
 
 // The console as a second writer of the audit chain (design/adr/0031).
@@ -45,7 +46,7 @@ func TestMain(m *testing.M) {
 	if os.Getenv(cliHelperEnv) == "1" {
 		os.Exit(cliHelper())
 	}
-	os.Exit(m.Run())
+	os.Exit(testenv.Main(m))
 }
 
 // cliHelper blocks and unblocks a fresh subject per round, each through a

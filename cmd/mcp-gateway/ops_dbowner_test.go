@@ -59,6 +59,19 @@ func pretendRoot(t *testing.T, atDrop func()) *[]int {
 	return &dropped
 }
 
+// serviceOwnsDatabaseDir gives the database directory to a non-root owner when
+// the tests run as root, as on a real host, so becomeDatabaseOwner has an
+// owner to drop to. An unprivileged run already owns it and is left as it is.
+func serviceOwnsDatabaseDir(t *testing.T, dbPath string) {
+	t.Helper()
+	if os.Geteuid() != 0 {
+		return
+	}
+	if err := os.Chown(filepath.Dir(dbPath), 65534, 65534); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // noSQLiteFilesYet fails when the database's -wal or -shm, or a restore
 // staging file, already exists: something opened the database before the
 // drop.
@@ -120,6 +133,7 @@ func TestCheck_AnOlderSchemaIsReadWithoutWritingIt(t *testing.T) {
 // directory's owner before SQLite opens anything.
 func TestCheck_AsRootDropsBeforeOpeningTheDatabase(t *testing.T) {
 	fx := newCheckFixture(t, "")
+	serviceOwnsDatabaseDir(t, fx.cfg.Database)
 	for _, suffix := range []string{"-wal", "-shm"} {
 		_ = os.Remove(fx.cfg.Database + suffix)
 	}
@@ -201,6 +215,7 @@ func TestBackup_RefusesAMissingOrNewerDatabase(t *testing.T) {
 // restore reads -in before the drop.
 func TestCmdBackupAndRestore_AsRootDropBeforeOpening(t *testing.T) {
 	fx := newCheckFixture(t, "")
+	serviceOwnsDatabaseDir(t, fx.cfg.Database)
 	for _, suffix := range []string{"-wal", "-shm"} {
 		_ = os.Remove(fx.cfg.Database + suffix)
 	}

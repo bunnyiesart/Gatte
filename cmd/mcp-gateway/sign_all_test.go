@@ -107,6 +107,7 @@ func TestCmdSign_AsRootDropsToTheDatabaseOwnerBeforeOpeningIt(t *testing.T) {
 	for _, suffix := range []string{"-wal", "-shm"} {
 		_ = os.Remove(cfg.Database + suffix)
 	}
+	serviceOwnsDatabaseDir(t, cfg.Database)
 
 	var droppedTo []int
 	openedBeforeDrop := false

@@ -44,6 +44,7 @@ type runningServe struct {
 
 func startServe(t *testing.T, tweak func(*strings.Builder)) *runningServe {
 	t.Helper()
+	ringAsServiceAccount(t)
 	fx := newServeFixture(t, tweak)
 	sink := &syncBuf{}
 	logger := slog.New(slog.NewTextHandler(sink, &slog.HandlerOptions{Level: slog.LevelDebug}))
@@ -365,8 +366,23 @@ func TestReload_WithoutServeNothingIsFiledAndAStaleRequestIsSuperseded(t *testin
 	}
 }
 
+// ringAsServiceAccount lets these tests ring serve, which runs in the test
+// process itself, when they run as root: ringServe refuses as root by design,
+// a refusal TestRingServe_SignalsOnlyTheProcessThatRecordedItself asserts on
+// its own. An unprivileged run is left as it is.
+func ringAsServiceAccount(t *testing.T) {
+	t.Helper()
+	if os.Geteuid() != 0 {
+		return
+	}
+	ringGeteuid = func() int { return 65534 }
+	t.Cleanup(func() { ringGeteuid = os.Geteuid })
+}
+
 // TestRingServe_SignalsOnlyTheProcessThatRecordedItself.
 func TestRingServe_SignalsOnlyTheProcessThatRecordedItself(t *testing.T) {
+	ringAsServiceAccount(t)
+	asRunner := ringGeteuid
 	hup := make(chan os.Signal, 1)
 	signal.Notify(hup, syscall.SIGHUP)
 	defer signal.Stop(hup)
@@ -396,7 +412,7 @@ func TestRingServe_SignalsOnlyTheProcessThatRecordedItself(t *testing.T) {
 		t.Fatal("root rang the recorded pid")
 	case <-time.After(200 * time.Millisecond):
 	}
-	ringGeteuid = os.Geteuid
+	ringGeteuid = asRunner
 	if runtime.GOOS == "linux" {
 		if me.StartToken == "" {
 			t.Fatal("no start token on Linux")

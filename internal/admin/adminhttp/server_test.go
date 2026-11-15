@@ -130,6 +130,9 @@ func TestRoutes_OperatorRoutesAreAbsentOnTheAccountsSocket(t *testing.T) {
 // TestAccountsSocket_RefusesTheServiceAccount even if the file mode was
 // widened by mistake (design/adr/0040 §1).
 func TestAccountsSocket_RefusesTheServiceAccount(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("as root the test's peer is root, which the accounts socket admits; the service account is never root")
+	}
 	b := newBackend(t)
 	sock, _ := serve(t, adminhttp.Options{Socket: adminapi.SocketAccounts, Service: b.svc, ServiceUID: uint32(os.Geteuid())})
 	if status, code, _ := call(t, sock, "POST", "/v1/accounts/ana/reset-password", "", nil); status != 403 || code != adminapi.CodeForbiddenPeer {

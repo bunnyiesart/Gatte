@@ -12,7 +12,7 @@
 . /usr/local/share/gatte/lib.sh
 # The domain docker run -e gave, before derive mixes in the saved one:
 # setup cannot change a domain the container's own flags would put back.
-RUN_DOMAIN=${GATTE_DOMAIN:-} RUN_TLS=${GATTE_TLS:-}
+RUN_DOMAIN=${GATTE_DOMAIN:-} RUN_TLS=${GATTE_TLS:-} RUN_2FA=${GATTE_2FA:-}
 if ! derive; then
 	case "${1:-help}" in
 	setup | help | -h | --help) ;;
@@ -25,8 +25,9 @@ usage() {
 gatte -- Gatte operator commands. Run each as:  docker exec -it gatte gatte ...
 
 Setup
-  gatte setup                domain and TLS, the first person, backends, self-test;
-                             a step already done is skipped, so it can be run again
+  gatte setup                domain and TLS, an optional TOTP second factor, the first
+                             person, backends, self-test; a step already done is skipped,
+                             so it can be run again
   gatte setup import         read an MCP JSON file (.mcp.json) on standard input and
                              keep its server names and URLs, never a value, for setup:
                                  docker exec -i gatte gatte setup import < .mcp.json
@@ -707,26 +708,54 @@ setup_domain() {
 	derive
 }
 
+# setup_2fa offers the opt-in TOTP second factor. Off by default, so a
+# password-only install is unchanged. The choice is applied when the
+# container renders Authelia's configuration, so turning it on or off asks
+# for a restart, like a domain change does.
+setup_2fa() {
+	cur=off
+	if [ -r "$SETTINGS" ]; then
+		v=$(sed -n 's/^GATTE_2FA=//p' "$SETTINGS" | head -n 1)
+		[ -n "$v" ] && cur=$v
+	fi
+	if [ -n "$RUN_2FA" ]; then
+		say "2. Second factor: $cur. Set by -e GATTE_2FA; re-create the container to change it."
+		return 0
+	fi
+	if [ "$cur" = totp ]; then
+		say "2. Second factor: TOTP, required at sign-in. Already on."
+		confirm "   Turn it off (sign-in becomes password only)?" || return 0
+		GATTE_2FA=off
+	else
+		say "2. Second factor: password only. A TOTP app can be required at sign-in,"
+		say "   one per person, enrolled at their next sign-in."
+		confirm "   Require a TOTP second factor?" || return 0
+		GATTE_2FA=totp
+	fi
+	save_settings
+	say "   Saved. Apply it: docker restart gatte."
+}
+
 setup_wait_up() {
 	i=0
 	until curl -fsS -o /dev/null --max-time 3 http://127.0.0.1:8080/.well-known/oauth-protected-resource 2>/dev/null &&
 		[ -S "$OPERATOR_SOCKET" ] && [ -S "$ACCOUNTS_SOCKET" ]; do
-		if [ "$i" -eq 0 ]; then say "2. Waiting for Gatte to start (docker logs gatte says why if it does not)..."; fi
+		if [ "$i" -eq 0 ]; then say "3. Waiting for Gatte to start (docker logs gatte says why if it does not)..."; fi
 		i=$((i + 1))
 		[ "$i" -lt 90 ] || die "Gatte did not come up in 3 minutes: docker logs gatte"
 		sleep 2
 	done
-	say "2. Gatte is up at $GW_URL."
+	say "3. Gatte is up at $GW_URL."
 }
 
 setup_person() {
 	n=$(gatte user list | wc -l | tr -d ' ')
 	if [ "$n" -gt 0 ]; then
-		say "3. People: $n already. Skipped (gatte user add for more)."
+		say "4. People: $n already. Skipped (gatte user add for more)."
 		return 0
 	fi
 	while :; do
-		ask "3. First person's username"
+		ask "4. First person's username"
 		u=$a
 		ask "   Display name" "$u"
 		dn=$a
@@ -878,7 +907,7 @@ setup_import_pick() {
 }
 
 setup_backends() {
-	say "4. Backends. None are bundled: Gatte serves REST APIs (from an OpenAPI"
+	say "5. Backends. None are bundled: Gatte serves REST APIs (from an OpenAPI"
 	say "   document) and remote MCP servers (reached by URL)."
 	if [ ! -s "$IMPORT" ]; then
 		say "   To pick them from an MCP JSON file, run this on the host in another terminal:"
@@ -967,10 +996,11 @@ cmd_setup() {
 	[ $# -eq 0 ] || die "usage: gatte setup [import]"
 	[ -t 0 ] || die "setup asks questions: docker exec -it gatte gatte setup"
 	setup_domain
+	setup_2fa
 	setup_wait_up
 	setup_person
 	setup_backends
-	if confirm "5. Run the self-test (signs in as a throwaway analyst, then deletes it)?"; then
+	if confirm "6. Run the self-test (signs in as a throwaway analyst, then deletes it)?"; then
 		gatte selftest || true
 	fi
 	setup_summary

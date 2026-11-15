@@ -53,7 +53,7 @@ say() {
 # load_settings: a value given to `docker run -e` wins and is remembered;
 # one left out is read back from the volume, so a container re-created
 # without the -e flags (an upgrade) keeps its domain.
-SETTING_NAMES="GATTE_DOMAIN GATTE_PORT GATTE_TLS GATTE_ACME_EMAIL"
+SETTING_NAMES="GATTE_DOMAIN GATTE_PORT GATTE_TLS GATTE_ACME_EMAIL GATTE_2FA"
 load_settings() {
 	for n in $SETTING_NAMES; do
 		eval "v=\${$n:-}"
@@ -106,6 +106,16 @@ derive() {
 		[ -n "${GATTE_ACME_EMAIL:-}" ] || die "GATTE_TLS=acme needs GATTE_ACME_EMAIL"
 		;;
 	*) die "GATTE_TLS=$GATTE_TLS: use internal (a private CA this container makes) or acme (a public certificate)" ;;
+	esac
+	# Opt-in second factor. Default (off) keeps the password-only sign-in, so
+	# an existing install is unaffected; totp turns on Authelia's TOTP and
+	# requires a second factor on sign-in. Applied when the container renders
+	# authelia.yml, so a change needs a restart.
+	GATTE_2FA=${GATTE_2FA:-off}
+	case "$GATTE_2FA" in
+	off) TOTP_DISABLE=true AUTH_POLICY=one_factor ;;
+	totp) TOTP_DISABLE=false AUTH_POLICY=two_factor ;;
+	*) die "GATTE_2FA=$GATTE_2FA: use off (password only) or totp (require a TOTP second factor)" ;;
 	esac
 	if [ "$GATTE_PORT" = 443 ]; then sfx=; else sfx=:$GATTE_PORT; fi
 	IDP_HOST=auth.$GATTE_DOMAIN

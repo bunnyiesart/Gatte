@@ -54,12 +54,14 @@ again:
 1. The domain, and TLS: `internal` (a private CA made here, the default) or
    `acme` (Let's Encrypt, with an email). It warns when a name does not
    resolve.
-2. It waits for `gatte: up`.
-3. The first person: username, display name, email, group (`soc-analysts`
+2. An optional second factor at sign-in: TOTP, off by default. Opting in
+   asks for a `docker restart gatte` to apply it; see "Second factor" below.
+3. It waits for `gatte: up`.
+4. The first person: username, display name, email, group (`soc-analysts`
    or `dfir-leads`). It prints their one-time password, once, and the line
    that writes their connect script.
-4. Backends (below). None are bundled.
-5. An optional self-test, then a summary: URLs, the CA fingerprint, the
+5. Backends (below). None are bundled.
+6. An optional self-test, then a summary: URLs, the CA fingerprint, the
    backup and upgrade commands.
 
 Every prompt that approves something defaults to no. Setup has no option to
@@ -83,6 +85,7 @@ Options, all `-e`:
 | `GATTE_DOMAIN` | (from `gatte setup`) | The name analysts reach Gatte on; the IdP is `auth.` + it |
 | `GATTE_TLS` | `internal` | `internal`: a private CA made here. `acme`: a public certificate from Let's Encrypt (add `-p 80:80` and `GATTE_ACME_EMAIL`) |
 | `GATTE_PORT` | `443` | The HTTPS port, when 443 is taken. Publish the same number: `-p 8443:8443 -e GATTE_PORT=8443` |
+| `GATTE_2FA` | `off` | `off`: password only. `totp`: require a TOTP second factor at sign-in (see "Second factor") |
 | `TZ` | `UTC` | Time zone of the logs |
 
 The settings are kept in the volume: an upgrade can drop the `-e` flags.
@@ -238,6 +241,23 @@ docker exec -i gatte gatte roles set < roles.toml # ...and load it back
 ```
 
 A file the gateway refuses is not applied: the previous one is put back.
+
+## Second factor
+
+Sign-in is a password by default. Because the gateway brokers production
+credentials, `gatte setup` offers an opt-in TOTP second factor, and `-e
+GATTE_2FA=totp` turns it on without the prompt. Default (`off`) is unchanged,
+so an existing install is unaffected until you opt in.
+
+The choice is applied when the container renders Authelia's configuration, so
+turning it on or off takes a `docker restart gatte`. After it is on, each
+person enrols an authenticator app the next time they sign in; no
+administrator step is needed. WebAuthn/passkeys are not offered here.
+
+```sh
+docker exec -it gatte gatte setup        # answer yes at the second-factor step
+docker restart gatte                      # apply it
+```
 
 ## Everyday
 

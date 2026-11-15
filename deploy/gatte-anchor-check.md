@@ -42,6 +42,16 @@ Pick cron or systemd; both run the same script.
    $EDITOR /usr/local/etc/gatte/anchor.env     # fill in GRAYLOG_USER / GRAYLOG_PASS
    ```
 
+   Then check the two gateway names against the host, because the defaults
+   only fit the reference deployment and a wrong one fails every run:
+
+   - `GW_JAIL` is the jail's name on the gateway host, as `jls name` prints
+     it. Set it whenever the default jail does not exist there.
+   - `GW_USER` is the gateway's service user **as named inside that jail**.
+     The script runs `jexec -U GW_USER GW_JAIL ...`, and `jexec -U` looks the
+     name up in the jail's own password database, so a host-side account name
+     for the same uid will not work.
+
 2a. **cron** (FreeBSD or Linux): edit `MAILTO` in
     `deploy/gatte-anchor-check.crontab`, then `crontab gatte-anchor-check.crontab`
     as the operator user.

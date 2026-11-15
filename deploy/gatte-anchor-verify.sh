@@ -41,6 +41,11 @@ GW_HOST="${GW_HOST:-root@198.18.0.4}"
 # said `gatte` -- so the default run of this script pointed at a jail that may
 # not exist, and the failure reads as "the gateway is gone" rather than "the
 # name is wrong". Override both for a differently-named deployment.
+#
+# GW_JAIL is the jail's name on the host, as `jls name` prints it; set it
+# whenever the default jail does not exist there. GW_USER is the gateway's
+# service user as named INSIDE that jail: `jexec -U` looks the name up in the
+# jail's own password database, so a host-side name for the same uid fails.
 GW_JAIL="${GW_JAIL:-mcp-gateway-test}"
 GW_USER="${GW_USER:-mcpgw}"
 GRAYLOG="${GRAYLOG:-http://localhost:9100/api}"

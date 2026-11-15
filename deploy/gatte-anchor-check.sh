@@ -16,6 +16,12 @@
 # Runs on the OPERATOR box, same as the verify script: the host that can reach
 # Graylog and can ssh to the gateway. Never on the gateway.
 #
+# Settings go in $ANCHOR_ENV (below). Two of them are easy to get wrong:
+# GW_JAIL must be the jail's actual name on the gateway host whenever the
+# default does not exist there, and GW_USER is the gateway's service user as
+# named INSIDE that jail -- `jexec -U` resolves it in the jail, so a host-side
+# name for the same uid does not work.
+#
 # WHAT IT ADDS over calling the verify script from cron directly:
 #
 #   1. Quiet on success. A healthy run writes only to syslog, nothing to

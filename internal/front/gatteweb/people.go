@@ -238,9 +238,9 @@ func (f *Front) accFeature(ctx context.Context, name string) bool {
 
 // accountOffboard blocks the person in the gateway and disables their
 // account in one call of the accounts socket, and shows what is left to
-// do by hand.
+// do by hand. It gates on the offboard feature, as its confirm page does.
 func (f *Front) accountOffboard(w http.ResponseWriter, r *http.Request) {
-	if f.acc == nil {
+	if !f.accFeature(r.Context(), adminapi.FeatureOffboard) {
 		http.NotFound(w, r)
 		return
 	}
@@ -260,9 +260,10 @@ func (f *Front) accountOffboard(w http.ResponseWriter, r *http.Request) {
 }
 
 // accountDelete removes the account. The form carries a confirmation the
-// operator ticks; the backend's rule is the same with or without it.
+// operator ticks; the backend's rule is the same with or without it. It gates
+// on the delete feature, as the account page's Delete form does.
 func (f *Front) accountDelete(w http.ResponseWriter, r *http.Request) {
-	if f.acc == nil {
+	if !f.accFeature(r.Context(), adminapi.FeatureAccountDelete) {
 		http.NotFound(w, r)
 		return
 	}

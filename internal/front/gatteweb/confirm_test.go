@@ -3,10 +3,13 @@ package gatteweb
 import (
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/bunnyiesart/Gatte/internal/adminapitest"
+	"github.com/bunnyiesart/Gatte/pkg/adminapi"
 	"github.com/bunnyiesart/Gatte/pkg/frontkit"
 )
 
@@ -163,5 +166,66 @@ func TestAccountConfirms_NeedTheAccountsSocket(t *testing.T) {
 		if w := get(t, f, path); w.Code != http.StatusNotFound {
 			t.Errorf("GET %s without the accounts socket = %d, want 404", path, w.Code)
 		}
+	}
+}
+
+// postForm drives one form POST through the real console routes.
+func postForm(t *testing.T, f *Front, path string, form url.Values) *httptest.ResponseRecorder {
+	t.Helper()
+	r := httptest.NewRequest("POST", path, strings.NewReader(form.Encode()))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if err := r.ParseForm(); err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	f.routes().ServeHTTP(w, r)
+	return w
+}
+
+// Offboard and Delete gate their POST on the same feature as the page that
+// offers them: a backend without the feature gets a 404 from both, and the
+// account is left as it was. With the feature, the POST goes through.
+func TestAccountActions_GateThePostOnTheirFeature(t *testing.T) {
+	for _, tc := range []struct {
+		feature, get, post string
+		form               url.Values
+	}{
+		{adminapi.FeatureOffboard, "/people/offboard?u=ana.lima", "/people/offboard",
+			url.Values{"username": {"ana.lima"}, "subject": {"sub-ana"}, "reason": {"left"}}},
+		{adminapi.FeatureAccountDelete, "", "/people/delete",
+			url.Values{"username": {"ana.lima"}, "confirm": {"yes"}}},
+	} {
+		t.Run(tc.feature+" off", func(t *testing.T) {
+			f, c := testFrontOn(t)
+			c.Server.DropFeature(tc.feature)
+			if tc.get != "" {
+				if w := get(t, f, tc.get); w.Code != http.StatusNotFound {
+					t.Errorf("GET %s without %s = %d, want 404", tc.get, tc.feature, w.Code)
+				}
+			}
+			if w := postForm(t, f, tc.post, tc.form); w.Code != http.StatusNotFound {
+				t.Errorf("POST %s without %s = %d, want 404", tc.post, tc.feature, w.Code)
+			}
+			a, err := c.Accounts.GetAccount(t.Context(), "ana.lima")
+			if err != nil || a.Disabled {
+				t.Errorf("ana.lima after a refused POST %s: %+v, %v; want present and enabled", tc.post, a, err)
+			}
+			if bl, err := c.Operator.ListBlocks(t.Context()); err != nil || slices.ContainsFunc(bl.Blocks, func(b adminapi.Block) bool { return b.Subject == "sub-ana" }) {
+				t.Errorf("a refused POST %s blocked sub-ana (%v)", tc.post, err)
+			}
+		})
+		t.Run(tc.feature+" on", func(t *testing.T) {
+			f, c := testFrontOn(t)
+			if w := postForm(t, f, tc.post, tc.form); w.Code != http.StatusOK {
+				t.Fatalf("POST %s with %s = %d\n%s", tc.post, tc.feature, w.Code, w.Body)
+			}
+			a, err := c.Accounts.GetAccount(t.Context(), "ana.lima")
+			if tc.feature == adminapi.FeatureOffboard && (err != nil || !a.Disabled) {
+				t.Errorf("ana.lima after offboard: %+v, %v; want disabled", a, err)
+			}
+			if tc.feature == adminapi.FeatureAccountDelete && err == nil {
+				t.Errorf("ana.lima still exists after delete")
+			}
+		})
 	}
 }

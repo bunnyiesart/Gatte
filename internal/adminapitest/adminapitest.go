@@ -17,6 +17,7 @@ package adminapitest
 import (
 	"encoding/json"
 	"net/http"
+	"slices"
 	"sync"
 	"time"
 
@@ -110,6 +111,14 @@ func (s *Server) PeopleReads() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.peopleReads
+}
+
+// DropFeature stops WhoAmI listing name, so a test can reach a frontend's
+// "backend without this feature" path.
+func (s *Server) DropFeature(name string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.features = slices.DeleteFunc(s.features, func(f string) bool { return f == name })
 }
 
 // Handler is the fake's HTTP surface. Mount it on a listener, or serve it from

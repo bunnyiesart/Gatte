@@ -295,7 +295,7 @@ set -e
 sed 's/^/   /' "$WORK/verify.out"
 
 if [ "$RC" -eq 0 ]; then
-	say "BATEM -- a ancora externa esta viva"
+	say "MATCH -- the external anchor is live"
 	ok "the local trail verifies AND its head matches the copy the gateway cannot write"
 	exit 0
 fi

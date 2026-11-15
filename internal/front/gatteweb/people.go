@@ -11,7 +11,6 @@ package gatteweb
 // (design/adr/0040 §1).
 
 import (
-	"context"
 	"errors"
 	"html/template"
 	"net/http"
@@ -204,11 +203,10 @@ func (f *Front) accountReset(w http.ResponseWriter, r *http.Request) {
 // empty subject blocks nobody. It gates on the offboard feature, so a console
 // without it never shows the page.
 func (f *Front) accountOffboardConfirm(w http.ResponseWriter, r *http.Request) {
-	if !f.accFeature(r.Context(), adminapi.FeatureOffboard) {
-		http.NotFound(w, r)
+	u := r.URL.Query().Get("u")
+	if !f.accGate(w, r, adminapi.FeatureOffboard, "Offboard "+frontkit.VisibleText(u), u) {
 		return
 	}
-	u := r.URL.Query().Get("u")
 	f.confirm(w, r, "users", "Offboard "+frontkit.VisibleText(u), confirmView{
 		Back:      f.kit.Base() + "/people/account?u=" + url.QueryEscape(u),
 		BackLabel: frontkit.VisibleText(u),
@@ -226,25 +224,38 @@ func (f *Front) accountOffboardConfirm(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// accFeature reports whether the accounts socket's backend lists name. Without
-// the accounts socket a console lists nothing it serves.
-func (f *Front) accFeature(ctx context.Context, name string) bool {
+// accGate reports whether the accounts socket's backend lists feature, and
+// answers the request when it does not: 404 when the backend answered without
+// it (or the console has no accounts socket), so a console without the
+// feature never shows the page nor forwards the action; an error result,
+// with nothing done, when the backend could not be asked, so an operator
+// mid-incident sees why instead of a bare 404.
+func (f *Front) accGate(w http.ResponseWriter, r *http.Request, feature, title, username string) bool {
 	if f.acc == nil {
+		http.NotFound(w, r)
 		return false
 	}
-	me, err := f.acc.WhoAmI(ctx)
-	return err == nil && slices.Contains(me.Features, name)
+	me, err := f.acc.WhoAmI(r.Context())
+	if err != nil {
+		f.showResult(w, r, "users", title, "/people/account?u="+url.QueryEscape(username),
+			result{Summary: "Nothing was done: the accounts socket could not be reached.", Output: errText(err)})
+		return false
+	}
+	if !slices.Contains(me.Features, feature) {
+		http.NotFound(w, r)
+		return false
+	}
+	return true
 }
 
 // accountOffboard blocks the person in the gateway and disables their
 // account in one call of the accounts socket, and shows what is left to
 // do by hand. It gates on the offboard feature, as its confirm page does.
 func (f *Front) accountOffboard(w http.ResponseWriter, r *http.Request) {
-	if !f.accFeature(r.Context(), adminapi.FeatureOffboard) {
-		http.NotFound(w, r)
+	u := r.PostForm.Get("username")
+	if !f.accGate(w, r, adminapi.FeatureOffboard, "Offboard "+frontkit.VisibleText(u), u) {
 		return
 	}
-	u := r.PostForm.Get("username")
 	subject := strings.TrimSpace(r.PostForm.Get("subject"))
 	res, err := f.acc.OffboardAccount(r.Context(), u, adminapi.OffboardRequest{Subject: subject, Reason: strings.TrimSpace(r.PostForm.Get("reason"))})
 	out := actionResult(res.ActionResult, err)
@@ -263,11 +274,10 @@ func (f *Front) accountOffboard(w http.ResponseWriter, r *http.Request) {
 // operator ticks; the backend's rule is the same with or without it. It gates
 // on the delete feature, as the account page's Delete form does.
 func (f *Front) accountDelete(w http.ResponseWriter, r *http.Request) {
-	if !f.accFeature(r.Context(), adminapi.FeatureAccountDelete) {
-		http.NotFound(w, r)
+	u := r.PostForm.Get("username")
+	if !f.accGate(w, r, adminapi.FeatureAccountDelete, "Delete "+frontkit.VisibleText(u), u) {
 		return
 	}
-	u := r.PostForm.Get("username")
 	if r.PostForm.Get("confirm") != "yes" {
 		f.showResult(w, r, "users", "Delete "+frontkit.VisibleText(u), "/people/account?u="+url.QueryEscape(u),
 			result{Summary: "Nothing was deleted: tick the confirmation first."})

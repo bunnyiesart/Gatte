@@ -1,11 +1,15 @@
 package gatteweb
 
 import (
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/bunnyiesart/Gatte/internal/adminapitest"
@@ -227,5 +231,77 @@ func TestAccountActions_GateThePostOnTheirFeature(t *testing.T) {
 				t.Errorf("ana.lima still exists after delete")
 			}
 		})
+	}
+}
+
+// frontWithBrokenWhoAmI is a console whose accounts socket fails whoami and
+// counts every other call it is sent; the operator socket and the state behind
+// both are the seeded fake's.
+func frontWithBrokenWhoAmI(t *testing.T) (*Front, *adminapitest.Clients, *atomic.Int32) {
+	t.Helper()
+	c := adminapitest.Start(t)
+	var calls atomic.Int32
+	dir, err := os.MkdirTemp("", "gwb")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	ln, err := net.Listen("unix", filepath.Join(dir, "acc.sock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	hs := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/whoami" {
+			http.Error(w, "unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		calls.Add(1)
+		c.Server.ServeHTTP(w, r)
+	})}
+	go func() { _ = hs.Serve(ln) }()
+	t.Cleanup(func() { _ = hs.Close() })
+	kit, err := frontkit.New(frontkit.Config{Listen: "127.0.0.1:0"})
+	if err != nil {
+		t.Fatalf("frontkit: %v", err)
+	}
+	t.Cleanup(func() { _ = kit.Close() })
+	f, err := New(Options{Operator: c.Operator, Accounts: adminapi.New(ln.Addr().String(), adminapi.WithFront("ui")), Kit: kit})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	return f, c, &calls
+}
+
+// When the accounts socket cannot be asked whether it offers offboard or
+// delete, the console says so on the result page instead of a bare 404, and
+// sends nothing else to the backend.
+func TestAccountActions_AnUnreachableAccountsSocketIsShownNotA404(t *testing.T) {
+	f, c, calls := frontWithBrokenWhoAmI(t)
+	for _, tc := range []struct {
+		method, path string
+		form         url.Values
+	}{
+		{"GET", "/people/offboard?u=ana.lima", nil},
+		{"POST", "/people/offboard", url.Values{"username": {"ana.lima"}, "subject": {"sub-ana"}, "reason": {"left"}}},
+		{"POST", "/people/delete", url.Values{"username": {"ana.lima"}, "confirm": {"yes"}}},
+	} {
+		var w *httptest.ResponseRecorder
+		if tc.method == "GET" {
+			w = get(t, f, tc.path)
+		} else {
+			w = postForm(t, f, tc.path, tc.form)
+		}
+		body := w.Body.String()
+		if w.Code != http.StatusOK || !strings.Contains(body, "result-icon danger") ||
+			!strings.Contains(body, "Nothing was done: the accounts socket could not be reached.") {
+			t.Errorf("%s %s with whoami failing = %d, want the error result:\n%s", tc.method, tc.path, w.Code, body)
+		}
+	}
+	if n := calls.Load(); n != 0 {
+		t.Errorf("the accounts socket was sent %d calls besides whoami, want 0", n)
+	}
+	a, err := c.Accounts.GetAccount(t.Context(), "ana.lima")
+	if err != nil || a.Disabled {
+		t.Errorf("ana.lima after the refused actions: %+v, %v; want present and enabled", a, err)
 	}
 }

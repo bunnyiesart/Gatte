@@ -467,6 +467,103 @@ func TestVerifyChain_ConcurrentWritesProduceAnIntactChain(t *testing.T) {
 	}
 }
 
+// TestVerifyChain_TwoHandlesOnOneFileStayLinear: the in-process write gate
+// is per handle, so appenders on two handles of one file -- the shape of
+// serve beside the console -- are ordered only by BEGIN IMMEDIATE. The
+// chain must still verify with every record in it.
+func TestVerifyChain_TwoHandlesOnOneFileStayLinear(t *testing.T) {
+	path := t.TempDir() + "/audit.db"
+	var recs [2]*Recorder
+	for i := range recs {
+		db, err := store.Open(path)
+		if err != nil {
+			t.Fatalf("store.Open: %v", err)
+		}
+		t.Cleanup(func() { db.Close() })
+		if err := Migrate(db); err != nil {
+			t.Fatalf("Migrate: %v", err)
+		}
+		recs[i] = New(db)
+	}
+
+	const writers, each = 8, 10
+	base := time.Date(2026, 9, 11, 12, 0, 0, 0, time.UTC)
+	errs := make(chan error, writers*each)
+	done := make(chan struct{})
+	for w := range writers {
+		go func() {
+			defer func() { done <- struct{}{} }()
+			for i := range each {
+				errs <- recs[w%2].Record(context.Background(), audit.Record{
+					AnalystIdentity: "ana",
+					Tool:            "casemgmt.list_cases",
+					TargetUpstream:  "casemgmt",
+					Timestamp:       base.Add(time.Duration(w*each+i) * time.Millisecond),
+					Outcome:         audit.OutcomeAllowed,
+				})
+			}
+		}()
+	}
+	for range writers {
+		<-done
+	}
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("Record: %v", err)
+		}
+	}
+
+	check, err := recs[0].VerifyChain(context.Background())
+	if err != nil {
+		t.Fatalf("VerifyChain: %v", err)
+	}
+	if !check.Intact() || check.Count != writers*each {
+		t.Fatalf("intact=%v count=%d, want an intact chain of %d", check.Intact(), check.Count, writers*each)
+	}
+}
+
+// TestRecord_WaitsForTheWriteGateAndWritesNothingWithoutIt: an append
+// queues behind the in-process write gate, and one whose context ends while
+// it waits fails -- which Dispatch turns into a refused call -- with no row
+// written. Once the gate is free the same append lands and the chain holds.
+func TestRecord_WaitsForTheWriteGateAndWritesNothingWithoutIt(t *testing.T) {
+	db := newTestFileDB(t)
+	r := New(db)
+	rec := audit.Record{
+		AnalystIdentity: "ana",
+		Tool:            "casemgmt.list_cases",
+		TargetUpstream:  "casemgmt",
+		Timestamp:       time.Date(2026, 9, 11, 12, 0, 0, 0, time.UTC),
+		Outcome:         audit.OutcomeAllowed,
+	}
+
+	unlock, err := store.LockWrites(context.Background(), db)
+	if err != nil {
+		t.Fatalf("LockWrites: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if _, err := r.RecordChained(ctx, rec); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("RecordChained behind a held gate = %v, want context.DeadlineExceeded", err)
+	}
+	if n := countRows(t, db); n != 0 {
+		t.Fatalf("%d rows after an append that never got the gate, want 0", n)
+	}
+
+	unlock()
+	if err := r.Record(context.Background(), rec); err != nil {
+		t.Fatalf("Record once the gate is free: %v", err)
+	}
+	check, err := r.VerifyChain(context.Background())
+	if err != nil {
+		t.Fatalf("VerifyChain: %v", err)
+	}
+	if !check.Intact() || check.Count != 1 {
+		t.Fatalf("intact=%v count=%d, want an intact chain of 1", check.Intact(), check.Count)
+	}
+}
+
 // TestMigrate_BackfillsExistingRowsAndRecordsTheBoundary covers ADR-0015
 // item 4, including the part that matters most: the boundary is reported,
 // so an intact result cannot be read as "these rows are authentic" for

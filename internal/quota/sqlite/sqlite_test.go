@@ -581,7 +581,10 @@ func TestReserve_ConcurrentCallersNeverOverGrant(t *testing.T) {
 // TestReserve_ContentionIsRefusedAndNeverOverGranted is the same race
 // without a busy_timeout, which is what a handle opened without store.Open
 // gets. SQLite then refuses the second writer immediately instead of
-// queueing it.
+// queueing it. The callers are split across two handles on one file:
+// callers sharing one *sql.DB queue in-process (store.LockWrites) and never
+// reach SQLite together, so it is the second handle -- a second process,
+// in production -- that SQLite has to refuse.
 //
 // That refusal is the correct direction -- it is a refusal, and Gate.Admit
 // turns it into ErrUnavailable, so the call does not go out. What this
@@ -593,6 +596,17 @@ func TestReserve_ContentionIsRefusedAndNeverOverGranted(t *testing.T) {
 	const callers = 16
 
 	s, db := newConcurrentStore(t, false)
+	var seq int
+	var name, path string
+	if err := db.QueryRow(`PRAGMA database_list`).Scan(&seq, &name, &path); err != nil {
+		t.Fatalf("database_list: %v", err)
+	}
+	second, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatalf("open a second handle: %v", err)
+	}
+	t.Cleanup(func() { second.Close() })
+	stores := []*Store{s, New(second)}
 	// A limit high enough that exhaustion cannot be what refuses anybody:
 	// whatever is refused here is refused by contention.
 	r := reservation("analyst-a", charge("virustotal", callers, dayStart))
@@ -604,10 +618,10 @@ func TestReserve_ContentionIsRefusedAndNeverOverGranted(t *testing.T) {
 	)
 	var wg sync.WaitGroup
 	wg.Add(callers)
-	for range callers {
+	for i := range callers {
 		go func() {
 			defer wg.Done()
-			err := s.Reserve(context.Background(), r)
+			err := stores[i%2].Reserve(context.Background(), r)
 			mu.Lock()
 			defer mu.Unlock()
 			if err == nil {
@@ -627,6 +641,38 @@ func TestReserve_ContentionIsRefusedAndNeverOverGranted(t *testing.T) {
 	}
 	if got := used(t, db, "analyst-a", "virustotal", dayStart); got != granted {
 		t.Errorf("counter = %d but %d callers were granted: under contention a grant must be exactly a debit", got, granted)
+	}
+}
+
+// TestReserve_WaitsForTheWriteGateAndDebitsNothingWithoutIt: a reservation
+// queues behind the in-process write gate, and one whose context ends
+// while it waits is refused -- not as exhausted, so Gate.Admit fails the
+// call closed -- having written nothing. Once the gate is free the same
+// reservation goes through.
+func TestReserve_WaitsForTheWriteGateAndDebitsNothingWithoutIt(t *testing.T) {
+	s, db := newConcurrentStore(t, true)
+	r := reservation("analyst-a", charge("virustotal", 5, dayStart))
+
+	unlock, err := store.LockWrites(context.Background(), db)
+	if err != nil {
+		t.Fatalf("LockWrites: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	err = s.Reserve(ctx, r)
+	if err == nil || errors.Is(err, quota.ErrExhausted) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Reserve behind a held gate = %v, want a context.DeadlineExceeded refusal", err)
+	}
+	if n := rowCount(t, db); n != 0 {
+		t.Fatalf("%d counter rows after a reservation that never got the gate, want 0", n)
+	}
+
+	unlock()
+	if err := s.Reserve(context.Background(), r); err != nil {
+		t.Fatalf("Reserve once the gate is free: %v", err)
+	}
+	if got := used(t, db, "analyst-a", "virustotal", dayStart); got != 1 {
+		t.Fatalf("counter = %d, want 1", got)
 	}
 }
 

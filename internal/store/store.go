@@ -14,9 +14,11 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
+	"sync"
 
 	_ "modernc.org/sqlite"
 )
@@ -94,6 +96,46 @@ func Open(path string) (*sql.DB, error) {
 		}
 	}
 	return db, nil
+}
+
+// writeGates holds one gate per *sql.DB, created on first use.
+var writeGates sync.Map // *sql.DB -> chan struct{}
+
+// LockWrites waits, in arrival order, until no other caller in this process
+// holds db's write gate, and returns the function that releases it. It
+// returns an error only when ctx ends first, and then nothing is held.
+//
+// It exists for the writers on the request path -- the quota reservation
+// and the audit append -- which run once or twice per call from as many
+// goroutines as there are calls in flight. Left to SQLite, each of them
+// waits for the write lock inside busy_timeout's busy handler, which polls
+// with sleeps of up to 100 ms and is not fair: the lock sits idle between
+// polls, and an unlucky waiter can lose every poll until the timeout ends
+// in SQLITE_BUSY. Measured with 64 concurrent writers of two transactions
+// each, on a dataset where a commit's fsync costs about 8 ms: 5.4 s and
+// seven SQLITE_BUSY failures through the busy handler, against 1.2-1.9 s
+// and none queued here. Raising busy_timeout instead removed the failures
+// but took 6.2 s.
+//
+// The gate is in-process only. A second process -- the console -- is still
+// ordered by SQLite's file lock and busy_timeout, which is what keeps the
+// audit chain linear across both (design/adr/0015 item 3, 0031 §5). Holding
+// the gate never replaces BEGIN IMMEDIATE; it only means that, inside this
+// process, at most one gated writer is waiting on SQLite at a time.
+func LockWrites(ctx context.Context, db *sql.DB) (unlock func(), err error) {
+	g, ok := writeGates.Load(db)
+	if !ok {
+		g, _ = writeGates.LoadOrStore(db, make(chan struct{}, 1))
+	}
+	gate := g.(chan struct{})
+	// A channel's blocked senders are served first in, first out, which is
+	// the fairness the busy handler lacks.
+	select {
+	case gate <- struct{}{}:
+		return func() { <-gate }, nil
+	case <-ctx.Done():
+		return nil, fmt.Errorf("store: waiting to write: %w", ctx.Err())
+	}
 }
 
 // IsBusy reports whether err is SQLite refusing a lock another connection

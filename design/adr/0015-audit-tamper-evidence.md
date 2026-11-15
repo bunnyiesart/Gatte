@@ -109,6 +109,20 @@ ramo: dois registros apontando para o mesmo antecessor, e a verificação
 acusa quebra num banco que ninguém adulterou. A inserção passa a ser
 `BEGIN IMMEDIATE`, lê o último `hash` e grava, atomicamente.
 
+> **ANOTAÇÃO — 14 nov 2026.** Dentro do processo, o append (e a reserva de
+> quota, que divide o mesmo arquivo) agora espera numa fila em Go antes do
+> `BEGIN IMMEDIATE`: `store.LockWrites`, um portão por `*sql.DB`, por ordem
+> de chegada e limitado pelo contexto do chamador. Sem ele, cada chamada
+> concorrente esperava no handler de espera do SQLite, que dorme até 100 ms
+> entre tentativas e não é justo. Medido com 64 escritores de duas
+> transações cada, num disco em que o fsync de um commit custa ~8 ms:
+> 5,4 s e sete `SQLITE_BUSY` pelo handler; 1,2–1,9 s e nenhum pela fila.
+> Subir o `busy_timeout` tirava o erro, mas levava 6,2 s. O que ordena a
+> cadeia entre processos (`serve` e console, `0031` §5) continua sendo o
+> `BEGIN IMMEDIATE` e o lock do arquivo; a fila não o substitui, e uma
+> espera que esgota o contexto não grava nada — o `Dispatch` recusa a
+> chamada como antes.
+
 ### 4. A migração preenche o passado — e isso **não** autentica o passado
 
 Bancos existentes têm linhas sem hash. A migração as encadeia em ordem de

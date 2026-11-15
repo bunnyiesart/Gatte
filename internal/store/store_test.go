@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 )
 
 // TestInMemoryPoolSeesOneDatabase pins the reason Open pins the pool for
@@ -201,4 +202,87 @@ func TestIsBusy_RecognisesARealContendedLock(t *testing.T) {
 	if IsBusy(errors.New("database is locked")) || IsBusy(nil) {
 		t.Fatal("IsBusy answered true for something that is not a SQLite lock error")
 	}
+}
+
+// TestLockWrites_AdmitsOneHolderAtATime: however many goroutines ask, at
+// most one holds a database's write gate, and every one of them gets it.
+func TestLockWrites_AdmitsOneHolderAtATime(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "gate.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	const callers = 64
+	var (
+		mu            sync.Mutex
+		holding, most int
+		served        int
+		wg            sync.WaitGroup
+	)
+	for range callers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			unlock, err := LockWrites(context.Background(), db)
+			if err != nil {
+				t.Errorf("LockWrites: %v", err)
+				return
+			}
+			mu.Lock()
+			holding++
+			most = max(most, holding)
+			mu.Unlock()
+			time.Sleep(100 * time.Microsecond)
+			mu.Lock()
+			holding--
+			served++
+			mu.Unlock()
+			unlock()
+		}()
+	}
+	wg.Wait()
+	if most != 1 || served != callers {
+		t.Fatalf("at most %d holders at once and %d of %d served, want 1 and all", most, served, callers)
+	}
+}
+
+// TestLockWrites_GivesUpWithTheContextAndHoldsNothing: a waiter whose
+// context ends is told so, and leaves the gate exactly as it found it.
+// Separate databases do not share a gate.
+func TestLockWrites_GivesUpWithTheContextAndHoldsNothing(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "gate.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+	other, err := Open(filepath.Join(t.TempDir(), "other.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer other.Close()
+
+	unlock, err := LockWrites(context.Background(), db)
+	if err != nil {
+		t.Fatalf("LockWrites: %v", err)
+	}
+
+	unlockOther, err := LockWrites(context.Background(), other)
+	if err != nil {
+		t.Fatalf("a held gate on one database blocked another: %v", err)
+	}
+	unlockOther()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if _, err := LockWrites(ctx, db); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("waiting past the context = %v, want context.DeadlineExceeded", err)
+	}
+
+	unlock()
+	again, err := LockWrites(context.Background(), db)
+	if err != nil {
+		t.Fatalf("the gate was not free after its holder released it: %v", err)
+	}
+	again()
 }

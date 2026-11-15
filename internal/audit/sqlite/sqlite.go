@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/bunnyiesart/Gatte/internal/audit"
+	"github.com/bunnyiesart/Gatte/internal/store"
 )
 
 // timeLayout is the on-disk representation of Record.Timestamp: RFC3339
@@ -254,6 +255,14 @@ func (r *Recorder) RecordChained(ctx context.Context, rec audit.Record) (audit.C
 	if err := rec.Validate(); err != nil {
 		return audit.ChainLink{}, err
 	}
+
+	// Queued in-process first (store.LockWrites); BEGIN IMMEDIATE below is
+	// still what orders this append against another process.
+	unlock, err := store.LockWrites(ctx, r.db)
+	if err != nil {
+		return audit.ChainLink{}, fmt.Errorf("audit/sqlite: record: %w", err)
+	}
+	defer unlock()
 
 	conn, err := r.db.Conn(ctx)
 	if err != nil {

@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"github.com/bunnyiesart/Gatte/internal/quota"
+	"github.com/bunnyiesart/Gatte/internal/store"
 )
 
 // timeLayout is the on-disk representation of a window start: RFC3339 with
@@ -141,7 +142,10 @@ func New(db *sql.DB) *Store {
 //
 // Because the first statement in the transaction is a write, two
 // concurrent reservations do not both read a stale count: the second waits
-// for the first, or fails. Failing is a refusal, never a pass. That
+// for the first, or fails. Inside this process it waits in
+// store.LockWrites, in arrival order, for as long as its context allows;
+// against another process it waits in SQLite's busy_timeout. Failing
+// either way is a refusal, never a pass. That
 // refusal is the same write contention the audit trail already has on the
 // same file -- Dispatch writes a row per call three lines later -- so it
 // is not a new unavailability mode (ADR-0030 decision 6).
@@ -151,6 +155,14 @@ func (s *Store) Reserve(ctx context.Context, r quota.Reservation) error {
 	if err := r.Validate(); err != nil {
 		return err
 	}
+
+	// Queued in-process before asking SQLite for the lock: every Dispatch
+	// reserves here, concurrently (store.LockWrites).
+	unlock, err := store.LockWrites(ctx, s.db)
+	if err != nil {
+		return fmt.Errorf("quota/sqlite: reserve: %w", err)
+	}
+	defer unlock()
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {

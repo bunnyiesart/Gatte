@@ -319,25 +319,44 @@ func TestUI_PagesCarryAStrictPolicyAndNoScript(t *testing.T) {
 	e, s, cookie := newUITest(t)
 	mustRegister(t, e, stdioEntry("edr"))
 	mustObserve(t, e, "edr", quarantine.ToolIdentity{Name: "get_host", Description: "d", InputSchema: []byte(`{}`)})
+	for _, page := range []string{"/servers", "/servers/edr", "/servers/edr/tools/get_host", "/servers/edr/tools/review-set",
+		uiRevokePath, "/users", "/help"} {
+		uiCheckStrictPage(t, s, cookie, page)
+	}
 
-	for _, page := range []string{"/servers", "/servers/edr", "/servers/edr/tools/get_host", "/servers/edr/tools/review-set", "/users", "/help"} {
-		w := uiDo(s, "GET", page, nil, cookie, nil)
-		if w.Code != http.StatusOK {
-			t.Errorf("GET %s: %d\n%s", page, w.Code, w.Body)
-			continue
+	// The clear confirm page exists only on a console that may clear.
+	m := newManageUI(t, true, false)
+	mustObserveSensitive(t, m.e, "reporting", submitReport)
+	mustApprove(t, m.e, "reporting", "submit_report")
+	uiCheckStrictPage(t, m.s, m.cookie, "/servers/reporting/tools/submit_report/clear")
+
+	// The account confirm pages exist only with the accounts socket.
+	_, ps, pcookie, _ := newPeopleTest(t, true)
+	for _, page := range []string{"/people/disable?u=ana", "/people/offboard?u=ana"} {
+		uiCheckStrictPage(t, ps, pcookie, page)
+	}
+}
+
+// uiCheckStrictPage asserts page answers 200 with the console's strict
+// headers and carries no script.
+func uiCheckStrictPage(t *testing.T, s *uiHarness, cookie *http.Cookie, page string) {
+	t.Helper()
+	w := uiDo(s, "GET", page, nil, cookie, nil)
+	if w.Code != http.StatusOK {
+		t.Errorf("GET %s: %d\n%s", page, w.Code, w.Body)
+		return
+	}
+	h := w.Header()
+	if csp := h.Get("Content-Security-Policy"); !strings.Contains(csp, "default-src 'none'") || !strings.Contains(csp, "frame-ancestors 'none'") || strings.Contains(csp, "unsafe") {
+		t.Errorf("GET %s: Content-Security-Policy %q", page, csp)
+	}
+	for k, v := range map[string]string{"X-Content-Type-Options": "nosniff", "Referrer-Policy": "same-origin", "Cache-Control": "no-store"} {
+		if h.Get(k) != v {
+			t.Errorf("GET %s: %s = %q, want %q", page, k, h.Get(k), v)
 		}
-		h := w.Header()
-		if csp := h.Get("Content-Security-Policy"); !strings.Contains(csp, "default-src 'none'") || !strings.Contains(csp, "frame-ancestors 'none'") || strings.Contains(csp, "unsafe") {
-			t.Errorf("GET %s: Content-Security-Policy %q", page, csp)
-		}
-		for k, v := range map[string]string{"X-Content-Type-Options": "nosniff", "Referrer-Policy": "same-origin", "Cache-Control": "no-store"} {
-			if h.Get(k) != v {
-				t.Errorf("GET %s: %s = %q, want %q", page, k, h.Get(k), v)
-			}
-		}
-		if strings.Contains(strings.ToLower(w.Body.String()), "<script") {
-			t.Errorf("GET %s: the page carries a script", page)
-		}
+	}
+	if strings.Contains(strings.ToLower(w.Body.String()), "<script") {
+		t.Errorf("GET %s: the page carries a script", page)
 	}
 }
 

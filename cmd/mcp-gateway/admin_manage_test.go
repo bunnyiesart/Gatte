@@ -29,6 +29,10 @@ import (
 	"github.com/bunnyiesart/Gatte/pkg/adminapi"
 )
 
+// uiSecretMarker is a secret value no page or API error may ever carry. It
+// lives here, outside the nofront-tagged files, because the API tests use it too.
+const uiSecretMarker = "ui-secret-marker-5f1c-not-real"
+
 var carol = admin.Actor{Name: "carol", Front: "ui", Operator: true}
 
 func manageEnv(t *testing.T) (opTestEnv, *admin.Service) {

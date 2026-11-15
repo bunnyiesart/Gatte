@@ -36,9 +36,6 @@ import (
 // vault's secrets, the roles file and a reload. Every screen is absent with
 // [admin] console_manages off, and root's are absent without -manage-users.
 
-// uiSecretMarker is a vault value no page may ever carry.
-const uiSecretMarker = "ui-secret-marker-5f1c-not-real"
-
 // memVault is the accounts socket's vault for these tests: the service's
 // rules over it are the real ones, the encryption is sops's and tested in
 // admin_manage_test.go.

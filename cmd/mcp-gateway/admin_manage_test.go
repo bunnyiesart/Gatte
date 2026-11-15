@@ -371,6 +371,13 @@ func TestManage_RegistryReaderListsDeclaredNames(t *testing.T) {
 	if code != exitOK {
 		t.Fatalf("register: %d %s", code, errText)
 	}
+	// The reader refuses root; run as root, the test stands in for the
+	// database's owner.
+	if os.Geteuid() == 0 {
+		old := adminGeteuid
+		adminGeteuid = func() int { return 1000 }
+		t.Cleanup(func() { adminGeteuid = old })
+	}
 	var out, errb strings.Builder
 	if code := runRegistryReader(cfgPath, &out, &errb); code != exitOK {
 		t.Fatalf("registry reader: %d %s", code, errb.String())

@@ -104,6 +104,13 @@ EOF
 
 upper() { printf '%s' "$1" | tr 'a-z-' 'A-Z_'; }
 
+# need_arg OPTION ARGC dies unless OPTION is followed by a value. Under set -u
+# a value-taking option given last would otherwise end the script on an
+# unset $2, with a shell error instead of this script's own message.
+need_arg() {
+	[ "$2" -ge 2 ] || die "$1 needs a value (gatte help)"
+}
+
 valid_var() {
 	case "$1" in
 	'' | [0-9]* | *[!A-Za-z0-9_]*) die "$1 is not an environment variable name (letters, digits, _)" ;;
@@ -271,13 +278,13 @@ cmd_api_add() {
 	url='' spec='' kind='' aname='' key='' keyless='' grant=analyst
 	while [ $# -gt 0 ]; do
 		case "$1" in
-		-url) url=$2; shift 2 ;;
-		-openapi) spec=$2; shift 2 ;;
-		-auth-kind) kind=$2; shift 2 ;;
-		-auth-name) aname=$2; shift 2 ;;
-		-key) key=$2; shift 2 ;;
+		-url) need_arg "$1" $#; url=$2; shift 2 ;;
+		-openapi) need_arg "$1" $#; spec=$2; shift 2 ;;
+		-auth-kind) need_arg "$1" $#; kind=$2; shift 2 ;;
+		-auth-name) need_arg "$1" $#; aname=$2; shift 2 ;;
+		-key) need_arg "$1" $#; key=$2; shift 2 ;;
 		-keyless) keyless=1; shift ;;
-		-grant) grant=$2; shift 2 ;;
+		-grant) need_arg "$1" $#; grant=$2; shift 2 ;;
 		-no-grant) grant=; shift ;;
 		*) die "unknown option $1 (gatte help)" ;;
 		esac
@@ -402,13 +409,13 @@ cmd_remote_add() {
 	url='' kind='' aname='' rkind='' key='' keyless='' grant=analyst
 	while [ $# -gt 0 ]; do
 		case "$1" in
-		-url) url=$2; shift 2 ;;
-		-auth-kind) kind=$2; shift 2 ;;
-		-auth-name) aname=$2; shift 2 ;;
-		-remote-kind) rkind=$2; shift 2 ;;
-		-key) key=$2; shift 2 ;;
+		-url) need_arg "$1" $#; url=$2; shift 2 ;;
+		-auth-kind) need_arg "$1" $#; kind=$2; shift 2 ;;
+		-auth-name) need_arg "$1" $#; aname=$2; shift 2 ;;
+		-remote-kind) need_arg "$1" $#; rkind=$2; shift 2 ;;
+		-key) need_arg "$1" $#; key=$2; shift 2 ;;
 		-keyless) keyless=1; shift ;;
-		-grant) grant=$2; shift 2 ;;
+		-grant) need_arg "$1" $#; grant=$2; shift 2 ;;
 		-no-grant) grant=; shift ;;
 		*) die "unknown option $1 (gatte help)" ;;
 		esac
@@ -479,9 +486,9 @@ cmd_user() {
 		dn=$u email='' groups=''
 		while [ $# -gt 0 ]; do
 			case "$1" in
-			-name) dn=$2; shift 2 ;;
-			-email) email=$2; shift 2 ;;
-			-group) groups="$groups $2"; shift 2 ;;
+			-name) need_arg "$1" $#; dn=$2; shift 2 ;;
+			-email) need_arg "$1" $#; email=$2; shift 2 ;;
+			-group) need_arg "$1" $#; groups="$groups $2"; shift 2 ;;
 			*) die "unknown option $1" ;;
 			esac
 		done
@@ -522,7 +529,11 @@ cmd_connect() {
 	[ "${1:-}" = -all ] && { shift; cmd_connect_all "$@"; return; }
 	[ $# -ge 1 ] || die "usage: gatte connect USERNAME [-os macos|linux|windows]  (all at once: gatte connect -all [-os OS] [-out DIR])"
 	u=$1 os=macos
-	[ "${2:-}" = -os ] && os=${3:-macos}
+	shift
+	if [ "${1:-}" = -os ]; then
+		need_arg -os $#
+		os=$2
+	fi
 	w=$(private_dir)
 	trap 'rm -rf "$w"' EXIT INT TERM
 	api_call GET "$OPERATOR_SOCKET" "/v1/connect/script?os=$os&username=$u" >"$w/r"
@@ -537,8 +548,8 @@ cmd_connect_all() {
 	os=macos out=.
 	while [ $# -gt 0 ]; do
 		case "$1" in
-		-os) os=${2:-macos}; shift 2 ;;
-		-out) out=${2:-.}; shift 2 ;;
+		-os) need_arg "$1" $#; os=$2; shift 2 ;;
+		-out) need_arg "$1" $#; out=$2; shift 2 ;;
 		*) die "usage: gatte connect -all [-os macos|linux|windows] [-out DIR]" ;;
 		esac
 	done

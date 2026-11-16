@@ -347,7 +347,7 @@ func TestLabProbeREST(t *testing.T) {
 	// ingest it, and let the auth descriptor be derived from the document.
 	fetcher := resthttp.New(nil, resthttp.WithHTTPClientTimeout(10*time.Second))
 	resthttp.AllowLoopbackForTest(fetcher)
-	doc, err := fetcher.FetchDocument(ctx, mock.url+"/openapi.json", 0)
+	doc, err := fetcher.FetchDocument(ctx, mock.url+"/openapi.json", 0, nil)
 	if err != nil {
 		t.Fatalf("FetchDocument: %v", err)
 	}

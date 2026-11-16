@@ -211,6 +211,26 @@ func Canonical(s registry.UpstreamServer) []byte {
 		buf = appendField(buf, s.AuthName)
 		opsDigest := sha256.Sum256(s.Operations)
 		buf = appendField(buf, string(opsDigest[:]))
+		// The per-backend egress allowlist (ADR-0048 Decisão 6): the private
+		// CIDRs this entry's REST egress guard may reach. Signed so a direct
+		// database write cannot widen them and still verify. Appended only when
+		// non-empty, and it is the last thing in the http tail, so an entry
+		// with no allowlist -- every REST entry before this field existed --
+		// produces byte-for-byte the same canonical form and its signature
+		// still verifies. Sorted before hashing, like EnvVarNames, so the order
+		// they were typed in does not change the signature; appendCount fixes
+		// the arity and each CIDR goes through appendField so none can span a
+		// field boundary. Any change to the set -- including adding or clearing
+		// it -- changes these bytes, so a database write that widens egress
+		// breaks the signature.
+		if len(s.EgressAllowCIDRs) > 0 {
+			allowCIDRs := slices.Clone(s.EgressAllowCIDRs)
+			slices.Sort(allowCIDRs)
+			buf = appendCount(buf, len(allowCIDRs))
+			for _, cidr := range allowCIDRs {
+				buf = appendField(buf, cidr)
+			}
+		}
 	}
 	// remote-only tail (ADR-0058 §5): where the credential goes and which
 	// MCP client transport reaches the endpoint.

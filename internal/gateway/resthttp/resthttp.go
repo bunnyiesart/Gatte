@@ -189,9 +189,20 @@ func (d *Dialer) Dial(ctx context.Context, spec gateway.UpstreamSpec, env map[st
 	if err != nil {
 		return nil, fmt.Errorf("upstream %q: %w", spec.Name, err)
 	}
-	// d.egress, not refuseAddr: the test-only loopback allowance must let
-	// an httptest base through here exactly as it does at the socket.
-	if err := b.literalHostRefusal(d.egress); err != nil {
+	// The per-entry egress policy: this Dialer's default (refuseAddr, or the
+	// test-only loopback allowance) widened by the entry's own private-CIDR
+	// allowlist when it declares one (ADR-0048 Decisão 6). The allowlist was
+	// validated at registration (egress.ParseAllowPrefixes, via
+	// registry.Validate), so a bad CIDR never reaches here; this reparses the
+	// stored, canonical form.
+	prefixes, err := egress.ParseAllowPrefixes(spec.EgressAllowCIDRs)
+	if err != nil {
+		return nil, fmt.Errorf("upstream %q: egress allowlist: %w", spec.Name, err)
+	}
+	policy := egress.AllowPrefixes(d.egress, prefixes)
+	// policy, not refuseAddr: the test-only loopback allowance and the entry's
+	// allowlist must let a base through here exactly as they do at the socket.
+	if err := b.literalHostRefusal(policy); err != nil {
 		return nil, fmt.Errorf("upstream %q: %w", spec.Name, err)
 	}
 	secretName, err := secretRef(spec.AuthKind, env)
@@ -221,7 +232,7 @@ func (d *Dialer) Dial(ctx context.Context, spec gateway.UpstreamSpec, env map[st
 		routes:     routes,
 		maxBody:    d.maxBody,
 		client: &http.Client{
-			Transport:     d.newTransport(),
+			Transport:     d.newTransport(policy),
 			Timeout:       d.timeout,
 			CheckRedirect: b.checkRedirect,
 		},
@@ -274,15 +285,25 @@ func scrubDialError(err error, env map[string]string) error {
 // trail of the first failed call. A host NAME is not resolved here --
 // register must not do DNS -- and is judged per call by dialPinned.
 //
+// allowCIDRs is the entry's per-backend private-CIDR allowlist (ADR-0048
+// Decisão 6): a literal private host inside one of these ranges is accepted,
+// as Dial will accept it. The CIDRs are validated here too, so register
+// refuses a bad allowlist at the prompt rather than at the first dial.
+//
 // Pre-condition: none. Post-condition: nil if and only if Dial would accept
-// raw as its URL; a non-nil error wraps ErrInvalidURL, and additionally
-// ErrEgressRefused when it is the literal host that was refused.
-func ValidateBaseURL(raw string) error {
+// raw as its URL under allowCIDRs; a non-nil error wraps ErrInvalidURL, and
+// additionally ErrEgressRefused when it is the literal host or a CIDR that was
+// refused.
+func ValidateBaseURL(raw string, allowCIDRs []string) error {
 	b, err := parseBase(raw)
 	if err != nil {
 		return err
 	}
-	return b.literalHostRefusal(refuseAddr)
+	prefixes, err := egress.ParseAllowPrefixes(allowCIDRs)
+	if err != nil {
+		return err
+	}
+	return b.literalHostRefusal(egress.AllowPrefixes(refuseAddr, prefixes))
 }
 
 // base is the signed URL decomposed into what the client is pinned to.

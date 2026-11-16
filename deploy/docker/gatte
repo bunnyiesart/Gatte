@@ -41,6 +41,10 @@ APIs (REST backends from an OpenAPI document)
                  -key VAR      vault entry holding the key (default NAME_API_KEY, upper case)
                  -keyless      the API takes no key
                  -grant ROLE   role that gets NAME = ["*"] (default analyst); -no-grant to skip
+                 -allow-cidr CIDR  a private CIDR this backend's REST egress guard may
+                               reach (repeat); the guard otherwise refuses every private
+                               and internal address. Only private ranges, signed with the
+                               entry -- for a SIEM or case system reached over a VPN
   gatte api approve NAME [-yes]
         Show every tool of NAME waiting for review, then approve that exact set.
   gatte api list
@@ -281,7 +285,7 @@ cmd_api_add() {
 	[ $# -ge 1 ] || die "usage: gatte api add NAME -url BASE-URL -openapi FILE|URL [...]"
 	name=$1
 	shift
-	url='' spec='' kind='' aname='' key='' keyless='' grant=analyst
+	url='' spec='' kind='' aname='' key='' keyless='' grant=analyst acidrs=''
 	while [ $# -gt 0 ]; do
 		case "$1" in
 		-url) url=$2; shift 2 ;;
@@ -292,6 +296,10 @@ cmd_api_add() {
 		-keyless) keyless=1; shift ;;
 		-grant) grant=$2; shift 2 ;;
 		-no-grant) grant=; shift ;;
+		# A private CIDR this backend's REST egress guard may reach (repeat).
+		# The guard otherwise refuses every private, loopback and internal
+		# address; the list is signed with the entry (gatte help; design/adr/0048).
+		-allow-cidr) acidrs="$acidrs $2"; shift 2 ;;
 		*) die "unknown option $1 (gatte help)" ;;
 		esac
 	done
@@ -323,6 +331,7 @@ cmd_api_add() {
 	set -- -name "$name" -transport http -url "$url" -openapi "$spec"
 	[ -n "$kind" ] && set -- "$@" -auth-kind "$kind"
 	[ -n "$aname" ] && set -- "$@" -auth-name "$aname"
+	for c in $acidrs; do set -- "$@" -allow-cidr "$c"; done
 	if [ -n "$keyless" ]; then
 		[ -n "$kind" ] || set -- "$@" -auth-kind none
 	else
@@ -761,12 +770,14 @@ setup_person() {
 	fi
 }
 
-# setup_add NAME BASE-URL OPENAPI [AUTH-KIND [AUTH-NAME]] registers a REST
-# API through `gatte api add`, whose register checks the name, the URL and
+# setup_add NAME BASE-URL OPENAPI [AUTH-KIND [AUTH-NAME [ALLOW-CIDRS]]] registers
+# a REST API through `gatte api add`, whose register checks the name, the URL and
 # the variable, then asks for the key with `gatte secret set` (no echo) and
-# offers the review. AUTH-KIND "none" is a keyless API.
+# offers the review. AUTH-KIND "none" is a keyless API. ALLOW-CIDRS is a
+# space-separated list of private CIDRs the backend's REST egress guard may reach
+# (design/adr/0048).
 setup_add() {
-	n=$1 k=${4:-} h=${5:-}
+	n=$1 k=${4:-} h=${5:-} acidrs=${6:-}
 	set -- "$1" -url "$2" -openapi "$3"
 	case "$k" in
 	'') ;;
@@ -774,6 +785,7 @@ setup_add() {
 	*) set -- "$@" -auth-kind "$k" ;;
 	esac
 	if [ -n "$h" ]; then set -- "$@" -auth-name "$h"; fi
+	for c in $acidrs; do set -- "$@" -allow-cidr "$c"; done
 	o=$(private_dir)
 	if ! gatte api add "$@" >"$o/out" 2>&1; then
 		cat "$o/out"
@@ -899,6 +911,9 @@ setup_backends() {
 		ask "   Then press Enter (or Enter now to skip)"
 	fi
 	if [ -s "$IMPORT" ]; then setup_import_pick; fi
+	say "   A REST backend on a private address (a SIEM or case system reached over a VPN)"
+	say "   is refused by the egress guard unless you opt it in: it asks below for the"
+	say "   private CIDRs this backend may reach, and signs them with the entry."
 	while confirm "   Add a REST API by hand (name, base URL, OpenAPI document URL)?"; do
 		ask "   Name (letters, digits, - and _)"
 		n=$a
@@ -908,7 +923,15 @@ setup_backends() {
 		s=$a
 		k=none
 		if confirm "   Does it take an API key?"; then k=; fi
-		setup_add "$n" "$u" "$s" "$k"
+		acidrs=''
+		if confirm "   Is it on a private address (reached over a VPN)?"; then
+			say "   The egress guard refuses private addresses by default. Name the private"
+			say "   CIDRs this backend may reach (e.g. 10.0.0.0/8), space-separated. Only"
+			say "   private ranges are accepted, and the list is signed with the entry."
+			ask "   Private CIDRs"
+			acidrs=$a
+		fi
+		setup_add "$n" "$u" "$s" "$k" "" "$acidrs"
 	done
 	while confirm "   Add a remote MCP server by hand (name, endpoint URL)?"; do
 		ask "   Name (letters, digits, - and _)"

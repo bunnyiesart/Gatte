@@ -178,7 +178,7 @@ func dialTimeRefusal(entry registry.UpstreamServer) error {
 		}
 		return gwoci.ValidateEnvVarNames(entry.EnvVarNames)
 	case registry.TransportHTTP:
-		if err := gwrest.ValidateBaseURL(entry.URL); err != nil {
+		if err := gwrest.ValidateBaseURL(entry.URL, entry.EgressAllowCIDRs); err != nil {
 			return err
 		}
 		_, err := gwrest.Decode(entry.Operations, string(entry.AuthKind), entry.AuthName)

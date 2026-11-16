@@ -20,6 +20,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bunnyiesart/Gatte/internal/egress"
 	"github.com/bunnyiesart/Gatte/internal/visible"
 )
 
@@ -179,8 +180,19 @@ type UpstreamServer struct {
 	// a database write could repoint an approved tool at a different path and
 	// nothing would notice.
 	Operations []byte
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
+	// EgressAllowCIDRs is a per-backend opt-in list of private CIDRs the REST
+	// egress guard may reach for this entry only (ADR-0048 Decisão 6). The
+	// guard otherwise refuses every private, loopback and link-local address,
+	// which blocks a legitimate backend -- a SOC's own SIEM or case system on
+	// a private address reached over a VPN. Each CIDR must lie within private
+	// address space (egress.PrivatePrefix); it is never a blanket disable of
+	// the guard. It is a signed field (signer canonical/v3-http): the ranges a
+	// backend may reach are part of what a signature attests, so a direct
+	// database write cannot widen them and still verify. Empty for every other
+	// transport, and for an http entry that reaches a public address.
+	EgressAllowCIDRs []string
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
 }
 
 // safeUpstreamName is the grammar of an upstream name.
@@ -325,6 +337,9 @@ func (s UpstreamServer) Validate() error {
 	if s.Transport != TransportHTTP {
 		if len(s.Operations) != 0 {
 			return fmt.Errorf("%w: operations must be empty for %s transport; only http entries carry a frozen operation set", ErrInvalid, s.Transport)
+		}
+		if len(s.EgressAllowCIDRs) != 0 {
+			return fmt.Errorf("%w: egress allowlist must be empty for %s transport; only an http entry's REST egress guard reads a per-backend private-CIDR allowlist", ErrInvalid, s.Transport)
 		}
 	}
 
@@ -497,6 +512,14 @@ func validateHTTP(s UpstreamServer) error {
 	}
 	if len(ops) == 0 {
 		return fmt.Errorf("%w: operations is an empty array; an http entry must serve at least one operation", ErrInvalid)
+	}
+
+	// The per-backend egress allowlist, when present, must name only private
+	// CIDRs: the same rule ParseAllowPrefixes applies at registration, re-run
+	// here so a row written into the database by hand with a public or
+	// loopback range is refused rather than widening the guard at dial.
+	if _, err := egress.ParseAllowPrefixes(s.EgressAllowCIDRs); err != nil {
+		return fmt.Errorf("%w: egress allowlist: %v", ErrInvalid, err)
 	}
 
 	return nil

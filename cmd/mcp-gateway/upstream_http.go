@@ -15,11 +15,33 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bunnyiesart/Gatte/internal/egress"
 	gwrest "github.com/bunnyiesart/Gatte/internal/gateway/resthttp"
 	"github.com/bunnyiesart/Gatte/internal/quarantine"
 	"github.com/bunnyiesart/Gatte/internal/registry"
 	"github.com/bunnyiesart/Gatte/internal/visible"
 )
+
+// normalizeAllowCIDRs parses, validates and canonicalises the -allow-cidr
+// values an operator typed into the stored, signed form: masked, de-duplicated
+// and sorted (egress.ParseAllowPrefixes), so the same allowlist always signs to
+// the same bytes however it was spelled. An empty input is a nil list -- a
+// public entry. It is the one place the CLI turns the flag into what the entry
+// stores.
+func normalizeAllowCIDRs(raw []string) ([]string, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	prefixes, err := egress.ParseAllowPrefixes(raw)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, len(prefixes))
+	for i, p := range prefixes {
+		out[i] = p.String()
+	}
+	return out, nil
+}
 
 // authKindNone is the -auth-kind spelling for "keyless, and I mean it":
 // the registry's keyless value is the empty string, which the flag cannot
@@ -202,8 +224,10 @@ func ingestHTTP(ctx context.Context, entry *registry.UpstreamServer, in httpRegi
 
 	// The -url, by the adapter's rule, before the document is read: a URL
 	// the adapter would refuse at every start makes the fetch pointless,
-	// and ValidateBaseURL does no I/O.
-	if err := gwrest.ValidateBaseURL(entry.URL); err != nil {
+	// and ValidateBaseURL does no I/O. The entry's egress allowlist is passed
+	// so a private -url the allowlist covers is accepted here, as Dial will
+	// accept it (ADR-0048 Decisão 6).
+	if err := gwrest.ValidateBaseURL(entry.URL, entry.EgressAllowCIDRs); err != nil {
 		return nil, refuse(true, "-url: %v\n\n", err)
 	}
 	// The registry's own rules that do not depend on the document -- the
@@ -226,7 +250,7 @@ func ingestHTTP(ctx context.Context, entry *registry.UpstreamServer, in httpRegi
 		doc, report = in.document, &httpIngestReport{source: in.source}
 	} else {
 		var err error
-		doc, report, err = loadOpenAPIDocument(ctx, in.openapi, in.allowFile)
+		doc, report, err = loadOpenAPIDocument(ctx, in.openapi, in.allowFile, entry.EgressAllowCIDRs)
 		if err != nil {
 			return nil, refuse(false, "-openapi: %s\n", visible.Escape(err.Error()))
 		}
@@ -321,16 +345,19 @@ func preIngestRefusal(entry registry.UpstreamServer, authKind, authName string, 
 // URL is an operator-typed string that could name the metadata endpoint as
 // easily as a spec (ADR-0048 Decisão 6).
 //
-// allowFile false refuses anything but a URL: the management API never
-// reads a path a client named (design/adr/0050 §2). ctx bounds the fetch
+// allowCIDRs is the entry's egress allowlist, applied to the fetch as it is to
+// a call, so a document served by the same private backend being allowlisted
+// can be fetched by URL; it is private-only, so it cannot reach the metadata
+// endpoint. allowFile false refuses anything but a URL: the management API
+// never reads a path a client named (design/adr/0050 §2). ctx bounds the fetch
 // along with fetchTimeout -- the API's request has a shorter deadline.
-func loadOpenAPIDocument(ctx context.Context, ref string, allowFile bool) ([]byte, *httpIngestReport, error) {
+func loadOpenAPIDocument(ctx context.Context, ref string, allowFile bool, allowCIDRs []string) ([]byte, *httpIngestReport, error) {
 	lower := strings.ToLower(ref)
 	if strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") {
 		ctx, cancel := context.WithTimeout(ctx, fetchTimeout)
 		defer cancel()
 		d := gwrest.New(nil, gwrest.WithHTTPClientTimeout(fetchTimeout))
-		doc, err := d.FetchDocument(ctx, ref, gwrest.MaxDocumentBytes)
+		doc, err := d.FetchDocument(ctx, ref, gwrest.MaxDocumentBytes, allowCIDRs)
 		if err != nil {
 			// The URL is not repeated here: FetchDocument's error already
 			// names what it requested when a request was made, and when

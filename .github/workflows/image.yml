@@ -62,6 +62,23 @@ jobs:
         run: |
           install -d -m 0700 "$HOME/gotmp"
           TMPDIR="$HOME/gotmp" go test ./... -count=1
+      # The desk gate (make check) runs lint, the nofront build and
+      # govulncheck too; CI ran only vet and test, so a lint regression, a
+      # broken nofront build or a newly reachable vulnerability could land on
+      # main unseen. staticcheck, errcheck and gosec back make lint; the lint
+      # target finds them on $(go env GOPATH)/bin the way make test does.
+      - name: lint and vuln tools
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@latest
+          go install github.com/kisielk/errcheck@latest
+          go install github.com/securego/gosec/v2/cmd/gosec@latest
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+      - name: lint
+        run: make lint
+      - name: nofront
+        run: make nofront
+      - name: govulncheck
+        run: govulncheck ./...
 
   image:
     needs: test

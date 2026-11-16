@@ -35,7 +35,7 @@ func TestFetchDocument_ReturnsTheBytesAndSendsNoCredential(t *testing.T) {
 	})
 	d := newDialer(t, nil)
 
-	body, err := d.FetchDocument(context.Background(), srv.URL+"/openapi.json", 0)
+	body, err := d.FetchDocument(context.Background(), srv.URL+"/openapi.json", 0, nil)
 	if err != nil {
 		t.Fatalf("FetchDocument: %v", err)
 	}
@@ -67,12 +67,23 @@ func TestFetchDocument_LoopbackIsRefusedWithoutTheTestHook(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	_, err := resthttp.New(nil).FetchDocument(context.Background(), srv.URL+"/openapi.json", 0)
+	_, err := resthttp.New(nil).FetchDocument(context.Background(), srv.URL+"/openapi.json", 0, nil)
 	if !errors.Is(err, resthttp.ErrEgressRefused) || !errors.Is(err, resthttp.ErrInvalidURL) {
 		t.Fatalf("FetchDocument(loopback) = %v, want ErrInvalidURL wrapping ErrEgressRefused", err)
 	}
 	if hits.Load() != 0 {
 		t.Errorf("the server was reached %d times; a refused literal host must not be dialled", hits.Load())
+	}
+
+	// A private-CIDR allowlist widens the fetch to those ranges but never to
+	// loopback: the allowlist is private-only, so a loopback document URL is
+	// still refused even with one. The guarding property the fetch relies on.
+	_, err = resthttp.New(nil).FetchDocument(context.Background(), srv.URL+"/openapi.json", 0, []string{"10.0.0.0/8"})
+	if !errors.Is(err, resthttp.ErrEgressRefused) {
+		t.Fatalf("FetchDocument(loopback, private allowlist) = %v, want ErrEgressRefused; the allowlist must not open loopback", err)
+	}
+	if hits.Load() != 0 {
+		t.Errorf("the server was reached %d times; the allowlist must not open loopback", hits.Load())
 	}
 }
 
@@ -101,7 +112,7 @@ func TestFetchDocument_RefusesACrossOriginRedirect(t *testing.T) {
 	t.Cleanup(srv.Close)
 	d := newDialer(t, nil)
 
-	_, err := d.FetchDocument(context.Background(), srv.URL+"/away", 0)
+	_, err := d.FetchDocument(context.Background(), srv.URL+"/away", 0, nil)
 	if !errors.Is(err, resthttp.ErrEgressRefused) || !errors.Is(err, resthttp.ErrFetchFailed) {
 		t.Fatalf("FetchDocument(cross-origin redirect) = %v, want ErrFetchFailed wrapping ErrEgressRefused", err)
 	}
@@ -112,7 +123,7 @@ func TestFetchDocument_RefusesACrossOriginRedirect(t *testing.T) {
 		t.Errorf("the refusal repeats the Location's path: %v", err)
 	}
 
-	body, err := d.FetchDocument(context.Background(), srv.URL+"/old", 0)
+	body, err := d.FetchDocument(context.Background(), srv.URL+"/old", 0, nil)
 	if err != nil || string(body) != fetchedDoc {
 		t.Fatalf("FetchDocument(same-origin redirect) = %q, %v; want the document", body, err)
 	}
@@ -135,14 +146,14 @@ func TestFetchDocument_CeilingAndStatus(t *testing.T) {
 	t.Cleanup(srv.Close)
 	d := newDialer(t, nil)
 
-	_, err := d.FetchDocument(context.Background(), srv.URL+"/big", int64(len(big)-1))
+	_, err := d.FetchDocument(context.Background(), srv.URL+"/big", int64(len(big)-1), nil)
 	if !errors.Is(err, resthttp.ErrBodyTooLarge) || !errors.Is(err, resthttp.ErrFetchFailed) {
 		t.Errorf("FetchDocument(over the ceiling) = %v, want ErrFetchFailed wrapping ErrBodyTooLarge", err)
 	}
-	if body, err := d.FetchDocument(context.Background(), srv.URL+"/big", int64(len(big))); err != nil || len(body) != len(big) {
+	if body, err := d.FetchDocument(context.Background(), srv.URL+"/big", int64(len(big)), nil); err != nil || len(body) != len(big) {
 		t.Errorf("FetchDocument(exactly the ceiling) = %d bytes, %v; want %d bytes", len(body), err, len(big))
 	}
-	_, err = d.FetchDocument(context.Background(), srv.URL+"/missing", 0)
+	_, err = d.FetchDocument(context.Background(), srv.URL+"/missing", 0, nil)
 	if !errors.Is(err, resthttp.ErrFetchFailed) || !strings.Contains(err.Error(), "404") {
 		t.Errorf("FetchDocument(404) = %v, want ErrFetchFailed naming the status", err)
 	}
@@ -166,7 +177,7 @@ func TestFetchDocument_URLRulesAreTheBaseURLRules(t *testing.T) {
 		"https:///openapi.json",
 		"",
 	} {
-		_, err := d.FetchDocument(context.Background(), raw, 0)
+		_, err := d.FetchDocument(context.Background(), raw, 0, nil)
 		if !errors.Is(err, resthttp.ErrInvalidURL) {
 			t.Errorf("FetchDocument(%q) = %v, want ErrInvalidURL", raw, err)
 		}
@@ -175,7 +186,7 @@ func TestFetchDocument_URLRulesAreTheBaseURLRules(t *testing.T) {
 		}
 	}
 	for _, raw := range []string{"http://169.254.169.254/openapi.json", "http://10.0.0.1/openapi.json", "http://[::1]/openapi.json"} {
-		_, err := d.FetchDocument(context.Background(), raw, 0)
+		_, err := d.FetchDocument(context.Background(), raw, 0, nil)
 		if !errors.Is(err, resthttp.ErrInvalidURL) || !errors.Is(err, resthttp.ErrEgressRefused) {
 			t.Errorf("FetchDocument(%q) = %v, want ErrInvalidURL wrapping ErrEgressRefused", raw, err)
 		}

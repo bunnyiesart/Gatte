@@ -52,6 +52,10 @@ CREATE TABLE IF NOT EXISTS upstream_servers (
 		// The remote transport's MCP client transport (ADR-0058 §3); ''
 		// for every other transport.
 		`ALTER TABLE upstream_servers ADD COLUMN remote_kind TEXT NOT NULL DEFAULT ''`,
+		// The http transport's per-backend egress allowlist (ADR-0048 Decisão
+		// 6), a JSON array of private CIDRs; '[]' for every other transport and
+		// for an http entry that reaches a public address.
+		`ALTER TABLE upstream_servers ADD COLUMN egress_allow_cidrs TEXT NOT NULL DEFAULT '[]'`,
 	} {
 		if _, err := db.Exec(alter); err != nil && !isDuplicateColumn(err) {
 			return fmt.Errorf("sqlite: migrate upstream_servers: %w", err)
@@ -103,6 +107,9 @@ func (r *Repository) Register(ctx context.Context, s registry.UpstreamServer) er
 	if s.Operations == nil {
 		s.Operations = []byte{}
 	}
+	if s.EgressAllowCIDRs == nil {
+		s.EgressAllowCIDRs = []string{}
+	}
 
 	args, err := json.Marshal(s.Args)
 	if err != nil {
@@ -112,14 +119,18 @@ func (r *Repository) Register(ctx context.Context, s registry.UpstreamServer) er
 	if err != nil {
 		return fmt.Errorf("sqlite: marshal env var names: %w", err)
 	}
+	egressAllowCIDRs, err := json.Marshal(s.EgressAllowCIDRs)
+	if err != nil {
+		return fmt.Errorf("sqlite: marshal egress allow cidrs: %w", err)
+	}
 
 	now := time.Now().UTC()
 	s.CreatedAt = now
 	s.UpdatedAt = now
 
 	const stmt = `
-INSERT INTO upstream_servers (name, transport, command, args, url, image, env_var_names, created_at, updated_at, auth_kind, auth_name, operations, remote_kind)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+INSERT INTO upstream_servers (name, transport, command, args, url, image, env_var_names, created_at, updated_at, auth_kind, auth_name, operations, remote_kind, egress_allow_cidrs)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	_, err = r.db.ExecContext(ctx, stmt,
 		s.Name,
 		string(s.Transport),
@@ -134,6 +145,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 		s.AuthName,
 		s.Operations,
 		string(s.RemoteKind),
+		string(egressAllowCIDRs),
 	)
 	if err != nil {
 		if isUniqueConstraintErr(err) {
@@ -250,7 +262,7 @@ func (r *Repository) Deregister(ctx context.Context, name string) error {
 // upstreamColumns is the column set, in scanUpstreamServer's Scan order,
 // shared by every SELECT so the three readers cannot drift apart (mirrors
 // control/sqlite's requestColumns).
-const upstreamColumns = `name, transport, command, args, url, image, env_var_names, created_at, updated_at, auth_kind, auth_name, operations, remote_kind`
+const upstreamColumns = `name, transport, command, args, url, image, env_var_names, created_at, updated_at, auth_kind, auth_name, operations, remote_kind, egress_allow_cidrs`
 
 // rowScanner is satisfied by both *sql.Row and *sql.Rows, letting
 // scanUpstreamServer serve Get and List alike.
@@ -265,9 +277,10 @@ func scanUpstreamServer(row rowScanner) (registry.UpstreamServer, error) {
 		args, envVarNames    string
 		createdAt, updatedAt string
 		authKind, remoteKind string
+		egressAllowCIDRs     string
 	)
 
-	if err := row.Scan(&s.Name, &transport, &s.Command, &args, &s.URL, &s.Image, &envVarNames, &createdAt, &updatedAt, &authKind, &s.AuthName, &s.Operations, &remoteKind); err != nil {
+	if err := row.Scan(&s.Name, &transport, &s.Command, &args, &s.URL, &s.Image, &envVarNames, &createdAt, &updatedAt, &authKind, &s.AuthName, &s.Operations, &remoteKind, &egressAllowCIDRs); err != nil {
 		return registry.UpstreamServer{}, err
 	}
 
@@ -293,6 +306,15 @@ func scanUpstreamServer(row rowScanner) (registry.UpstreamServer, error) {
 	}
 	if s.EnvVarNames == nil {
 		s.EnvVarNames = []string{}
+	}
+
+	if err := json.Unmarshal([]byte(egressAllowCIDRs), &s.EgressAllowCIDRs); err != nil {
+		return registry.UpstreamServer{}, fmt.Errorf("unmarshal egress allow cidrs: %w", err)
+	}
+	// Kept nil when empty, like Operations: a non-http entry carries none, and
+	// equality in tests sees the same shape Register was given.
+	if len(s.EgressAllowCIDRs) == 0 {
+		s.EgressAllowCIDRs = nil
 	}
 
 	createdAtTime, err := time.Parse(time.RFC3339, createdAt)

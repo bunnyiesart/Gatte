@@ -103,6 +103,45 @@ func TestCanonicalHTTPCoversAuthAndOperations(t *testing.T) {
 	}
 }
 
+// TestCanonicalHTTPCoversEgressAllowlist: the per-backend egress allowlist is
+// signed (ADR-0048 Decisão 6), so a database write that widens or clears it
+// breaks the signature; the order the CIDRs are stored in does not; and an
+// empty allowlist -- every REST entry before this field existed -- produces the
+// same bytes as before, so existing signatures still verify.
+func TestCanonicalHTTPCoversEgressAllowlist(t *testing.T) {
+	base := Canonical(httpEntry())
+
+	// An empty allowlist is byte-for-byte the pre-field form (back-compat).
+	empty := httpEntry()
+	empty.EgressAllowCIDRs = []string{}
+	if !bytes.Equal(Canonical(empty), base) {
+		t.Error("an empty allowlist changed the canonical bytes; existing http signatures would break")
+	}
+
+	// Adding an allowlist changes the bytes; clearing it again changes them back.
+	with := httpEntry()
+	with.EgressAllowCIDRs = []string{"10.0.0.0/8"}
+	if bytes.Equal(Canonical(with), base) {
+		t.Error("adding an egress allowlist did not change the canonical bytes; the field is not covered")
+	}
+
+	// Order does not matter: the set is sorted before hashing.
+	a := httpEntry()
+	a.EgressAllowCIDRs = []string{"10.0.0.0/8", "192.168.0.0/24"}
+	b := httpEntry()
+	b.EgressAllowCIDRs = []string{"192.168.0.0/24", "10.0.0.0/8"}
+	if !bytes.Equal(Canonical(a), Canonical(b)) {
+		t.Error("the allowlist order changed the signed bytes; it must be order-independent")
+	}
+
+	// A different set is a different signature.
+	c := httpEntry()
+	c.EgressAllowCIDRs = []string{"10.0.0.0/8"}
+	if bytes.Equal(Canonical(a), Canonical(c)) {
+		t.Error("two different allowlists produced equal canonical bytes")
+	}
+}
+
 // TestCanonicalHTTPStableAcrossTimestamps keeps the v3-http form honest about
 // what it ignores: timestamps still move without changing the signed bytes.
 func TestCanonicalHTTPStableAcrossTimestamps(t *testing.T) {

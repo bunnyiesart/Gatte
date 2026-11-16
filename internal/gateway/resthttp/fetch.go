@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+
+	"github.com/bunnyiesart/Gatte/internal/egress"
 )
 
 // MaxDocumentBytes is the ceiling Ingest applies to an OpenAPI document,
@@ -41,12 +43,21 @@ var ErrFetchFailed = errors.New("resthttp: openapi document fetch failed")
 // key typed into a URL would be sent on the wire here and printed in every
 // error that names the URL.
 //
+// allowCIDRs is the entry's egress allowlist (ADR-0048 Decisão 6), applied
+// here exactly as Dial applies it, so a document served by the same private
+// backend the operator is allowlisting can be fetched by URL in the one
+// `upstream register` command. The allowlist is private-only by construction
+// (egress.ParseAllowPrefixes), so widening the fetch to it cannot reach
+// loopback or the metadata endpoint; everything outside the listed ranges
+// stays under the strict guard.
+//
 // Pre-condition: rawURL is an http or https URL parseBase accepts; maxBytes
-// <= 0 selects MaxDocumentBytes. Post-condition: on nil error the result is
-// the whole body of a 200 response of at most maxBytes; every non-nil error
-// wraps ErrInvalidURL (the URL itself, before any I/O) or ErrFetchFailed,
-// and never contains a credential, since none was available here.
-func (d *Dialer) FetchDocument(ctx context.Context, rawURL string, maxBytes int64) ([]byte, error) {
+// <= 0 selects MaxDocumentBytes; allowCIDRs is the entry's validated allowlist
+// or nil. Post-condition: on nil error the result is the whole body of a 200
+// response of at most maxBytes; every non-nil error wraps ErrInvalidURL (the
+// URL itself, before any I/O) or ErrFetchFailed, and never contains a
+// credential, since none was available here.
+func (d *Dialer) FetchDocument(ctx context.Context, rawURL string, maxBytes int64, allowCIDRs []string) ([]byte, error) {
 	if maxBytes <= 0 {
 		maxBytes = MaxDocumentBytes
 	}
@@ -54,10 +65,15 @@ func (d *Dialer) FetchDocument(ctx context.Context, rawURL string, maxBytes int6
 	if err != nil {
 		return nil, err
 	}
-	// d.egress, not refuseAddr, for the same reason Dial uses it: the
-	// test-only loopback allowance (export_test.go) must apply here exactly
-	// as it does at the socket, and nothing outside _test.go changes it.
-	if err := b.literalHostRefusal(d.egress); err != nil {
+	prefixes, err := egress.ParseAllowPrefixes(allowCIDRs)
+	if err != nil {
+		return nil, fmt.Errorf("%w: egress allowlist: %v", ErrInvalidURL, err)
+	}
+	// d.egress widened by the entry's allowlist, for the same reason Dial uses
+	// it: the test-only loopback allowance (export_test.go) and the operator's
+	// private-CIDR opt-in must apply here exactly as they do at the socket.
+	policy := egress.AllowPrefixes(d.egress, prefixes)
+	if err := b.literalHostRefusal(policy); err != nil {
 		return nil, err
 	}
 	path := b.path
@@ -68,7 +84,7 @@ func (d *Dialer) FetchDocument(ctx context.Context, rawURL string, maxBytes int6
 	where := b.origin + path
 
 	client := &http.Client{
-		Transport:     d.newTransport(),
+		Transport:     d.newTransport(policy),
 		Timeout:       d.timeout,
 		CheckRedirect: b.checkRedirect,
 	}

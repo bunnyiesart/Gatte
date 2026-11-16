@@ -44,7 +44,12 @@ import (
 // 4 (ADR-0058): the upstream_servers table gains remote_kind, the remote
 // transport's signed MCP client transport. A guarded ALTER defaulting to
 // the empty string, which is what every non-remote entry holds.
-const SchemaVersion = 4
+//
+// 5 (ADR-0048, BLU-108): the upstream_servers table gains egress_allow_cidrs,
+// the http transport's signed per-backend allowlist of private CIDRs the REST
+// egress guard may reach. A guarded ALTER defaulting to '[]', which is what
+// every other transport and every public http entry holds.
+const SchemaVersion = 5
 
 // ErrSchemaTooNew means the file was written by a binary that knows a
 // newer schema than this one.

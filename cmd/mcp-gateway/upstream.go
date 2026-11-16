@@ -60,7 +60,7 @@ func upstreamUsage(w io.Writer) {
   mcp-gateway upstream register [-config FILE] -name NAME -transport http
                                 -url BASE-URL -openapi FILE|URL
                                 [-auth-kind bearer|header|query|none [-auth-name NAME]]
-                                [-env VARNAME]
+                                [-env VARNAME] [-allow-cidr CIDR ...]
   mcp-gateway upstream register [-config FILE] -name NAME -transport remote
                                 -url MCP-ENDPOINT-URL
                                 [-auth-kind bearer|header|none [-auth-name NAME]]
@@ -113,6 +113,13 @@ injected on every call (bearer: Authorization; header/query: the location
 one apiKey or bearer scheme, and "none" refuses that and registers keyless.
 POST, PUT, PATCH and DELETE tools are sensitive: approval alone does not make
 one callable (design/adr/0047, 0048).
+
+The REST egress guard refuses private and internal addresses by default, so a
+backend on a private address -- a SIEM or case system reached over a VPN -- is
+refused unless you opt it in. -allow-cidr names a private CIDR the guard may
+reach for THIS backend only (repeat for more); only private ranges (RFC 1918,
+100.64.0.0/10, fc00::/7) are accepted. The list is signed with the entry, so it
+is reviewed, never a blanket disable of the guard (design/adr/0048).
 
 -transport remote registers a native MCP server reached by URL over Streamable
 HTTP: the gateway holds a live session and the server announces its own
@@ -324,10 +331,12 @@ func upstreamRegister(args []string, stdout, stderr io.Writer) int {
 	command := fs.String("command", "", "command to spawn, for -transport stdio")
 	image := fs.String("image", "", "digest-pinned image to run, for -transport oci: NAME@sha256:<64 hex>")
 	url := fs.String("url", "", "base URL of the API, for -transport http: scheme, host, port and base path, as signed and as the only destination the gateway dials for this entry; no userinfo, query or fragment. A base path the document declares is folded in when this has none. For -transport remote: the MCP endpoint, signed whole")
-	openapi := fs.String("openapi", "", "for -transport http (required): the OpenAPI 3.0.x/3.1.x document, JSON or YAML, as a FILE path or an http(s) URL. A URL is fetched once, now, with no credential and under the same egress guard as the gateway's calls (no private or loopback address, no redirect off its origin, no userinfo or query); a document that needs a credential to read is downloaded by you and passed as a file")
+	openapi := fs.String("openapi", "", "for -transport http (required): the OpenAPI 3.0.x/3.1.x document, JSON or YAML, as a FILE path or an http(s) URL. A URL is fetched once, now, with no credential and under the same egress guard as the gateway's calls, including this entry's -allow-cidr allowlist (so a private address is reached only when allowlisted; no loopback, no redirect off its origin, no userinfo or query); a document that needs a credential to read is downloaded by you and passed as a file")
 	authKind := fs.String("auth-kind", "", "for -transport http: where the one secret -env names is injected on every call: \"bearer\" (Authorization: Bearer), \"header\" (the header -auth-name names), \"query\" (the query parameter -auth-name names) or \"none\" (keyless). Left out: keyless, unless the document declares exactly one apiKey or http bearer scheme, which is then derived and printed")
 	authName := fs.String("auth-name", "", "for -auth-kind header or query: the header or query parameter name the secret is injected as; a parameter of the document on the same name is refused (the server-side value wins)")
 	remoteKind := fs.String("remote-kind", "", "for -transport remote: the MCP client transport, \"streamable\" (the default); \"sse\" is reserved and not yet built")
+	var allowCIDRs opStringList
+	fs.Var(&allowCIDRs, "allow-cidr", "for -transport http: a private CIDR this backend's REST egress guard may reach (e.g. 10.0.0.0/8); repeat for more. The guard otherwise refuses every private, loopback and link-local address. Only private ranges (RFC 1918, 100.64.0.0/10, fc00::/7) are accepted, and the list is signed with the entry -- a reviewed opt-in for one backend, never a blanket disable")
 	var argv opStringList
 	fs.Var(&argv, "arg", "argument for the spawned command; repeat, in order")
 	var envs opStringList
@@ -360,6 +369,23 @@ func upstreamRegister(args []string, stdout, stderr io.Writer) int {
 		URL:         *url,
 		Image:       *image,
 		EnvVarNames: envs,
+	}
+	// The per-backend egress allowlist is an http-only, signed field: refuse it
+	// by name on any other transport, and normalise it to the stored form
+	// before it reaches the URL and dial-time checks (which read it).
+	if len(allowCIDRs) > 0 {
+		if entry.Transport != registry.TransportHTTP {
+			fmt.Fprintf(stderr, "-allow-cidr applies to -transport http only; it is the REST egress guard's per-backend allowlist of private CIDRs.\n\n")
+			upstreamUsage(stderr)
+			return exitCannotRun
+		}
+		normalized, err := normalizeAllowCIDRs(allowCIDRs)
+		if err != nil {
+			fmt.Fprintf(stderr, "-allow-cidr: %v\n\n", err)
+			upstreamUsage(stderr)
+			return exitCannotRun
+		}
+		entry.EgressAllowCIDRs = normalized
 	}
 	// An http entry's URL, auth descriptor and operation set come from the
 	// -openapi document, read and translated before the database is opened
@@ -456,6 +482,11 @@ func runUpstreamRegisterReport(e *opEnv, entry registry.UpstreamServer, report *
 		// documentation, so it is in the table, not only in the report.
 		fmt.Fprintf(tw, "  auth\t%s\n", opAuthLine(entry))
 		fmt.Fprintf(tw, "  operations\t%s\n", opOperationsLine(entry))
+		if len(entry.EgressAllowCIDRs) > 0 {
+			// A signed field that widens the egress guard, so it is in the
+			// table the operator checks before signing, not only in the report.
+			fmt.Fprintf(tw, "  egress allowlist\t%s\n", strings.Join(entry.EgressAllowCIDRs, ", "))
+		}
 	}
 	if entry.Transport == registry.TransportRemote {
 		fmt.Fprintf(tw, "  auth\t%s\n", opRemoteAuthLine(entry))

@@ -87,6 +87,7 @@
   </form>
   {{end}}
   <p class="caption">One way to give the document: a URL (fetched once, under the gateway's egress rules), pasted text, or a file (use the file for a large document: pasted text counts up to three times its size against the form's limit). Registering does not call the API and does not approve its configuration: the next page shows the URL, where the key is injected and every operation, and an Approve configuration button. Every operation becomes a tool waiting for your review; a POST, PUT, PATCH or DELETE is sensitive and also needs clearing.{{if .Root}} The key's value, if you give one, goes straight to the vault and is never shown again. The role you name gets every safe tool of the API once approved; leave it empty to grant nothing.{{end}} An empty key name is NAME_API_KEY for a keyed API.</p>
+  <div class="notice" role="note">{{template "dot"}}<p>The Base URL must be a public address. The REST egress guard refuses a private or internal address, so a backend on a private address &mdash; a SIEM or case system reached over a VPN &mdash; is refused here. To reach one, register it in the terminal with an allowlist of the private ranges it may reach: <code>mcp-gateway upstream register -transport http &hellip; -allow-cidr 10.0.0.0/8</code>. Only private ranges are accepted, and the allowlist is signed with the entry &mdash; a reviewed opt-in for that one backend, never a blanket disable of the guard.</p></div>
 </section>
 {{end}}
 

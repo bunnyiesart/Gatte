@@ -21,7 +21,9 @@ var refuseAddr = egress.RefuseAddr
 // newTransport builds the one http.Transport an upstream's client uses: the
 // shared egress guard (egress.Guard.Transport -- no proxy, resolved-address
 // policy at dial and at the socket, no HTTP/2, no keep-alive), with this
-// Dialer's resolver and policy, which only the tests replace.
-func (d *Dialer) newTransport() *http.Transport {
-	return egress.Guard{Lookup: d.lookup, Policy: d.egress}.Transport()
+// Dialer's resolver and the per-entry policy. policy is this Dialer's default
+// (refuseAddr, which only the tests replace) widened by the entry's own
+// private-CIDR allowlist when it declares one (ADR-0048 Decisão 6).
+func (d *Dialer) newTransport(policy egress.Policy) *http.Transport {
+	return egress.Guard{Lookup: d.lookup, Policy: policy}.Transport()
 }

@@ -20,6 +20,7 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -177,6 +178,99 @@ func embeddedIPv4(a netip.Addr) netip.Addr {
 // twice.
 func detail(err error) string {
 	return strings.TrimPrefix(err.Error(), ErrRefused.Error()+": ")
+}
+
+// privateBlocks is the only address space a per-backend egress allowlist may
+// open (ADR-0048 Decisão 6): RFC 1918, RFC 6598 carrier-grade NAT, and the
+// RFC 4193 IPv6 unique-local range. A SOC's own SIEM or case system reached
+// over a VPN lives here; loopback, link-local (the cloud metadata endpoint),
+// multicast, the unspecified address and public space never do, so an
+// allowlist cannot re-open the ranges RefuseAddr exists to close.
+var privateBlocks = []netip.Prefix{
+	netip.MustParsePrefix("10.0.0.0/8"),
+	netip.MustParsePrefix("172.16.0.0/12"),
+	netip.MustParsePrefix("192.168.0.0/16"),
+	netip.MustParsePrefix("100.64.0.0/10"),
+	netip.MustParsePrefix("fc00::/7"),
+}
+
+// PrivatePrefix reports why p may not appear in a per-backend egress
+// allowlist, or nil when it may. A prefix is allowed only when it lies
+// entirely within one of privateBlocks: its base address is in the block and
+// its mask is at least as long as the block's, so every address it covers is
+// private. This is a reviewed, signed opt-in for one backend, never a blanket
+// disable of the guard.
+func PrivatePrefix(p netip.Prefix) error {
+	if !p.IsValid() {
+		return fmt.Errorf("%w: invalid CIDR", ErrRefused)
+	}
+	if p.Addr().Zone() != "" {
+		return fmt.Errorf("%w: %s carries an interface zone, which only a link-local address has", ErrRefused, p)
+	}
+	if p.Addr().Is4In6() {
+		return fmt.Errorf("%w: %s is an IPv4-mapped IPv6 CIDR; write an IPv4 range in dotted-quad form (e.g. 10.0.0.0/8)", ErrRefused, p)
+	}
+	m := p.Masked()
+	a := m.Addr()
+	for _, b := range privateBlocks {
+		if a.Is4() == b.Addr().Is4() && b.Bits() <= m.Bits() && b.Contains(a) {
+			return nil
+		}
+	}
+	return fmt.Errorf("%w: %s is not within private address space (RFC 1918, carrier-grade NAT 100.64.0.0/10 or IPv6 unique-local fc00::/7); a per-backend egress allowlist may open only private ranges, never loopback, link-local, the metadata endpoint or public space", ErrRefused, p)
+}
+
+// ParseAllowPrefixes parses, validates and canonicalises a backend's egress
+// allowlist. Each string must be a CIDR within private address space
+// (PrivatePrefix); the result is masked, de-duplicated and sorted, so the same
+// allowlist always produces the same bytes under a signature regardless of how
+// it was typed. It is the one place "which CIDRs a backend may allow" is
+// decided, shared by the registry validator, the console and the adapter.
+func ParseAllowPrefixes(cidrs []string) ([]netip.Prefix, error) {
+	out := make([]netip.Prefix, 0, len(cidrs))
+	for _, raw := range cidrs {
+		s := strings.TrimSpace(raw)
+		if s == "" {
+			return nil, fmt.Errorf("%w: an empty CIDR", ErrRefused)
+		}
+		p, err := netip.ParsePrefix(s)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %q is not a CIDR (address/bits, e.g. 10.0.0.0/8): %v", ErrRefused, s, err)
+		}
+		if err := PrivatePrefix(p); err != nil {
+			return nil, err
+		}
+		out = append(out, p.Masked())
+	}
+	slices.SortFunc(out, func(a, b netip.Prefix) int { return strings.Compare(a.String(), b.String()) })
+	return slices.CompactFunc(out, func(a, b netip.Prefix) bool { return a == b }), nil
+}
+
+// AllowPrefixes returns a Policy that permits an address contained in one of
+// prefixes (compared after unmapping an IPv4-mapped IPv6 address) and
+// otherwise defers to base (RefuseAddr when base is nil). Because every prefix
+// came through ParseAllowPrefixes, an allowed address is private by
+// construction: the allowlist cannot reach loopback, link-local or public
+// space. With no prefixes it is base unchanged.
+func AllowPrefixes(base Policy, prefixes []netip.Prefix) Policy {
+	if base == nil {
+		base = RefuseAddr
+	}
+	if len(prefixes) == 0 {
+		return base
+	}
+	ps := slices.Clone(prefixes)
+	return func(a netip.Addr) error {
+		if a.IsValid() {
+			u := a.Unmap()
+			for _, p := range ps {
+				if p.Contains(u) {
+					return nil
+				}
+			}
+		}
+		return base(a)
+	}
 }
 
 // Timeouts of the transport itself, below any per-call ceiling the caller

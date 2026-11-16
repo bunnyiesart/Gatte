@@ -319,3 +319,29 @@ func TestHTTPAuthNameIsNotAControlHeader(t *testing.T) {
 		t.Errorf("raw Authorization header: %v", err)
 	}
 }
+
+// TestHTTPEgressAllowlist: an http entry may carry a per-backend allowlist of
+// private CIDRs (ADR-0048 Decisão 6), but only private ranges, and only on an
+// http entry.
+func TestHTTPEgressAllowlist(t *testing.T) {
+	e := validHTTP()
+	e.EgressAllowCIDRs = []string{"10.0.0.0/8", "192.168.0.0/24"}
+	if err := e.Validate(); err != nil {
+		t.Errorf("a private allowlist on an http entry: %v", err)
+	}
+
+	for _, cidr := range []string{"8.8.8.0/24", "127.0.0.0/8", "169.254.0.0/16", "not-a-cidr"} {
+		e := validHTTP()
+		e.EgressAllowCIDRs = []string{cidr}
+		if err := e.Validate(); !errors.Is(err, ErrInvalid) {
+			t.Errorf("allowlist %q: want ErrInvalid, got %v", cidr, err)
+		}
+	}
+
+	// Rejected on a non-http entry: an egress allowlist with no http egress
+	// guard to read it must not sit in the signature.
+	stdio := UpstreamServer{Name: "casemgmt", Transport: TransportStdio, Command: "/bin/true", EgressAllowCIDRs: []string{"10.0.0.0/8"}}
+	if err := stdio.Validate(); !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "egress allowlist") {
+		t.Errorf("egress allowlist on a stdio entry: %v, want an ErrInvalid naming it", err)
+	}
+}

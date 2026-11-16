@@ -255,13 +255,13 @@ func TestValidateBaseURL_RefusesAForbiddenLiteralHost(t *testing.T) {
 		"http://169.254.169.254/latest", "http://127.0.0.1/", "https://10.0.0.1/v1",
 		"http://[::1]:8080", "http://0.0.0.0/", "http://100.64.0.1/", "http://[::ffff:127.0.0.1]/",
 	} {
-		err := resthttp.ValidateBaseURL(raw)
+		err := resthttp.ValidateBaseURL(raw, nil)
 		if !errors.Is(err, resthttp.ErrInvalidURL) || !errors.Is(err, resthttp.ErrEgressRefused) {
 			t.Errorf("%s: want ErrInvalidURL wrapping ErrEgressRefused, got %v", raw, err)
 		}
 	}
 	for _, raw := range []string{"https://api.example.com/v2", "http://203.0.113.10:8080/", "https://[2001:db8::1]/"} {
-		if err := resthttp.ValidateBaseURL(raw); err != nil {
+		if err := resthttp.ValidateBaseURL(raw, nil); err != nil {
 			t.Errorf("%s: want accepted, got %v", raw, err)
 		}
 	}

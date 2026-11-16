@@ -3970,16 +3970,17 @@ func identityOf(def ToolDef) quarantine.ToolIdentity {
 // resolved values and has no business knowing what else the entry names.
 func specFor(entry registry.UpstreamServer) UpstreamSpec {
 	return UpstreamSpec{
-		Name:       entry.Name,
-		Transport:  string(entry.Transport),
-		Command:    entry.Command,
-		Args:       slices.Clone(entry.Args),
-		URL:        entry.URL,
-		Image:      entry.Image,
-		AuthKind:   string(entry.AuthKind),
-		AuthName:   entry.AuthName,
-		RemoteKind: string(entry.RemoteKind),
-		Operations: slices.Clone(entry.Operations),
+		Name:             entry.Name,
+		Transport:        string(entry.Transport),
+		Command:          entry.Command,
+		Args:             slices.Clone(entry.Args),
+		URL:              entry.URL,
+		Image:            entry.Image,
+		AuthKind:         string(entry.AuthKind),
+		AuthName:         entry.AuthName,
+		RemoteKind:       string(entry.RemoteKind),
+		Operations:       slices.Clone(entry.Operations),
+		EgressAllowCIDRs: slices.Clone(entry.EgressAllowCIDRs),
 	}
 }
 

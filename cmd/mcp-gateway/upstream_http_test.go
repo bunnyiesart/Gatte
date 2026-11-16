@@ -218,6 +218,52 @@ func TestCmdUpstreamRegister_HTTPFromFile(t *testing.T) {
 	}
 }
 
+// TestCmdUpstreamRegister_HTTPEgressAllowlist: -allow-cidr opts a backend's
+// REST egress guard into a private range (ADR-0048 Decisão 6). The entry
+// registers with a private -url that would otherwise be refused, stores the
+// normalised allowlist, shows it in the table, and passes the dial-time check.
+// On a non-http transport the flag is refused by name.
+func TestCmdUpstreamRegister_HTTPEgressAllowlist(t *testing.T) {
+	configPath := httpTestConfig(t)
+	spec := writeSpec(t, "openapi.json", restSpecJSON)
+	var out, errBuf bytes.Buffer
+	code := cmdUpstream([]string{
+		"register", "-config", configPath, "-name", "siem", "-transport", "http",
+		"-url", "http://10.0.0.5", "-openapi", spec, "-auth-kind", "none",
+		"-allow-cidr", "10.0.0.9/8", "-allow-cidr", "192.168.0.0/24",
+	}, &out, &errBuf)
+	requireExit(t, code, exitOK, "register http with an egress allowlist")
+
+	entry := storedEntry(t, configPath, "siem")
+	if got := strings.Join(entry.EgressAllowCIDRs, ","); got != "10.0.0.0/8,192.168.0.0/24" {
+		t.Errorf("stored allowlist = %q, want the normalised, sorted 10.0.0.0/8,192.168.0.0/24", got)
+	}
+	if err := dialTimeRefusal(entry); err != nil {
+		t.Errorf("dialTimeRefusal refuses the private entry the allowlist opts in: %v", err)
+	}
+	requireContains(t, out.String(), "egress allowlist", "register output names the allowlist")
+	requireContains(t, out.String(), "10.0.0.0/8, 192.168.0.0/24", "register output shows the ranges")
+
+	// A non-private range is refused at register, before a database is touched.
+	out.Reset()
+	errBuf.Reset()
+	code = cmdUpstream([]string{
+		"register", "-name", "bad", "-transport", "http",
+		"-url", "https://api.example.com", "-openapi", spec, "-auth-kind", "none", "-allow-cidr", "8.8.8.0/24",
+	}, &out, &errBuf)
+	requireExit(t, code, exitCannotRun, "register with a public allowlist CIDR")
+	requireContains(t, errBuf.String(), "-allow-cidr", "refusal names the flag")
+
+	// The flag belongs to http only.
+	out.Reset()
+	errBuf.Reset()
+	code = cmdUpstream([]string{
+		"register", "-name", "proc", "-transport", "stdio", "-command", "/bin/true", "-allow-cidr", "10.0.0.0/8",
+	}, &out, &errBuf)
+	requireExit(t, code, exitCannotRun, "allow-cidr on a stdio entry")
+	requireContains(t, errBuf.String(), "-allow-cidr applies to -transport http only", "the refusal")
+}
+
 // TestCmdUpstreamRegister_HTTPFromURLIsGuarded: a document URL goes through
 // the adapter's egress guard, which refuses httptest's loopback listener
 // before any request leaves -- no production build has a loopback

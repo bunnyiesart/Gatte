@@ -18,8 +18,12 @@ log:
 ntp:
   disable_startup_check: true
 
+# TOTP is enabled only when the operator opted in (GATTE_2FA=totp); the
+# default install stays password-only. Each person enrolls an authenticator
+# at their next sign-in.
 totp:
-  disable: true
+  disable: @TOTP_DISABLE@
+  issuer: '@SESSION_DOMAIN@'
 
 webauthn:
   disable: true
@@ -39,7 +43,7 @@ authentication_backend:
       algorithm: 'argon2'
 
 access_control:
-  default_policy: 'one_factor'
+  default_policy: '@AUTH_POLICY@'
 
 session:
   name: 'authelia_session'
@@ -108,7 +112,7 @@ identity_providers:
         client_name: 'Claude Code (analyst MCP client)'
         lifespan: 'mcp_short'
         public: true
-        authorization_policy: 'one_factor'
+        authorization_policy: '@AUTH_POLICY@'
         claims_policy: 'mcp_gateway'
         audience:
           - '@AUDIENCE@'

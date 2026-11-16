@@ -37,6 +37,8 @@ render() { # TEMPLATE DEST MODE OWNER
 		-e "s|@AUDIENCE@|$AUDIENCE|g" \
 		-e "s|@IDP_URL@|$IDP_URL|g" \
 		-e "s|@SESSION_DOMAIN@|$GATTE_DOMAIN|g" \
+		-e "s|@TOTP_DISABLE@|$TOTP_DISABLE|g" \
+		-e "s|@AUTH_POLICY@|$AUTH_POLICY|g" \
 		-e "s|@TRUSTED_KEY@|$(cat "$SIGNING_PUB")|g" \
 		-e "s|@CA_FILE_LINE@|$CA_FILE_LINE|g" \
 		-e "s|@GW_SITE@|$GW_SITE|g" \

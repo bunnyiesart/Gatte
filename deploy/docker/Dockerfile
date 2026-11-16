@@ -27,8 +27,8 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.buildVersion=${VERS
       -o /out/mcp-gateway ./cmd/mcp-gateway
 
 # --- 2. sops, from its release, checked against the release's checksums. ---
-FROM debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f AS sops
-ARG SOPS_VERSION=v3.13.2
+FROM debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2 AS sops
+ARG SOPS_VERSION=v3.13.3
 RUN set -eu; apt-get update -qq; apt-get install -y -qq --no-install-recommends ca-certificates curl >/dev/null; \
     arch=$(dpkg --print-architecture); \
     base="https://github.com/getsops/sops/releases/download/${SOPS_VERSION}"; \
@@ -38,11 +38,11 @@ RUN set -eu; apt-get update -qq; apt-get install -y -qq --no-install-recommends 
     install -D -m 0755 "$f" /out/sops
 
 # --- 3. Caddy and Authelia, from their official images. ---
-FROM caddy:2.11.7-alpine@sha256:d8542f48d34a9cf4e4c11a478865229840e87e4c96ea3f439101f31a5d35f75f AS caddy
+FROM caddy:2.11.9-alpine@sha256:003a97808e781aa9f7e75cc2f43d34d461099031faf5e20faefb9f61126836f0 AS caddy
 FROM authelia/authelia:4.39.28@sha256:bd97cff4fcbf715b5ff1f9ae286afbe6033afce385302520b0368122d43a6f54 AS authelia
 
 # --- 4. The runtime. ---
-FROM debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f
+FROM debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2
 # tini is PID 1, so signals reach the entrypoint, which stops the three
 # processes in order; setpriv (util-linux) drops each one to its own
 # account; curl talks to the management API's UNIX sockets.

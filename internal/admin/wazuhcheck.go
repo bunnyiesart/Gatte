@@ -135,7 +135,7 @@ func (s *Service) wazuhUser(ctx context.Context, cfg *config.Config, username st
 	if err != nil {
 		return unchecked(wazuhReason(err))
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var ans adminapi.WazuhUserCheck
 	switch resp.StatusCode {

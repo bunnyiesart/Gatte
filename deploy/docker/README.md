@@ -465,4 +465,3 @@ keep their services in a compose file. It has no default image: set
   volume; with the container stopped,
   `docker run --rm -v gatte:/gatte:ro -v "$PWD":/out "$IMAGE" tar czf /out/gatte.tgz /gatte`
   is a full backup. It holds every secret Gatte has: keep it offline.
-- No second factor yet: sign-in is a password (Authelia `one_factor`).

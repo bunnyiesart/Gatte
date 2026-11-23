@@ -184,7 +184,7 @@ func dialTimeRefusal(entry registry.UpstreamServer) error {
 		_, err := gwrest.Decode(entry.Operations, string(entry.AuthKind), entry.AuthName)
 		return err
 	case registry.TransportRemote:
-		return gwremote.ValidateURL(entry.URL)
+		return gwremote.ValidateURL(entry.URL, entry.EgressAllowCIDRs)
 	}
 	return nil
 }

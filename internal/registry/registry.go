@@ -338,8 +338,14 @@ func (s UpstreamServer) Validate() error {
 		if len(s.Operations) != 0 {
 			return fmt.Errorf("%w: operations must be empty for %s transport; only http entries carry a frozen operation set", ErrInvalid, s.Transport)
 		}
+	}
+	// The per-backend egress allowlist is read by the egress guard the http and
+	// remote adapters share (ADR-0048 Decisão 6, ADR-0058 §7); any other
+	// transport must not carry one, where it would sit in the signature without
+	// affecting what the gateway reaches.
+	if s.Transport != TransportHTTP && s.Transport != TransportRemote {
 		if len(s.EgressAllowCIDRs) != 0 {
-			return fmt.Errorf("%w: egress allowlist must be empty for %s transport; only an http entry's REST egress guard reads a per-backend private-CIDR allowlist", ErrInvalid, s.Transport)
+			return fmt.Errorf("%w: egress allowlist must be empty for %s transport; only the http and remote egress guard reads a per-backend private-CIDR allowlist", ErrInvalid, s.Transport)
 		}
 	}
 
@@ -604,6 +610,15 @@ func validateRemote(s UpstreamServer) error {
 		return fmt.Errorf("%w: remote kind must be set for remote transport (%q)", ErrInvalid, RemoteStreamable)
 	default:
 		return fmt.Errorf("%w: remote kind %q is not %q (or the deferred %q)", ErrInvalid, s.RemoteKind, RemoteStreamable, RemoteSSE)
+	}
+
+	// The per-backend egress allowlist, when present, must name only private
+	// CIDRs: the same rule ParseAllowPrefixes applies at registration, re-run
+	// here so a row written into the database by hand with a public or loopback
+	// range is refused rather than widening the guard at dial (ADR-0058 §7,
+	// reusing the http opt-in of ADR-0048 Decisão 6).
+	if _, err := egress.ParseAllowPrefixes(s.EgressAllowCIDRs); err != nil {
+		return fmt.Errorf("%w: egress allowlist: %v", ErrInvalid, err)
 	}
 	return nil
 }

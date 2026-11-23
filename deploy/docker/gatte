@@ -63,6 +63,10 @@ Remote MCP servers (native MCP backends reached by URL)
                  -key VAR      vault entry holding the token (default NAME_API_KEY, upper case)
                  -keyless      the server takes no token
                  -grant ROLE   role that gets NAME = ["*"] (default analyst); -no-grant to skip
+                 -allow-cidr CIDR  a private CIDR this backend's egress guard may
+                               reach (repeat); the guard otherwise refuses every private
+                               and internal address. Only private ranges, signed with the
+                               entry -- for a sibling container or a SIEM reached over a VPN
   gatte remote approve NAME [-yes]
         Show every tool of NAME waiting for review, then approve that exact set.
   gatte remote list
@@ -422,7 +426,7 @@ cmd_remote_add() {
 	[ $# -ge 1 ] || die "usage: gatte remote add NAME -url MCP-ENDPOINT-URL [...]"
 	name=$1
 	shift
-	url='' kind='' aname='' rkind='' key='' keyless='' grant=analyst
+	url='' kind='' aname='' rkind='' key='' keyless='' grant=analyst acidrs=''
 	while [ $# -gt 0 ]; do
 		case "$1" in
 		-url) url=$2; shift 2 ;;
@@ -433,6 +437,10 @@ cmd_remote_add() {
 		-keyless) keyless=1; shift ;;
 		-grant) grant=$2; shift 2 ;;
 		-no-grant) grant=; shift ;;
+		# A private CIDR this backend's egress guard may reach (repeat). The
+		# guard otherwise refuses every private, loopback and internal address;
+		# the list is signed with the entry (gatte help; design/adr/0058, 0048).
+		-allow-cidr) acidrs="$acidrs $2"; shift 2 ;;
 		*) die "unknown option $1 (gatte help)" ;;
 		esac
 	done
@@ -441,6 +449,7 @@ cmd_remote_add() {
 	[ -n "$kind" ] && set -- "$@" -auth-kind "$kind"
 	[ -n "$aname" ] && set -- "$@" -auth-name "$aname"
 	[ -n "$rkind" ] && set -- "$@" -remote-kind "$rkind"
+	for c in $acidrs; do set -- "$@" -allow-cidr "$c"; done
 	if [ -n "$keyless" ]; then
 		[ -n "$kind" ] || set -- "$@" -auth-kind none
 	else

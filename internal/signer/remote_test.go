@@ -75,6 +75,65 @@ func TestCanonicalRemoteCoversURLAuthAndKind(t *testing.T) {
 	}
 }
 
+// TestCanonicalRemoteCoversEgressAllowlist: the per-backend egress allowlist is
+// signed for a remote entry too (ADR-0058 §7, reusing ADR-0048 Decisão 6), so a
+// database write that widens or clears it breaks the signature; the order the
+// CIDRs are stored in does not; and an empty allowlist -- every remote entry
+// signed before this field -- produces the same bytes as before, so existing
+// signatures still verify.
+func TestCanonicalRemoteCoversEgressAllowlist(t *testing.T) {
+	base := Canonical(remoteEntry())
+
+	// An empty allowlist is byte-for-byte the pre-field form (back-compat).
+	empty := remoteEntry()
+	empty.EgressAllowCIDRs = []string{}
+	if !bytes.Equal(Canonical(empty), base) {
+		t.Error("an empty allowlist changed the remote canonical bytes; existing remote signatures would break")
+	}
+
+	// Adding an allowlist changes the bytes.
+	with := remoteEntry()
+	with.EgressAllowCIDRs = []string{"10.0.0.0/8"}
+	if bytes.Equal(Canonical(with), base) {
+		t.Error("adding an egress allowlist did not change the remote canonical bytes; the field is not covered")
+	}
+
+	// Order does not matter: the set is sorted before hashing.
+	a := remoteEntry()
+	a.EgressAllowCIDRs = []string{"10.0.0.0/8", "192.168.0.0/24"}
+	b := remoteEntry()
+	b.EgressAllowCIDRs = []string{"192.168.0.0/24", "10.0.0.0/8"}
+	if !bytes.Equal(Canonical(a), Canonical(b)) {
+		t.Error("the allowlist order changed the signed bytes; it must be order-independent")
+	}
+
+	// A different set is a different signature.
+	c := remoteEntry()
+	c.EgressAllowCIDRs = []string{"10.0.0.0/8"}
+	if bytes.Equal(Canonical(a), Canonical(c)) {
+		t.Error("two different allowlists produced equal canonical bytes")
+	}
+}
+
+// TestVerifyRemoteAllowlistTamper: a signature over a remote entry no longer
+// verifies once the stored allowlist is widened, so a database write that opens
+// egress cannot keep an old signature.
+func TestVerifyRemoteAllowlistTamper(t *testing.T) {
+	s := newSigner(t)
+	v := newVerifier(t, s)
+	entry := remoteEntry()
+	entry.EgressAllowCIDRs = []string{"10.0.0.0/8"}
+	sig := s.Sign(entry)
+	if err := v.Verify(entry, sig); err != nil {
+		t.Fatalf("Verify of the signed remote entry: %v", err)
+	}
+	widened := entry
+	widened.EgressAllowCIDRs = []string{"10.0.0.0/8", "192.168.0.0/16"}
+	if err := v.Verify(widened, sig); !errors.Is(err, ErrInvalidSignature) {
+		t.Errorf("Verify after widening the allowlist = %v, want ErrInvalidSignature", err)
+	}
+}
+
 // TestCanonical_RemoteAndHTTPBytesArePinned pins the v4-remote and v3-http
 // encodings with a golden hash, as TestCanonical_StdioEntryKeepsV1Bytes
 // pins v1. Changing either constant invalidates every deployed signature

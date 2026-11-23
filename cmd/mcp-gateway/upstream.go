@@ -65,6 +65,7 @@ func upstreamUsage(w io.Writer) {
                                 -url MCP-ENDPOINT-URL
                                 [-auth-kind bearer|header|none [-auth-name NAME]]
                                 [-env VARNAME] [-remote-kind streamable]
+                                [-allow-cidr CIDR ...]
   mcp-gateway upstream update [-config FILE] -image NAME@sha256:HEX NAME
   mcp-gateway upstream deregister [-config FILE] NAME
   mcp-gateway upstream maintenance on|off [-config FILE] NAME [-message TEXT] [-until T]
@@ -128,7 +129,11 @@ signed whole; it is reached only through the gateway's egress guard, as for
 http (no internal address, no redirect off its origin). -auth-kind bearer or
 header sends the ONE secret -env names as the gateway's own token on every
 request; the analyst's token is never forwarded. -remote-kind defaults to
-streamable; sse is reserved and not yet built. The gateway cannot isolate a
+streamable; sse is reserved and not yet built. -allow-cidr opts this remote
+backend into a private CIDR the egress guard may reach -- the same signed,
+reviewed, private-only allowlist as the http transport, for a native MCP
+backend on a private address (a sibling container or a SIEM reached over a
+VPN); without it a private endpoint is refused. The gateway cannot isolate a
 remote backend, and what it connects to after a call is outside the
 gateway's view (design/adr/0058).
 
@@ -336,7 +341,7 @@ func upstreamRegister(args []string, stdout, stderr io.Writer) int {
 	authName := fs.String("auth-name", "", "for -auth-kind header or query: the header or query parameter name the secret is injected as; a parameter of the document on the same name is refused (the server-side value wins)")
 	remoteKind := fs.String("remote-kind", "", "for -transport remote: the MCP client transport, \"streamable\" (the default); \"sse\" is reserved and not yet built")
 	var allowCIDRs opStringList
-	fs.Var(&allowCIDRs, "allow-cidr", "for -transport http: a private CIDR this backend's REST egress guard may reach (e.g. 10.0.0.0/8); repeat for more. The guard otherwise refuses every private, loopback and link-local address. Only private ranges (RFC 1918, 100.64.0.0/10, fc00::/7) are accepted, and the list is signed with the entry -- a reviewed opt-in for one backend, never a blanket disable")
+	fs.Var(&allowCIDRs, "allow-cidr", "for -transport http or remote: a private CIDR this backend's egress guard may reach (e.g. 10.0.0.0/8); repeat for more. The guard otherwise refuses every private, loopback and link-local address. Only private ranges (RFC 1918, 100.64.0.0/10, fc00::/7) are accepted, and the list is signed with the entry -- a reviewed opt-in for one backend, never a blanket disable")
 	var argv opStringList
 	fs.Var(&argv, "arg", "argument for the spawned command; repeat, in order")
 	var envs opStringList
@@ -370,12 +375,13 @@ func upstreamRegister(args []string, stdout, stderr io.Writer) int {
 		Image:       *image,
 		EnvVarNames: envs,
 	}
-	// The per-backend egress allowlist is an http-only, signed field: refuse it
-	// by name on any other transport, and normalise it to the stored form
-	// before it reaches the URL and dial-time checks (which read it).
+	// The per-backend egress allowlist is a signed field the http and remote
+	// egress guard reads: refuse it by name on any other transport, and
+	// normalise it to the stored form before it reaches the URL and dial-time
+	// checks (which read it).
 	if len(allowCIDRs) > 0 {
-		if entry.Transport != registry.TransportHTTP {
-			fmt.Fprintf(stderr, "-allow-cidr applies to -transport http only; it is the REST egress guard's per-backend allowlist of private CIDRs.\n\n")
+		if entry.Transport != registry.TransportHTTP && entry.Transport != registry.TransportRemote {
+			fmt.Fprintf(stderr, "-allow-cidr applies to -transport http and remote only; it is the egress guard's per-backend allowlist of private CIDRs.\n\n")
 			upstreamUsage(stderr)
 			return exitCannotRun
 		}
@@ -491,6 +497,11 @@ func runUpstreamRegisterReport(e *opEnv, entry registry.UpstreamServer, report *
 	if entry.Transport == registry.TransportRemote {
 		fmt.Fprintf(tw, "  auth\t%s\n", opRemoteAuthLine(entry))
 		fmt.Fprintf(tw, "  remote kind\t%s\n", entry.RemoteKind)
+		if len(entry.EgressAllowCIDRs) > 0 {
+			// A signed field that widens the egress guard, so it is in the
+			// table the operator checks before signing (as for an http entry).
+			fmt.Fprintf(tw, "  egress allowlist\t%s\n", strings.Join(entry.EgressAllowCIDRs, ", "))
+		}
 	}
 	if !opFlushTable(tw, e.stderr) {
 		return exitProblem

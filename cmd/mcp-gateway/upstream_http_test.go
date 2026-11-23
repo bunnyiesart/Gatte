@@ -254,14 +254,15 @@ func TestCmdUpstreamRegister_HTTPEgressAllowlist(t *testing.T) {
 	requireExit(t, code, exitCannotRun, "register with a public allowlist CIDR")
 	requireContains(t, errBuf.String(), "-allow-cidr", "refusal names the flag")
 
-	// The flag belongs to http only.
+	// The flag belongs to http and remote only; a stdio (or oci) entry refuses
+	// it by name.
 	out.Reset()
 	errBuf.Reset()
 	code = cmdUpstream([]string{
 		"register", "-name", "proc", "-transport", "stdio", "-command", "/bin/true", "-allow-cidr", "10.0.0.0/8",
 	}, &out, &errBuf)
 	requireExit(t, code, exitCannotRun, "allow-cidr on a stdio entry")
-	requireContains(t, errBuf.String(), "-allow-cidr applies to -transport http only", "the refusal")
+	requireContains(t, errBuf.String(), "-allow-cidr applies to -transport http and remote only", "the refusal")
 }
 
 // TestCmdUpstreamRegister_HTTPFromURLIsGuarded: a document URL goes through

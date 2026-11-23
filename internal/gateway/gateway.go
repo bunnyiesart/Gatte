@@ -288,10 +288,11 @@ type UpstreamSpec struct {
 	// its method, path, namespaced input schema and security class. Empty for
 	// stdio and oci.
 	Operations []byte
-	// EgressAllowCIDRs is the http entry's per-backend allowlist of private
-	// CIDRs its REST egress guard may reach (ADR-0048 Decisão 6). Signed with
-	// the entry; the resthttp adapter turns it into the one entry's egress
-	// policy. Empty for every other transport and for a public http entry.
+	// EgressAllowCIDRs is a http or remote entry's per-backend allowlist of
+	// private CIDRs its egress guard may reach (ADR-0048 Decisão 6, ADR-0058
+	// §7). Signed with the entry; the resthttp and remotemcp adapters turn it
+	// into the one entry's egress policy. Empty for stdio and oci, and for a
+	// public http or remote entry.
 	EgressAllowCIDRs []string
 }
 

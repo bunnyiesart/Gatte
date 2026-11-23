@@ -98,9 +98,10 @@ const canonicalTagV3HTTP = "mcp-gateway/signer/canonical/v3-http"
 // canonicalTagV4Remote is the tag of the encoding for a remote entry, a
 // native MCP server reached by URL (ADR-0058 §5). It covers what v1 covers
 // -- the full URL (scheme, host, port, path) among it -- and then the auth
-// descriptor (AuthKind, AuthName) and RemoteKind, which decides the wire
-// protocol. There is no operation digest: a remote entry has no frozen set,
-// its tools are observed live by quarantine.
+// descriptor (AuthKind, AuthName), RemoteKind, which decides the wire
+// protocol, and the per-backend egress allowlist (ADR-0058 §7, reusing
+// ADR-0048 Decisão 6). There is no operation digest: a remote entry has no
+// frozen set, its tools are observed live by quarantine.
 //
 // A separate tag for the same reason as v2 and v3: no other layout can
 // coincide with it, so a remote row that loses its URL, descriptor or
@@ -117,7 +118,10 @@ const canonicalTagV4Remote = "mcp-gateway/signer/canonical/v4-remote"
 // credential-injection descriptor (AuthKind, AuthName) and a SHA-256 digest
 // of the frozen operation set -- so the injection location and the method/
 // path each tool maps to are attested, not just stored (ADR-0047 §4). For
-// a remote entry (canonicalTagV4Remote), the descriptor and RemoteKind.
+// a remote entry (canonicalTagV4Remote), the descriptor, RemoteKind and the
+// per-backend egress allowlist. The allowlist is covered for both transports
+// that read it, so a database write cannot widen a backend's egress and still
+// verify.
 //
 // Name is covered although ADR-0003 lists only command/url, args and env
 // var names. Including it binds a signature to the entry it was made for,
@@ -212,34 +216,48 @@ func Canonical(s registry.UpstreamServer) []byte {
 		opsDigest := sha256.Sum256(s.Operations)
 		buf = appendField(buf, string(opsDigest[:]))
 		// The per-backend egress allowlist (ADR-0048 Decisão 6): the private
-		// CIDRs this entry's REST egress guard may reach. Signed so a direct
-		// database write cannot widen them and still verify. Appended only when
-		// non-empty, and it is the last thing in the http tail, so an entry
-		// with no allowlist -- every REST entry before this field existed --
-		// produces byte-for-byte the same canonical form and its signature
-		// still verifies. Sorted before hashing, like EnvVarNames, so the order
-		// they were typed in does not change the signature; appendCount fixes
-		// the arity and each CIDR goes through appendField so none can span a
-		// field boundary. Any change to the set -- including adding or clearing
-		// it -- changes these bytes, so a database write that widens egress
-		// breaks the signature.
-		if len(s.EgressAllowCIDRs) > 0 {
-			allowCIDRs := slices.Clone(s.EgressAllowCIDRs)
-			slices.Sort(allowCIDRs)
-			buf = appendCount(buf, len(allowCIDRs))
-			for _, cidr := range allowCIDRs {
-				buf = appendField(buf, cidr)
-			}
-		}
+		// CIDRs this entry's REST egress guard may reach, signed so a direct
+		// database write cannot widen them and still verify. Last in the http
+		// tail, in the same shape the remote tail uses (appendAllowCIDRs).
+		buf = appendAllowCIDRs(buf, s.EgressAllowCIDRs)
 	}
 	// remote-only tail (ADR-0058 §5): where the credential goes and which
-	// MCP client transport reaches the endpoint.
+	// MCP client transport reaches the endpoint, then the per-backend egress
+	// allowlist (ADR-0058 §7, reusing ADR-0048 Decisão 6). The allowlist is
+	// signed for the same reason as the http one and in the same shape -- so a
+	// database write that widens or clears the private CIDRs a remote backend
+	// may be reached on breaks the signature -- and it is appended only when
+	// non-empty, so a remote entry with no allowlist (every remote entry before
+	// this field was signed for the transport) produces byte-for-byte the same
+	// canonical form and its signature still verifies.
 	if isRemote {
 		buf = appendField(buf, string(s.AuthKind))
 		buf = appendField(buf, s.AuthName)
 		buf = appendField(buf, string(s.RemoteKind))
+		buf = appendAllowCIDRs(buf, s.EgressAllowCIDRs)
 	}
 
+	return buf
+}
+
+// appendAllowCIDRs appends the per-backend egress allowlist to a canonical
+// encoding, or nothing when it is empty. The set is sorted before hashing,
+// like EnvVarNames, so the order the CIDRs were typed in does not change the
+// signature; appendCount fixes the arity and each CIDR goes through appendField
+// so none can span a field boundary. Any change to the set -- including adding
+// or clearing it -- changes these bytes, so a database write that widens egress
+// breaks the signature. It is the last thing in a transport's tail, so an entry
+// with no allowlist is byte-for-byte the pre-field form.
+func appendAllowCIDRs(buf []byte, cidrs []string) []byte {
+	if len(cidrs) == 0 {
+		return buf
+	}
+	sorted := slices.Clone(cidrs)
+	slices.Sort(sorted)
+	buf = appendCount(buf, len(sorted))
+	for _, cidr := range sorted {
+		buf = appendField(buf, cidr)
+	}
 	return buf
 }
 

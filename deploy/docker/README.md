@@ -181,17 +181,19 @@ Three network paths, each different on purpose.
     cannot be routed through an outbound proxy.
 
   A backend that lives only on a private address -- a SIEM or case system the
-  host reaches over a VPN -- has two answers:
+  host reaches over a VPN, or a sibling MCP container -- has two answers:
 
   - **Per-backend allowlist (`-allow-cidr`).** Opt that one backend into the
     private ranges it may reach: `gatte api add NAME -url http://10.1.2.3 ...
-    -allow-cidr 10.0.0.0/8` (repeat the flag for more ranges). Only private
-    ranges are accepted (`10/8`, `172.16/12`, `192.168/16`, `100.64/10`,
-    `fc00::/7`); loopback, link-local and public space are always refused. The
-    allowlist is signed with the entry, so it is reviewed and cannot be widened
-    by a database write -- it is a scoped opt-in for one backend, never a
-    blanket disable of the guard. The web console does not take an allowlist;
-    register a private backend in the terminal.
+    -allow-cidr 10.0.0.0/8` (repeat the flag for more ranges). It works the
+    same way for a native MCP backend: `gatte remote add NAME -url
+    http://10.1.2.3/mcp -allow-cidr 10.0.0.0/8`. Only private ranges are
+    accepted (`10/8`, `172.16/12`, `192.168/16`, `100.64/10`, `fc00::/7`);
+    loopback, link-local and public space are always refused. The allowlist is
+    signed with the entry, so it is reviewed and cannot be widened by a database
+    write -- it is a scoped opt-in for one backend, never a blanket disable of
+    the guard. The web console does not take an allowlist; register a private
+    backend in the terminal.
   - **A routable front.** Front the backend at a public name the container
     reaches directly -- commonly the same VPN or reverse-proxy endpoint
     analysts use -- and register that name with no allowlist.

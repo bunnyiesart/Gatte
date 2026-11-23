@@ -103,3 +103,21 @@ func TestRemoteKindOnlyOnRemote(t *testing.T) {
 		t.Errorf("stdio with remote kind: want ErrInvalid, got %v", err)
 	}
 }
+
+// TestRemoteEgressAllowlist: a remote entry may carry a per-backend allowlist
+// of private CIDRs (ADR-0058 §7, reusing ADR-0048 Decisão 6), but only private
+// ranges, mirroring the http rule.
+func TestRemoteEgressAllowlist(t *testing.T) {
+	ok := remoteEntry()
+	ok.EgressAllowCIDRs = []string{"10.0.0.0/8", "192.168.0.0/24"}
+	if err := ok.Validate(); err != nil {
+		t.Errorf("a private allowlist on a remote entry: %v", err)
+	}
+	for _, cidr := range []string{"8.8.8.0/24", "127.0.0.0/8", "169.254.0.0/16", "not-a-cidr"} {
+		e := remoteEntry()
+		e.EgressAllowCIDRs = []string{cidr}
+		if err := e.Validate(); !errors.Is(err, ErrInvalid) {
+			t.Errorf("allowlist %q on a remote entry: want ErrInvalid, got %v", cidr, err)
+		}
+	}
+}

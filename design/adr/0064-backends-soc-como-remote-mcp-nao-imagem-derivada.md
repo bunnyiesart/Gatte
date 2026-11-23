@@ -2,10 +2,20 @@
 
 **Status:** Accepted — 23 nov 2026. Reverte a opção A (imagem derivada) que
 a issue de produto tinha escolhido para servir os quatro MCPs do SOC. Reaproveita
-o transporte `remote` (`0058`) tal como está, sem nenhuma mudança no gateway.
-Preserva a decisão da imagem única de **não rodar processo de backend nem
-container** (`0049`/`0050`): a imagem publicada não tem Python, não tem runtime
-de container e nunca recebe o socket do Docker.
+o transporte `remote` (`0058`), com **uma única mudança no gateway**: estender ao
+`remote` o opt-in de allowlist `-allow-cidr` que já existia no `http` (`0048`),
+para que um backend nativo em endereço privado (um container irmão ou um SIEM
+alcançado por VPN) possa ser discado quando explicitamente liberado. Preserva a
+decisão da imagem única de **não rodar processo de backend nem container**
+(`0049`/`0050`): a imagem publicada não tem Python, não tem runtime de container
+e nunca recebe o socket do Docker.
+
+**Correção (23 nov 2026, mesma data).** A redação original dizia "sem nenhuma
+mudança no gateway". Estava errada: o guard de egresso do `remote` não lia
+nenhuma allowlist, então todo endpoint privado era recusado no dial, sem escape
+pela CLI — a lacuna que o próprio `0058` já havia declarado em aberto. A mudança
+abaixo a fecha para este caso, reaproveitando o mecanismo do `0048` em vez de
+inventar um novo. É a única mudança de código no gateway que este ADR exige.
 
 ## Contexto
 
@@ -64,10 +74,35 @@ separado; cada um recebe seu próprio PR pequeno.
 
 Cada MCP sobe no seu container, em modo HTTP, e o Gatte o alcança por URL com
 `gatte remote add NAME -url https://.../mcp`. Isso reaproveita o `remote`
-(`0058`) e o menu Add de três vias do console (`0059`) sem código novo no
-gateway. As chaves de cada backend ficam no container do backend, isoladas do
-processo do gateway — o isolamento que a opção B do produto buscava, mas sem
-escrever adaptador novo.
+(`0058`) e o menu Add de três vias do console (`0059`) sem adaptador novo. As
+chaves de cada backend ficam no container do backend, isoladas do processo do
+gateway — o isolamento que a opção B do produto buscava, mas sem escrever
+adaptador novo.
+
+Quando o endpoint do backend fica num endereço privado (um container irmão na
+mesma rede Docker, ou um SIEM atrás de VPN), o guard de egresso compartilhado
+(`0048` Decisão 6, `0058` §7) o recusa por padrão. O operador o libera por
+backend com `gatte remote add NAME -url http://10.1.2.3/mcp -allow-cidr
+10.0.0.0/8` (repetível): só faixas privadas (RFC 1918, 100.64.0.0/10, fc00::/7)
+são aceitas, a lista é assinada com a entrada e revisada, e nunca é um disable
+geral do guard. É exatamente o mesmo opt-in do `http`, agora também no `remote`.
+
+### 4. A única mudança de código no gateway
+
+Estender ao `remote` a allowlist `-allow-cidr` que o `http` já tinha:
+
+- a CLI (`upstream register`) aceita `-allow-cidr` em `-transport remote`,
+  normaliza e armazena na entrada, e a recusa em stdio/oci;
+- o campo entra na forma canônica assinada do `remote` (`canonical/v4-remote`),
+  como já entrava na do `http` — uma escrita no banco não pode alargar o egresso
+  e ainda verificar;
+- o adaptador `remotemcp` monta o guard de egresso da entrada com a allowlist, do
+  mesmo jeito que o `resthttp`, no dial e no socket;
+- `registry.Validate` e `dialTimeRefusal` passam a validar a allowlist do
+  `remote` (só faixas privadas), para recusar no prompt o que o dial recusaria.
+
+Nada mais do gateway muda. O console web não toma allowlist: um backend privado é
+registrado no terminal.
 
 ### 3. O endpoint HTTP de cada backend exige um segredo; o Gatte é o único cliente
 
@@ -82,8 +117,13 @@ container, nunca no registro nem no log.
 
 - A imagem publicada do Gatte **não muda** e mantém a garantia de não rodar
   processo de backend nem container. A opção A (imagem derivada) fica descartada.
-- Trabalho é quatro PRs pequenos, um por repositório de servidor (`swiss`,
-  `graylog-mcp`, `iris-mcp`, `mcp-opensearch`), não código no Gatte.
+- A única mudança de código no gateway é estender ao `remote` a allowlist
+  `-allow-cidr` do `http` (item 4): reaproveita `0048`/`0058` e fecha, para este
+  caso, a lacuna de egresso que o `0058` havia declarado em aberto. Nenhum
+  adaptador novo, nenhuma forma de assinatura nova.
+- O resto do trabalho é quatro PRs pequenos, um por repositório de servidor
+  (`swiss`, `graylog-mcp`, `iris-mcp`, `mcp-opensearch`), sem mais código no
+  Gatte.
 - **Fora do alcance deste ADR (lacuna declarada):** a conectividade de rede de
   `graylog`/`iris`/`opensearch` até suas próprias fontes de dados. Isso era
   resolvido por uma VPN que não existe mais; é questão de deploy, ortogonal ao

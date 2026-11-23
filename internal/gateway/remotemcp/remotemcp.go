@@ -164,8 +164,17 @@ func New(opts ...Option) *Dialer {
 // fragment, and a literal-address host the egress policy accepts. A host
 // name is not resolved here; it is judged at every dial. It is the console
 // seam that refuses at register an entry the gateway would refuse forever.
-func ValidateURL(raw string) error {
-	_, err := parseEndpoint(raw, egress.Guard{})
+//
+// allowCIDRs is the entry's per-backend private-CIDR allowlist (ADR-0058 §7,
+// reusing ADR-0048 Decisão 6): a literal private host inside one of these
+// ranges is accepted, as Dial will accept it, and a bad allowlist is refused
+// here so register fails at the prompt rather than at the first dial.
+func ValidateURL(raw string, allowCIDRs []string) error {
+	prefixes, err := egress.ParseAllowPrefixes(allowCIDRs)
+	if err != nil {
+		return err
+	}
+	_, err = parseEndpoint(raw, egress.Guard{Policy: egress.AllowPrefixes(egress.RefuseAddr, prefixes)})
 	return err
 }
 
@@ -246,7 +255,20 @@ func (d *Dialer) Dial(ctx context.Context, spec gateway.UpstreamSpec, env map[st
 	default:
 		return nil, fmt.Errorf("%w: upstream %q: remote kind %q", ErrUnsupportedTransport, spec.Name, spec.RemoteKind)
 	}
-	origin, err := parseEndpoint(spec.URL, d.guard)
+	// The per-entry egress policy: this Dialer's default (RefuseAddr, or the
+	// test-only loopback allowance) widened by the entry's own private-CIDR
+	// allowlist when it declares one (ADR-0058 §7, reusing ADR-0048 Decisão 6).
+	// The allowlist was validated at registration (egress.ParseAllowPrefixes,
+	// via registry.Validate), so a bad CIDR never reaches here; this reparses
+	// the stored, canonical form. The same guard judges the literal host, the
+	// resolved addresses and the socket, so what parseEndpoint accepts is what
+	// the transport dials.
+	prefixes, err := egress.ParseAllowPrefixes(spec.EgressAllowCIDRs)
+	if err != nil {
+		return nil, fmt.Errorf("upstream %q: egress allowlist: %w", spec.Name, err)
+	}
+	guard := egress.Guard{Lookup: d.guard.Lookup, Policy: egress.AllowPrefixes(d.guard.Policy, prefixes)}
+	origin, err := parseEndpoint(spec.URL, guard)
 	if err != nil {
 		return nil, fmt.Errorf("upstream %q: %w", spec.Name, err)
 	}
@@ -255,7 +277,7 @@ func (d *Dialer) Dial(ctx context.Context, spec gateway.UpstreamSpec, env map[st
 		return nil, fmt.Errorf("upstream %q: %w", spec.Name, err)
 	}
 
-	signer := &signedTransport{base: d.guard.Transport(), maxBody: d.maxBody}
+	signer := &signedTransport{base: guard.Transport(), maxBody: d.maxBody}
 	switch spec.AuthKind {
 	case AuthBearer:
 		signer.header, signer.value = "Authorization", "Bearer "+secret

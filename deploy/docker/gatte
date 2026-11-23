@@ -617,8 +617,14 @@ cmd_console() {
 	[ -S "$OPERATOR_SOCKET" ] && [ -S "$ACCOUNTS_SOCKET" ] || die "the management API is not up yet: wait for 'gatte: up at' in docker logs"
 	out=$RUN_DIR/console.out
 	(umask 077 && : >"$out")
+	# Close the lock fd (9) in the console child: setsid detaches it to run
+	# for as long as the console is open, and a child that inherited fd 9
+	# would hold the flock the whole time, so a later `gatte console` (new
+	# link) and `gatte console stop` would both die at flock above. The lock
+	# only needs to serialise cmd_console itself; it is released when this
+	# function returns.
 	setsid mcp-gateway ui -manage-users -listen "$CONSOLE_INNER" \
-		-socket "$OPERATOR_SOCKET" -accounts-socket "$ACCOUNTS_SOCKET" >"$out" 2>&1 </dev/null &
+		-socket "$OPERATOR_SOCKET" -accounts-socket "$ACCOUNTS_SOCKET" >"$out" 2>&1 </dev/null 9>&- &
 	echo $! >"$pidf"
 	i=0 url=''
 	while [ "$i" -lt 50 ]; do
